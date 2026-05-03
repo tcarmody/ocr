@@ -19,6 +19,14 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BIN" "$APP_MACOS/$APP_NAME"
 cp "$REPO_ROOT/BundleAssets/Info.plist" "$APP_CONTENTS/Info.plist"
 
+ICON_ICNS="$REPO_ROOT/BundleAssets/AppIcon.icns"
+if [[ -f "$ICON_ICNS" ]]; then
+    cp "$ICON_ICNS" "$APP_RESOURCES/AppIcon.icns"
+    log "Copied AppIcon.icns into bundle Resources"
+else
+    warn "AppIcon.icns not found at $ICON_ICNS — bundle will use default icon"
+fi
+
 log "Signing"
 resolve_signing_identity
 ENTITLEMENTS="$REPO_ROOT/BundleAssets/$APP_NAME.entitlements"
