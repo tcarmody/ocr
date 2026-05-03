@@ -54,13 +54,49 @@ public actor PDFToEPUBPipeline {
     public typealias ProgressHandler = @Sendable (Progress) -> Void
 
     private let loader = PDFLoader()
-    private let engine: any OCREngine
+    private let visionEngine: any OCREngine
+    private let tesseractEngine: (any OCREngine)?
     private let embeddedExtractor = EmbeddedTextExtractor()
     private let gapFiller = EmbeddedTextGapFiller()
     private let qualityScorer = EmbeddedTextQualityScorer()
 
-    public init(engine: any OCREngine = VisionOCREngine()) {
-        self.engine = engine
+    public init(
+        visionEngine: any OCREngine = VisionOCREngine(),
+        tesseractEngine: (any OCREngine)? = TesseractOCREngine.detect()
+    ) {
+        self.visionEngine = visionEngine
+        self.tesseractEngine = tesseractEngine
+    }
+
+    /// Route an OCR call to Tesseract when any requested language is
+    /// non-Latin or ancient; Vision is consistently weak on those.
+    /// Falls back to Vision if Tesseract isn't installed even when it
+    /// would have been preferred — a logged degradation is better than
+    /// a hard failure.
+    private func selectEngine(for languages: [BCP47]) -> any OCREngine {
+        if let tesseractEngine, Self.shouldPreferTesseract(for: languages) {
+            return tesseractEngine
+        }
+        return visionEngine
+    }
+
+    /// Languages where Tesseract beats Vision in the cases the plan
+    /// enumerates: ancient scripts (Greek, Latin) and non-Latin scripts
+    /// (Hebrew, Syriac, Coptic, Arabic, CJK, Cyrillic).
+    static func shouldPreferTesseract(for languages: [BCP47]) -> Bool {
+        let tesseractStrong: Set<String> = [
+            "grc", "la",                               // ancient
+            "he", "ar",                                // RTL
+            "syr", "cop", "san", "chu",                // other ancient/liturgical
+            "zh", "ja", "ko",                          // CJK
+            "ru", "uk",                                // Cyrillic
+        ]
+        for lang in languages {
+            let primary = lang.rawValue.split(separator: "-", maxSplits: 1).first.map(String.init)
+                ?? lang.rawValue
+            if tesseractStrong.contains(primary) { return true }
+        }
+        return false
     }
 
     public func convert(
@@ -124,12 +160,16 @@ public actor PDFToEPUBPipeline {
 
             case .reocr:
                 // Existing path — render, OCR, then gap-fill from embedded.
+                // Engine choice is per-page so a Greek-only volume of an
+                // otherwise English-set could route correctly later. For
+                // now, hint languages are document-wide.
                 let image = try renderer.renderPage(at: i, of: pdf)
                 if options.emitDebugLog {
                     let pngURL = outputURL.appendingPathExtension("page-\(i).png")
                     Self.savePNG(image, to: pngURL)
                 }
-                let result = try await engine.recognize(image: image, hints: hints)
+                let pageEngine = selectEngine(for: hints.languages)
+                let result = try await pageEngine.recognize(image: image, hints: hints)
                 observations = gapFiller.fill(
                     visionObservations: result.observations,
                     embeddedLines: extracted.lines
@@ -266,13 +306,15 @@ public actor PDFToEPUBPipeline {
             out += "\n"
         }
 
-        out += "OBSERVATIONS (per page; Vision observations first, then embedded fillers appended)\n"
+        out += "OBSERVATIONS (per page)\n"
         out += "format: [FATE] page/idx src (x, y, w, h) conf=N.NN | text\n"
-        out += "  src = v (Vision) or e (embedded PDF text layer)\n\n"
+        out += "  src = v (Vision), t (Tesseract), e (embedded PDF text layer)\n\n"
         for page in pages {
-            let visionCount = page.observations.filter { $0.source == .vision }.count
-            let embeddedCount = page.observations.count - visionCount
-            out += "--- Page \(page.pageIndex) — \(page.observations.count) observations (\(visionCount) Vision, \(embeddedCount) embedded)\n"
+            let visionCount    = page.observations.filter { $0.source == .vision }.count
+            let tesseractCount = page.observations.filter { $0.source == .tesseract }.count
+            let embeddedCount  = page.observations.filter { $0.source == .embedded }.count
+            out += "--- Page \(page.pageIndex) — \(page.observations.count) observations " +
+                "(\(visionCount) Vision, \(tesseractCount) Tesseract, \(embeddedCount) embedded)\n"
             for (i, obs) in page.observations.enumerated() {
                 let key = ObservationKey(pageIndex: page.pageIndex, observationIndex: i)
                 let fate: String
@@ -284,7 +326,12 @@ public actor PDFToEPUBPipeline {
                     fate = "KEEP"
                 }
                 let b = obs.box
-                let src = obs.source == .vision ? "v" : "e"
+                let src: String
+                switch obs.source {
+                case .vision:    src = "v"
+                case .tesseract: src = "t"
+                case .embedded:  src = "e"
+                }
                 out += String(
                     format: "[%@] %d/%-3d %@ (%.3f, %.3f, %.3f, %.3f) conf=%.2f | %@\n",
                     fate, page.pageIndex, i, src,

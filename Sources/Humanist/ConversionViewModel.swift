@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Document
+import OCR
 import Pipeline
 
 @MainActor
@@ -12,11 +13,48 @@ final class ConversionViewModel: ObservableObject {
         case failed(message: String)
     }
 
+    /// User-facing language choice. The picker shows `label`; the
+    /// pipeline routes on `language` (modern Latin → Vision, ancient
+    /// or non-Latin → Tesseract when available).
+    struct LanguageOption: Identifiable, Hashable {
+        let id: String
+        let language: BCP47
+        let label: String
+        init(_ language: BCP47, _ label: String) {
+            self.id = language.rawValue
+            self.language = language
+            self.label = label
+        }
+    }
+
+    static let supportedLanguages: [LanguageOption] = [
+        .init(.en,         "English"),
+        .init(.fr,         "French"),
+        .init(.de,         "German"),
+        .init(.it,         "Italian"),
+        .init(.es,         "Spanish"),
+        .init(.grc,        "Ancient Greek (polytonic)"),
+        .init(.la,         "Latin"),
+        .init("he",        "Hebrew"),
+        .init("ar",        "Arabic"),
+        .init("ru",        "Russian"),
+    ]
+
     @Published var phase: Phase = .idle
     @Published var lastConfidence: Double = .nan
     @Published var sourceName: String = ""
+    @Published var selectedLanguage: BCP47 = .en
+
+    /// True when the Tesseract binary was found on init. Used by the UI
+    /// to warn before the user picks an ancient/non-Latin language and
+    /// gets surprised by Vision-quality output.
+    let tesseractAvailable: Bool
 
     private var task: Task<Void, Never>?
+
+    init() {
+        self.tesseractAvailable = (TesseractOCREngine.detect() != nil)
+    }
 
     func convert(pdfURL: URL) {
         task?.cancel()
@@ -27,6 +65,7 @@ final class ConversionViewModel: ObservableObject {
         let outputURL = pdfURL
             .deletingPathExtension()
             .appendingPathExtension("epub")
+        let language = selectedLanguage
 
         task = Task { [weak self] in
             let pipeline = PDFToEPUBPipeline()
@@ -34,7 +73,7 @@ final class ConversionViewModel: ObservableObject {
                 try await pipeline.convert(
                     pdfURL: pdfURL,
                     outputURL: outputURL,
-                    options: .init(),
+                    options: .init(languages: [language]),
                     progress: { [weak self] p in
                         Task { @MainActor in
                             guard let self else { return }

@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Document
 
 struct ContentView: View {
     @StateObject private var vm = ConversionViewModel()
@@ -12,6 +13,8 @@ struct ContentView: View {
             Text("Drop a PDF anywhere in this window, or choose one to convert.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            languageRow
 
             DropZone(isTargeted: isTargeted)
                 .frame(maxWidth: .infinity, minHeight: 180)
@@ -46,6 +49,47 @@ struct ContentView: View {
     private var isRunning: Bool {
         if case .running = vm.phase { return true }
         return false
+    }
+
+    @ViewBuilder
+    private var languageRow: some View {
+        HStack(spacing: 12) {
+            Text("Language:").bold()
+            Picker("", selection: $vm.selectedLanguage) {
+                ForEach(ConversionViewModel.supportedLanguages) { opt in
+                    Text(opt.label).tag(opt.language)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: 280)
+            Spacer()
+            tesseractStatusBadge
+        }
+    }
+
+    @ViewBuilder
+    private var tesseractStatusBadge: some View {
+        let needsTesseract = isTesseractLanguage(vm.selectedLanguage)
+        if needsTesseract && !vm.tesseractAvailable {
+            Label("Tesseract not installed", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else if needsTesseract {
+            Label("Tesseract", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Label("Vision", systemImage: "eye")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func isTesseractLanguage(_ lang: BCP47) -> Bool {
+        let primary = lang.rawValue.split(separator: "-").first.map(String.init) ?? lang.rawValue
+        return ["grc", "la", "he", "ar", "syr", "cop", "san", "chu", "zh", "ja", "ko", "ru", "uk"]
+            .contains(primary)
     }
 
     @ViewBuilder
