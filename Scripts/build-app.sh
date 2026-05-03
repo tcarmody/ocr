@@ -27,6 +27,18 @@ else
     warn "AppIcon.icns not found at $ICON_ICNS — bundle will use default icon"
 fi
 
+# Phase 4: bundle the layout sidecar Python script. The runtime
+# (surya-ocr installed via uv) is found by absolute path on the user's
+# system; only our script lives inside the .app for now. Phase 4.6
+# will bundle the runtime + weights too so the app distributes
+# self-contained.
+LAYOUT_SIDECAR="$REPO_ROOT/Sidecars/layout/sidecar.py"
+if [[ -f "$LAYOUT_SIDECAR" ]]; then
+    mkdir -p "$APP_RESOURCES/layout-sidecar"
+    cp "$LAYOUT_SIDECAR" "$APP_RESOURCES/layout-sidecar/sidecar.py"
+    log "Copied layout sidecar into bundle Resources"
+fi
+
 log "Signing"
 resolve_signing_identity
 ENTITLEMENTS="$REPO_ROOT/BundleAssets/$APP_NAME.entitlements"

@@ -22,11 +22,13 @@ public struct OCRHints: Sendable, Equatable {
 /// Where a text observation came from. Vision OCR is the primary
 /// source; the embedded PDF text layer fills gaps where Vision is
 /// silent (see `Pipeline.EmbeddedTextGapFiller`); Tesseract handles
-/// ancient and non-Latin scripts where Vision is weak.
+/// ancient and non-Latin scripts where Vision is weak; Surya is the
+/// "high accuracy" engine for book pages where Vision misses lines.
 public enum ObservationSource: Sendable, Equatable {
     case vision
     case embedded
     case tesseract
+    case surya
 }
 
 /// One recognized text region, with location and confidence. Bounding

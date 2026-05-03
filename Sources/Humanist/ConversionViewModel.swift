@@ -47,6 +47,12 @@ final class ConversionViewModel: ObservableObject {
     /// to the OCR engine as recognition-language hints. Vision picks
     /// per-region; Tesseract loads all matching traineddata via `+`.
     @Published var selectedLanguageIds: Set<String> = ["en"]
+    /// Force Surya as the primary OCR engine for every page.
+    /// Significantly slower than Vision (~10-20 s/page vs ~1 s) but
+    /// recovers lines Vision drops on certain typography. When false,
+    /// the per-region cascade kicks in automatically: Vision first,
+    /// Surya/Tesseract called only on regions where Vision struggled.
+    @Published var useHighAccuracyOCR: Bool = false
 
     /// True when the Tesseract binary was found on init. Used by the UI
     /// to warn before the user picks an ancient/non-Latin language and
@@ -113,6 +119,7 @@ final class ConversionViewModel: ObservableObject {
             .deletingPathExtension()
             .appendingPathExtension("epub")
         let languages = selectedLanguages
+        let highAccuracy = useHighAccuracyOCR
 
         task = Task { [weak self] in
             let pipeline = PDFToEPUBPipeline()
@@ -120,7 +127,10 @@ final class ConversionViewModel: ObservableObject {
                 try await pipeline.convert(
                     pdfURL: pdfURL,
                     outputURL: outputURL,
-                    options: .init(languages: languages),
+                    options: .init(
+                        languages: languages,
+                        useHighAccuracyOCR: highAccuracy
+                    ),
                     progress: { [weak self] p in
                         Task { @MainActor in
                             guard let self else { return }

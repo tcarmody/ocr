@@ -16,6 +16,17 @@ struct ContentView: View {
 
             languageRow
 
+            Toggle(isOn: $vm.useHighAccuracyOCR) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("High-accuracy OCR (Surya)")
+                    Text("Slower but better. Per-region cascade is automatic; this forces Surya everywhere.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.checkbox)
+            .padding(.vertical, 2)
+
             DropZone(isTargeted: isTargeted)
                 .frame(maxWidth: .infinity, minHeight: 180)
 

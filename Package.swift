@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "PDFIngest", targets: ["PDFIngest"]),
         .library(name: "OCR", targets: ["OCR"]),
         .library(name: "EPUB", targets: ["EPUB"]),
+        .library(name: "Layout", targets: ["Layout"]),
         .library(name: "Pipeline", targets: ["Pipeline"]),
     ],
     dependencies: [
@@ -50,9 +51,18 @@ let package = Package(
             dependencies: ["Document", "ZIPFoundation"],
             path: "Sources/EPUB"
         ),
+        // Surya layout sidecar bridge. Phase 4 lite: requires user to
+        // `uv tool install surya-ocr`; the bridge auto-detects the
+        // tool's Python interpreter at runtime. Phase 4.6 will bundle
+        // the runtime + weights into the .app.
+        .target(
+            name: "Layout",
+            dependencies: ["Document", "OCR"],
+            path: "Sources/Layout"
+        ),
         .target(
             name: "Pipeline",
-            dependencies: ["Document", "PDFIngest", "OCR", "EPUB"],
+            dependencies: ["Document", "PDFIngest", "OCR", "EPUB", "Layout"],
             path: "Sources/Pipeline"
         ),
         .executableTarget(
