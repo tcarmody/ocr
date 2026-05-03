@@ -57,6 +57,7 @@ public actor PDFToEPUBPipeline {
     private let engine: any OCREngine
     private let embeddedExtractor = EmbeddedTextExtractor()
     private let gapFiller = EmbeddedTextGapFiller()
+    private let qualityScorer = EmbeddedTextQualityScorer()
 
     public init(engine: any OCREngine = VisionOCREngine()) {
         self.engine = engine
@@ -75,39 +76,77 @@ public actor PDFToEPUBPipeline {
         let title = pdf.title ?? pdfURL.deletingPathExtension().lastPathComponent
         let language = options.languages.first ?? .en
 
-        // Pass 1 — render + OCR every page, collect observations.
+        // Pass 1 — for each page:
+        //   a. Extract the embedded text layer (cheap; PDFKit access).
+        //   b. Score its quality.
+        //   c. Branch:
+        //        - .trust  → skip Vision entirely; emit observations
+        //                    synthesized from embedded lines.
+        //        - .reocr → render + Vision OCR, then gap-fill any lines
+        //                    Vision missed using whatever embedded text
+        //                    exists.
         var pageResults: [PageObservations] = []
         pageResults.reserveCapacity(pdf.pageCount)
         var extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics] = [:]
+        var qualityScores: [Int: EmbeddedTextQualityScorer.Score] = [:]
 
         for i in 0..<pdf.pageCount {
             try Task.checkCancellation()
 
-            let image = try renderer.renderPage(at: i, of: pdf)
-            if options.emitDebugLog {
-                let pngURL = outputURL.appendingPathExtension("page-\(i).png")
-                Self.savePNG(image, to: pngURL)
-            }
-            let result = try await engine.recognize(image: image, hints: hints)
-            // Compare-don't-replace merge with the PDF's embedded text
-            // layer. Trust Vision wherever it produced an observation;
-            // fill in only the lines Vision missed entirely (vertical
-            // gap with no Vision coverage).
             let extracted = embeddedExtractor.extract(from: pdf, pageIndex: i)
             extractorDiagnostics[i] = extracted.diagnostics
-            let merged = gapFiller.fill(
-                visionObservations: result.observations,
-                embeddedLines: extracted.lines
-            )
+            let combinedText = extracted.lines.map(\.text).joined(separator: " ")
+            let quality = qualityScorer.score(text: combinedText)
+            qualityScores[i] = quality
+
+            let observations: [TextObservation]
+            let pageBounds: CGSize
+            let confidenceForProgress: Double
+
+            switch quality.verdict {
+            case .trust:
+                // Embedded text is good — skip Vision OCR entirely.
+                observations = extracted.lines.map { line in
+                    TextObservation(
+                        text: line.text,
+                        confidence: 0.95,
+                        box: line.box,
+                        source: .embedded
+                    )
+                }
+                if let pdfPage = pdf.document.page(at: i) {
+                    let r = pdfPage.bounds(for: .mediaBox)
+                    pageBounds = CGSize(width: r.width, height: r.height)
+                } else {
+                    pageBounds = .zero
+                }
+                confidenceForProgress = 1.0
+
+            case .reocr:
+                // Existing path — render, OCR, then gap-fill from embedded.
+                let image = try renderer.renderPage(at: i, of: pdf)
+                if options.emitDebugLog {
+                    let pngURL = outputURL.appendingPathExtension("page-\(i).png")
+                    Self.savePNG(image, to: pngURL)
+                }
+                let result = try await engine.recognize(image: image, hints: hints)
+                observations = gapFiller.fill(
+                    visionObservations: result.observations,
+                    embeddedLines: extracted.lines
+                )
+                pageBounds = CGSize(width: image.width, height: image.height)
+                confidenceForProgress = result.meanConfidence
+            }
+
             pageResults.append(PageObservations(
                 pageIndex: i,
-                pageBounds: CGSize(width: image.width, height: image.height),
-                observations: merged
+                pageBounds: pageBounds,
+                observations: observations
             ))
             progress?(Progress(
                 totalPages: pdf.pageCount,
                 completedPages: i + 1,
-                currentPageMeanConfidence: result.meanConfidence
+                currentPageMeanConfidence: confidenceForProgress
             ))
         }
 
@@ -118,7 +157,8 @@ public actor PDFToEPUBPipeline {
             blocks = Self.reflow(
                 pageResults: pageResults,
                 debugLogURL: logURL,
-                extractorDiagnostics: extractorDiagnostics
+                extractorDiagnostics: extractorDiagnostics,
+                qualityScores: qualityScores
             )
         } else {
             blocks = Self.reflow(pageResults: pageResults)
@@ -138,7 +178,8 @@ public actor PDFToEPUBPipeline {
     static func reflow(
         pageResults: [PageObservations],
         debugLogURL: URL? = nil,
-        extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics] = [:]
+        extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics] = [:],
+        qualityScores: [Int: EmbeddedTextQualityScorer.Score] = [:]
     ) -> [Block] {
         let classification = HeaderFooterClassifier().classifyWithReasons(pageResults)
         let drop = classification.dropSet
@@ -161,6 +202,7 @@ public actor PDFToEPUBPipeline {
                 classification: classification,
                 blocks: merged,
                 extractorDiagnostics: extractorDiagnostics,
+                qualityScores: qualityScores,
                 to: debugLogURL
             )
         }
@@ -185,6 +227,7 @@ public actor PDFToEPUBPipeline {
         classification: HeaderFooterClassifier.Result,
         blocks: [Block],
         extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics],
+        qualityScores: [Int: EmbeddedTextQualityScorer.Score],
         to url: URL
     ) throws {
         var out = ""
@@ -193,6 +236,21 @@ public actor PDFToEPUBPipeline {
         out += "pages: \(pages.count)\n"
         out += "blocks emitted: \(blocks.count)\n"
         out += "observations dropped: \(classification.dropSet.count)\n\n"
+
+        if !qualityScores.isEmpty {
+            out += "EMBEDDED TEXT QUALITY (per page)\n"
+            out += "format: page: verdict combined=N.NN  mojibake=N.NN  singleChar=N.NN  langConf=N.NN  lang=XX  chars=N words=N\n\n"
+            for pageIdx in qualityScores.keys.sorted() {
+                guard let q = qualityScores[pageIdx] else { continue }
+                out += String(
+                    format: "Page %d: %-5@ combined=%.2f  mojibake=%.2f  singleChar=%.2f  langConf=%.2f  lang=%@  chars=%d words=%d\n",
+                    pageIdx, q.verdict.rawValue,
+                    q.combined, q.mojibakeRatio, q.singleCharWordRatio, q.languageConfidence,
+                    q.dominantLanguage ?? "—", q.totalCharCount, q.totalWordCount
+                )
+            }
+            out += "\n"
+        }
 
         if !extractorDiagnostics.isEmpty {
             out += "EMBEDDED TEXT EXTRACTOR DIAGNOSTICS\n"
