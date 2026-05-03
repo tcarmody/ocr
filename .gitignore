@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+build/
+.swiftpm/
+xcuserdata/
+*.app
+*.dmg
+*.zip
+DerivedData/
+TestDocuments/
+*.epub.tmp/
