@@ -50,9 +50,24 @@ enum RegionAwareReflow {
         let regionKind: String
     }
 
-    static func reflow(pageResults: [PageObservations]) -> [Block] {
+    /// Output of one reflow pass: the body block stream plus the
+    /// chapter-level footnote collection that body runs reference via
+    /// `InlineRun.noterefId`. Footnotes only get populated when the
+    /// layout analyzer found `.footnote` regions.
+    struct Result: Sendable, Equatable {
+        let blocks: [Block]
+        let footnotes: [Footnote]
+    }
+
+    /// Per-page footnote audit captured during reflow for the debug
+    /// log. Map key is `pageIndex`. Empty arrays are omitted.
+    static var lastFootnotesPerPage: [Int: [FootnoteLinker.Parsed]] = [:]
+
+    static func reflow(pageResults: [PageObservations]) -> Result {
         lastAttributions.removeAll(keepingCapacity: true)
+        lastFootnotesPerPage.removeAll(keepingCapacity: true)
         var blocks: [Block] = []
+        var allFootnotes: [FootnoteLinker.Parsed] = []
         for page in pageResults {
             // Fall back to the heuristic path when no regions were
             // produced (no analyzer, or analyzer returned nothing).
@@ -60,16 +75,35 @@ enum RegionAwareReflow {
                 blocks.append(contentsOf: heuristicFallback(for: page))
                 continue
             }
-            blocks.append(contentsOf: reflowPage(page: page, regions: regions))
+            let pageFootnotes = FootnoteLinker.parseFootnotes(
+                pageIndex: page.pageIndex,
+                observations: page.observations,
+                regions: regions
+            )
+            if !pageFootnotes.isEmpty {
+                lastFootnotesPerPage[page.pageIndex] = pageFootnotes
+                allFootnotes.append(contentsOf: pageFootnotes)
+            }
+            blocks.append(contentsOf: reflowPage(
+                page: page, regions: regions, pageFootnotes: pageFootnotes
+            ))
         }
-        return PDFToEPUBPipeline.bridgeBoundaries(blocks)
+        let bridged = PDFToEPUBPipeline.bridgeBoundaries(blocks)
+        return Result(
+            blocks: bridged,
+            footnotes: FootnoteLinker.footnotesForChapter(allFootnotes)
+        )
     }
 
     private static func heuristicFallback(for page: PageObservations) -> [Block] {
         ParagraphReflow().reflow(page.observations)
     }
 
-    private static func reflowPage(page: PageObservations, regions: [LayoutRegion]) -> [Block] {
+    private static func reflowPage(
+        page: PageObservations,
+        regions: [LayoutRegion],
+        pageFootnotes: [FootnoteLinker.Parsed]
+    ) -> [Block] {
         // Sort by reading order; -1 (unassigned) sorts to the end so
         // it doesn't disrupt the ordered regions.
         let ordered = regions.sorted { (a, b) in
@@ -116,24 +150,43 @@ enum RegionAwareReflow {
             let text = joinWithDehyphenation(sorted.map(\.text))
             guard !text.isEmpty else { continue }
 
-            blocks.append(blockForRegion(kind: region.kind, text: text))
+            blocks.append(blockForRegion(
+                kind: region.kind,
+                text: text,
+                pageFootnotes: pageFootnotes
+            ))
         }
         return blocks
     }
 
-    private static func blockForRegion(kind: LayoutRegion.Kind, text: String) -> Block {
+    private static func blockForRegion(
+        kind: LayoutRegion.Kind,
+        text: String,
+        pageFootnotes: [FootnoteLinker.Parsed]
+    ) -> Block {
         switch kind {
+        // Headings shouldn't carry footnote references — keep them as
+        // a single plain run to avoid linker false positives in title
+        // text like a chapter number.
         case .title:         return .heading(level: 1, runs: [InlineRun(text)])
         case .sectionHeader: return .heading(level: 2, runs: [InlineRun(text)])
         // listItem keeps its inline marker ("1.", "2.", "•") because
         // Surya doesn't strip it; the EPUB renders this as a paragraph
         // beginning with the marker — fine for now, real <ol>/<ul>
         // markup is a later refinement.
-        case .listItem:      return .paragraph(runs: [InlineRun(text)])
-        case .caption:       return .paragraph(runs: [InlineRun(text)])
+        case .listItem:
+            return .paragraph(runs: FootnoteLinker.splice(
+                text: text, footnotes: pageFootnotes
+            ))
+        case .caption:
+            return .paragraph(runs: FootnoteLinker.splice(
+                text: text, footnotes: pageFootnotes
+            ))
         case .text, .pageHeader, .pageFooter, .footnote,
              .picture, .table, .formula, .other:
-            return .paragraph(runs: [InlineRun(text)])
+            return .paragraph(runs: FootnoteLinker.splice(
+                text: text, footnotes: pageFootnotes
+            ))
         }
     }
 

@@ -262,10 +262,10 @@ public actor PDFToEPUBPipeline {
         }
 
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).
-        let blocks: [Block]
+        let reflowed: ReflowOutput
         if options.emitDebugLog {
             let logURL = outputURL.appendingPathExtension("log.txt")
-            blocks = Self.reflow(
+            reflowed = Self.reflow(
                 pageResults: pageResults,
                 debugLogURL: logURL,
                 extractorDiagnostics: extractorDiagnostics,
@@ -273,16 +273,31 @@ public actor PDFToEPUBPipeline {
                 layoutErrors: layoutErrors
             )
         } else {
-            blocks = Self.reflow(pageResults: pageResults)
+            reflowed = Self.reflow(pageResults: pageResults)
         }
 
         let book = Book(
             title: title,
             language: language,
-            chapters: [Chapter(title: title, blocks: blocks)]
+            chapters: [Chapter(
+                title: title,
+                blocks: reflowed.blocks,
+                footnotes: reflowed.footnotes
+            )]
         )
 
         try EPUBBuilder().write(book: book, to: outputURL)
+    }
+
+    /// Result of `reflow` — body block stream + chapter-level
+    /// footnotes that body runs reference via `InlineRun.noterefId`.
+    public struct ReflowOutput: Sendable, Equatable {
+        public let blocks: [Block]
+        public let footnotes: [Footnote]
+        public init(blocks: [Block], footnotes: [Footnote]) {
+            self.blocks = blocks
+            self.footnotes = footnotes
+        }
     }
 
     /// Convert per-page observations into a clean block stream.
@@ -300,10 +315,11 @@ public actor PDFToEPUBPipeline {
         extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics] = [:],
         qualityScores: [Int: EmbeddedTextQualityScorer.Score] = [:],
         layoutErrors: [Int: String] = [:]
-    ) -> [Block] {
+    ) -> ReflowOutput {
         let hasAnyLayout = pageResults.contains { ($0.layoutRegions?.isEmpty == false) }
 
         let merged: [Block]
+        let footnotes: [Footnote]
         let classification: HeaderFooterClassifier.Result
 
         if hasAnyLayout {
@@ -311,9 +327,12 @@ public actor PDFToEPUBPipeline {
             // log can show what *would* have been dropped, but the
             // region-aware reflow makes its own structural decisions.
             classification = HeaderFooterClassifier().classifyWithReasons(pageResults)
-            merged = RegionAwareReflow.reflow(pageResults: pageResults)
+            let result = RegionAwareReflow.reflow(pageResults: pageResults)
+            merged = result.blocks
+            footnotes = result.footnotes
         } else {
-            // Heuristic-only path (Phase 1.5 behavior).
+            // Heuristic-only path (Phase 1.5 behavior). No layout
+            // regions means no footnote regions, so no popups either.
             classification = HeaderFooterClassifier().classifyWithReasons(pageResults)
             let drop = classification.dropSet
             let reflower = ParagraphReflow()
@@ -327,6 +346,7 @@ public actor PDFToEPUBPipeline {
                 blocks.append(contentsOf: reflower.reflow(kept))
             }
             merged = Self.bridgeBoundaries(blocks)
+            footnotes = []
         }
 
         if let debugLogURL {
@@ -337,10 +357,11 @@ public actor PDFToEPUBPipeline {
                 extractorDiagnostics: extractorDiagnostics,
                 qualityScores: qualityScores,
                 layoutErrors: layoutErrors,
+                footnotes: footnotes,
                 to: debugLogURL
             )
         }
-        return merged
+        return ReflowOutput(blocks: merged, footnotes: footnotes)
     }
 
     /// Save a CGImage as PNG to the given URL. Used by the debug-log
@@ -363,6 +384,7 @@ public actor PDFToEPUBPipeline {
         extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics],
         qualityScores: [Int: EmbeddedTextQualityScorer.Score],
         layoutErrors: [Int: String],
+        footnotes: [Footnote],
         to url: URL
     ) throws {
         var out = ""
@@ -409,6 +431,22 @@ public actor PDFToEPUBPipeline {
                 out += "Page \(pageIdx): \(msg)\n"
             }
             out += "\n"
+        }
+
+        let parsedByPage = RegionAwareReflow.lastFootnotesPerPage
+        if !parsedByPage.isEmpty || !footnotes.isEmpty {
+            out += "FOOTNOTES (per page, parsed from .footnote regions)\n"
+            out += "format: page/marker id=ID  body excerpt\n\n"
+            for pageIdx in parsedByPage.keys.sorted() {
+                let parsed = parsedByPage[pageIdx] ?? []
+                for fn in parsed {
+                    let excerpt = fn.body.count > 120
+                        ? String(fn.body.prefix(120)) + "…"
+                        : fn.body
+                    out += "Page \(pageIdx)/\(fn.marker)  id=\(fn.id)  \(excerpt)\n"
+                }
+            }
+            out += "\nlinked into chapter: \(footnotes.count) footnote(s)\n\n"
         }
 
         // Surya layout regions per page — when Phase 4 is active.

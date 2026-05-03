@@ -23,6 +23,22 @@ struct XHTMLWriter {
             }
         }
 
+        // Footnote popups. Asides are display:none in book.css; readers
+        // (Apple Books, Thorium) hoist them into a popover when the
+        // matching <a epub:type="noteref"> is tapped.
+        if !chapter.footnotes.isEmpty {
+            body += "<section epub:type=\"footnotes\" role=\"doc-endnotes\">\n"
+            for fn in chapter.footnotes {
+                let id = XMLEscape.attribute(fn.id)
+                let marker = XMLEscape.text(fn.marker)
+                let runs = renderRuns(fn.runs, parentLanguage: defaultLanguage)
+                body += "<aside epub:type=\"footnote\" role=\"doc-footnote\" id=\"\(id)\">"
+                body += "<p><span class=\"fn-marker\">\(marker)</span> \(runs)</p>"
+                body += "</aside>\n"
+            }
+            body += "</section>\n"
+        }
+
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE html>
@@ -41,6 +57,21 @@ struct XHTMLWriter {
     private func renderRuns(_ runs: [InlineRun], parentLanguage: BCP47) -> String {
         runs.map { run in
             let escaped = XMLEscape.text(run.text)
+            // Noteref runs render as a superscript link to the matching
+            // <aside> at the end of the chapter. Language attrs still
+            // apply (rare, but a Greek footnote marker should still be
+            // language-tagged consistently).
+            if let id = run.noterefId {
+                let href = XMLEscape.attribute("#" + id)
+                let inner: String
+                if let lang = run.language, lang != parentLanguage {
+                    let l = XMLEscape.attribute(lang.rawValue)
+                    inner = "<span xml:lang=\"\(l)\" lang=\"\(l)\">\(escaped)</span>"
+                } else {
+                    inner = escaped
+                }
+                return "<a epub:type=\"noteref\" role=\"doc-noteref\" href=\"\(href)\">\(inner)</a>"
+            }
             if let lang = run.language, lang != parentLanguage {
                 let l = XMLEscape.attribute(lang.rawValue)
                 return "<span xml:lang=\"\(l)\" lang=\"\(l)\">\(escaped)</span>"
