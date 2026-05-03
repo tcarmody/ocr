@@ -83,7 +83,7 @@ public actor PDFToEPUBPipeline {
     /// Languages where Tesseract beats Vision in the cases the plan
     /// enumerates: ancient scripts (Greek, Latin) and non-Latin scripts
     /// (Hebrew, Syriac, Coptic, Arabic, CJK, Cyrillic).
-    static func shouldPreferTesseract(for languages: [BCP47]) -> Bool {
+    public static func shouldPreferTesseract(for languages: [BCP47]) -> Bool {
         let tesseractStrong: Set<String> = [
             "grc", "la",                               // ancient
             "he", "ar",                                // RTL

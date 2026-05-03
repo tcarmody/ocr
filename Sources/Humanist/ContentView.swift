@@ -54,15 +54,28 @@ struct ContentView: View {
     @ViewBuilder
     private var languageRow: some View {
         HStack(spacing: 12) {
-            Text("Language:").bold()
-            Picker("", selection: $vm.selectedLanguage) {
+            Text("Languages:").bold()
+            Menu {
                 ForEach(ConversionViewModel.supportedLanguages) { opt in
-                    Text(opt.label).tag(opt.language)
+                    Button {
+                        vm.toggleLanguage(opt.language)
+                    } label: {
+                        // System checkmark in front of selected items.
+                        if vm.isLanguageSelected(opt.language) {
+                            Label(opt.label, systemImage: "checkmark")
+                        } else {
+                            Text(opt.label)
+                        }
+                    }
                 }
+            } label: {
+                Text(vm.languageButtonLabel)
+                    .frame(maxWidth: 280, alignment: .leading)
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(maxWidth: 280)
+            // .menuActionDismissBehavior(.disabled) is iOS-only on
+            // SwiftUI for macOS — Menu always closes after tap. User
+            // re-opens to pick a second / third language.
+            .frame(maxWidth: 320)
             Spacer()
             tesseractStatusBadge
         }
@@ -70,12 +83,11 @@ struct ContentView: View {
 
     @ViewBuilder
     private var tesseractStatusBadge: some View {
-        let needsTesseract = isTesseractLanguage(vm.selectedLanguage)
-        if needsTesseract && !vm.tesseractAvailable {
+        if vm.willUseTesseract && !vm.tesseractAvailable {
             Label("Tesseract not installed", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.orange)
-        } else if needsTesseract {
+        } else if vm.willUseTesseract {
             Label("Tesseract", systemImage: "checkmark.circle.fill")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -84,12 +96,6 @@ struct ContentView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private func isTesseractLanguage(_ lang: BCP47) -> Bool {
-        let primary = lang.rawValue.split(separator: "-").first.map(String.init) ?? lang.rawValue
-        return ["grc", "la", "he", "ar", "syr", "cop", "san", "chu", "zh", "ja", "ko", "ru", "uk"]
-            .contains(primary)
     }
 
     @ViewBuilder

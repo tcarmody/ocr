@@ -43,7 +43,10 @@ final class ConversionViewModel: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var lastConfidence: Double = .nan
     @Published var sourceName: String = ""
-    @Published var selectedLanguage: BCP47 = .en
+    /// Set of selected BCP-47 raw values. Multiple selections are sent
+    /// to the OCR engine as recognition-language hints. Vision picks
+    /// per-region; Tesseract loads all matching traineddata via `+`.
+    @Published var selectedLanguageIds: Set<String> = ["en"]
 
     /// True when the Tesseract binary was found on init. Used by the UI
     /// to warn before the user picks an ancient/non-Latin language and
@@ -56,6 +59,50 @@ final class ConversionViewModel: ObservableObject {
         self.tesseractAvailable = (TesseractOCREngine.detect() != nil)
     }
 
+    // MARK: - language selection
+
+    /// Selected languages in the canonical UI order (matches the picker).
+    var selectedLanguages: [BCP47] {
+        let selected = Self.supportedLanguages
+            .filter { selectedLanguageIds.contains($0.id) }
+            .map(\.language)
+        return selected.isEmpty ? [.en] : selected
+    }
+
+    func isLanguageSelected(_ language: BCP47) -> Bool {
+        selectedLanguageIds.contains(language.rawValue)
+    }
+
+    /// Toggle a language in/out of the selection. Refuses to leave the
+    /// selection empty — at least one language must remain.
+    func toggleLanguage(_ language: BCP47) {
+        if selectedLanguageIds.contains(language.rawValue) {
+            guard selectedLanguageIds.count > 1 else { return }
+            selectedLanguageIds.remove(language.rawValue)
+        } else {
+            selectedLanguageIds.insert(language.rawValue)
+        }
+    }
+
+    /// Concise label for the language menu button. Lists names if ≤ 3
+    /// selected; otherwise shows a count.
+    var languageButtonLabel: String {
+        let labels = Self.supportedLanguages
+            .filter { selectedLanguageIds.contains($0.id) }
+            .map(\.label)
+        if labels.isEmpty { return "English" }
+        if labels.count <= 3 { return labels.joined(separator: ", ") }
+        return "\(labels.count) languages"
+    }
+
+    /// Which engine the current language selection routes to.
+    /// Mirrors `PDFToEPUBPipeline.shouldPreferTesseract`.
+    var willUseTesseract: Bool {
+        PDFToEPUBPipeline.shouldPreferTesseract(for: selectedLanguages)
+    }
+
+    // MARK: - conversion
+
     func convert(pdfURL: URL) {
         task?.cancel()
         sourceName = pdfURL.lastPathComponent
@@ -65,7 +112,7 @@ final class ConversionViewModel: ObservableObject {
         let outputURL = pdfURL
             .deletingPathExtension()
             .appendingPathExtension("epub")
-        let language = selectedLanguage
+        let languages = selectedLanguages
 
         task = Task { [weak self] in
             let pipeline = PDFToEPUBPipeline()
@@ -73,7 +120,7 @@ final class ConversionViewModel: ObservableObject {
                 try await pipeline.convert(
                     pdfURL: pdfURL,
                     outputURL: outputURL,
-                    options: .init(languages: [language]),
+                    options: .init(languages: languages),
                     progress: { [weak self] p in
                         Task { @MainActor in
                             guard let self else { return }
