@@ -1,13 +1,16 @@
 import Foundation
+import SwiftUI
 import AppKit
 import EPUB
 import UniformTypeIdentifiers
 
 /// Per-window state for the EPUB editor: the open package + which file
-/// the user is looking at + on-disk content of that file.
+/// the user is looking at + in-memory edit buffers + save action.
 ///
-/// View-only for v1. Phase 6.B will add edit + save: the source pane's
-/// edits will go through here so we can mark dirty / repack.
+/// Edit model: when a file is first selected, its contents are read
+/// from disk into an in-memory buffer. Subsequent edits update the
+/// buffer; navigating away keeps it. Save flushes every dirty buffer
+/// back to the working directory and re-zips it into the source EPUB.
 @MainActor
 final class EditorViewModel: ObservableObject {
     enum LoadState: Equatable {
@@ -16,13 +19,25 @@ final class EditorViewModel: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var state: LoadState = .loading
-    @Published private(set) var package: EPUBPackage?
-    @Published var selectedFile: FileNode?
+    enum SaveState: Equatable {
+        case idle
+        case saving
+        case failed(String)
+    }
 
-    /// Decoded text of `selectedFile` if it's a text-y file; nil
-    /// otherwise. Used by the source pane.
-    @Published private(set) var selectedSource: String?
+    @Published private(set) var state: LoadState = .loading
+    @Published private(set) var saveState: SaveState = .idle
+    @Published private(set) var package: EPUBPackage?
+    @Published private(set) var selectedFile: FileNode?
+    /// True when at least one buffer differs from disk OR has been
+    /// modified since the last successful repack.
+    @Published private(set) var isDirty: Bool = false
+
+    /// In-memory edit buffers, keyed by absolute file URL. Populated
+    /// lazily on first read. Survives navigation between files.
+    private var buffers: [URL: String] = [:]
+    /// URLs whose buffer differs from disk (subset of `buffers` keys).
+    private var dirtyURLs: Set<URL> = []
 
     init(epubURL: URL) {
         Task { await self.load(epubURL: epubURL) }
@@ -36,10 +51,7 @@ final class EditorViewModel: ObservableObject {
             }.value
             self.package = pkg
             self.state = .ready
-            // Default selection: first XHTML in spine, fall back to nav,
-            // fall back to first leaf in tree.
             self.selectedFile = Self.preferredInitialSelection(in: pkg)
-            self.refreshSource()
         } catch {
             self.state = .failed(error.localizedDescription)
         }
@@ -48,41 +60,93 @@ final class EditorViewModel: ObservableObject {
     func select(_ node: FileNode) {
         guard !node.isDirectory else { return }
         selectedFile = node
-        refreshSource()
     }
 
-    /// Opens the source .epub in the user's default file viewer (Finder).
     func revealInFinder() {
         guard let pkg = package else { return }
         NSWorkspace.shared.activateFileViewerSelecting([pkg.sourceURL])
     }
 
-    // MARK: - source decoding
+    // MARK: - source buffers
 
-    private func refreshSource() {
-        guard let node = selectedFile, !node.isDirectory else {
-            selectedSource = nil
-            return
+    /// Decoded text of the selected file from the in-memory buffer.
+    /// Reads from disk on first access and caches.
+    var selectedSource: String? {
+        guard let url = selectedFile?.id, !(selectedFile?.isDirectory ?? true) else {
+            return nil
         }
-        if Self.isTextFile(node.id) {
-            do {
-                let data = try Data(contentsOf: node.id)
-                selectedSource = String(data: data, encoding: .utf8)
-                    ?? "(Could not decode \(node.name) as UTF-8)"
-            } catch {
-                selectedSource = "(Read failed: \(error.localizedDescription))"
-            }
-        } else {
-            selectedSource = nil  // binary; preview pane shows it instead
+        if let buf = buffers[url] { return buf }
+        guard Self.isTextFile(url) else { return nil }
+        do {
+            let data = try Data(contentsOf: url)
+            let text = String(data: data, encoding: .utf8)
+                ?? "(Could not decode \(url.lastPathComponent) as UTF-8)"
+            buffers[url] = text
+            return text
+        } catch {
+            return "(Read failed: \(error.localizedDescription))"
         }
     }
 
+    /// SwiftUI binding for the source TextEditor. The setter mirrors
+    /// edits into the buffer + dirty set; the getter is the same as
+    /// `selectedSource` so first-read populates the buffer.
+    var sourceBinding: Binding<String> {
+        Binding(
+            get: { [weak self] in self?.selectedSource ?? "" },
+            set: { [weak self] in self?.updateSelectedSource($0) }
+        )
+    }
+
+    private func updateSelectedSource(_ text: String) {
+        guard let url = selectedFile?.id else { return }
+        if buffers[url] == text { return }
+        buffers[url] = text
+        dirtyURLs.insert(url)
+        isDirty = true
+    }
+
+    // MARK: - save (Phase 6.B)
+
+    /// Write every dirty buffer to disk inside the working directory,
+    /// then repack the working directory into the source .epub.
+    /// Atomic at the .epub level: a successful return means readers
+    /// will see the new contents on next open.
+    func save() async {
+        guard let pkg = package else { return }
+        saveState = .saving
+        let buffersCopy = buffers
+        let dirtyCopy = dirtyURLs
+        let workingDir = pkg.workingDirectory
+        let outURL = pkg.sourceURL
+
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                // Flush dirty buffers to disk first.
+                for url in dirtyCopy {
+                    if let text = buffersCopy[url] {
+                        try text.write(to: url, atomically: true, encoding: .utf8)
+                    }
+                }
+                // Then repack everything under workingDir into the EPUB.
+                try EPUBRepacker().repack(workingDirectory: workingDir, to: outURL)
+            }.value
+            self.dirtyURLs.removeAll()
+            self.isDirty = false
+            self.saveState = .idle
+        } catch {
+            self.saveState = .failed(error.localizedDescription)
+        }
+    }
+
+    // MARK: - file kind classification
+
     /// File-extension whitelist for "show this as text in the source
-    /// pane." Anything else (images, fonts, audio) → preview only.
+    /// pane and accept edits." Anything else (images, fonts, audio) is
+    /// preview-only.
     static func isTextFile(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         return Self.textExtensions.contains(ext)
-            // mimetype, container.xml, content.opf — no extension or odd ones
             || url.lastPathComponent == "mimetype"
             || url.lastPathComponent == "container.xml"
             || ext == "opf" || ext == "ncx"
@@ -98,7 +162,6 @@ final class EditorViewModel: ObservableObject {
         let opfDir = pkg.workingDirectory
             .appendingPathComponent(pkg.package.opfPathRelativeToRoot)
             .deletingLastPathComponent()
-        // First try first spine item.
         if let firstSpineId = pkg.package.spine.first,
            let item = pkg.package.manifestById[firstSpineId] {
             let target = opfDir.appendingPathComponent(item.href).standardized
@@ -106,7 +169,6 @@ final class EditorViewModel: ObservableObject {
                 return node
             }
         }
-        // Fall back to first XHTML leaf in the tree.
         return firstLeaf(in: pkg.fileTree, where: { node in
             let ext = node.id.pathExtension.lowercased()
             return ext == "xhtml" || ext == "html"

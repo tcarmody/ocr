@@ -50,10 +50,12 @@ public struct EPUBUnpacker {
             guard entry.type == .file else { continue }
             let destURL = workingDir.appendingPathComponent(entry.path)
             // Defend against zip-slip: refuse paths that escape workingDir.
-            let normalized = destURL.standardized
-            guard normalized.path.hasPrefix(workingDir.standardized.path) else {
-                continue
-            }
+            // Resolve symlinks on both sides — macOS's temp dir comes
+            // through as `/var/...` (a symlink to `/private/var/...`),
+            // and a naive prefix check otherwise rejects every entry.
+            let normalized = destURL.resolvingSymlinksInPath().path
+            let rootPath = workingDir.resolvingSymlinksInPath().path
+            guard normalized.hasPrefix(rootPath) else { continue }
             try FileManager.default.createDirectory(
                 at: destURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
