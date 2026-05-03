@@ -27,10 +27,23 @@ let package = Package(
             dependencies: ["Document"],
             path: "Sources/PDFIngest"
         ),
+        // C bridge for libtesseract + libleptonica. Phase 3.5a links
+        // against the brew-installed dylibs at /opt/homebrew. Phase
+        // 3.5b will switch to vendored dylibs in Vendor/tesseract/.
+        .systemLibrary(
+            name: "CTesseract",
+            path: "Sources/CTesseract"
+        ),
         .target(
             name: "OCR",
-            dependencies: ["Document"],
-            path: "Sources/OCR"
+            dependencies: ["Document", "CTesseract"],
+            path: "Sources/OCR",
+            swiftSettings: [
+                .unsafeFlags(["-Xcc", "-I/opt/homebrew/include"])
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/opt/homebrew/lib"])
+            ]
         ),
         .target(
             name: "EPUB",
