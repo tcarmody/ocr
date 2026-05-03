@@ -1,10 +1,12 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import Document
 
 struct ContentView: View {
     @StateObject private var vm = ConversionViewModel()
     @State private var isTargeted = false
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 16) {
@@ -33,28 +35,73 @@ struct ContentView: View {
             statusView
 
             HStack {
-                Button("Choose PDF…") { vm.chooseFile() }
+                Button("Choose PDF or EPUB…") { chooseFile() }
                     .disabled(isRunning)
                 Spacer()
                 if case .running = vm.phase {
                     Button("Cancel", role: .destructive) { vm.cancel() }
                 }
-                if case .done = vm.phase {
+                if case .done(let url) = vm.phase {
                     Button("Reveal in Finder") { vm.revealOutput() }
+                    Button("Open in Editor") { openWindow(id: "editor", value: url) }
+                        .buttonStyle(.borderedProminent)
                 }
             }
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Whole-window drop target. URL conforms to Transferable on
-        // macOS 13+ and the system delivers a real file URL — no
-        // NSItemProvider bookmark-decode dance required.
+        // Drop target accepts a single PDF (convert + open editor) or
+        // EPUB (open editor directly). Folders / multiple files are a
+        // later phase.
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first(where: { $0.pathExtension.lowercased() == "pdf" })
-            else { return false }
-            vm.convert(pdfURL: url)
-            return true
+            guard let url = urls.first else { return false }
+            return handleOpen(url: url)
         } isTargeted: { isTargeted = $0 }
+        // Watch for File > Open menu deliveries that target a PDF —
+        // the menu can't easily route into a specific window's
+        // viewmodel, so we go via NotificationCenter.
+        .onReceive(NotificationCenter.default.publisher(for: .humanistConvertPDF)) { note in
+            guard let url = note.userInfo?["url"] as? URL else { return }
+            startConversion(pdfURL: url)
+        }
+        // When the converter finishes, automatically open an editor
+        // window on the resulting .epub.
+        .onChange(of: vm.phase) { _, newPhase in
+            if case .done(let url) = newPhase {
+                openWindow(id: "editor", value: url)
+            }
+        }
+    }
+
+    /// Route a file URL to the right action.
+    /// Returns true on success (used by drop handlers' Bool return).
+    private func handleOpen(url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        switch ext {
+        case "pdf":
+            startConversion(pdfURL: url)
+            return true
+        case "epub":
+            openWindow(id: "editor", value: url)
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func startConversion(pdfURL: URL) {
+        vm.convert(pdfURL: pdfURL)
+    }
+
+    private func chooseFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf, .epub]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        if panel.runModal() == .OK, let url = panel.url {
+            _ = handleOpen(url: url)
+        }
     }
 
     private var isRunning: Bool {
