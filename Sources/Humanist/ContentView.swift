@@ -9,11 +9,11 @@ struct ContentView: View {
         VStack(spacing: 16) {
             Text("Humanist")
                 .font(.title2).bold()
-            Text("Drop a PDF onto the window, or choose one to convert.")
+            Text("Drop a PDF anywhere in this window, or choose one to convert.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            DropZone(isTargeted: $isTargeted, onDrop: vm.convert(pdfURL:))
+            DropZone(isTargeted: isTargeted)
                 .frame(maxWidth: .infinity, minHeight: 180)
 
             statusView
@@ -31,6 +31,16 @@ struct ContentView: View {
             }
         }
         .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Whole-window drop target. URL conforms to Transferable on
+        // macOS 13+ and the system delivers a real file URL — no
+        // NSItemProvider bookmark-decode dance required.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first(where: { $0.pathExtension.lowercased() == "pdf" })
+            else { return false }
+            vm.convert(pdfURL: url)
+            return true
+        } isTargeted: { isTargeted = $0 }
     }
 
     private var isRunning: Bool {
@@ -88,9 +98,11 @@ struct ContentView: View {
     }
 }
 
+/// Visual indicator only — actual drop handling lives on the outer
+/// view so users can drop anywhere in the window. `isTargeted` is owned
+/// by the parent and driven by the outer `dropDestination` callback.
 private struct DropZone: View {
-    @Binding var isTargeted: Bool
-    let onDrop: (URL) -> Void
+    let isTargeted: Bool
 
     var body: some View {
         ZStack {
@@ -108,18 +120,6 @@ private struct DropZone: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .onDrop(of: [.fileURL, .pdf], isTargeted: $isTargeted) { providers in
-            handleDrop(providers: providers)
-        }
-    }
-
-    private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
-        // Prefer a direct fileURL representation; fall back to data-URL load.
-        _ = provider.loadObject(ofClass: URL.self) { url, _ in
-            guard let url, url.pathExtension.lowercased() == "pdf" else { return }
-            DispatchQueue.main.async { onDrop(url) }
-        }
-        return true
+        .allowsHitTesting(false)  // outer view owns drop hit-testing
     }
 }

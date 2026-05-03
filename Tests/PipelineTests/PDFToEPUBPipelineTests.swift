@@ -42,10 +42,12 @@ final class PDFToEPUBPipelineTests: XCTestCase {
         let xhtml = try readEntry("OEBPS/text/chapter-001.xhtml", from: archive)
 
         // Vision is not perfect — we shouldn't require an exact match.
-        // Demand that at least one of the lines appears, and that the
-        // page-heading scaffolding is present.
-        XCTAssertTrue(xhtml.contains("Page 1"),
-                      "Expected page heading 'Page 1' in chapter XHTML")
+        // Demand that at least one of the lines appears in the body and
+        // that the body is rendered as paragraphs (post-Phase-1.5: no
+        // more "Page N" debug headings).
+        XCTAssertTrue(xhtml.contains("<p>"), "Body should be wrapped in paragraphs")
+        XCTAssertFalse(xhtml.contains("Page 1"),
+                       "Phase 1.5 removes the per-page debug headings")
         let matches = lines.filter { xhtml.contains($0) }
         XCTAssertFalse(matches.isEmpty,
                        "Vision should have recognized at least one of: \(lines). Got XHTML:\n\(xhtml)")

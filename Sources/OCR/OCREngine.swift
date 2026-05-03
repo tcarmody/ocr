@@ -19,6 +19,14 @@ public struct OCRHints: Sendable, Equatable {
     }
 }
 
+/// Where a text observation came from. Vision OCR is the primary
+/// source; the embedded PDF text layer fills gaps where Vision is
+/// silent (see `Pipeline.EmbeddedTextGapFiller`).
+public enum ObservationSource: Sendable, Equatable {
+    case vision
+    case embedded
+}
+
 /// One recognized text region, with location and confidence. Bounding
 /// box uses Vision's normalized [0,1] coordinate system, origin at the
 /// lower-left corner of the input image.
@@ -26,11 +34,18 @@ public struct TextObservation: Sendable, Equatable {
     public var text: String
     public var confidence: Double  // 0...1
     public var box: CGRect
+    public var source: ObservationSource
 
-    public init(text: String, confidence: Double, box: CGRect) {
+    public init(
+        text: String,
+        confidence: Double,
+        box: CGRect,
+        source: ObservationSource = .vision
+    ) {
         self.text = text
         self.confidence = confidence
         self.box = box
+        self.source = source
     }
 }
 

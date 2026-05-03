@@ -1,5 +1,7 @@
 import Foundation
 import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import Document
 import PDFIngest
 import OCR
@@ -7,29 +9,39 @@ import EPUB
 
 /// End-to-end orchestration: PDF on disk → EPUB on disk.
 ///
-/// Phase 1 walking-skeleton implementation:
-///   * Render each page at a fixed DPI.
-///   * Send the rendered page to a single OCR engine (Vision by default).
-///   * Concatenate every observation into one `Chapter` of `Book`.
-///   * Hand off to `EPUBBuilder`.
+/// Two-pass design:
+///   1. Render every page, OCR it, collect observations + geometry.
+///   2. Run the reflow pipeline:
+///        a. `HeaderFooterClassifier` learns running heads / footers /
+///           page numbers across pages and marks them for removal.
+///        b. `ParagraphReflow` groups remaining observations into
+///           paragraphs per page using bounding-box geometry.
+///        c. Cross-page bridge merges paragraphs split mid-word at page
+///           boundaries (soft hyphens spanning pages).
 ///
-/// Layout-aware blocking, language routing, footnote detection, and
-/// page-level parallelism arrive in later phases. The shape of this type
-/// stays the same.
+/// Tesseract routing, layout-aware blocking, footnote linking, and
+/// page-level parallelism arrive in later phases. The shape of this
+/// type stays the same.
 public actor PDFToEPUBPipeline {
     public struct Options: Sendable {
         public var dpi: CGFloat
         public var languages: [BCP47]
         public var ocrQuality: OCRHints.Quality
+        /// When true, write a per-observation debug log alongside the
+        /// output EPUB (`output.epub.log.txt`). Useful when text appears
+        /// to vanish or end up in the wrong paragraph.
+        public var emitDebugLog: Bool
 
         public init(
-            dpi: CGFloat = 300,
+            dpi: CGFloat = 400,
             languages: [BCP47] = [.en],
-            ocrQuality: OCRHints.Quality = .accurate
+            ocrQuality: OCRHints.Quality = .accurate,
+            emitDebugLog: Bool = true
         ) {
             self.dpi = dpi
             self.languages = languages
             self.ocrQuality = ocrQuality
+            self.emitDebugLog = emitDebugLog
         }
     }
 
@@ -43,14 +55,13 @@ public actor PDFToEPUBPipeline {
 
     private let loader = PDFLoader()
     private let engine: any OCREngine
+    private let embeddedExtractor = EmbeddedTextExtractor()
+    private let gapFiller = EmbeddedTextGapFiller()
 
     public init(engine: any OCREngine = VisionOCREngine()) {
         self.engine = engine
     }
 
-    /// Convert a single PDF to a single EPUB. Throws on any pipeline-stage
-    /// failure; partial output is not preserved (EPUBBuilder writes
-    /// atomically via ZIPFoundation's create-archive flow).
     public func convert(
         pdfURL: URL,
         outputURL: URL,
@@ -64,32 +75,53 @@ public actor PDFToEPUBPipeline {
         let title = pdf.title ?? pdfURL.deletingPathExtension().lastPathComponent
         let language = options.languages.first ?? .en
 
-        var blocks: [Block] = []
-        let total = pdf.pageCount
+        // Pass 1 — render + OCR every page, collect observations.
+        var pageResults: [PageObservations] = []
+        pageResults.reserveCapacity(pdf.pageCount)
+        var extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics] = [:]
 
-        for i in 0..<total {
+        for i in 0..<pdf.pageCount {
             try Task.checkCancellation()
 
             let image = try renderer.renderPage(at: i, of: pdf)
-            let result = try await engine.recognize(image: image, hints: hints)
-
-            // Walking-skeleton conversion: one heading per page (so the
-            // EPUB has *some* structure to navigate) followed by one
-            // paragraph per Vision observation. Layout-aware blocking
-            // arrives in Phase 4.
-            blocks.append(.heading(level: 2, runs: [InlineRun("Page \(i + 1)")]))
-            for obs in result.observations {
-                let trimmed = obs.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    blocks.append(.paragraph(runs: [InlineRun(trimmed)]))
-                }
+            if options.emitDebugLog {
+                let pngURL = outputURL.appendingPathExtension("page-\(i).png")
+                Self.savePNG(image, to: pngURL)
             }
-
+            let result = try await engine.recognize(image: image, hints: hints)
+            // Compare-don't-replace merge with the PDF's embedded text
+            // layer. Trust Vision wherever it produced an observation;
+            // fill in only the lines Vision missed entirely (vertical
+            // gap with no Vision coverage).
+            let extracted = embeddedExtractor.extract(from: pdf, pageIndex: i)
+            extractorDiagnostics[i] = extracted.diagnostics
+            let merged = gapFiller.fill(
+                visionObservations: result.observations,
+                embeddedLines: extracted.lines
+            )
+            pageResults.append(PageObservations(
+                pageIndex: i,
+                pageBounds: CGSize(width: image.width, height: image.height),
+                observations: merged
+            ))
             progress?(Progress(
-                totalPages: total,
+                totalPages: pdf.pageCount,
                 completedPages: i + 1,
                 currentPageMeanConfidence: result.meanConfidence
             ))
+        }
+
+        // Pass 2 — reflow (and optionally a debug log of every observation's fate).
+        let blocks: [Block]
+        if options.emitDebugLog {
+            let logURL = outputURL.appendingPathExtension("log.txt")
+            blocks = Self.reflow(
+                pageResults: pageResults,
+                debugLogURL: logURL,
+                extractorDiagnostics: extractorDiagnostics
+            )
+        } else {
+            blocks = Self.reflow(pageResults: pageResults)
         }
 
         let book = Book(
@@ -99,5 +131,209 @@ public actor PDFToEPUBPipeline {
         )
 
         try EPUBBuilder().write(book: book, to: outputURL)
+    }
+
+    /// Convert per-page Vision observations into a clean, deduped block
+    /// stream. Visible for testing.
+    static func reflow(
+        pageResults: [PageObservations],
+        debugLogURL: URL? = nil,
+        extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics] = [:]
+    ) -> [Block] {
+        let classification = HeaderFooterClassifier().classifyWithReasons(pageResults)
+        let drop = classification.dropSet
+        let reflower = ParagraphReflow()
+
+        var blocks: [Block] = []
+        for page in pageResults {
+            let kept = page.observations.enumerated().compactMap { (idx, obs) -> TextObservation? in
+                let key = ObservationKey(pageIndex: page.pageIndex, observationIndex: idx)
+                return drop.contains(key) ? nil : obs
+            }
+            blocks.append(contentsOf: reflower.reflow(kept))
+        }
+
+        let merged = Self.bridgeBoundaries(blocks)
+
+        if let debugLogURL {
+            try? writeDebugLog(
+                pages: pageResults,
+                classification: classification,
+                blocks: merged,
+                extractorDiagnostics: extractorDiagnostics,
+                to: debugLogURL
+            )
+        }
+        return merged
+    }
+
+    /// Save a CGImage as PNG to the given URL. Used by the debug-log
+    /// path so we can visually inspect what Vision was actually fed.
+    /// Silently no-ops on failure — debug aid, not load-bearing.
+    private static func savePNG(_ image: CGImage, to url: URL) {
+        guard let dest = CGImageDestinationCreateWithURL(
+            url as CFURL,
+            UTType.png.identifier as CFString,
+            1, nil
+        ) else { return }
+        CGImageDestinationAddImage(dest, image, nil)
+        _ = CGImageDestinationFinalize(dest)
+    }
+
+    private static func writeDebugLog(
+        pages: [PageObservations],
+        classification: HeaderFooterClassifier.Result,
+        blocks: [Block],
+        extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics],
+        to url: URL
+    ) throws {
+        var out = ""
+        out += "Humanist debug log\n"
+        out += "==================\n"
+        out += "pages: \(pages.count)\n"
+        out += "blocks emitted: \(blocks.count)\n"
+        out += "observations dropped: \(classification.dropSet.count)\n\n"
+
+        if !extractorDiagnostics.isEmpty {
+            out += "EMBEDDED TEXT EXTRACTOR DIAGNOSTICS\n"
+            out += "format: page: pageStringChars=N selectionsByLine=N kept=N (fallback used? kept=N)\n\n"
+            for pageIdx in extractorDiagnostics.keys.sorted() {
+                guard let d = extractorDiagnostics[pageIdx] else { continue }
+                let fallback = d.characterFallbackUsed
+                    ? " | char-fallback used, kept=\(d.characterFallbackKept)"
+                    : ""
+                out += "Page \(pageIdx): pageStringChars=\(d.pageStringCharCount) " +
+                    "selectionsByLine=\(d.selectionByLineCount) kept=\(d.selectionByLineKept)\(fallback)\n"
+            }
+            out += "\n"
+        }
+
+        out += "OBSERVATIONS (per page; Vision observations first, then embedded fillers appended)\n"
+        out += "format: [FATE] page/idx src (x, y, w, h) conf=N.NN | text\n"
+        out += "  src = v (Vision) or e (embedded PDF text layer)\n\n"
+        for page in pages {
+            let visionCount = page.observations.filter { $0.source == .vision }.count
+            let embeddedCount = page.observations.count - visionCount
+            out += "--- Page \(page.pageIndex) — \(page.observations.count) observations (\(visionCount) Vision, \(embeddedCount) embedded)\n"
+            for (i, obs) in page.observations.enumerated() {
+                let key = ObservationKey(pageIndex: page.pageIndex, observationIndex: i)
+                let fate: String
+                if let reason = classification.reasons[key] {
+                    fate = "DROP \(reason.rawValue)"
+                } else if classification.dropSet.contains(key) {
+                    fate = "DROP unknown"
+                } else {
+                    fate = "KEEP"
+                }
+                let b = obs.box
+                let src = obs.source == .vision ? "v" : "e"
+                out += String(
+                    format: "[%@] %d/%-3d %@ (%.3f, %.3f, %.3f, %.3f) conf=%.2f | %@\n",
+                    fate, page.pageIndex, i, src,
+                    b.minX, b.minY, b.width, b.height,
+                    obs.confidence,
+                    obs.text.replacingOccurrences(of: "\n", with: " ⏎ ")
+                )
+            }
+            out += "\n"
+        }
+
+        out += "BLOCKS (post-reflow + bridging)\n\n"
+        for (i, block) in blocks.enumerated() {
+            switch block {
+            case .heading(let level, let runs):
+                out += "[\(i)] H\(level): \(runs.map(\.text).joined())\n"
+            case .paragraph(let runs):
+                out += "[\(i)] P: \(runs.map(\.text).joined())\n"
+            }
+            out += "\n"
+        }
+
+        try out.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Merge adjacent paragraphs that should not have been split. Two
+    /// cases handled:
+    ///
+    ///   1. **Soft hyphen across boundaries** — first paragraph ends in
+    ///      `letter-`, second starts with a lowercase letter
+    ///      → join with the hyphen dropped (the "Mendelssohn" case).
+    ///   2. **Mid-sentence break across boundaries** — first paragraph
+    ///      doesn't end with a sentence terminator AND the second starts
+    ///      with a lowercase letter → join with a space.
+    ///
+    /// Both fire across column transitions within a page and across page
+    /// transitions. They're geometric blind spots — the per-column reflow
+    /// can't see that the next column's first paragraph is actually a
+    /// continuation of the previous column's last paragraph.
+    ///
+    /// Length guard on case 2 prevents accidentally swallowing short
+    /// headings or labels into the previous paragraph.
+    static func bridgeBoundaries(_ blocks: [Block]) -> [Block] {
+        var out: [Block] = []
+        out.reserveCapacity(blocks.count)
+        for block in blocks {
+            guard case let .paragraph(runs) = block,
+                  case let .paragraph(prevRuns) = out.last,
+                  let lastPrevText = prevRuns.last?.text,
+                  let firstNewText = runs.first?.text,
+                  let bridgeKind = bridgeKind(prev: prevRuns, prevTail: lastPrevText, nextHead: firstNewText)
+            else {
+                out.append(block)
+                continue
+            }
+
+            let mergedTail: String
+            switch bridgeKind {
+            case .softHyphen:
+                mergedTail = Dehyphenation.join(lastPrevText, firstNewText)
+            case .midSentence:
+                mergedTail = lastPrevText.trimmingCharacters(in: .whitespaces)
+                    + " " + firstNewText.trimmingCharacters(in: .whitespaces)
+            }
+
+            var combinedRuns = prevRuns
+            combinedRuns[combinedRuns.count - 1] = InlineRun(
+                mergedTail, language: combinedRuns.last?.language
+            )
+            combinedRuns.append(contentsOf: runs.dropFirst())
+
+            out.removeLast()
+            out.append(.paragraph(runs: combinedRuns))
+        }
+        return out
+    }
+
+    private enum BridgeKind { case softHyphen, midSentence }
+
+    private static func bridgeKind(
+        prev: [InlineRun], prevTail: String, nextHead: String
+    ) -> BridgeKind? {
+        if Dehyphenation.shouldDehyphenate(lhs: prevTail, rhs: nextHead) {
+            return .softHyphen
+        }
+        // Mid-sentence join: prev didn't end with a terminator, next
+        // begins with a lowercase letter, prev paragraph is long enough
+        // to plausibly be prose (not a heading or short label).
+        let prevWhole = prev.map(\.text).joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard prevWhole.count >= 20 else { return nil }
+        guard !endsWithSentenceTerminator(prevWhole) else { return nil }
+        let nextHeadTrimmed = nextHead.trimmingCharacters(in: .whitespaces)
+        guard let firstChar = nextHeadTrimmed.first,
+              firstChar.isLetter, firstChar.isLowercase
+        else { return nil }
+        return .midSentence
+    }
+
+    /// Treat `.`, `?`, `!`, `…`, `;`, `:` (optionally followed by closing
+    /// quotes/brackets) as sentence-ish terminators.
+    private static func endsWithSentenceTerminator(_ s: String) -> Bool {
+        var t = Substring(s)
+        while let last = t.last, "\")]}”’»".contains(last) {
+            t = t.dropLast()
+        }
+        guard let last = t.last else { return false }
+        return ".?!;:\u{2026}".contains(last)
     }
 }
