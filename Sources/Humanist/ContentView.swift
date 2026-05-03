@@ -7,7 +7,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("BookForge")
+            Text("Humanist")
                 .font(.title2).bold()
             Text("Drop a PDF onto the window, or choose one to convert.")
                 .font(.callout)

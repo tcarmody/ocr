@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>BookForge</string>
+    <string>Humanist</string>
     <key>CFBundleIdentifier</key>
-    <string>com.tcarmody.BookForge</string>
+    <string>com.tcarmody.Humanist</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>BookForge</string>
+    <string>Humanist</string>
     <key>CFBundleDisplayName</key>
-    <string>BookForge</string>
+    <string>Humanist</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

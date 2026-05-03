@@ -6,8 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-APP_NAME="BookForge"
-BUNDLE_ID="com.tcarmody.BookForge"
+APP_NAME="Humanist"
+BUNDLE_ID="com.tcarmody.Humanist"
 
 BUILD_DIR="$REPO_ROOT/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"

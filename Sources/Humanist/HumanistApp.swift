@@ -1,9 +1,9 @@
 import SwiftUI
 
 @main
-struct BookForgeApp: App {
+struct HumanistApp: App {
     var body: some Scene {
-        WindowGroup("BookForge") {
+        WindowGroup("Humanist") {
             ContentView()
                 .frame(minWidth: 560, minHeight: 420)
         }

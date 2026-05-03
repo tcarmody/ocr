@@ -16,7 +16,7 @@ final class PDFToEPUBPipelineTests: XCTestCase {
     func test_generatedPDF_runsThroughFullPipeline_andProducesEPUBContainingText() async throws {
         // Vision needs reasonably large, high-contrast text to read reliably.
         let lines = [
-            "BookForge end to end test",
+            "Humanist end to end test",
             "The quick brown fox jumps over the lazy dog",
             "Walking skeleton phase one",
         ]

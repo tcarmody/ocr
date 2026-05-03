@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "BookForge",
+    name: "Humanist",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "BookForge", targets: ["BookForge"]),
+        .executable(name: "Humanist", targets: ["Humanist"]),
         .library(name: "Document", targets: ["Document"]),
         .library(name: "PDFIngest", targets: ["PDFIngest"]),
         .library(name: "OCR", targets: ["OCR"]),
@@ -43,9 +43,9 @@ let package = Package(
             path: "Sources/Pipeline"
         ),
         .executableTarget(
-            name: "BookForge",
+            name: "Humanist",
             dependencies: ["Pipeline"],
-            path: "Sources/BookForge"
+            path: "Sources/Humanist"
         ),
         .testTarget(
             name: "EPUBTests",
