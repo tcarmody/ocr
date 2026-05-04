@@ -90,13 +90,13 @@ public struct EPUBRepacker {
     }
 
     /// Compute the slash-separated path of `fileURL` relative to `root`.
-    /// Resolves symlinks on both sides — on macOS the temp dir is
+    /// Canonicalizes both sides — on macOS the temp dir is
     /// `/var/folders/...` (a symlink) while `enumerator(at:)` yields
     /// URLs through `/private/var/folders/...`, so a naive prefix
     /// check fails and the file ends up at the archive root.
     static func relativePath(of fileURL: URL, from root: URL) -> String {
-        let f = fileURL.resolvingSymlinksInPath().path
-        let r = root.resolvingSymlinksInPath().path
+        let f = fileURL.canonicalForFile.path
+        let r = root.canonicalForFile.path
         guard f.hasPrefix(r) else { return fileURL.lastPathComponent }
         var rel = String(f.dropFirst(r.count))
         if rel.hasPrefix("/") { rel.removeFirst() }

@@ -31,7 +31,7 @@ struct PreviewView: View {
     private func content(for file: FileNode) -> some View {
         let ext = file.id.pathExtension.lowercased()
         if ["xhtml", "html", "htm", "svg"].contains(ext) {
-            WebPreview(url: file.id, accessRoot: workingDirectory)
+            WebPreviewPane(url: file.id, accessRoot: workingDirectory)
         } else if isImage(ext) {
             ImagePreview(url: file.id)
         } else if EditorViewModel.isTextFile(file.id) {
@@ -66,17 +66,101 @@ struct PreviewView: View {
     }
 }
 
-// MARK: - WKWebView wrapper
+// MARK: - WKWebView wrapper with visible diagnostics
+
+/// Owns the load state for one WebPreview so the parent can render an
+/// overlay/badge when something goes wrong. Bridges WKNavigationDelegate
+/// callbacks into `@Published` state — Console.app filtering is finicky
+/// and "the preview is just blank" is the worst possible bug to debug
+/// without a status visible in-app.
+@MainActor
+private final class WebPreviewModel: NSObject, ObservableObject, WKNavigationDelegate {
+    enum Status: Equatable {
+        case idle
+        case loading
+        case loaded
+        case failed(String)
+    }
+
+    @Published var status: Status = .idle
+    var loadedURL: URL?
+
+    nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        Task { @MainActor in self.status = .loading }
+    }
+    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        Task { @MainActor in self.status = .loaded }
+    }
+    nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        let message = error.localizedDescription
+        Task { @MainActor in self.status = .failed(message) }
+    }
+    nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        let message = error.localizedDescription
+        Task { @MainActor in self.status = .failed(message) }
+    }
+}
+
+/// Composite view: the WKWebView itself + a status overlay so failures
+/// (or "we never even tried to load") are visible in the editor.
+private struct WebPreviewPane: View {
+    let url: URL
+    let accessRoot: URL
+    @StateObject private var model = WebPreviewModel()
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            WebPreview(url: url, accessRoot: accessRoot, model: model)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            statusBadge
+                .padding(.top, 8)
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch model.status {
+        case .idle, .loading:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Loading preview…")
+                    .font(.caption)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(.thinMaterial, in: Capsule())
+        case .loaded:
+            EmptyView()
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Preview failed to load", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Text(url.path)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+            }
+            .padding(10)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 8)
+        }
+    }
+}
 
 private struct WebPreview: NSViewRepresentable {
     let url: URL
-    let accessRoot: URL  // grant the webview read access to this dir
-                          // so file:// CSS/image references resolve.
+    let accessRoot: URL
+    let model: WebPreviewModel
 
     func makeNSView(context: Context) -> WKWebView {
-        let cfg = WKWebViewConfiguration()
-        let view = WKWebView(frame: .zero, configuration: cfg)
-        view.setValue(false, forKey: "drawsBackground")
+        let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        view.navigationDelegate = model
         load(into: view)
         return view
     }
@@ -86,10 +170,15 @@ private struct WebPreview: NSViewRepresentable {
     }
 
     private func load(into view: WKWebView) {
-        // loadFileURL scopes read access. Without `allowingReadAccessTo`
-        // pointing at the working dir, WKWebView refuses CSS in a
-        // sibling folder.
-        view.loadFileURL(url, allowingReadAccessTo: accessRoot)
+        // WebKit's sandbox check is a strict path-prefix comparison;
+        // canonicalize both sides via the shared helper so `/var/...`
+        // vs `/private/var/...` doesn't trip "outside the sandbox."
+        let resolvedURL = url.canonicalForFile
+        let resolvedAccess = accessRoot.canonicalForFile
+        guard model.loadedURL != resolvedURL else { return }
+        model.loadedURL = resolvedURL
+        model.status = .loading
+        view.loadFileURL(resolvedURL, allowingReadAccessTo: resolvedAccess)
     }
 }
 

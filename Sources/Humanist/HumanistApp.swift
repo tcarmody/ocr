@@ -12,9 +12,8 @@ struct HumanistApp: App {
         }
         .windowResizability(.contentSize)
         .commands {
-            CommandGroup(replacing: .newItem) {
-                OpenCommand()
-            }
+            FileMenuCommands()
+            EditorViewMenu()
         }
 
         // Editor window: one per opened EPUB. macOS reuses an existing
@@ -28,38 +27,78 @@ struct HumanistApp: App {
                 Text("No EPUB loaded.")
             }
         }
+
+        // PDF viewer window: opened by File > Open on a PDF, or by the
+        // editor's "Open Source PDF…" command. Same URL → same window.
+        WindowGroup("PDF", id: "pdf-viewer", for: URL.self) { $url in
+            if let url {
+                PDFViewerView(pdfURL: url)
+            } else {
+                Text("No PDF loaded.")
+            }
+        }
     }
 }
 
-/// File > Open… menu item. Lives in its own view so it can pull
-/// `openWindow` out of the environment (commands themselves don't have
-/// view-scoped environment access).
+/// File menu rebuild. We replace `.newItem` (the default New/Open
+/// pair) with two distinct actions:
+///
+///   * **Open** — view-only. PDF → PDF viewer, EPUB → editor.
+///   * **Convert PDF to EPUB** — runs the OCR pipeline and opens the
+///     editor on the resulting .epub. Same flow as drag-drop on the
+///     launcher window.
+private struct FileMenuCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            OpenCommand()
+            ConvertCommand()
+        }
+        CommandGroup(replacing: .saveItem) {
+            EditorSaveCommand()
+        }
+    }
+}
+
 private struct OpenCommand: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button("Open EPUB or PDF…") {
+        Button("Open…") {
             let panel = NSOpenPanel()
             panel.allowedContentTypes = [.epub, .pdf]
             panel.allowsMultipleSelection = false
             panel.canChooseDirectories = false
             panel.canChooseFiles = true
             guard panel.runModal() == .OK, let url = panel.url else { return }
-            if url.pathExtension.lowercased() == "epub" {
-                openWindow(id: "editor", value: url)
-            } else {
-                // PDFs go to the launcher's converter via a notification —
-                // the launcher view listens. (We can't do "open the
-                // launcher window AND tell it to convert URL X" with
-                // openWindow alone.)
-                NotificationCenter.default.post(
-                    name: .humanistConvertPDF,
-                    object: nil,
-                    userInfo: ["url": url]
-                )
+            switch url.pathExtension.lowercased() {
+            case "epub": openWindow(id: "editor", value: url)
+            case "pdf":  openWindow(id: "pdf-viewer", value: url)
+            default:     break
             }
         }
         .keyboardShortcut("o", modifiers: .command)
+    }
+}
+
+private struct ConvertCommand: View {
+    var body: some View {
+        Button("Convert PDF to EPUB…") {
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.pdf]
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            panel.canChooseFiles = true
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            // The launcher window owns the conversion ViewModel; route
+            // the URL to it. (We can't reach a SwiftUI ViewModel from
+            // an App-scope command directly.)
+            NotificationCenter.default.post(
+                name: .humanistConvertPDF,
+                object: nil,
+                userInfo: ["url": url]
+            )
+        }
+        .keyboardShortcut("o", modifiers: [.command, .shift])
     }
 }
 

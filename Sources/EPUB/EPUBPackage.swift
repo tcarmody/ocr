@@ -46,14 +46,21 @@ public final class EPUBPackage: Identifiable, @unchecked Sendable {
     /// Open `epubURL`, unpack into a temp directory, parse OPF.
     public static func open(epubURL: URL) throws -> EPUBPackage {
         let unpacker = EPUBUnpacker()
-        let workingDir = try unpacker.unpack(
+        let rawWorkingDir = try unpacker.unpack(
             epubURL: epubURL,
             into: FileManager.default.temporaryDirectory
         )
+        // Canonicalize once at the boundary so workingDirectory and
+        // every URL FileNode.walk yields share the same form. Without
+        // this the working dir is `/var/folders/...` (symlink) but the
+        // tree URLs are `/private/var/folders/...` (resolved by
+        // FileManager), and downstream comparisons / prefix checks /
+        // dictionary lookups break in confusing ways.
+        let workingDir = rawWorkingDir.canonicalForFile
         let pkg = try OPFReader().read(rootDir: workingDir)
         let tree = FileNode.walk(workingDir)
         return EPUBPackage(
-            sourceURL: epubURL,
+            sourceURL: epubURL.canonicalForFile,
             workingDirectory: workingDir,
             package: pkg,
             fileTree: tree
