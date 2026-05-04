@@ -31,6 +31,17 @@
       font-family: inherit;
       font-size: inherit;
     }
+    /* Brief highlight when the editor is jumped to an anchor by
+       linked-navigation (PDF page change / preview scroll). */
+    .CodeMirror-line.hu-flash-line {
+      background: rgba(255, 230, 0, 0.45);
+      transition: background 1.0s ease-out;
+    }
+    @media (prefers-color-scheme: dark) {
+      .CodeMirror-line.hu-flash-line {
+        background: rgba(120, 100, 0, 0.55);
+      }
+    }
     @media (prefers-color-scheme: dark) {
       body { background: #1e1e1e; color: #d4d4d4; }
       .CodeMirror { background: #1e1e1e; color: #d4d4d4; }
@@ -142,6 +153,38 @@
 
       window.humanistRefresh = function () {
         editor.refresh();
+      };
+
+      // Linked-navigation: search the source for the given anchor id
+      // (matches `id="hu-page-N"` produced by the converter), move the
+      // cursor there, and briefly flash the line so the jump is
+      // visible.
+      window.humanistScrollToAnchor = function (anchorId) {
+        if (!anchorId) return;
+        var doc = editor.getDoc();
+        var content = doc.getValue();
+        // Try double quotes first (the canonical form the XHTML
+        // writer emits), then fall back to single quotes for hand-
+        // edited files.
+        var needles = ['id="' + anchorId + '"', "id='" + anchorId + "'"];
+        var idx = -1;
+        for (var i = 0; i < needles.length; i++) {
+          var hit = content.indexOf(needles[i]);
+          if (hit >= 0) { idx = hit; break; }
+        }
+        if (idx < 0) return;
+        var pos = doc.posFromIndex(idx);
+        // Move cursor and scroll the target line ~100px from the top
+        // so context above the anchor is still visible.
+        doc.setSelection(pos, pos);
+        editor.scrollIntoView(pos, 100);
+        // Flash the line briefly. CodeMirror's addLineClass returns
+        // a handle we use to remove the class after the flash.
+        var line = pos.line;
+        var handle = doc.addLineClass(line, "background", "hu-flash-line");
+        setTimeout(function () {
+          if (handle) doc.removeLineClass(handle, "background", "hu-flash-line");
+        }, 1100);
       };
 
       ready = true;

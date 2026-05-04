@@ -47,6 +47,7 @@ public struct EPUBBuilder {
         // 4. Chapters — XHTML files
         let xhtmlWriter = XHTMLWriter(cssPath: "../css/book.css")
         var chapterItems: [OPFWriter.Item] = []
+        var pageMapEntries: [PageMap.Entry] = []
         for (index, chapter) in book.chapters.enumerated() {
             let id = String(format: "chapter-%03d", index + 1)
             let href = "text/\(id).xhtml"
@@ -62,6 +63,29 @@ public struct EPUBBuilder {
             chapterItems.append(OPFWriter.Item(
                 id: id, href: href, mediaType: "application/xhtml+xml", properties: nil
             ))
+            for anchor in chapter.pageAnchors {
+                pageMapEntries.append(PageMap.Entry(
+                    pdfPage: anchor.pdfPage,
+                    xhtmlFile: "OEBPS/\(href)",
+                    anchorId: anchor.anchorId
+                ))
+            }
+        }
+
+        // 4b. Editor-only pagemap sidecar — only emitted when at least
+        // one chapter contributed anchors (i.e. the book came through
+        // the OCR pipeline). Standard EPUB readers ignore unknown
+        // META-INF files, so this round-trips through other tools.
+        if !pageMapEntries.isEmpty {
+            let pageMap = PageMap(entries: pageMapEntries)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(pageMap) {
+                entries.append(EPUBPackager.Entry(
+                    path: PageMap.pathInsideEPUB,
+                    data: data
+                ))
+            }
         }
 
         // 5. nav.xhtml

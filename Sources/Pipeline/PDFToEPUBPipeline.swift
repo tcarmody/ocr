@@ -282,7 +282,8 @@ public actor PDFToEPUBPipeline {
             chapters: [Chapter(
                 title: title,
                 blocks: reflowed.blocks,
-                footnotes: reflowed.footnotes
+                footnotes: reflowed.footnotes,
+                pageAnchors: reflowed.pageAnchors
             )]
         )
 
@@ -290,13 +291,17 @@ public actor PDFToEPUBPipeline {
     }
 
     /// Result of `reflow` — body block stream + chapter-level
-    /// footnotes that body runs reference via `InlineRun.noterefId`.
+    /// footnotes that body runs reference via `InlineRun.noterefId`,
+    /// + page-boundary anchors emitted into the block stream so the
+    /// editor can sync preview scroll with PDF page (Phase 7.D).
     public struct ReflowOutput: Sendable, Equatable {
         public let blocks: [Block]
         public let footnotes: [Footnote]
-        public init(blocks: [Block], footnotes: [Footnote]) {
+        public let pageAnchors: [PageAnchor]
+        public init(blocks: [Block], footnotes: [Footnote], pageAnchors: [PageAnchor] = []) {
             self.blocks = blocks
             self.footnotes = footnotes
+            self.pageAnchors = pageAnchors
         }
     }
 
@@ -320,6 +325,7 @@ public actor PDFToEPUBPipeline {
 
         let merged: [Block]
         let footnotes: [Footnote]
+        let pageAnchors: [PageAnchor]
         let classification: HeaderFooterClassifier.Result
 
         if hasAnyLayout {
@@ -330,6 +336,7 @@ public actor PDFToEPUBPipeline {
             let result = RegionAwareReflow.reflow(pageResults: pageResults)
             merged = result.blocks
             footnotes = result.footnotes
+            pageAnchors = result.pageAnchors
         } else {
             // Heuristic-only path (Phase 1.5 behavior). No layout
             // regions means no footnote regions, so no popups either.
@@ -347,6 +354,7 @@ public actor PDFToEPUBPipeline {
             }
             merged = Self.bridgeBoundaries(blocks)
             footnotes = []
+            pageAnchors = []
         }
 
         if let debugLogURL {
@@ -361,7 +369,7 @@ public actor PDFToEPUBPipeline {
                 to: debugLogURL
             )
         }
-        return ReflowOutput(blocks: merged, footnotes: footnotes)
+        return ReflowOutput(blocks: merged, footnotes: footnotes, pageAnchors: pageAnchors)
     }
 
     /// Save a CGImage as PNG to the given URL. Used by the debug-log
@@ -534,6 +542,8 @@ public actor PDFToEPUBPipeline {
                 out += "[\(i)] H\(level): \(runs.map(\.text).joined())\n"
             case .paragraph(let runs):
                 out += "[\(i)] P: \(runs.map(\.text).joined())\n"
+            case .anchor(let id, let label):
+                out += "[\(i)] ANCHOR id=\(id) label=\(label)\n"
             }
             out += "\n"
         }
@@ -562,8 +572,26 @@ public actor PDFToEPUBPipeline {
         var out: [Block] = []
         out.reserveCapacity(blocks.count)
         for block in blocks {
+            // Anchors aren't paragraphs and never bridge — pass them
+            // through. Real cross-page bridging happens in the lookback
+            // below, which steps past any trailing anchors to find the
+            // previous paragraph.
+            if case .anchor = block {
+                out.append(block)
+                continue
+            }
+
+            // Walk back over any anchors that landed at the end of
+            // `out` (page-boundary markers between two paragraphs that
+            // really should be merged into one sentence).
+            var prevIndex = out.count - 1
+            while prevIndex >= 0, case .anchor = out[prevIndex] {
+                prevIndex -= 1
+            }
+            let prev: Block? = prevIndex >= 0 ? out[prevIndex] : nil
+
             guard case let .paragraph(runs) = block,
-                  case let .paragraph(prevRuns) = out.last,
+                  case let .paragraph(prevRuns) = prev,
                   let lastPrevText = prevRuns.last?.text,
                   let firstNewText = runs.first?.text,
                   let bridgeKind = bridgeKind(prev: prevRuns, prevTail: lastPrevText, nextHead: firstNewText)
@@ -587,8 +615,11 @@ public actor PDFToEPUBPipeline {
             )
             combinedRuns.append(contentsOf: runs.dropFirst())
 
-            out.removeLast()
-            out.append(.paragraph(runs: combinedRuns))
+            // Replace the previous paragraph in-place; anchors that
+            // sat between it and the current paragraph stay where
+            // they are (now positioned right after the merged text,
+            // marking where the next page's distinct content starts).
+            out[prevIndex] = .paragraph(runs: combinedRuns)
         }
         return out
     }

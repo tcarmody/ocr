@@ -18,6 +18,14 @@ struct PreviewView: View {
     /// preview write) so the underlying WebKit view reloads. Same URL
     /// + bumped trigger → `view.reload()`.
     let reloadTrigger: Int
+    /// Pending "scroll the preview to this anchor" request from the
+    /// linked-navigation feature (PDF page change). Nonce-tagged so a
+    /// repeat request to the same anchor still fires onChange.
+    let scrollRequest: EditorViewModel.AnchorScrollRequest?
+    /// Callback fired when the JS-injected IntersectionObserver
+    /// reports a new topmost-visible page anchor (back-sync from
+    /// preview scroll → PDF page).
+    let onAnchorVisible: ((String) -> Void)?
 
     var body: some View {
         Group {
@@ -38,7 +46,9 @@ struct PreviewView: View {
             WebPreviewPane(
                 url: file.id,
                 accessRoot: workingDirectory,
-                reloadTrigger: reloadTrigger
+                reloadTrigger: reloadTrigger,
+                scrollRequest: scrollRequest,
+                onAnchorVisible: onAnchorVisible
             )
         } else if isImage(ext) {
             ImagePreview(url: file.id)
@@ -78,11 +88,11 @@ struct PreviewView: View {
 
 /// Owns the load state for one WebPreview so the parent can render an
 /// overlay/badge when something goes wrong. Bridges WKNavigationDelegate
-/// callbacks into `@Published` state — Console.app filtering is finicky
-/// and "the preview is just blank" is the worst possible bug to debug
-/// without a status visible in-app.
+/// and WKScriptMessageHandler callbacks into observable state +
+/// closures the parent set up.
 @MainActor
-private final class WebPreviewModel: NSObject, ObservableObject, WKNavigationDelegate {
+private final class WebPreviewModel: NSObject, ObservableObject,
+                                     WKNavigationDelegate, WKScriptMessageHandler {
     enum Status: Equatable {
         case idle
         case loading
@@ -96,12 +106,26 @@ private final class WebPreviewModel: NSObject, ObservableObject, WKNavigationDel
     /// from "same URL, content changed" so the live-preview reload
     /// path can call `view.reload()` instead of `loadFileURL` again.
     var loadedTrigger: Int = .min
+    /// Last linked-nav scroll request nonce we honored. New request
+    /// (different nonce) → re-issue the JS scroll call.
+    var lastScrollNonce: Int = .min
+    /// Anchor id we want to scroll to once loading completes. Set on
+    /// scroll request before the page is ready; consumed in didFinish.
+    var pendingScrollAnchor: String?
+    /// Forwarded back to EditorViewModel when JS reports a new
+    /// topmost-visible anchor.
+    var onAnchorVisible: ((String) -> Void)?
+    /// Reference back to the WKWebView so didFinish can run JS.
+    weak var webView: WKWebView?
 
     nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         Task { @MainActor in self.status = .loading }
     }
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        Task { @MainActor in self.status = .loaded }
+        Task { @MainActor in
+            self.status = .loaded
+            self.flushPendingScroll()
+        }
     }
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         let message = error.localizedDescription
@@ -111,6 +135,37 @@ private final class WebPreviewModel: NSObject, ObservableObject, WKNavigationDel
         let message = error.localizedDescription
         Task { @MainActor in self.status = .failed(message) }
     }
+
+    func flushPendingScroll() {
+        guard let webView, let id = pendingScrollAnchor else { return }
+        pendingScrollAnchor = nil
+        let safe = jsString(id)
+        let js = """
+        var el = document.getElementById(\(safe));
+        if (el) el.scrollIntoView({block: 'start'});
+        """
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    // WKScriptMessageHandler — JS → Swift back-sync
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        guard let dict = message.body as? [String: Any],
+              let type = dict["type"] as? String,
+              type == "anchor",
+              let id = dict["id"] as? String
+        else { return }
+        onAnchorVisible?(id)
+    }
+
+    private func jsString(_ s: String) -> String {
+        let array = (try? JSONSerialization.data(
+            withJSONObject: [s], options: []
+        )) ?? Data("[\"\"]".utf8)
+        let str = String(data: array, encoding: .utf8) ?? "[\"\"]"
+        return String(str.dropFirst().dropLast())
+    }
 }
 
 /// Composite view: the WKWebView itself + a status overlay so failures
@@ -119,6 +174,8 @@ private struct WebPreviewPane: View {
     let url: URL
     let accessRoot: URL
     let reloadTrigger: Int
+    let scrollRequest: EditorViewModel.AnchorScrollRequest?
+    let onAnchorVisible: ((String) -> Void)?
     @StateObject private var model = WebPreviewModel()
 
     var body: some View {
@@ -127,12 +184,19 @@ private struct WebPreviewPane: View {
                 url: url,
                 accessRoot: accessRoot,
                 reloadTrigger: reloadTrigger,
+                scrollRequest: scrollRequest,
                 model: model
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             statusBadge
                 .padding(.top, 8)
+        }
+        .onAppear { model.onAnchorVisible = onAnchorVisible }
+        .onChange(of: ObjectIdentifier(model)) { _, _ in
+            // Belt-and-suspenders: re-bind closure if model identity
+            // changes (shouldn't with @StateObject, but cheap).
+            model.onAnchorVisible = onAnchorVisible
         }
     }
 
@@ -175,17 +239,32 @@ private struct WebPreview: NSViewRepresentable {
     let url: URL
     let accessRoot: URL
     let reloadTrigger: Int
+    let scrollRequest: EditorViewModel.AnchorScrollRequest?
     let model: WebPreviewModel
 
     func makeNSView(context: Context) -> WKWebView {
-        let view = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let cfg = WKWebViewConfiguration()
+        let userContent = WKUserContentController()
+        // Inject the IntersectionObserver bridge into every loaded
+        // page. Only fires for pages that actually have hu-page-*
+        // anchors; otherwise it's a cheap no-op.
+        userContent.addUserScript(WKUserScript(
+            source: Self.intersectionObserverSource,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        userContent.add(model, name: "humanistPreview")
+        cfg.userContentController = userContent
+        let view = WKWebView(frame: .zero, configuration: cfg)
         view.navigationDelegate = model
+        model.webView = view
         load(into: view)
         return view
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
         load(into: nsView)
+        applyScrollRequestIfNeeded(view: nsView)
     }
 
     private func load(into view: WKWebView) {
@@ -209,6 +288,61 @@ private struct WebPreview: NSViewRepresentable {
             view.reload()
         }
     }
+
+    private func applyScrollRequestIfNeeded(view: WKWebView) {
+        guard let req = scrollRequest else { return }
+        guard model.lastScrollNonce != req.nonce else { return }
+        model.lastScrollNonce = req.nonce
+        // If the page is still loading, defer; didFinish flushes it.
+        if model.status == .loaded {
+            model.pendingScrollAnchor = req.anchorId
+            model.flushPendingScroll()
+        } else {
+            model.pendingScrollAnchor = req.anchorId
+        }
+    }
+
+    // MARK: - injected JS
+
+    private static let intersectionObserverSource: String = """
+    (function () {
+      if (!('IntersectionObserver' in window)) return;
+      if (!window.webkit || !window.webkit.messageHandlers
+          || !window.webkit.messageHandlers.humanistPreview) return;
+
+      function setup() {
+        var anchors = document.querySelectorAll('[id^="hu-page-"]');
+        if (!anchors.length) return;
+
+        var lastActive = null;
+        var io = new IntersectionObserver(function (entries) {
+          var visible = entries.filter(function (e) { return e.isIntersecting; });
+          if (!visible.length) return;
+          visible.sort(function (a, b) {
+            return a.boundingClientRect.top - b.boundingClientRect.top;
+          });
+          var topId = visible[0].target.id;
+          if (topId !== lastActive) {
+            lastActive = topId;
+            try {
+              window.webkit.messageHandlers.humanistPreview.postMessage({
+                type: 'anchor', id: topId
+              });
+            } catch (e) {}
+          }
+        }, { rootMargin: '0px 0px -80% 0px', threshold: 0 });
+
+        for (var i = 0; i < anchors.length; i++) io.observe(anchors[i]);
+      }
+
+      if (document.readyState === 'complete'
+          || document.readyState === 'interactive') {
+        setup();
+      } else {
+        document.addEventListener('DOMContentLoaded', setup);
+      }
+    })();
+    """
 }
 
 // MARK: - image fallback

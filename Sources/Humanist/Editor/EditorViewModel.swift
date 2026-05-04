@@ -66,6 +66,36 @@ final class EditorViewModel: ObservableObject {
     /// Reset whenever `sourcePDFURL` changes.
     @Published private(set) var pdfController: PDFViewerController?
 
+    /// Page-anchor map written by the converter into
+    /// `META-INF/com.humanist.pagemap.json`. Non-nil → linked
+    /// navigation is active. Nil → editor opened a non-Humanist EPUB
+    /// (or one that predates the anchor-emitting pipeline) and sync
+    /// stays dormant.
+    @Published private(set) var pageMap: PageMap?
+    /// Anchor id the preview pane should scroll to. Bumped (or rather
+    /// replaced with a new value carrying the same id but a fresh
+    /// sequence number) every time we want the preview to re-scroll,
+    /// so consecutive PDF page changes that map to the same anchor
+    /// still register.
+    @Published private(set) var scrollPreviewToAnchor: AnchorScrollRequest?
+    /// Same shape, but routed to the CodeMirror source pane so the
+    /// editor jumps to (and briefly flashes) the matching anchor in
+    /// the XHTML. Driven by both the PDF-page-change observer and the
+    /// preview-IntersectionObserver back-sync — the source pane
+    /// follows whichever pane the user is steering with.
+    @Published private(set) var scrollCodeToAnchor: AnchorScrollRequest?
+
+    /// Tagged anchor scroll request — the `nonce` lets the preview
+    /// pane's `onChange(of:)` fire even when the same anchor is
+    /// targeted twice in a row (because the user clicked away in the
+    /// PDF and back).
+    struct AnchorScrollRequest: Equatable {
+        let anchorId: String
+        let xhtmlFile: String
+        let nonce: Int
+    }
+    private var scrollNonce: Int = 0
+
     /// In-memory edit buffers, keyed by absolute file URL. Populated
     /// when a file is selected. Survives navigation between files.
     private var buffers: [URL: String] = [:]
@@ -153,9 +183,119 @@ final class EditorViewModel: ObservableObject {
             self.selectedFile = Self.preferredInitialSelection(in: pkg)
             self.loadSourceForSelectedFile()
             self.attachInitialSourcePDF(epubURL: epubURL, package: pkg)
+            self.pageMap = PageMap.read(workingDirectory: pkg.workingDirectory)
         } catch {
             self.state = .failed(error.localizedDescription)
         }
+    }
+
+    // MARK: - linked navigation (Phase 7.D)
+
+    /// Token for the current PDF-page-change observer. Tearing it
+    /// down on detach/reload prevents stale callbacks firing into a
+    /// dead PDFView.
+    private var pdfPageObserver: NSObjectProtocol?
+    /// True while we're driving the PDF programmatically (preview
+    /// scrolled, we're moving the PDF to match). Suppresses the
+    /// page-change → preview-scroll feedback that would otherwise
+    /// fire back at us.
+    private var suppressPDFToPreviewSync: Bool = false
+
+    private func observePDFPageChanges() {
+        if let token = pdfPageObserver {
+            NotificationCenter.default.removeObserver(token)
+        }
+        guard let pdfView = pdfController?.pdfView else { return }
+        pdfPageObserver = NotificationCenter.default.addObserver(
+            forName: .PDFViewPageChanged,
+            object: pdfView,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                guard !self.suppressPDFToPreviewSync else { return }
+                guard let page = pdfView.currentPage,
+                      let pdfPage = pdfView.document?.index(for: page)
+                else { return }
+                self.scrollPreviewTo(pdfPage: pdfPage)
+            }
+        }
+    }
+
+    /// PDF → preview: find the anchor for `pdfPage`, switch the
+    /// selected file if the anchor lives in a different chapter, and
+    /// publish a scroll request.
+    func scrollPreviewTo(pdfPage: Int) {
+        guard let map = pageMap, let pkg = package else { return }
+        guard let entry = bestAnchor(for: pdfPage, in: map) else { return }
+        // Switch file if needed. Path is stored relative to the EPUB
+        // root in the sidecar; resolve against the working dir.
+        let fileURL = pkg.workingDirectory
+            .appendingPathComponent(entry.xhtmlFile)
+            .canonicalForFile
+        if selectedFile?.id.canonicalForFile != fileURL,
+           let node = Self.findLeaf(in: pkg.fileTree, matching: fileURL) {
+            select(node)
+        }
+        scrollNonce &+= 1
+        let req = AnchorScrollRequest(
+            anchorId: entry.anchorId,
+            xhtmlFile: entry.xhtmlFile,
+            nonce: scrollNonce
+        )
+        scrollPreviewToAnchor = req
+        scrollCodeToAnchor = req
+    }
+
+    /// Preview → PDF: called by the IntersectionObserver bridge when
+    /// the topmost-visible anchor in the rendered XHTML changes.
+    /// Looks up the matching PDF page and scrolls the PDF view.
+    /// Suppresses the inverse callback during the transition so the
+    /// two directions don't fight each other.
+    func scrollPDFTo(anchorId: String) {
+        guard let map = pageMap,
+              let entry = map.entries.first(where: { $0.anchorId == anchorId })
+        else { return }
+        // Code editor follows the preview's current scroll position
+        // too — preview is the source of truth in this direction, but
+        // we still want the source pane to track. (Preview is already
+        // showing the anchor, so don't republish its scroll request.)
+        scrollNonce &+= 1
+        scrollCodeToAnchor = AnchorScrollRequest(
+            anchorId: entry.anchorId,
+            xhtmlFile: entry.xhtmlFile,
+            nonce: scrollNonce
+        )
+        // Drive the PDF to match.
+        guard let pdfView = pdfController?.pdfView,
+              let document = pdfView.document,
+              entry.pdfPage >= 0, entry.pdfPage < document.pageCount,
+              let page = document.page(at: entry.pdfPage)
+        else { return }
+        if pdfView.currentPage === page { return }  // already there
+        suppressPDFToPreviewSync = true
+        pdfView.go(to: page)
+        // Release suppression on next runloop tick — by then the
+        // PDFViewPageChangedNotification has already fired and been
+        // ignored.
+        DispatchQueue.main.async { [weak self] in
+            self?.suppressPDFToPreviewSync = false
+        }
+    }
+
+    /// Pick the anchor whose `pdfPage` is closest to `target` without
+    /// going over. Defends against gaps in the pagemap (e.g. blank
+    /// pages that produced no anchor) — clicking page 7 should still
+    /// land you near page 7's content even if 7 itself isn't anchored.
+    private func bestAnchor(for target: Int, in map: PageMap) -> PageMap.Entry? {
+        var best: PageMap.Entry?
+        for entry in map.entries {
+            if entry.pdfPage > target { continue }
+            if best == nil || entry.pdfPage > best!.pdfPage {
+                best = entry
+            }
+        }
+        return best ?? map.entries.first
     }
 
     /// Resolve the source PDF on first load. Order:
@@ -181,6 +321,10 @@ final class EditorViewModel: ObservableObject {
     private func setSourcePDF(_ url: URL?) {
         sourcePDFURL = url
         pdfController = url.map { PDFViewerController(pdfURL: $0) }
+        // The previous controller's observer is now dangling — re-bind
+        // page-change notifications to the new pdfView (or detach if
+        // the user removed the source PDF altogether).
+        observePDFPageChanges()
     }
 
     /// Explicit user attach (toolbar action). Persists into the

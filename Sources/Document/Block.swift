@@ -9,4 +9,11 @@ public enum Block: Sendable, Equatable {
 
     /// `<p>`.
     case paragraph(runs: [InlineRun])
+
+    /// Invisible page-boundary marker. Rendered as an empty
+    /// `<span id="..." epub:type="pagebreak" role="doc-pagebreak"
+    /// aria-label="Page N">`. Used by the editor's linked-navigation
+    /// feature to align preview scroll with PDF page; honored by EPUB
+    /// readers as a print-page break for "skip to page N" navigation.
+    case anchor(id: String, label: String)
 }

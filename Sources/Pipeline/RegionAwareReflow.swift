@@ -57,6 +57,14 @@ enum RegionAwareReflow {
     struct Result: Sendable, Equatable {
         let blocks: [Block]
         let footnotes: [Footnote]
+        let pageAnchors: [PageAnchor]
+    }
+
+    /// Anchor id format. `EditorViewModel`'s linked-navigation feature
+    /// looks for `[id^="hu-page-"]` in the rendered XHTML, so this
+    /// prefix is load-bearing — change in both places if changed.
+    static func anchorId(forPageIndex pageIndex: Int) -> String {
+        "hu-page-\(pageIndex)"
     }
 
     /// Per-page footnote audit captured during reflow for the debug
@@ -68,7 +76,16 @@ enum RegionAwareReflow {
         lastFootnotesPerPage.removeAll(keepingCapacity: true)
         var blocks: [Block] = []
         var allFootnotes: [FootnoteLinker.Parsed] = []
+        var pageAnchors: [PageAnchor] = []
         for page in pageResults {
+            // Page-boundary anchor — invisible in normal rendering,
+            // used by the editor to align preview scroll with PDF
+            // page (and by EPUB readers as an epub:type=pagebreak
+            // for "skip to page N" navigation).
+            let anchor = anchorId(forPageIndex: page.pageIndex)
+            blocks.append(.anchor(id: anchor, label: "Page \(page.pageIndex + 1)"))
+            pageAnchors.append(PageAnchor(pdfPage: page.pageIndex, anchorId: anchor))
+
             // Fall back to the heuristic path when no regions were
             // produced (no analyzer, or analyzer returned nothing).
             guard let regions = page.layoutRegions, !regions.isEmpty else {
@@ -91,7 +108,8 @@ enum RegionAwareReflow {
         let bridged = PDFToEPUBPipeline.bridgeBoundaries(blocks)
         return Result(
             blocks: bridged,
-            footnotes: FootnoteLinker.footnotesForChapter(allFootnotes)
+            footnotes: FootnoteLinker.footnotesForChapter(allFootnotes),
+            pageAnchors: pageAnchors
         )
     }
 

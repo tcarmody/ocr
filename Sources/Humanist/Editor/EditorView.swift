@@ -164,7 +164,8 @@ struct EditorView: View {
             CodeEditorView(
                 text: $vm.sourceText,
                 language: CodeEditorView.Language.from(url: file.id),
-                resetID: AnyHashable(file.id)
+                resetID: AnyHashable(file.id),
+                scrollRequest: vm.scrollCodeToAnchor
             )
             .id(file.id)
             .onChange(of: vm.sourceText) { _, _ in
@@ -189,7 +190,9 @@ struct EditorView: View {
             PreviewView(
                 file: vm.selectedFile,
                 workingDirectory: workingDir,
-                reloadTrigger: vm.previewVersion
+                reloadTrigger: vm.previewVersion,
+                scrollRequest: vm.scrollPreviewToAnchor,
+                onAnchorVisible: { id in vm.scrollPDFTo(anchorId: id) }
             )
         }
     }

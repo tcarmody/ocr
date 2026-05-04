@@ -21,6 +21,11 @@ struct CodeEditorView: View {
     /// Bumps when the parent wants the editor to discard local state
     /// (file switch). Same trick as `PreviewView.reloadTrigger`.
     let resetID: AnyHashable
+    /// Linked-navigation scroll command. When the request's nonce
+    /// changes, the editor searches for `id="<anchorId>"` in the
+    /// source and scrolls / cursor-moves to that line, with a brief
+    /// background flash so the jump is visible. Nil → no sync.
+    let scrollRequest: EditorViewModel.AnchorScrollRequest?
 
     enum Language: String {
         case xml, htmlmixed, css, javascript
@@ -44,7 +49,8 @@ struct CodeEditorView: View {
                 assetsRoot: assetsRoot,
                 text: $text,
                 language: language,
-                resetID: resetID
+                resetID: resetID,
+                scrollRequest: scrollRequest
             )
         } else {
             // CodeMirror assets weren't bundled. Plain TextEditor so
@@ -75,6 +81,7 @@ private struct CodeMirrorWebView: NSViewRepresentable {
     @Binding var text: String
     let language: CodeEditorView.Language
     let resetID: AnyHashable
+    let scrollRequest: EditorViewModel.AnchorScrollRequest?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -107,6 +114,12 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             coordinator.lastPushedText = text
             coordinator.lastLanguage = language
             coordinator.pushContent(text: text, language: language, reason: .reset)
+            // Don't push the scroll-request immediately — the new
+            // file's content needs to land in CodeMirror first. The
+            // ready/edit cycle handles ordering by re-pushing the
+            // pending request when ready.
+            coordinator.lastScrollNonce = scrollRequest?.nonce ?? .min
+            coordinator.pendingScrollAnchor = scrollRequest?.anchorId
             return
         }
         // Same file, but the text changed externally (e.g. live preview
@@ -120,6 +133,13 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         if coordinator.lastLanguage != language {
             coordinator.lastLanguage = language
             coordinator.pushLanguage(language)
+        }
+        // Linked-navigation scroll request — search the source for
+        // the anchor and jump there. Nonce-tagged so a repeat request
+        // for the same anchor still fires.
+        if let req = scrollRequest, coordinator.lastScrollNonce != req.nonce {
+            coordinator.lastScrollNonce = req.nonce
+            coordinator.pushScrollAnchor(req.anchorId)
         }
     }
 
@@ -138,6 +158,11 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         var lastResetID: AnyHashable = AnyHashable("__init__")
         /// Pending push that came in before JS was ready.
         var pendingPush: (text: String, language: CodeEditorView.Language)?
+        /// Last linked-nav scroll request nonce we honored.
+        var lastScrollNonce: Int = .min
+        /// Anchor id queued while JS wasn't ready or content hadn't
+        /// landed yet. Flushed when ready fires.
+        var pendingScrollAnchor: String?
 
         init(text: Binding<String>) {
             _text = text
@@ -164,6 +189,16 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
+        func pushScrollAnchor(_ anchorId: String) {
+            guard ready, let webView else {
+                pendingScrollAnchor = anchorId
+                return
+            }
+            pendingScrollAnchor = nil
+            let js = "humanistScrollToAnchor(\(jsString(anchorId)));"
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+
         // WKScriptMessageHandler
 
         func userContentController(_ userContentController: WKUserContentController,
@@ -176,6 +211,14 @@ private struct CodeMirrorWebView: NSViewRepresentable {
                 if let pending = pendingPush {
                     pendingPush = nil
                     pushContent(text: pending.text, language: pending.language, reason: .reset)
+                }
+                if let anchor = pendingScrollAnchor {
+                    // Wait one runloop so the just-pushed content has
+                    // landed in CodeMirror before we try to find the
+                    // anchor in it.
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushScrollAnchor(anchor)
+                    }
                 }
             case "edit":
                 if let newText = dict["text"] as? String {

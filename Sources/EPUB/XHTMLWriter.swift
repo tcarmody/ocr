@@ -20,6 +20,14 @@ struct XHTMLWriter {
                 body += "<h\(n)>\(renderRuns(runs, parentLanguage: defaultLanguage))</h\(n)>\n"
             case .paragraph(let runs):
                 body += "<p>\(renderRuns(runs, parentLanguage: defaultLanguage))</p>\n"
+            case .anchor(let id, let label):
+                // Empty span — invisible in normal rendering. The
+                // editor's IntersectionObserver targets `[id^="hu-page-"]`
+                // for back-sync; readers honor epub:type="pagebreak"
+                // for "skip to page N" navigation.
+                let idAttr = XMLEscape.attribute(id)
+                let labelAttr = XMLEscape.attribute(label)
+                body += "<span id=\"\(idAttr)\" epub:type=\"pagebreak\" role=\"doc-pagebreak\" aria-label=\"\(labelAttr)\"></span>\n"
             }
         }
 
