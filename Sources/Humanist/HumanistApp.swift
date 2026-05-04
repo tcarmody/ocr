@@ -82,10 +82,30 @@ private struct FileMenuCommands: Commands {
             OpenCommand()
             OpenRecentMenu()
             ConvertCommand()
+            Divider()
+            SplitTwoUpCommand()
         }
         CommandGroup(replacing: .saveItem) {
             EditorSaveCommand()
             EditorSaveAsCommand()
+        }
+    }
+}
+
+/// File > Split Two-Up PDF… — manual entry point for cases where
+/// auto-detect at queue-add missed (or the user wants to split a PDF
+/// without queueing it for conversion). Opens a file picker → save
+/// dialog → splits → confirms with an alert.
+private struct SplitTwoUpCommand: View {
+    var body: some View {
+        Button("Split Two-Up PDF…") {
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.pdf]
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            panel.canChooseFiles = true
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            _ = TwoUpPrompt.runManual(pdfURL: url)
         }
     }
 }

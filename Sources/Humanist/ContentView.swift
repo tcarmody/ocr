@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import Document
+import PDFIngest
 
 /// Launcher window — queue-centric. Drop one PDF or a folder of PDFs;
 /// each becomes a job. Existing jobs from previous sessions persist
@@ -11,6 +12,7 @@ struct ContentView: View {
     @EnvironmentObject private var store: JobStore
     @EnvironmentObject private var runner: JobRunner
     @State private var isTargeted = false
+    @StateObject private var twoUpProcessor = TwoUpProcessor()
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -50,27 +52,68 @@ struct ContentView: View {
         // since the menu can't reach our viewmodel directly.
         .onReceive(NotificationCenter.default.publisher(for: .humanistConvertPDF)) { note in
             guard let url = note.userInfo?["url"] as? URL else { return }
-            queue.addPDF(url)
+            handlePDFDrops([url])
+        }
+        // Two-up detection / split progress + decision UI. Bound to
+        // processor.phase != .idle so the sheet auto-dismisses when
+        // the processor returns to idle (success, cancel, or error).
+        .sheet(isPresented: Binding(
+            get: { twoUpProcessor.phase != .idle },
+            set: { _ in }
+        )) {
+            TwoUpProgressSheet(processor: twoUpProcessor)
         }
     }
 
-    /// Route dropped URLs: EPUBs open immediately; PDFs/folders enqueue.
+    /// Route dropped URLs: EPUBs open immediately; PDFs go through
+    /// the async two-up processor (which prompts on detection hits
+    /// and otherwise enqueues straight through); folders walk and
+    /// queue every PDF inside as-is (no two-up prompt for folders —
+    /// would be too noisy at scale).
+    ///
+    /// Returns true synchronously if anything will be handled — the
+    /// PDF/EPUB cases queue async work but we still want the drop
+    /// to register as "accepted" for the OS feedback.
     private func handleDrop(_ urls: [URL]) -> Bool {
-        var handled = false
-        var queueable: [URL] = []
+        var pdfBatch: [URL] = []
+        var handledImmediately = false
         for url in urls {
-            if url.pathExtension.lowercased() == "epub" {
+            let ext = url.pathExtension.lowercased()
+            let isDir = (try? url.resourceValues(
+                forKeys: [.isDirectoryKey]
+            ).isDirectory) ?? false
+            if ext == "epub" {
                 OpenRouter.open(url, openWindow: openWindow)
-                handled = true
-            } else {
-                queueable.append(url)
+                handledImmediately = true
+            } else if ext == "pdf" {
+                pdfBatch.append(url)
+            } else if isDir {
+                // Folders skip two-up detection entirely. Queue
+                // every PDF as-is — the per-file detection cost
+                // across a 50-book drop is too much, and the
+                // prompts would be unmanageable.
+                for pdf in QueueViewModel.enumeratePDFs(in: url) {
+                    queue.addPDF(pdf)
+                    handledImmediately = true
+                }
             }
         }
-        if !queueable.isEmpty {
-            let added = queue.addDropped(queueable)
-            if added > 0 { handled = true }
+        if !pdfBatch.isEmpty {
+            handlePDFDrops(pdfBatch)
+            return true
         }
-        return handled
+        return handledImmediately
+    }
+
+    /// Run the async two-up pipeline for a batch of PDF URLs and
+    /// queue whatever resolves. Cancelled/empty results no-op.
+    private func handlePDFDrops(_ pdfs: [URL]) {
+        Task {
+            let resolved = await twoUpProcessor.process(pdfs)
+            for url in resolved {
+                queue.addPDF(url)
+            }
+        }
     }
 
     // MARK: - options
