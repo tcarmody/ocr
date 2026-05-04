@@ -41,13 +41,13 @@ struct HumanistApp: App {
         // window when the same URL value is reopened, so dragging the
         // same .epub twice doesn't duplicate.
         //
-        // .commands is re-applied here because SwiftUI scopes them to
-        // the focused scene's window: with the modifier only on the
-        // launcher above, the editor window has no menu items at all
-        // when frontmost — File > Save vanishes and ⌘S goes nowhere.
-        // Renaming our top-level menu to "Document" (was "View")
-        // prevents the multi-scene duplication that made us pull this
-        // back the first time.
+        // No `.commands` attached here. The launcher scene above
+        // declares them once; SwiftUI surfaces command items in the
+        // global menu bar, and `@FocusedObject` inside each command
+        // resolves to whichever editor is currently focused. Adding
+        // `.commands` per-scene would create duplicate "Document"
+        // menus in the bar (one per scene declaring it), which we've
+        // bounced back and forth on — keeping it single-attached.
         WindowGroup("Editor", id: "editor", for: URL.self) { $url in
             if let url {
                 EditorView(epubURL: url)
@@ -55,10 +55,6 @@ struct HumanistApp: App {
             } else {
                 Text("No EPUB loaded.")
             }
-        }
-        .commands {
-            FileMenuCommands()
-            EditorViewMenu()
         }
 
         // PDF viewer window: opened by File > Open on a PDF, or by the
@@ -69,10 +65,6 @@ struct HumanistApp: App {
             } else {
                 Text("No PDF loaded.")
             }
-        }
-        .commands {
-            FileMenuCommands()
-            EditorViewMenu()
         }
     }
 }

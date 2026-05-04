@@ -71,9 +71,27 @@ enum RegionAwareReflow {
     /// log. Map key is `pageIndex`. Empty arrays are omitted.
     static var lastFootnotesPerPage: [Int: [FootnoteLinker.Parsed]] = [:]
 
+    /// Per-page record of `.text` regions Surya tagged that we
+    /// reclassified as `.footnote` based on the marker / position /
+    /// gap heuristic. Surfaced in the debug log so we can see what
+    /// fired (and didn't fire) and tune thresholds.
+    static var lastReclassificationsPerPage: [Int: [Reclassification]] = [:]
+
+    /// One region's reclassification trace. `signals` is a small
+    /// human-readable list ("starts with marker '1.'", "in bottom 60%",
+    /// "gap=0.087 > 2× line=0.038") for the debug log.
+    struct Reclassification: Sendable, Equatable {
+        let regionIndex: Int
+        let originalKind: String
+        let newKind: String
+        let firstLineExcerpt: String
+        let signals: [String]
+    }
+
     static func reflow(pageResults: [PageObservations]) -> Result {
         lastAttributions.removeAll(keepingCapacity: true)
         lastFootnotesPerPage.removeAll(keepingCapacity: true)
+        lastReclassificationsPerPage.removeAll(keepingCapacity: true)
         var blocks: [Block] = []
         var allFootnotes: [FootnoteLinker.Parsed] = []
         var pageAnchors: [PageAnchor] = []
@@ -92,17 +110,27 @@ enum RegionAwareReflow {
                 blocks.append(contentsOf: heuristicFallback(for: page))
                 continue
             }
+            // Reclassify Surya `.text` regions that look like
+            // footnotes — Surya often misses these and tags them as
+            // body. Conservative heuristic (3 signals must agree)
+            // documented on `reclassifyLikelyFootnotes`.
+            let (effectiveRegions, decisions) = reclassifyLikelyFootnotes(
+                regions: regions, observations: page.observations
+            )
+            if !decisions.isEmpty {
+                lastReclassificationsPerPage[page.pageIndex] = decisions
+            }
             let pageFootnotes = FootnoteLinker.parseFootnotes(
                 pageIndex: page.pageIndex,
                 observations: page.observations,
-                regions: regions
+                regions: effectiveRegions
             )
             if !pageFootnotes.isEmpty {
                 lastFootnotesPerPage[page.pageIndex] = pageFootnotes
                 allFootnotes.append(contentsOf: pageFootnotes)
             }
             blocks.append(contentsOf: reflowPage(
-                page: page, regions: regions, pageFootnotes: pageFootnotes
+                page: page, regions: effectiveRegions, pageFootnotes: pageFootnotes
             ))
         }
         let bridged = PDFToEPUBPipeline.bridgeBoundaries(blocks)
@@ -218,5 +246,164 @@ enum RegionAwareReflow {
             acc = Dehyphenation.join(acc, next)
         }
         return acc
+    }
+
+    // MARK: - footnote reclassification heuristic
+
+    /// Region's center must be no higher than this (in normalized
+    /// page coordinates with y=0 at bottom, y=1 at top) to be eligible
+    /// for footnote reclassification. Footnotes don't appear in the
+    /// upper half of a page.
+    private static let footnoteCenterMaxY: CGFloat = 0.55
+    /// Vertical gap (in units of median observation height) above a
+    /// region required for footnote reclassification. Numbered lists
+    /// embedded in body text typically sit close to the preceding
+    /// paragraph; visually-separated footnotes have a larger gap.
+    private static let footnoteGapMultiplier: CGFloat = 2.0
+    /// X-center distance (normalized) below which two regions are
+    /// considered "in the same column." Loose enough to handle slight
+    /// per-line skew in Surya's bbox output.
+    private static let sameColumnXTolerance: CGFloat = 0.10
+
+    /// Walk the region list and reclassify any `.text` region as
+    /// `.footnote` when **all three** signals agree:
+    ///
+    ///   1. The region's first observation (top-most line) starts
+    ///      with a footnote marker — `^\d{1,3}[.)]\s` for numeric or
+    ///      `*†‡§¶•` for symbolic.
+    ///   2. The region's vertical center sits in the lower half of
+    ///      the page (`midY <= 0.55`).
+    ///   3. There is a substantial vertical gap (`>= 2× median line
+    ///      height`) between this region and the nearest text region
+    ///      above it in the same column.
+    ///
+    /// Conservative on purpose: a numbered list embedded in body text
+    /// (Foucault's "It merits attention for several reasons. 1. …
+    /// 2. …") fails signal #3 because consecutive list items abut
+    /// the body without a wide gap. Standalone footnotes —
+    /// visually separated by a blank line or rule — pass.
+    ///
+    /// Returns the new region list (same indices, kinds possibly
+    /// changed) plus a per-decision audit trail for the debug log.
+    static func reclassifyLikelyFootnotes(
+        regions: [LayoutRegion],
+        observations: [TextObservation]
+    ) -> (regions: [LayoutRegion], decisions: [Reclassification]) {
+        var output = regions
+        var decisions: [Reclassification] = []
+
+        for (idx, region) in regions.enumerated() {
+            guard region.kind == .text else { continue }
+
+            // Signal 1: marker pattern at start of first (top) line.
+            let inflated = region.box.insetBy(
+                dx: -regionInflation, dy: -regionInflation
+            )
+            let inRegion = observations.filter { obs in
+                inflated.contains(CGPoint(x: obs.box.midX, y: obs.box.midY))
+            }
+            guard !inRegion.isEmpty else { continue }
+            let firstObs = inRegion.max(by: { $0.box.midY < $1.box.midY })
+            let firstText = (firstObs?.text ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let marker = leadingFootnoteMarker(firstText) else { continue }
+
+            // Signal 2: position in lower half of page.
+            guard region.box.midY <= footnoteCenterMaxY else { continue }
+
+            // Signal 3: substantial gap above in same column.
+            let medianH = medianObservationHeight(in: inRegion)
+            guard medianH > 0 else { continue }
+            let abovePrev = nearestTextRegionAbove(
+                index: idx, in: regions
+            )
+            // If nothing above in this column, treat as passing — a
+            // footnote at the very top of a column is rare but valid.
+            let gap: CGFloat
+            if let prev = abovePrev {
+                gap = prev.region.box.minY - region.box.maxY
+                guard gap >= footnoteGapMultiplier * medianH else { continue }
+            } else {
+                gap = .infinity
+            }
+
+            // All three signals agree — reclassify.
+            output[idx] = LayoutRegion(
+                kind: .footnote,
+                box: region.box,
+                readingOrder: region.readingOrder,
+                confidence: region.confidence
+            )
+            let excerpt = String(firstText.prefix(60))
+            let gapDesc = gap == .infinity
+                ? "no preceding region in column"
+                : String(format: "gap=%.3f > %.1f×line=%.3f", Double(gap), Double(footnoteGapMultiplier), Double(medianH))
+            decisions.append(Reclassification(
+                regionIndex: idx,
+                originalKind: region.kind.rawValue,
+                newKind: "footnote",
+                firstLineExcerpt: excerpt,
+                signals: [
+                    "marker='\(marker)'",
+                    String(format: "midY=%.3f ≤ %.2f", Double(region.box.midY), Double(footnoteCenterMaxY)),
+                    gapDesc,
+                ]
+            ))
+        }
+
+        return (output, decisions)
+    }
+
+    /// Numeric (`1.`, `12)`, `3` followed by space) or symbolic
+    /// (`*†‡§¶•`) marker at the very start of `text`. Returns the
+    /// matched marker substring on hit, nil otherwise.
+    private static func leadingFootnoteMarker(_ text: String) -> String? {
+        guard let first = text.first else { return nil }
+        if "*†‡§¶•".contains(first) { return String(first) }
+        // Numeric: 1-3 digits followed by `.`, `)`, or whitespace.
+        if let r = text.range(
+            of: #"^\d{1,3}[.)\s]"#, options: .regularExpression
+        ), r.lowerBound == text.startIndex {
+            return String(text[r])
+        }
+        return nil
+    }
+
+    private static func medianObservationHeight(
+        in observations: [TextObservation]
+    ) -> CGFloat {
+        let heights = observations.map(\.box.height).sorted()
+        guard !heights.isEmpty else { return 0 }
+        return heights[heights.count / 2]
+    }
+
+    /// Find the text region with the smallest vertical distance ABOVE
+    /// `regions[index]` whose X-extent overlaps (same column).
+    /// Returns the region and its index, or nil if none.
+    private static func nearestTextRegionAbove(
+        index: Int, in regions: [LayoutRegion]
+    ) -> (region: LayoutRegion, index: Int)? {
+        let target = regions[index]
+        var best: (region: LayoutRegion, index: Int)? = nil
+        var bestMinY: CGFloat = .infinity
+        for (i, other) in regions.enumerated() {
+            guard i != index, other.kind == .text else { continue }
+            guard isInSameColumn(other, target) else { continue }
+            // Strictly above means other's bottom > our top.
+            guard other.box.minY > target.box.maxY else { continue }
+            // Closest = smallest minY (region whose bottom edge is
+            // nearest to our top edge).
+            if other.box.minY < bestMinY {
+                bestMinY = other.box.minY
+                best = (other, i)
+            }
+        }
+        return best
+    }
+
+    private static func isInSameColumn(
+        _ a: LayoutRegion, _ b: LayoutRegion
+    ) -> Bool {
+        abs(a.box.midX - b.box.midX) < sameColumnXTolerance
     }
 }

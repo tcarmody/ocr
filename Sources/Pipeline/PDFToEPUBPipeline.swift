@@ -115,13 +115,17 @@ public actor PDFToEPUBPipeline {
     /// Re-OCR a single page of a PDF using the caller-chosen engine,
     /// then run it through the same layout + region-aware reflow the
     /// converter does in bulk. Used by the editor's "Re-OCR Current
-    /// Page With…" command — without this path, raw OCR misses
-    /// columns, paragraph reflow, header/footer suppression, and
-    /// dehyphenation, producing gibberish on multi-column pages.
+    /// Page With…" command.
     ///
-    /// `engine` is the OCR engine the user picked (Vision / Surya /
-    /// Tesseract). The cascade is deliberately skipped — the user
-    /// asked for a specific engine, not the cascade's choice.
+    /// When Surya layout is available, the chosen engine runs **per
+    /// region** (each column, body block, footnote, etc. gets its
+    /// own crop). That's what keeps Tesseract from merging left- and
+    /// right-column words into one cross-column "line" — Tesseract
+    /// clusters by Y globally, so a whole-page call scrambles
+    /// columns. Per-region OCR sidesteps the issue for any engine.
+    ///
+    /// Falls back to a single whole-page call when no layout is
+    /// available (Surya not installed, both layout attempts failed).
     public func reOCRSinglePage(
         pdfURL: URL,
         pageIndex: Int,
@@ -149,24 +153,42 @@ public actor PDFToEPUBPipeline {
         let image = try renderer.renderPage(at: pageIndex, of: pdf)
         let pngURL = stagingDir.appendingPathComponent("page.png")
         Self.savePNG(image, to: pngURL)
-
-        let result = try await engine.recognize(image: image, hints: hints)
         let pageBounds = CGSize(width: image.width, height: image.height)
 
-        // Layout analysis is what makes columns / headers / footnotes
-        // reflow correctly. Optional — falls back to heuristic reflow
-        // if Surya isn't installed or fails.
+        // Layout first (with retry-at-lower-DPI). If we get regions,
+        // the engine runs per-region; otherwise we fall back to
+        // whole-page OCR.
         var layoutRegions: [LayoutRegion]? = nil
-        if let analyzer = layoutAnalyzer {
-            layoutRegions = try? await analyzer.analyze(
-                imageURL: pngURL, pageBounds: pageBounds
+        if layoutAnalyzer != nil {
+            let outcome = await analyzeLayoutWithRetry(
+                pdf: pdf,
+                pageIndex: pageIndex,
+                initialDPI: dpi,
+                initialPNGURL: pngURL,
+                initialPageBounds: pageBounds,
+                stagingDir: stagingDir
             )
+            layoutRegions = outcome.layout
+        }
+
+        let observations: [TextObservation]
+        if let regions = layoutRegions,
+           regions.contains(where: { Self.reOCRTextBearingKinds.contains($0.kind) }) {
+            observations = await ocrPerRegion(
+                engine: engine, image: image, regions: regions, hints: hints
+            )
+        } else {
+            // No usable layout — single whole-page call. Tesseract
+            // will scramble columns in this fallback, but there's no
+            // better option without region info.
+            let result = try await engine.recognize(image: image, hints: hints)
+            observations = result.observations
         }
 
         let pageObs = PageObservations(
             pageIndex: pageIndex,
             pageBounds: pageBounds,
-            observations: result.observations,
+            observations: observations,
             layoutRegions: layoutRegions
         )
         let reflowed = RegionAwareReflow.reflow(pageResults: [pageObs])
@@ -176,6 +198,169 @@ public actor PDFToEPUBPipeline {
             footnotes: reflowed.footnotes,
             pageAnchors: reflowed.pageAnchors
         )
+    }
+
+    /// Region kinds that should be OCR'd individually in the
+    /// per-region re-OCR path. Includes `.footnote` so footnote
+    /// content is re-OCR'd alongside body — they get spliced into
+    /// chapter footnotes by `FootnoteLinker`.
+    private static let reOCRTextBearingKinds: Set<LayoutRegion.Kind> = [
+        .text, .sectionHeader, .title, .listItem, .caption, .footnote,
+    ]
+
+    /// Run `engine` on each text-bearing region of `image` (cropped
+    /// to the region's bbox), translate observations back into
+    /// page-normalized coordinates, and confine each set to its own
+    /// region so a stray edge-of-crop glyph doesn't bleed out.
+    /// Mirrors what `RegionCascade` does for region-level Tesseract
+    /// crops, applied as the standard re-OCR strategy.
+    private func ocrPerRegion(
+        engine: any OCREngine,
+        image: CGImage,
+        regions: [LayoutRegion],
+        hints: OCRHints
+    ) async -> [TextObservation] {
+        var combined: [TextObservation] = []
+        for region in regions where Self.reOCRTextBearingKinds.contains(region.kind) {
+            guard let cropped = RegionCascade.cropImage(image, to: region.box)
+            else { continue }
+            do {
+                let result = try await engine.recognize(image: cropped, hints: hints)
+                let translated = RegionCascade.translate(
+                    observations: result.observations,
+                    fromCropOf: region.box,
+                    intoFullPage: image
+                )
+                let confined = RegionCascade.filter(
+                    observations: translated, inRegion: region
+                )
+                combined.append(contentsOf: confined)
+            } catch {
+                // Swallow per-region OCR failures — the rest of the
+                // page still produces useful output. Caller's overall
+                // throw path is reserved for unrecoverable errors
+                // (PDF load, bad page index, etc.).
+                continue
+            }
+        }
+        return combined
+    }
+
+    /// Run primary OCR on `image`. On error, retry once at a smaller
+    /// DPI (Surya's buffer-overflow errors are dimension-keyed); if
+    /// that also fails, fall back to Vision so the conversion
+    /// continues with degraded quality on that page rather than the
+    /// whole job failing. Cancellation is re-thrown unchanged.
+    ///
+    /// Returns (result, errorTrail). When `errorTrail` is non-nil the
+    /// caller can surface it in the debug log so the user knows which
+    /// pages got fallback treatment.
+    private func ocrPageWithFallback(
+        image: CGImage,
+        pdf: LoadedPDF,
+        pageIndex: Int,
+        initialDPI: CGFloat,
+        primaryEngine: any OCREngine,
+        hints: OCRHints
+    ) async throws -> (result: OCRResult, errorTrail: String?) {
+        do {
+            let result = try await primaryEngine.recognize(
+                image: image, hints: hints
+            )
+            return (result, nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let primaryError {
+            // Retry at 75% DPI with the same engine. Surya's "index N
+            // out of bounds" errors are tied to image dimensions, so
+            // a smaller render often gets through.
+            let retryDPI = max(150, initialDPI * 0.75)
+            do {
+                let retryRenderer = PDFRenderer(dpi: retryDPI)
+                let retryImage = try retryRenderer.renderPage(
+                    at: pageIndex, of: pdf
+                )
+                let result = try await primaryEngine.recognize(
+                    image: retryImage, hints: hints
+                )
+                let trail = "primary@\(Int(initialDPI))dpi failed "
+                    + "(\(primaryError)); succeeded at \(Int(retryDPI))dpi"
+                return (result, trail)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let retryError {
+                // Both attempts with the chosen engine failed. Vision
+                // is always installed — fall back so the page
+                // produces *some* output instead of nothing.
+                do {
+                    let visionResult = try await visionEngine.recognize(
+                        image: image, hints: hints
+                    )
+                    let trail = "primary@\(Int(initialDPI))dpi failed "
+                        + "(\(primaryError)); retry@\(Int(retryDPI))dpi failed "
+                        + "(\(retryError)); fell back to Vision"
+                    return (visionResult, trail)
+                } catch let fallbackError {
+                    // Vision also failed — return empty observations
+                    // so the page is blank but the job continues.
+                    let trail = "all engines failed (primary: "
+                        + "\(primaryError); retry: \(retryError); "
+                        + "Vision fallback: \(fallbackError))"
+                    return (
+                        OCRResult(text: "", meanConfidence: .nan, observations: []),
+                        trail
+                    )
+                }
+            }
+        }
+    }
+
+    /// Run Surya layout with one fallback retry at 75% DPI. Surya
+    /// occasionally throws internal buffer-overflow errors keyed to
+    /// specific image dimensions; the smaller retry image usually
+    /// dodges them. Returned layout bboxes are normalized 0..1 so
+    /// they still align with the high-DPI image used for OCR and
+    /// cascade — the retry render only matters to Surya.
+    ///
+    /// Returns (layout, errorDescription). Either both are
+    /// meaningful (success: layout non-nil, error nil) or layout is
+    /// nil and error describes both attempts.
+    private func analyzeLayoutWithRetry(
+        pdf: LoadedPDF,
+        pageIndex: Int,
+        initialDPI: CGFloat,
+        initialPNGURL: URL,
+        initialPageBounds: CGSize,
+        stagingDir: URL
+    ) async -> (layout: [LayoutRegion]?, error: String?) {
+        guard let analyzer = layoutAnalyzer else { return (nil, nil) }
+        do {
+            let result = try await analyzer.analyze(
+                imageURL: initialPNGURL, pageBounds: initialPageBounds
+            )
+            return (result, nil)
+        } catch let primaryError {
+            let retryDPI = max(150, initialDPI * 0.75)
+            do {
+                let retryRenderer = PDFRenderer(dpi: retryDPI)
+                let retryImage = try retryRenderer.renderPage(at: pageIndex, of: pdf)
+                let retryURL = stagingDir.appendingPathComponent(
+                    "page-\(pageIndex)-retry.png"
+                )
+                Self.savePNG(retryImage, to: retryURL)
+                let retryBounds = CGSize(
+                    width: retryImage.width, height: retryImage.height
+                )
+                let result = try await analyzer.analyze(
+                    imageURL: retryURL, pageBounds: retryBounds
+                )
+                return (result, nil)
+            } catch let retryError {
+                let msg = "primary@\(Int(initialDPI))dpi: \(primaryError); "
+                    + "retry@\(Int(retryDPI))dpi: \(retryError)"
+                return (nil, msg)
+            }
+        }
     }
 
     public struct SinglePageResult: Sendable {
@@ -270,6 +455,11 @@ public actor PDFToEPUBPipeline {
         // Surfaced in the debug log so silent layout failures aren't
         // invisible (they explain why a page reverts to heuristic reflow).
         var layoutErrors: [Int: String] = [:]
+        // Page index → trail of OCR fallbacks. Non-empty when the
+        // primary engine threw and we recovered via lower-DPI retry
+        // or Vision fallback. Lets the user see which pages got
+        // degraded treatment in high-accuracy mode.
+        var ocrErrors: [Int: String] = [:]
 
         for i in 0..<pdf.pageCount {
             try Task.checkCancellation()
@@ -317,7 +507,14 @@ public actor PDFToEPUBPipeline {
                     for: hints.languages,
                     preferSurya: options.useHighAccuracyOCR
                 )
-                let result = try await pageEngine.recognize(image: image, hints: hints)
+                let (result, ocrErrorTrail) = try await ocrPageWithFallback(
+                    image: image, pdf: pdf, pageIndex: i,
+                    initialDPI: options.dpi,
+                    primaryEngine: pageEngine, hints: hints
+                )
+                if let trail = ocrErrorTrail {
+                    ocrErrors[i] = trail
+                }
                 observations = gapFiller.fill(
                     visionObservations: result.observations,
                     embeddedLines: extracted.lines
@@ -325,21 +522,21 @@ public actor PDFToEPUBPipeline {
                 pageBounds = CGSize(width: image.width, height: image.height)
                 confidenceForProgress = result.meanConfidence
 
-                // Phase 4: layout analysis. Optional — if Surya isn't
-                // installed or fails, we fall back to the heuristic
-                // reflow path as before.
-                if let analyzer = layoutAnalyzer {
-                    do {
-                        layoutForPage = try await analyzer.analyze(
-                            imageURL: pngURL, pageBounds: pageBounds
-                        )
-                    } catch {
-                        // Pipeline keeps going on the heuristic path,
-                        // but surface the specific failure in the
-                        // debug log so silent missing-region pages
-                        // aren't a mystery.
-                        layoutForPage = nil
-                        layoutErrors[i] = String(describing: error)
+                // Phase 4: layout analysis with retry-at-lower-DPI on
+                // sidecar buffer-overflow errors. See
+                // `analyzeLayoutWithRetry` for the strategy.
+                if layoutAnalyzer != nil {
+                    let outcome = await analyzeLayoutWithRetry(
+                        pdf: pdf,
+                        pageIndex: i,
+                        initialDPI: options.dpi,
+                        initialPNGURL: pngURL,
+                        initialPageBounds: pageBounds,
+                        stagingDir: stagingDir
+                    )
+                    layoutForPage = outcome.layout
+                    if let err = outcome.error {
+                        layoutErrors[i] = err
                     }
                 }
 
@@ -390,7 +587,8 @@ public actor PDFToEPUBPipeline {
                 debugLogURL: logURL,
                 extractorDiagnostics: extractorDiagnostics,
                 qualityScores: qualityScores,
-                layoutErrors: layoutErrors
+                layoutErrors: layoutErrors,
+                ocrErrors: ocrErrors
             )
         } else {
             reflowed = Self.reflow(pageResults: pageResults)
@@ -439,7 +637,8 @@ public actor PDFToEPUBPipeline {
         debugLogURL: URL? = nil,
         extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics] = [:],
         qualityScores: [Int: EmbeddedTextQualityScorer.Score] = [:],
-        layoutErrors: [Int: String] = [:]
+        layoutErrors: [Int: String] = [:],
+        ocrErrors: [Int: String] = [:]
     ) -> ReflowOutput {
         let hasAnyLayout = pageResults.contains { ($0.layoutRegions?.isEmpty == false) }
 
@@ -485,6 +684,7 @@ public actor PDFToEPUBPipeline {
                 extractorDiagnostics: extractorDiagnostics,
                 qualityScores: qualityScores,
                 layoutErrors: layoutErrors,
+                ocrErrors: ocrErrors,
                 footnotes: footnotes,
                 to: debugLogURL
             )
@@ -512,6 +712,7 @@ public actor PDFToEPUBPipeline {
         extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics],
         qualityScores: [Int: EmbeddedTextQualityScorer.Score],
         layoutErrors: [Int: String],
+        ocrErrors: [Int: String],
         footnotes: [Footnote],
         to url: URL
     ) throws {
@@ -561,6 +762,18 @@ public actor PDFToEPUBPipeline {
             out += "\n"
         }
 
+        if !ocrErrors.isEmpty {
+            out += "OCR FALLBACK TRAILS\n"
+            out += "format: page: trail (primary engine failed → action taken)\n"
+            out += "  These pages got degraded OCR: lower-DPI retry of the primary,\n"
+            out += "  Vision fallback, or empty result if everything failed.\n\n"
+            for pageIdx in ocrErrors.keys.sorted() {
+                let msg = ocrErrors[pageIdx] ?? ""
+                out += "Page \(pageIdx): \(msg)\n"
+            }
+            out += "\n"
+        }
+
         let parsedByPage = RegionAwareReflow.lastFootnotesPerPage
         if !parsedByPage.isEmpty || !footnotes.isEmpty {
             out += "FOOTNOTES (per page, parsed from .footnote regions)\n"
@@ -575,6 +788,24 @@ public actor PDFToEPUBPipeline {
                 }
             }
             out += "\nlinked into chapter: \(footnotes.count) footnote(s)\n\n"
+        }
+
+        // Heuristic footnote reclassifications — Surya tagged the
+        // region as `.text` but our marker / position / gap heuristic
+        // promoted it to `.footnote`. Visible here so we can see what
+        // fired (and didn't) on a given PDF and tune thresholds.
+        let reclasByPage = RegionAwareReflow.lastReclassificationsPerPage
+        if !reclasByPage.isEmpty {
+            out += "FOOTNOTE RECLASSIFICATIONS (heuristic: marker + bottom-half + gap)\n"
+            out += "format: page/regionIdx originalKind → newKind  excerpt\n"
+            out += "         signals: …\n\n"
+            for pageIdx in reclasByPage.keys.sorted() {
+                for r in reclasByPage[pageIdx] ?? [] {
+                    out += "Page \(pageIdx)/region\(r.regionIndex)  \(r.originalKind) → \(r.newKind)  \"\(r.firstLineExcerpt)\"\n"
+                    out += "   signals: \(r.signals.joined(separator: ", "))\n"
+                }
+            }
+            out += "\n"
         }
 
         // Surya layout regions per page — when Phase 4 is active.
