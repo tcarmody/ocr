@@ -31,6 +31,13 @@ enum RegionCascade {
     /// well-set paragraph has ~zero within-region gap; gap > 1× line
     /// height ≈ at least one missing line.
     static let gapMultiplier: CGFloat = 1.0
+    /// Combined OCR-text quality (single-char ratio · long-word ratio
+    /// · language confidence) below this triggers re-OCR. Catches
+    /// over-confident garbage that the confidence/gap floors miss —
+    /// Vision sometimes returns 0.9+ on text that's run together or
+    /// split apart. 0.5 is conservative; tighten if false positives
+    /// show up on clean PDFs.
+    static let textQualityFloor: Double = 0.5
     /// How much to inflate region bboxes when matching observations
     /// (matches the value RegionAwareReflow uses).
     static let regionInflation: CGFloat = 0.005
@@ -144,6 +151,16 @@ enum RegionCascade {
         let meanConf = confs.reduce(0, +) / Double(confs.count)
         if meanConf < meanConfidenceFloor { return true }
         if let minConf = confs.min(), minConf < minObservationConfidenceFloor {
+            return true
+        }
+
+        // OCR-text quality check — catches over-confident gibberish
+        // (words run together, words split apart, low language
+        // confidence) that the confidence floors above miss because
+        // Vision claimed 0.9+ on the bad output.
+        let regionText = observations.map(\.text).joined(separator: " ")
+        if let q = OCRTextQualityScorer().score(text: regionText),
+           q.combined < textQualityFloor {
             return true
         }
 
