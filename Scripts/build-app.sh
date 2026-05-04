@@ -39,6 +39,16 @@ if [[ -f "$LAYOUT_SIDECAR" ]]; then
     log "Copied layout sidecar into bundle Resources"
 fi
 
+# CodeMirror source editor (Phase 7.E). Vendor the JS/CSS/host page
+# so the editor works offline and we don't depend on a CDN at runtime.
+CODEMIRROR_DIR="$REPO_ROOT/Resources/codemirror"
+if [[ -d "$CODEMIRROR_DIR" ]]; then
+    cp -R "$CODEMIRROR_DIR" "$APP_RESOURCES/codemirror"
+    log "Copied CodeMirror into bundle Resources"
+else
+    warn "CodeMirror assets not found at $CODEMIRROR_DIR — source editor will fall back to plain text"
+fi
+
 log "Signing"
 resolve_signing_identity
 ENTITLEMENTS="$REPO_ROOT/BundleAssets/$APP_NAME.entitlements"

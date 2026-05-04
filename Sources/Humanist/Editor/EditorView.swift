@@ -161,14 +161,15 @@ struct EditorView: View {
     @ViewBuilder
     private var sourceContent: some View {
         if let file = vm.selectedFile, vm.canEditSelectedFile {
-            TextEditor(text: $vm.sourceText)
-                .font(.system(size: 12, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .textBackgroundColor))
-                .id(file.id)
-                .onChange(of: vm.sourceText) { _, _ in
-                    vm.didEditSourceText()
-                }
+            CodeEditorView(
+                text: $vm.sourceText,
+                language: CodeEditorView.Language.from(url: file.id),
+                resetID: AnyHashable(file.id)
+            )
+            .id(file.id)
+            .onChange(of: vm.sourceText) { _, _ in
+                vm.didEditSourceText()
+            }
         } else if vm.selectedFile != nil {
             VStack {
                 Text("Binary file").foregroundStyle(.secondary)

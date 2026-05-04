@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Humanist Source Editor</title>
+  <link rel="stylesheet" href="codemirror.css">
+  <link rel="stylesheet" href="addon/dialog/dialog.css">
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background: -apple-system-textBackgroundColor;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .CodeMirror {
+      height: 100%;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    /* Dialog styling — match macOS find bar visually. */
+    .CodeMirror-dialog {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 13px;
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.95);
+      border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+    }
+    .CodeMirror-dialog input {
+      font-family: inherit;
+      font-size: inherit;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1e1e1e; color: #d4d4d4; }
+      .CodeMirror { background: #1e1e1e; color: #d4d4d4; }
+      .CodeMirror-gutters { background: #1e1e1e; border-right: 1px solid #333; }
+      .CodeMirror-linenumber { color: #6a6a6a; }
+      .CodeMirror-cursor { border-left-color: #d4d4d4 !important; }
+      .CodeMirror-dialog {
+        background: rgba(40, 40, 40, 0.95);
+        color: #d4d4d4;
+        border-bottom-color: rgba(255, 255, 255, 0.15);
+      }
+      .CodeMirror-dialog input {
+        background: #2c2c2c;
+        color: #d4d4d4;
+        border: 1px solid #555;
+      }
+    }
+  </style>
+  <script src="codemirror.js"></script>
+  <script src="mode/xml/xml.js"></script>
+  <script src="mode/css/css.js"></script>
+  <script src="mode/javascript/javascript.js"></script>
+  <script src="mode/htmlmixed/htmlmixed.js"></script>
+  <script src="addon/search/searchcursor.js"></script>
+  <script src="addon/search/search.js"></script>
+  <script src="addon/search/jump-to-line.js"></script>
+  <script src="addon/dialog/dialog.js"></script>
+</head>
+<body>
+  <textarea id="editor"></textarea>
+  <script>
+    (function () {
+      // Bridge between Swift and CodeMirror.
+      //
+      // Swift → JS:
+      //   * humanistSetContent(text, mode) — push file contents.
+      //   * humanistGetContent() — pull current text.
+      //   * humanistFocusFind() — open the search dialog.
+      //
+      // JS → Swift (via window.webkit.messageHandlers.humanist):
+      //   * { type: "ready" }     — DOM + CodeMirror constructed.
+      //   * { type: "edit", text } — user typed; text is the full doc.
+      //   * { type: "focus" }     — editor took focus (for menu enable).
+      var textarea = document.getElementById("editor");
+      var editor = CodeMirror.fromTextArea(textarea, {
+        lineNumbers: true,
+        mode: "xml",
+        viewportMargin: Infinity,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+        styleActiveLine: false,
+        autoCloseTags: false,
+        // Search/find UI uses these key bindings out of the box once
+        // search.js is loaded: ⌘F (find), ⌘G (next), ⇧⌘G (prev),
+        // ⌥⌘F (replace).
+      });
+
+      var suppressEditEvent = false;
+      var ready = false;
+
+      function post(message) {
+        try {
+          if (window.webkit && window.webkit.messageHandlers
+              && window.webkit.messageHandlers.humanist) {
+            window.webkit.messageHandlers.humanist.postMessage(message);
+          }
+        } catch (err) {
+          // No host (e.g. opened in a regular browser for debugging).
+        }
+      }
+
+      editor.on("change", function () {
+        if (suppressEditEvent) return;
+        post({ type: "edit", text: editor.getValue() });
+      });
+
+      editor.on("focus", function () {
+        post({ type: "focus" });
+      });
+
+      window.humanistSetContent = function (text, mode) {
+        suppressEditEvent = true;
+        try {
+          if (mode && editor.getOption("mode") !== mode) {
+            editor.setOption("mode", mode);
+          }
+          if (editor.getValue() !== text) {
+            editor.setValue(text);
+            editor.clearHistory();
+          }
+        } finally {
+          suppressEditEvent = false;
+        }
+        // Force a layout pass — without this CodeMirror may render with
+        // stale dimensions when the WKWebView's frame was zero at first
+        // load.
+        editor.refresh();
+      };
+
+      window.humanistGetContent = function () {
+        return editor.getValue();
+      };
+
+      window.humanistFocusFind = function () {
+        // CodeMirror's "find" command is registered by search.js.
+        editor.execCommand("find");
+      };
+
+      window.humanistRefresh = function () {
+        editor.refresh();
+      };
+
+      ready = true;
+      post({ type: "ready" });
+    })();
+  </script>
+</body>
+</html>
