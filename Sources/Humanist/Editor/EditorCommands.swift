@@ -10,7 +10,7 @@ import AppKit
 // MARK: - File menu items (Save, Save As, Close)
 
 struct EditorSaveCommand: View {
-    @FocusedValue(\.editorViewModel) private var vm: EditorViewModel?
+    @FocusedObject private var vm: EditorViewModel?
 
     var body: some View {
         Button("Save") {
@@ -41,7 +41,7 @@ struct EditorViewMenu: Commands {
 }
 
 private struct EditorPaneToggle: View {
-    @FocusedValue(\.editorViewModel) private var vm: EditorViewModel?
+    @FocusedObject private var vm: EditorViewModel?
     let pane: EditorPane
 
     var body: some View {
@@ -72,7 +72,7 @@ private struct EditorPaneToggle: View {
 }
 
 private struct EditorAttachPDFCommand: View {
-    @FocusedValue(\.editorViewModel) private var vm: EditorViewModel?
+    @FocusedObject private var vm: EditorViewModel?
 
     var body: some View {
         Button(vm?.sourcePDFURL == nil ? "Attach Source PDF…" : "Change Source PDF…") {

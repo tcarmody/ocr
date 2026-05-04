@@ -14,6 +14,10 @@ import EPUB
 struct PreviewView: View {
     let file: FileNode?
     let workingDirectory: URL
+    /// Bumps when the on-disk copy of the current file changes (live
+    /// preview write) so the underlying WebKit view reloads. Same URL
+    /// + bumped trigger → `view.reload()`.
+    let reloadTrigger: Int
 
     var body: some View {
         Group {
@@ -31,7 +35,11 @@ struct PreviewView: View {
     private func content(for file: FileNode) -> some View {
         let ext = file.id.pathExtension.lowercased()
         if ["xhtml", "html", "htm", "svg"].contains(ext) {
-            WebPreviewPane(url: file.id, accessRoot: workingDirectory)
+            WebPreviewPane(
+                url: file.id,
+                accessRoot: workingDirectory,
+                reloadTrigger: reloadTrigger
+            )
         } else if isImage(ext) {
             ImagePreview(url: file.id)
         } else if EditorViewModel.isTextFile(file.id) {
@@ -84,6 +92,10 @@ private final class WebPreviewModel: NSObject, ObservableObject, WKNavigationDel
 
     @Published var status: Status = .idle
     var loadedURL: URL?
+    /// Last `reloadTrigger` we acted on. Distinguishes "first load"
+    /// from "same URL, content changed" so the live-preview reload
+    /// path can call `view.reload()` instead of `loadFileURL` again.
+    var loadedTrigger: Int = .min
 
     nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         Task { @MainActor in self.status = .loading }
@@ -106,12 +118,18 @@ private final class WebPreviewModel: NSObject, ObservableObject, WKNavigationDel
 private struct WebPreviewPane: View {
     let url: URL
     let accessRoot: URL
+    let reloadTrigger: Int
     @StateObject private var model = WebPreviewModel()
 
     var body: some View {
         ZStack(alignment: .top) {
-            WebPreview(url: url, accessRoot: accessRoot, model: model)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            WebPreview(
+                url: url,
+                accessRoot: accessRoot,
+                reloadTrigger: reloadTrigger,
+                model: model
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             statusBadge
                 .padding(.top, 8)
@@ -156,6 +174,7 @@ private struct WebPreviewPane: View {
 private struct WebPreview: NSViewRepresentable {
     let url: URL
     let accessRoot: URL
+    let reloadTrigger: Int
     let model: WebPreviewModel
 
     func makeNSView(context: Context) -> WKWebView {
@@ -175,10 +194,20 @@ private struct WebPreview: NSViewRepresentable {
         // vs `/private/var/...` doesn't trip "outside the sandbox."
         let resolvedURL = url.canonicalForFile
         let resolvedAccess = accessRoot.canonicalForFile
-        guard model.loadedURL != resolvedURL else { return }
-        model.loadedURL = resolvedURL
-        model.status = .loading
-        view.loadFileURL(resolvedURL, allowingReadAccessTo: resolvedAccess)
+        if model.loadedURL != resolvedURL {
+            // URL change: full load.
+            model.loadedURL = resolvedURL
+            model.loadedTrigger = reloadTrigger
+            model.status = .loading
+            view.loadFileURL(resolvedURL, allowingReadAccessTo: resolvedAccess)
+        } else if model.loadedTrigger != reloadTrigger {
+            // Same URL, on-disk content changed (live preview write).
+            // `view.reload()` re-fetches the same URL with the updated
+            // bytes — cheaper than loadFileURL, no flicker.
+            model.loadedTrigger = reloadTrigger
+            model.status = .loading
+            view.reload()
+        }
     }
 }
 

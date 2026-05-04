@@ -49,10 +49,13 @@ struct EditorView: View {
                     .navigationSubtitle(saveStatusSubtitle)
                     .toolbar { toolbarContent }
                     .background(WindowDirtyBridge(isDirty: vm.isDirty))
-                    // Publish the viewmodel for menu bar commands so
-                    // File > Save (and friends) act on this window when
-                    // it's focused.
-                    .focusedSceneValue(\.editorViewModel, vm)
+                    // Publish the viewmodel as a focused scene object
+                    // so menu bar commands (File > Save, View > Show…)
+                    // act on this window when it's focused. Use
+                    // `focusedSceneObject` rather than the value-based
+                    // variant so the menu re-renders on @Published
+                    // changes (isDirty, saveState, sourcePDFURL).
+                    .focusedSceneObject(vm)
                 }
             }
         }
@@ -126,6 +129,32 @@ struct EditorView: View {
         VStack(spacing: 0) {
             paneHeader("Source", systemImage: "chevron.left.forwardslash.chevron.right")
             sourceContent
+            validationStrip
+        }
+    }
+
+    /// Shown under the source pane only when the most recent Save
+    /// detected an XML parse error in the file the user is currently
+    /// looking at. Cleared on the next clean Save. Save is non-blocking,
+    /// so the strip is informational — the file is on disk, but it
+    /// won't render in the preview (or in real EPUB readers) until the
+    /// XML parses.
+    @ViewBuilder
+    private var validationStrip: some View {
+        if let url = vm.selectedFile?.id,
+           let issue = vm.validationIssues[url] {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("XML parse error: \(issue)")
+                    .font(.caption)
+                    .textSelection(.enabled)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.orange.opacity(0.12))
+            .overlay(alignment: .top) { Divider() }
         }
     }
 
@@ -156,7 +185,11 @@ struct EditorView: View {
     private func previewPane(workingDir: URL) -> some View {
         VStack(spacing: 0) {
             paneHeader("Preview", systemImage: "eye")
-            PreviewView(file: vm.selectedFile, workingDirectory: workingDir)
+            PreviewView(
+                file: vm.selectedFile,
+                workingDirectory: workingDir,
+                reloadTrigger: vm.previewVersion
+            )
         }
     }
 

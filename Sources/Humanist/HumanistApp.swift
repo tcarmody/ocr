@@ -19,6 +19,11 @@ struct HumanistApp: App {
         // Editor window: one per opened EPUB. macOS reuses an existing
         // window when the same URL value is reopened, so dragging the
         // same .epub twice doesn't duplicate.
+        //
+        // .commands is re-applied here because SwiftUI scopes commands
+        // to the focused scene's window: without this, switching from
+        // the launcher to the editor empties the File / View menus and
+        // breaks ⌘S.
         WindowGroup("Editor", id: "editor", for: URL.self) { $url in
             if let url {
                 EditorView(epubURL: url)
@@ -26,6 +31,10 @@ struct HumanistApp: App {
             } else {
                 Text("No EPUB loaded.")
             }
+        }
+        .commands {
+            FileMenuCommands()
+            EditorViewMenu()
         }
 
         // PDF viewer window: opened by File > Open on a PDF, or by the
@@ -36,6 +45,10 @@ struct HumanistApp: App {
             } else {
                 Text("No PDF loaded.")
             }
+        }
+        .commands {
+            FileMenuCommands()
+            EditorViewMenu()
         }
     }
 }

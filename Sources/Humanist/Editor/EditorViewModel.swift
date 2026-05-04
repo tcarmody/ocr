@@ -46,6 +46,17 @@ final class EditorViewModel: ObservableObject {
     /// tracking so Save flushes the right files.
     @Published var sourceText: String = ""
 
+    /// Bumps after each debounced write of the current source buffer
+    /// to the working directory. The preview pane watches this to
+    /// reload the WKWebView so edits show up live without a Save.
+    @Published private(set) var previewVersion: Int = 0
+
+    /// Per-file XML / XHTML validation errors collected on the last
+    /// `save()`. Empty when everything parsed cleanly. Surfaces in
+    /// the source-pane footer so a broken edit is visible immediately
+    /// instead of after a reader rejects the EPUB.
+    @Published private(set) var validationIssues: [URL: String] = [:]
+
     /// Source PDF associated with this EPUB, if any. Auto-detected
     /// from a sibling .pdf on open or attached explicitly via
     /// `attachSourcePDF`. Persisted in the sidecar so the link
@@ -69,6 +80,13 @@ final class EditorViewModel: ObservableObject {
     /// buffer is empty string" so the auto-loader doesn't repeatedly
     /// touch the disk.
     private var loadedFiles: Set<URL> = []
+    /// Pending live-preview write. Cancelled and rescheduled on every
+    /// keystroke so a burst of typing collapses into one disk write +
+    /// one preview reload after the user pauses.
+    private var livePreviewTask: Task<Void, Never>?
+    /// Debounce window for the live-preview write. Long enough that
+    /// fast typing doesn't churn the disk; short enough to feel live.
+    private static let livePreviewDebounce: Duration = .milliseconds(300)
 
     /// Pane visibility state. Lives on the VM (rather than the View's
     /// `@SceneStorage`) so menu bar commands can read/toggle it via
@@ -271,6 +289,31 @@ final class EditorViewModel: ObservableObject {
             dirtyURLs.insert(url)
             isDirty = true
         }
+        scheduleLivePreviewRefresh()
+    }
+
+    /// Debounce + flush the current `sourceText` to its file on disk
+    /// and bump `previewVersion` so the preview pane reloads. Runs on
+    /// every keystroke; the previous task is cancelled so a burst of
+    /// typing produces exactly one disk write at the trailing edge.
+    private func scheduleLivePreviewRefresh() {
+        livePreviewTask?.cancel()
+        livePreviewTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.livePreviewDebounce)
+            guard !Task.isCancelled, let self else { return }
+            self.flushSelectedFileToDisk()
+            self.previewVersion &+= 1
+        }
+    }
+
+    /// Write the current `sourceText` to the working-dir copy of the
+    /// selected file. Ignores binaries and silently no-ops on write
+    /// failure — Save still has to succeed for the user to consider
+    /// data persisted, so this path is best-effort.
+    private func flushSelectedFileToDisk() {
+        guard let url = selectedFile?.id, Self.isTextFile(url) else { return }
+        guard let buf = buffers[selectedFile?.id ?? url] else { return }
+        try? buf.write(to: url, atomically: true, encoding: .utf8)
     }
 
     // MARK: - save (Phase 6.B)
@@ -284,6 +327,12 @@ final class EditorViewModel: ObservableObject {
         // Pull the current TextEditor's contents into the buffer so a
         // file the user is actively editing isn't missed.
         flushSourceTextToBuffer()
+        // Pre-flight: parse XML / XHTML files and surface any errors
+        // in `validationIssues`. Save still proceeds — a broken edit
+        // shouldn't block writing (the user may want to fix it from
+        // the on-disk file) — but the strip in the source pane makes
+        // the failure visible immediately.
+        validationIssues = Self.validateXMLBuffers(buffers, dirty: dirtyURLs)
         saveState = .saving
         let buffersCopy = buffers
         let dirtyCopy = dirtyURLs
@@ -307,6 +356,50 @@ final class EditorViewModel: ObservableObject {
         } catch {
             self.saveState = .failed(error.localizedDescription)
         }
+    }
+
+    // MARK: - validation
+
+    /// Validate the dirty XHTML / XML buffers against `XMLDocument`.
+    /// Returns a `[fileURL: error message]` dict for the failures.
+    /// CSS, JS, and other non-XML text files are skipped — there's
+    /// no Foundation parser for them and we'd rather miss a CSS typo
+    /// than spam the UI with false positives.
+    static func validateXMLBuffers(
+        _ buffers: [URL: String],
+        dirty: Set<URL>
+    ) -> [URL: String] {
+        var out: [URL: String] = [:]
+        for url in dirty {
+            guard isXMLFile(url), let text = buffers[url] else { continue }
+            if let err = validateXML(text) {
+                out[url] = err
+            }
+        }
+        return out
+    }
+
+    /// Try to parse `text` as a standalone XML document. Returns nil
+    /// on success, an error message on failure. Foundation's parser
+    /// surfaces the line and column in the error description.
+    static func validateXML(_ text: String) -> String? {
+        guard let data = text.data(using: .utf8) else {
+            return "Not valid UTF-8"
+        }
+        do {
+            _ = try XMLDocument(data: data)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Files that should be parsed as XML on save.
+    static func isXMLFile(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ext == "xhtml" || ext == "html" || ext == "htm"
+            || ext == "xml" || ext == "opf" || ext == "ncx" || ext == "svg"
+            || url.lastPathComponent == "container.xml"
     }
 
     // MARK: - file kind classification
