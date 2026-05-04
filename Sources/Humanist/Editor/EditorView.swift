@@ -67,8 +67,13 @@ struct EditorView: View {
                                 case .sourceSelection:
                                     vm.replaceSourceSelection(with: result.text)
                                 case .pageInSource(let anchorId):
+                                    // Prefer the well-formed XHTML
+                                    // fragment when we have one (the
+                                    // page path always sets it). Fall
+                                    // back to plain text for safety.
+                                    let payload = result.replacementXHTML ?? result.text
                                     vm.replacePageInSource(
-                                        anchorId: anchorId, text: result.text
+                                        anchorId: anchorId, text: payload
                                     )
                                 }
                                 vm.reOCRResult = nil

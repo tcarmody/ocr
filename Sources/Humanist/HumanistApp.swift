@@ -4,13 +4,34 @@ import UniformTypeIdentifiers
 
 @main
 struct HumanistApp: App {
+    /// Persistent job queue shared across the launcher's lifetime.
+    /// `@StateObject` so the store survives view-tree rebuilds; the
+    /// runner observes the same store and processes serially.
+    @StateObject private var jobStore = JobStore()
+    @StateObject private var jobRunner: JobRunner
+    @StateObject private var queueVM: QueueViewModel
+
+    init() {
+        let store = JobStore()
+        let runner = JobRunner(store: store)
+        let vm = QueueViewModel(store: store, runner: runner)
+        // Use `_` initializers to wire StateObjects from outside the
+        // property wrapper's default-value path. The store/runner pair
+        // is built once and shared across all three.
+        _jobStore  = StateObject(wrappedValue: store)
+        _jobRunner = StateObject(wrappedValue: runner)
+        _queueVM   = StateObject(wrappedValue: vm)
+    }
+
     var body: some Scene {
-        // Launcher window: drop a PDF to convert, drop an EPUB to edit.
+        // Launcher window: queue panel + drop zone for PDFs / folders.
         WindowGroup("Humanist") {
             ContentView()
-                .frame(minWidth: 560, minHeight: 420)
+                .environmentObject(queueVM)
+                .environmentObject(jobStore)
+                .environmentObject(jobRunner)
+                .frame(minWidth: 620, minHeight: 520)
         }
-        .windowResizability(.contentSize)
         .commands {
             FileMenuCommands()
             EditorViewMenu()

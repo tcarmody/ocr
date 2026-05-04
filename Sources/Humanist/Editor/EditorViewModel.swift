@@ -5,6 +5,7 @@ import Document
 import EPUB
 import OCR
 import PDFKit
+import Pipeline
 import UniformTypeIdentifiers
 
 /// Per-window state for the EPUB editor: the open package + which file
@@ -140,8 +141,15 @@ final class EditorViewModel: ObservableObject {
         /// PDF pages the selection spanned. Used for the sheet title
         /// (e.g. "Re-OCR with Vision · Page 7").
         let pageRange: ClosedRange<Int>
-        /// Recognized text, joined top-to-bottom-then-left-to-right.
+        /// Plain-text version of the OCR result for display in the
+        /// sheet (and the Copy button). For the PDF-selection path
+        /// this is the raw engine output; for the page path it's the
+        /// reflowed paragraphs joined with blank lines.
         let text: String
+        /// Well-formed XHTML fragment for "Replace Page in Source".
+        /// Nil for the PDF-selection path (which inserts `text` into
+        /// the source pane's current selection without wrapping).
+        let replacementXHTML: String?
         /// What the sheet's primary "Replace…" button should target.
         let replaceTarget: ReplaceTarget
 
@@ -452,19 +460,23 @@ final class EditorViewModel: ObservableObject {
         }
         reOCRResult = ReOCRResult(
             id: UUID(), engine: kind, pageRange: range,
-            text: text, replaceTarget: .sourceSelection
+            text: text, replacementXHTML: nil,
+            replaceTarget: .sourceSelection
         )
     }
 
     /// Re-OCR the entire PDF page that contains the cursor in the
-    /// source pane. This is the workflow most users want most of the
-    /// time: pick a bad section in the EPUB, re-OCR with a different
-    /// engine, replace the whole page in source. No PDF-selection
-    /// dance, no length-mismatch headaches.
+    /// source pane. Runs the same render + layout + region-aware
+    /// reflow that the bulk converter does, so the result preserves
+    /// columns, paragraph reflow, header/footer suppression, and
+    /// dehyphenation — not raw line-by-line OCR.
+    ///
+    /// Pulls the source PDF from the editor's attached `pdfController`
+    /// rather than re-loading it through PDFKit, so the URL in scope
+    /// is whatever the user attached (sidecar lookup, sibling
+    /// detection, manual override).
     func reOCRCurrentSourcePage(engine kind: ReOCREngineKind) async throws {
-        guard let pdfController else { throw ReOCRError.noPDFAttached }
-        guard let pdfDoc = pdfController.pdfView.document
-        else { throw ReOCRError.noPDFAttached }
+        guard let sourcePDFURL else { throw ReOCRError.noPDFAttached }
 
         // Find the anchor the source cursor is in. Fall back to the
         // first anchor in the currently-selected file if the cursor
@@ -474,33 +486,61 @@ final class EditorViewModel: ObservableObject {
         guard let anchorId,
               let entry = pageMap?.entries.first(where: { $0.anchorId == anchorId })
         else { throw ReOCRError.noSourceAnchor }
-        guard entry.pdfPage >= 0,
-              entry.pdfPage < pdfDoc.pageCount,
-              let page = pdfDoc.page(at: entry.pdfPage)
-        else { throw ReOCRError.noPDFAttached }
 
         guard kind.isAvailable, let engine = kind.makeEngine() else {
             throw ReOCRError.engineUnavailable(kind)
         }
 
-        let bounds = page.bounds(for: .mediaBox)
-        guard let image = PDFRegionRenderer.render(page: page, region: bounds)
-        else { throw ReOCRError.renderFailed }
+        let langs = selectedBCP47Languages()
+        let pipeline = PDFToEPUBPipeline()
+        let docLanguage = package?.package.metadata.language
+            .flatMap { BCP47(rawValue: $0) } ?? langs.first ?? .en
 
-        let hints = OCRHints(
-            languages: selectedBCP47Languages(),
-            quality: .accurate
-        )
         do {
-            let result = try await engine.recognize(image: image, hints: hints)
-            let text = formatObservations(result.observations)
+            let result = try await pipeline.reOCRSinglePage(
+                pdfURL: sourcePDFURL,
+                pageIndex: entry.pdfPage,
+                engine: engine,
+                languages: langs
+            )
+            // Drop the leading page-anchor block from the reflow
+            // output — the source already has that anchor; only the
+            // body content gets spliced in between consecutive
+            // anchors.
+            let bodyBlocks = result.blocks.filter {
+                if case .anchor = $0 { return false } else { return true }
+            }
+            let displayText = paragraphPlainText(bodyBlocks)
+            let xhtml = XHTMLFragmentRenderer.render(
+                blocks: bodyBlocks, language: docLanguage
+            )
             reOCRResult = ReOCRResult(
-                id: UUID(), engine: kind, pageRange: entry.pdfPage...entry.pdfPage,
-                text: text, replaceTarget: .pageInSource(anchorId: anchorId)
+                id: UUID(), engine: kind,
+                pageRange: entry.pdfPage...entry.pdfPage,
+                text: displayText, replacementXHTML: xhtml,
+                replaceTarget: .pageInSource(anchorId: anchorId)
             )
         } catch {
             throw ReOCRError.ocrFailed(String(describing: error))
         }
+    }
+
+    /// Join paragraph / heading blocks into a plain-text view for
+    /// display in the Re-OCR sheet. Anchors are skipped (they're
+    /// invisible in the rendered output anyway).
+    private func paragraphPlainText(_ blocks: [Block]) -> String {
+        var lines: [String] = []
+        for block in blocks {
+            switch block {
+            case .heading(_, let runs):
+                lines.append(runs.map(\.text).joined())
+            case .paragraph(let runs):
+                lines.append(runs.map(\.text).joined())
+            case .anchor:
+                continue
+            }
+        }
+        return lines.joined(separator: "\n\n")
     }
 
     /// First `hu-page-*` anchor whose pagemap entry points at the

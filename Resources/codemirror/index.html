@@ -169,10 +169,17 @@
       // closing `>` of `<span id="hu-page-N" …>` and the start of
       // `<span id="hu-page-N+1" …>` (or end of body, for the last
       // page). Used by the Re-OCR sheet's "Replace Page in Source"
-      // button. `text` is plain OCR output; we wrap each non-empty
-      // line in <p> tags + XML-escape so the result is valid XHTML.
-      window.humanistReplacePageInSource = function (anchorId, text) {
-        if (!anchorId || typeof text !== "string") return;
+      // button.
+      //
+      // `payload` is well-formed XHTML produced by Swift's
+      // XHTMLFragmentRenderer (the same renderer EPUBBuilder uses for
+      // chapters), so it already has <p> wrappers, language spans,
+      // noteref links, etc. We just splice it in verbatim — no need
+      // to wrap or escape further. (Earlier versions wrapped each
+      // line in <p> here, which produced gibberish on multi-column
+      // pages because the OCR text wasn't reflowed.)
+      window.humanistReplacePageInSource = function (anchorId, payload) {
+        if (!anchorId || typeof payload !== "string") return;
         var doc = editor.getDoc();
         var content = doc.getValue();
         var startNeedles = ['id="' + anchorId + '"', "id='" + anchorId + "'"];
@@ -194,25 +201,12 @@
         var nextMatch = nextRe.exec(content);
         var endIdx = nextMatch ? nextMatch.index : content.length;
 
-        var paragraphs = text
-          .split(/\n+/)
-          .map(function (p) { return p.trim(); })
-          .filter(function (p) { return p.length > 0; });
-        function escapeXml(s) {
-          return s.replace(/[<>&"']/g, function (c) {
-            return ({
-              "<": "&lt;", ">": "&gt;", "&": "&amp;",
-              '"': "&quot;", "'": "&#39;"
-            })[c];
-          });
-        }
-        var xhtml = "\n" + paragraphs.map(function (p) {
-          return "<p>" + escapeXml(p) + "</p>";
-        }).join("\n") + "\n";
-
+        // Pad with newlines so the splice sits cleanly between the
+        // anchor spans rather than smashed against them.
+        var spliced = "\n" + payload.replace(/^\n+|\n+$/g, "") + "\n";
         var startPos = doc.posFromIndex(startEnd);
         var endPos = doc.posFromIndex(endIdx);
-        doc.replaceRange(xhtml, startPos, endPos);
+        doc.replaceRange(spliced, startPos, endPos);
         editor.focus();
       };
 

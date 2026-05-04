@@ -3,22 +3,83 @@ import AppKit
 import UniformTypeIdentifiers
 import Document
 
+/// Launcher window — queue-centric. Drop one PDF or a folder of PDFs;
+/// each becomes a job. Existing jobs from previous sessions persist
+/// and resume on next launch.
 struct ContentView: View {
-    @StateObject private var vm = ConversionViewModel()
+    @EnvironmentObject private var queue: QueueViewModel
+    @EnvironmentObject private var store: JobStore
+    @EnvironmentObject private var runner: JobRunner
     @State private var isTargeted = false
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             Text("Humanist")
                 .font(.title2).bold()
-            Text("Drop a PDF anywhere in this window, or choose one to convert.")
+            Text("Drop PDFs (or a folder of PDFs) anywhere in this window.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            languageRow
+            optionsBlock
 
-            Toggle(isOn: $vm.useHighAccuracyOCR) {
+            DropZone(isTargeted: isTargeted)
+                .frame(maxWidth: .infinity, minHeight: 90)
+
+            queueList
+
+            HStack {
+                Button("Choose Files or Folder…") { queue.chooseFiles() }
+                Spacer()
+                if store.jobs.contains(where: \.isFinished) {
+                    Button("Clear Done") { store.clearFinished() }
+                }
+                if store.hasPendingWork {
+                    Button("Cancel All", role: .destructive) { runner.cancelAll() }
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Drop target accepts PDFs (added to queue) or EPUBs (open editor
+        // directly). Folders enumerate to PDFs.
+        .dropDestination(for: URL.self) { urls, _ in
+            handleDrop(urls)
+        } isTargeted: { isTargeted = $0 }
+        // File > Open menu deliveries that target a PDF go through here
+        // since the menu can't reach our viewmodel directly.
+        .onReceive(NotificationCenter.default.publisher(for: .humanistConvertPDF)) { note in
+            guard let url = note.userInfo?["url"] as? URL else { return }
+            queue.addPDF(url)
+        }
+    }
+
+    /// Route dropped URLs: EPUBs open immediately; PDFs/folders enqueue.
+    private func handleDrop(_ urls: [URL]) -> Bool {
+        var handled = false
+        var queueable: [URL] = []
+        for url in urls {
+            if url.pathExtension.lowercased() == "epub" {
+                OpenRouter.open(url, openWindow: openWindow)
+                handled = true
+            } else {
+                queueable.append(url)
+            }
+        }
+        if !queueable.isEmpty {
+            let added = queue.addDropped(queueable)
+            if added > 0 { handled = true }
+        }
+        return handled
+    }
+
+    // MARK: - options
+
+    @ViewBuilder
+    private var optionsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            languageRow
+            Toggle(isOn: $queue.useHighAccuracyOCR) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("High-accuracy OCR (Surya)")
                     Text("Slower but better. Per-region cascade is automatic; this forces Surya everywhere.")
@@ -27,88 +88,8 @@ struct ContentView: View {
                 }
             }
             .toggleStyle(.checkbox)
-            .padding(.vertical, 2)
-
-            DropZone(isTargeted: isTargeted)
-                .frame(maxWidth: .infinity, minHeight: 180)
-
-            statusView
-
-            HStack {
-                Button("Choose PDF or EPUB…") { chooseFile() }
-                    .disabled(isRunning)
-                Spacer()
-                if case .running = vm.phase {
-                    Button("Cancel", role: .destructive) { vm.cancel() }
-                }
-                if case .done(let url) = vm.phase {
-                    Button("Reveal in Finder") { vm.revealOutput() }
-                    Button("Open in Editor") { openWindow(id: "editor", value: url) }
-                        .buttonStyle(.borderedProminent)
-                }
-            }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Drop target accepts a single PDF (convert + open editor) or
-        // EPUB (open editor directly). Folders / multiple files are a
-        // later phase.
-        .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first else { return false }
-            return handleOpen(url: url)
-        } isTargeted: { isTargeted = $0 }
-        // Watch for File > Open menu deliveries that target a PDF —
-        // the menu can't easily route into a specific window's
-        // viewmodel, so we go via NotificationCenter.
-        .onReceive(NotificationCenter.default.publisher(for: .humanistConvertPDF)) { note in
-            guard let url = note.userInfo?["url"] as? URL else { return }
-            startConversion(pdfURL: url)
-        }
-        // When the converter finishes, automatically open an editor
-        // window on the resulting .epub.
-        .onChange(of: vm.phase) { _, newPhase in
-            if case .done(let url) = newPhase {
-                RecentsStore.add(url)
-                openWindow(id: "editor", value: url)
-            }
-        }
-    }
-
-    /// Route a file URL to the right action.
-    /// Returns true on success (used by drop handlers' Bool return).
-    private func handleOpen(url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        switch ext {
-        case "pdf":
-            RecentsStore.add(url)
-            startConversion(pdfURL: url)
-            return true
-        case "epub":
-            OpenRouter.open(url, openWindow: openWindow)
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func startConversion(pdfURL: URL) {
-        vm.convert(pdfURL: pdfURL)
-    }
-
-    private func chooseFile() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.pdf, .epub]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        if panel.runModal() == .OK, let url = panel.url {
-            _ = handleOpen(url: url)
-        }
-    }
-
-    private var isRunning: Bool {
-        if case .running = vm.phase { return true }
-        return false
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -116,12 +97,11 @@ struct ContentView: View {
         HStack(spacing: 12) {
             Text("Languages:").bold()
             Menu {
-                ForEach(ConversionViewModel.supportedLanguages) { opt in
+                ForEach(QueueViewModel.supportedLanguages) { opt in
                     Button {
-                        vm.toggleLanguage(opt.language)
+                        queue.toggleLanguage(opt.language)
                     } label: {
-                        // System checkmark in front of selected items.
-                        if vm.isLanguageSelected(opt.language) {
+                        if queue.isLanguageSelected(opt.language) {
                             Label(opt.label, systemImage: "checkmark")
                         } else {
                             Text(opt.label)
@@ -129,12 +109,9 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                Text(vm.languageButtonLabel)
+                Text(queue.languageButtonLabel)
                     .frame(maxWidth: 280, alignment: .leading)
             }
-            // .menuActionDismissBehavior(.disabled) is iOS-only on
-            // SwiftUI for macOS — Menu always closes after tap. User
-            // re-opens to pick a second / third language.
             .frame(maxWidth: 320)
             Spacer()
             tesseractStatusBadge
@@ -143,11 +120,11 @@ struct ContentView: View {
 
     @ViewBuilder
     private var tesseractStatusBadge: some View {
-        if vm.willUseTesseract && !vm.tesseractAvailable {
+        if queue.willUseTesseract && !queue.tesseractAvailable {
             Label("Tesseract not installed", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.orange)
-        } else if vm.willUseTesseract {
+        } else if queue.willUseTesseract {
             Label("Tesseract", systemImage: "checkmark.circle.fill")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -158,52 +135,160 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - queue
+
     @ViewBuilder
-    private var statusView: some View {
-        GroupBox {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
-                GridRow {
-                    Text("Source:").bold()
-                    Text(vm.sourceName.isEmpty ? "—" : vm.sourceName)
-                }
-                GridRow {
-                    Text("Status:").bold()
-                    statusText
-                }
-                if !vm.lastConfidence.isNaN {
-                    GridRow {
-                        Text("Last page conf:").bold()
-                        Text(String(format: "%.2f", vm.lastConfidence))
+    private var queueList: some View {
+        if store.jobs.isEmpty {
+            VStack(spacing: 4) {
+                Text("Queue is empty")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(store.jobs) { job in
+                        JobRow(job: job)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                            )
                     }
                 }
+                .padding(.vertical, 4)
             }
-            .padding(8)
+            .frame(maxHeight: 280)
+        }
+    }
+}
+
+private struct JobRow: View {
+    let job: Job
+    @EnvironmentObject private var store: JobStore
+    @EnvironmentObject private var runner: JobRunner
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            statusIcon
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(job.sourceURL.lastPathComponent)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                statusLine
+            }
+            Spacer()
+            actionButtons
         }
     }
 
     @ViewBuilder
-    private var statusText: some View {
-        switch vm.phase {
-        case .idle:
-            Text("Idle.")
-        case .running(let completed, let total):
-            if total > 0 {
-                let pct = Double(completed) / Double(total)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Page \(completed) of \(total)")
-                    ProgressView(value: pct)
+    private var statusIcon: some View {
+        switch job.status {
+        case .queued:
+            Image(systemName: "circle.dashed").foregroundStyle(.secondary)
+        case .running:
+            ProgressView().controlSize(.small)
+        case .done:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        case .cancelled:
+            Image(systemName: "minus.circle").foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        switch job.status {
+        case .queued:
+            Text("Queued").font(.caption).foregroundStyle(.secondary)
+        case .running:
+            if let p = job.progress, p.totalPages > 0 {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Page \(p.completedPages) of \(p.totalPages)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ProgressView(value: p.fraction)
                 }
             } else {
-                Text("Loading PDF…")
+                Text("Starting…").font(.caption).foregroundStyle(.secondary)
             }
-        case .done(let url):
-            Text("Wrote \(url.lastPathComponent)")
-                .foregroundStyle(.green)
-        case .failed(let message):
-            Text(message)
-                .foregroundStyle(.red)
-                .lineLimit(3)
+        case .done:
+            Text("Done — \(job.outputURL.lastPathComponent)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .failed:
+            Text(job.error ?? "Failed")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .lineLimit(2)
                 .textSelection(.enabled)
+        case .cancelled:
+            Text("Cancelled").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        switch job.status {
+        case .queued:
+            Button("Cancel", role: .destructive) {
+                runner.cancel(jobID: job.id)
+            }
+            .controlSize(.small)
+        case .running:
+            if runner.cancellingJobIDs.contains(job.id) {
+                Text("Cancelling…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Cancel", role: .destructive) {
+                    runner.cancel(jobID: job.id)
+                }
+                .controlSize(.small)
+            }
+        case .done:
+            Button("Open") {
+                RecentsStore.add(job.outputURL)
+                openWindow(id: "editor", value: job.outputURL)
+            }
+            .controlSize(.small)
+            Button("Reveal") {
+                NSWorkspace.shared.activateFileViewerSelecting([job.outputURL])
+            }
+            .controlSize(.small)
+            Button {
+                store.remove(job.id)
+            } label: { Image(systemName: "xmark") }
+                .controlSize(.small)
+                .help("Remove from queue")
+        case .failed, .cancelled:
+            Button("Retry") {
+                runner.retry(jobID: job.id)
+            }
+            .controlSize(.small)
+            Button {
+                store.remove(job.id)
+            } label: { Image(systemName: "xmark") }
+                .controlSize(.small)
+                .help("Remove from queue")
+        }
+    }
+}
+
+private extension Job {
+    var isFinished: Bool {
+        switch status {
+        case .done, .failed, .cancelled: return true
+        case .queued, .running:          return false
         }
     }
 }
@@ -223,13 +308,13 @@ private struct DropZone: View {
                 )
             VStack(spacing: 6) {
                 Image(systemName: "doc.text.image")
-                    .font(.system(size: 36, weight: .light))
+                    .font(.system(size: 32, weight: .light))
                     .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
-                Text(isTargeted ? "Release to convert" : "Drop PDF here")
+                Text(isTargeted ? "Release to add to queue" : "Drop PDFs or a folder of PDFs")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
-        .allowsHitTesting(false)  // outer view owns drop hit-testing
+        .allowsHitTesting(false)
     }
 }

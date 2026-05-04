@@ -28,9 +28,13 @@ public actor PDFToEPUBPipeline {
         public var dpi: CGFloat
         public var languages: [BCP47]
         public var ocrQuality: OCRHints.Quality
-        /// When true, write a per-observation debug log alongside the
-        /// output EPUB (`output.epub.log.txt`). Useful when text appears
-        /// to vanish or end up in the wrong paragraph.
+        /// When true, keep all per-page PNG renders + the debug log
+        /// in a sibling folder `<basename>.humanist-debug/` next to
+        /// the output EPUB. When false (default), PNGs are written
+        /// to a temp directory and deleted at end of conversion;
+        /// no log file is produced. Useful only when investigating
+        /// why a specific page came out wrong — at bulk scale these
+        /// artifacts add hundreds of files per book.
         public var emitDebugLog: Bool
         /// Force Surya as the OCR engine for every page that goes
         /// through the reocr branch. Slower (~10–20 s/page on Apple
@@ -42,7 +46,7 @@ public actor PDFToEPUBPipeline {
             dpi: CGFloat = 400,
             languages: [BCP47] = [.en],
             ocrQuality: OCRHints.Quality = .accurate,
-            emitDebugLog: Bool = true,
+            emitDebugLog: Bool = false,
             useHighAccuracyOCR: Bool = false
         ) {
             self.dpi = dpi
@@ -108,6 +112,88 @@ public actor PDFToEPUBPipeline {
     /// Languages where Tesseract beats Vision in the cases the plan
     /// enumerates: ancient scripts (Greek, Latin) and non-Latin scripts
     /// (Hebrew, Syriac, Coptic, Arabic, CJK, Cyrillic).
+    /// Re-OCR a single page of a PDF using the caller-chosen engine,
+    /// then run it through the same layout + region-aware reflow the
+    /// converter does in bulk. Used by the editor's "Re-OCR Current
+    /// Page With…" command — without this path, raw OCR misses
+    /// columns, paragraph reflow, header/footer suppression, and
+    /// dehyphenation, producing gibberish on multi-column pages.
+    ///
+    /// `engine` is the OCR engine the user picked (Vision / Surya /
+    /// Tesseract). The cascade is deliberately skipped — the user
+    /// asked for a specific engine, not the cascade's choice.
+    public func reOCRSinglePage(
+        pdfURL: URL,
+        pageIndex: Int,
+        engine: any OCREngine,
+        languages: [BCP47],
+        ocrQuality: OCRHints.Quality = .accurate,
+        dpi: CGFloat = 400
+    ) async throws -> SinglePageResult {
+        let pdf = try loader.load(pdfURL)
+        guard pageIndex >= 0, pageIndex < pdf.pageCount else {
+            throw SinglePageError.invalidPageIndex(pageIndex, pageCount: pdf.pageCount)
+        }
+        let renderer = PDFRenderer(dpi: dpi)
+        let hints = OCRHints(languages: languages, quality: ocrQuality)
+
+        let stagingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "Humanist-rescan-\(UUID().uuidString)", isDirectory: true
+            )
+        try? FileManager.default.createDirectory(
+            at: stagingDir, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: stagingDir) }
+
+        let image = try renderer.renderPage(at: pageIndex, of: pdf)
+        let pngURL = stagingDir.appendingPathComponent("page.png")
+        Self.savePNG(image, to: pngURL)
+
+        let result = try await engine.recognize(image: image, hints: hints)
+        let pageBounds = CGSize(width: image.width, height: image.height)
+
+        // Layout analysis is what makes columns / headers / footnotes
+        // reflow correctly. Optional — falls back to heuristic reflow
+        // if Surya isn't installed or fails.
+        var layoutRegions: [LayoutRegion]? = nil
+        if let analyzer = layoutAnalyzer {
+            layoutRegions = try? await analyzer.analyze(
+                imageURL: pngURL, pageBounds: pageBounds
+            )
+        }
+
+        let pageObs = PageObservations(
+            pageIndex: pageIndex,
+            pageBounds: pageBounds,
+            observations: result.observations,
+            layoutRegions: layoutRegions
+        )
+        let reflowed = RegionAwareReflow.reflow(pageResults: [pageObs])
+
+        return SinglePageResult(
+            blocks: reflowed.blocks,
+            footnotes: reflowed.footnotes,
+            pageAnchors: reflowed.pageAnchors
+        )
+    }
+
+    public struct SinglePageResult: Sendable {
+        public var blocks: [Block]
+        public var footnotes: [Footnote]
+        public var pageAnchors: [PageAnchor]
+    }
+
+    public enum SinglePageError: Error, LocalizedError {
+        case invalidPageIndex(Int, pageCount: Int)
+        public var errorDescription: String? {
+            switch self {
+            case .invalidPageIndex(let i, let count):
+                return "PDF has \(count) page\(count == 1 ? "" : "s"); page \(i + 1) is out of range."
+            }
+        }
+    }
+
     public static func shouldPreferTesseract(for languages: [BCP47]) -> Bool {
         let tesseractStrong: Set<String> = [
             "grc", "la",                               // ancient
@@ -136,6 +222,36 @@ public actor PDFToEPUBPipeline {
 
         let title = pdf.title ?? pdfURL.deletingPathExtension().lastPathComponent
         let language = options.languages.first ?? .en
+
+        // Where per-page PNG renders go. Two modes:
+        //   * Debug on  → `<basename>.humanist-debug/` next to the
+        //                 EPUB. PNGs + log accumulate there so the
+        //                 user can inspect after a bad conversion;
+        //                 one folder per book is easy to delete.
+        //   * Debug off → a fresh temp directory. Cleaned up at the
+        //                 end of conversion (and reaped by macOS if
+        //                 we crash). The source folder gets just the
+        //                 .epub — important at bulk scale.
+        let stagingDir: URL
+        let stagingIsTemp: Bool
+        if options.emitDebugLog {
+            stagingDir = outputURL.deletingPathExtension()
+                .appendingPathExtension("humanist-debug")
+            stagingIsTemp = false
+        } else {
+            stagingDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Humanist-staging-\(UUID().uuidString)", isDirectory: true)
+            stagingIsTemp = true
+        }
+        try? FileManager.default.createDirectory(
+            at: stagingDir, withIntermediateDirectories: true
+        )
+        // Always clean up temp on the way out, success or failure.
+        defer {
+            if stagingIsTemp {
+                try? FileManager.default.removeItem(at: stagingDir)
+            }
+        }
 
         // Pass 1 — for each page:
         //   a. Extract the embedded text layer (cheap; PDFKit access).
@@ -191,9 +307,11 @@ public actor PDFToEPUBPipeline {
             case .reocr:
                 // Render, OCR, gap-fill from embedded.
                 let image = try renderer.renderPage(at: i, of: pdf)
-                let pngURL = outputURL.appendingPathExtension("page-\(i).png")
-                // We need a stable image-on-disk for layout analysis;
-                // also serves as the debug PNG when logging is on.
+                // Layout analysis needs a stable image path on disk —
+                // the Surya sidecar takes paths, not raw bytes. PNGs
+                // go into the staging dir (temp by default; sibling
+                // folder when emitDebugLog is on).
+                let pngURL = stagingDir.appendingPathComponent("page-\(i).png")
                 Self.savePNG(image, to: pngURL)
                 let pageEngine = selectEngine(
                     for: hints.languages,
@@ -243,9 +361,9 @@ public actor PDFToEPUBPipeline {
                     )
                 }
 
-                if !options.emitDebugLog {
-                    try? FileManager.default.removeItem(at: pngURL)
-                }
+                // No per-page PNG cleanup — the staging dir's lifecycle
+                // (temp removed in `defer`, debug folder kept) handles
+                // it as a single batch.
             }
 
             pageResults.append(PageObservations(
@@ -264,7 +382,9 @@ public actor PDFToEPUBPipeline {
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).
         let reflowed: ReflowOutput
         if options.emitDebugLog {
-            let logURL = outputURL.appendingPathExtension("log.txt")
+            // Log lives in the same `humanist-debug/` folder as the
+            // PNGs so all artifacts for one book stay together.
+            let logURL = stagingDir.appendingPathComponent("log.txt")
             reflowed = Self.reflow(
                 pageResults: pageResults,
                 debugLogURL: logURL,
