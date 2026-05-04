@@ -56,6 +56,14 @@ struct EditorView: View {
                     // variant so the menu re-renders on @Published
                     // changes (isDirty, saveState, sourcePDFURL).
                     .focusedSceneObject(vm)
+                    .sheet(item: Binding(
+                        get: { vm.reOCRResult },
+                        set: { vm.reOCRResult = $0 }
+                    )) { result in
+                        ReOCRResultSheet(result: result) {
+                            vm.reOCRResult = nil
+                        }
+                    }
                 }
             }
         }
@@ -107,7 +115,9 @@ struct EditorView: View {
     private var pdfPane: some View {
         if let controller = vm.pdfController {
             VStack(spacing: 0) {
-                paneHeader("Source PDF", systemImage: "doc.richtext.fill")
+                paneHeader("Source PDF", systemImage: "doc.richtext.fill") {
+                    pdfPaneToolbar
+                }
                 PDFKitView(pdfView: controller.pdfView)
                     .background(Color(nsColor: .underPageBackgroundColor))
             }
@@ -122,6 +132,53 @@ struct EditorView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .windowBackgroundColor))
         }
+    }
+
+    /// Trailing accessory for the PDF pane header — zoom + page nav
+    /// inline so the user can drive the pane without going to the
+    /// menu bar. Mirrors View > Source PDF ▸ exactly.
+    private var pdfPaneToolbar: some View {
+        HStack(spacing: 2) {
+            Button {
+                vm.pdfPrevPage()
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .help("Previous Page (⇧⌘←)")
+
+            Button {
+                vm.pdfNextPage()
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .help("Next Page (⇧⌘→)")
+
+            Divider().frame(height: 12).padding(.horizontal, 4)
+
+            Button {
+                vm.pdfZoomOut()
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .help("Zoom Out (⌘−)")
+
+            Button {
+                vm.pdfZoomIn()
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .help("Zoom In (⌘=)")
+
+            Button {
+                vm.pdfFitPage()
+            } label: {
+                Image(systemName: "rectangle.arrowtriangle.2.inward")
+            }
+            .help("Fit Page (⌘0)")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .disabled(!vm.canNavigatePDF)
     }
 
     @ViewBuilder
@@ -198,7 +255,11 @@ struct EditorView: View {
     }
 
     @ViewBuilder
-    private func paneHeader(_ title: String, systemImage: String) -> some View {
+    private func paneHeader<Trailing: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() }
+    ) -> some View {
         HStack(spacing: 6) {
             Image(systemName: systemImage)
                 .font(.caption)
@@ -207,6 +268,7 @@ struct EditorView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer()
+            trailing()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)

@@ -22,6 +22,27 @@ struct EditorSaveCommand: View {
     }
 }
 
+struct EditorSaveAsCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+
+    var body: some View {
+        Button("Save As…") {
+            guard let vm, let pkg = vm.package else { return }
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.epub]
+            panel.nameFieldStringValue = pkg.sourceURL
+                .deletingPathExtension()
+                .lastPathComponent + " copy.epub"
+            panel.directoryURL = pkg.sourceURL.deletingLastPathComponent()
+            if panel.runModal() == .OK, let url = panel.url {
+                Task { await vm.saveAs(to: url) }
+            }
+        }
+        .keyboardShortcut("s", modifiers: [.command, .shift])
+        .disabled(vm == nil || vm?.saveState == .saving)
+    }
+}
+
 // MARK: - View menu (pane toggles + source PDF actions)
 
 /// Top-level View menu that owns the editor's pane toggles. Pane
@@ -36,7 +57,93 @@ struct EditorViewMenu: Commands {
             EditorPaneToggle(pane: .preview)
             Divider()
             EditorAttachPDFCommand()
+            EditorPDFNavMenu()
+            Divider()
+            EditorReloadPreviewCommand()
+            Divider()
+            EditorReOCRSelectionMenu()
         }
+    }
+}
+
+/// View > Source PDF ▸ — zoom + page navigation for the embedded
+/// PDF pane. Mirror of the standalone PDF viewer's toolbar; lives
+/// as a submenu so the View menu stays compact.
+private struct EditorPDFNavMenu: View {
+    @FocusedObject private var vm: EditorViewModel?
+
+    var body: some View {
+        Menu("Source PDF") {
+            Button("Zoom In") { vm?.pdfZoomIn() }
+                .keyboardShortcut("=", modifiers: .command)
+                .disabled(vm?.canNavigatePDF != true)
+            Button("Zoom Out") { vm?.pdfZoomOut() }
+                .keyboardShortcut("-", modifiers: .command)
+                .disabled(vm?.canNavigatePDF != true)
+            Button("Fit Page") { vm?.pdfFitPage() }
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(vm?.canNavigatePDF != true)
+            Divider()
+            // ⇧⌘← / ⇧⌘→ rather than ⌘←/⌘→ so we don't fight
+            // CodeMirror's beginning-/end-of-line bindings when the
+            // user's cursor is in the source pane.
+            Button("Previous Page") { vm?.pdfPrevPage() }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+                .disabled(vm?.canNavigatePDF != true)
+            Button("Next Page") { vm?.pdfNextPage() }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
+                .disabled(vm?.canNavigatePDF != true)
+        }
+        .disabled(vm?.canNavigatePDF != true)
+    }
+}
+
+private struct EditorReloadPreviewCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+
+    var body: some View {
+        Button("Reload Preview") {
+            vm?.reloadPreview()
+        }
+        .keyboardShortcut("r", modifiers: .command)
+        .disabled(vm == nil || vm?.selectedFile == nil)
+    }
+}
+
+/// Submenu: "Re-OCR Selection With ▸ Vision · Surya · Tesseract".
+/// User selects text in the PDF pane, picks an engine, the result
+/// surfaces in a sheet they can copy from. Engines that aren't
+/// installed on this machine show as disabled with "(not installed)".
+private struct EditorReOCRSelectionMenu: View {
+    @FocusedObject private var vm: EditorViewModel?
+
+    var body: some View {
+        Menu("Re-OCR Selection With") {
+            ForEach(ReOCREngineKind.allCases) { kind in
+                Button(label(for: kind)) {
+                    guard let vm else { return }
+                    Task {
+                        do { try await vm.reOCRSelection(engine: kind) }
+                        catch { presentError(error, in: vm) }
+                    }
+                }
+                .disabled(vm == nil || !kind.isAvailable)
+            }
+        }
+        .disabled(vm == nil || vm?.sourcePDFURL == nil)
+    }
+
+    private func label(for kind: ReOCREngineKind) -> String {
+        kind.isAvailable ? kind.displayName : "\(kind.displayName) (not installed)"
+    }
+
+    private func presentError(_ error: Error, in vm: EditorViewModel) {
+        let alert = NSAlert()
+        alert.messageText = "Could not re-OCR selection"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }
 

@@ -1,7 +1,10 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Document
 import EPUB
+import OCR
+import PDFKit
 import UniformTypeIdentifiers
 
 /// Per-window state for the EPUB editor: the open package + which file
@@ -95,6 +98,20 @@ final class EditorViewModel: ObservableObject {
         let nonce: Int
     }
     private var scrollNonce: Int = 0
+
+    /// Re-OCR result the source-pane sheet shows. Non-nil ⇒ sheet is
+    /// presented. The sheet is dismissed by setting this back to nil.
+    @Published var reOCRResult: ReOCRResult?
+
+    struct ReOCRResult: Identifiable, Equatable {
+        let id: UUID
+        let engine: ReOCREngineKind
+        /// PDF pages the selection spanned. Used for the sheet title
+        /// (e.g. "Re-OCR with Vision · Page 7").
+        let pageRange: ClosedRange<Int>
+        /// Recognized text, joined top-to-bottom-then-left-to-right.
+        let text: String
+    }
 
     /// In-memory edit buffers, keyed by absolute file URL. Populated
     /// when a file is selected. Survives navigation between files.
@@ -280,6 +297,151 @@ final class EditorViewModel: ObservableObject {
         // ignored.
         DispatchQueue.main.async { [weak self] in
             self?.suppressPDFToPreviewSync = false
+        }
+    }
+
+    // MARK: - re-OCR selection (menu enrichment)
+
+    enum ReOCRError: LocalizedError {
+        case noPDFAttached
+        case noSelection
+        case engineUnavailable(ReOCREngineKind)
+        case renderFailed
+        case ocrFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .noPDFAttached:
+                return "No source PDF is attached to this EPUB."
+            case .noSelection:
+                return "Select text in the PDF pane first, then re-OCR."
+            case .engineUnavailable(let kind):
+                return "\(kind.displayName) is not installed on this machine."
+            case .renderFailed:
+                return "Could not render the selection from the PDF."
+            case .ocrFailed(let s):
+                return "OCR failed: \(s)"
+            }
+        }
+    }
+
+    /// Render the user's current PDF selection at high DPI, run it
+    /// through the chosen engine, and surface the result in the
+    /// re-OCR sheet (`reOCRResult`). Throws `ReOCRError` if there's
+    /// no selection or the engine isn't installed; otherwise returns
+    /// silently after publishing the result.
+    func reOCRSelection(engine kind: ReOCREngineKind) async throws {
+        guard pdfController != nil else { throw ReOCRError.noPDFAttached }
+        guard let selection = pdfController?.pdfView.currentSelection,
+              !selection.pages.isEmpty
+        else { throw ReOCRError.noSelection }
+        guard kind.isAvailable, let engine = kind.makeEngine() else {
+            throw ReOCRError.engineUnavailable(kind)
+        }
+
+        // Selection can span pages — OCR each page's slice and
+        // concatenate. Track page indices for the sheet title.
+        var combined: [String] = []
+        var firstPage = Int.max, lastPage = Int.min
+        for page in selection.pages {
+            let bounds = selection.bounds(for: page)
+            guard let image = PDFRegionRenderer.render(page: page, region: bounds)
+            else { throw ReOCRError.renderFailed }
+            let hints = OCRHints(
+                languages: selectedBCP47Languages(),
+                quality: .accurate
+            )
+            do {
+                let result = try await engine.recognize(image: image, hints: hints)
+                combined.append(formatObservations(result.observations))
+            } catch {
+                throw ReOCRError.ocrFailed(String(describing: error))
+            }
+            if let pageIndex = page.document?.index(for: page) {
+                firstPage = min(firstPage, pageIndex)
+                lastPage = max(lastPage, pageIndex)
+            }
+        }
+
+        let text = combined.joined(separator: "\n\n")
+        let range: ClosedRange<Int>
+        if firstPage <= lastPage {
+            range = firstPage...lastPage
+        } else {
+            range = 0...0
+        }
+        reOCRResult = ReOCRResult(id: UUID(), engine: kind, pageRange: range, text: text)
+    }
+
+    /// Map the EPUB's metadata language to a BCP-47 list for the
+    /// engine. Vision and Surya read these as recognition hints;
+    /// Tesseract uses them to load tessdata.
+    private func selectedBCP47Languages() -> [BCP47] {
+        if let raw = package?.package.metadata.language,
+           let bcp = BCP47(rawValue: raw) {
+            return [bcp]
+        }
+        return [.en]
+    }
+
+    /// Sort observations top-to-bottom, then left-to-right within a
+    /// row (small Y tolerance), and join their text. Matches what the
+    /// converter does internally; the user can paste the result
+    /// directly into the source pane.
+    private func formatObservations(_ obs: [TextObservation]) -> String {
+        let sorted = obs.sorted { a, b in
+            if abs(a.box.midY - b.box.midY) > 0.005 { return a.box.midY > b.box.midY }
+            return a.box.minX < b.box.minX
+        }
+        return sorted
+            .map { $0.text }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    // MARK: - PDF pane navigation
+
+    /// True when the embedded PDF pane has a document loaded — used
+    /// by menu / toolbar to enable PDF zoom + page-nav commands.
+    var canNavigatePDF: Bool {
+        pdfController?.pdfView.document != nil
+    }
+
+    func pdfZoomIn()    { pdfController?.pdfView.zoomIn(nil) }
+    func pdfZoomOut()   { pdfController?.pdfView.zoomOut(nil) }
+    func pdfFitPage()   { pdfController?.fitPage() }
+    func pdfNextPage()  { pdfController?.pdfView.goToNextPage(nil) }
+    func pdfPrevPage()  { pdfController?.pdfView.goToPreviousPage(nil) }
+
+    // MARK: - reload preview / save as
+
+    /// Force the preview pane to re-fetch the current file. Useful
+    /// after the user edited a CSS or asset file the preview depends
+    /// on but didn't change the chapter file's `previewVersion`.
+    func reloadPreview() {
+        previewVersion &+= 1
+    }
+
+    /// Write the current state of the EPUB to a different path
+    /// without disturbing the original. Flushes pending edits and
+    /// repacks; doesn't switch the editor's `sourceURL`, so further
+    /// Save calls still target the original.
+    func saveAs(to outputURL: URL) async {
+        guard let pkg = package else { return }
+        flushSourceTextToBuffer()
+        let buffersCopy = buffers
+        let workingDir = pkg.workingDirectory
+        saveState = .saving
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                for (url, text) in buffersCopy {
+                    try text.write(to: url, atomically: true, encoding: .utf8)
+                }
+                try EPUBRepacker().repack(workingDirectory: workingDir, to: outputURL)
+            }.value
+            saveState = .idle
+        } catch {
+            saveState = .failed(error.localizedDescription)
         }
     }
 

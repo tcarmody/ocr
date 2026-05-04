@@ -68,6 +68,7 @@ private struct FileMenuCommands: Commands {
         }
         CommandGroup(replacing: .saveItem) {
             EditorSaveCommand()
+            EditorSaveAsCommand()
         }
     }
 }
