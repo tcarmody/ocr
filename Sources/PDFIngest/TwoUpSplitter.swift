@@ -4,12 +4,19 @@ import CoreGraphics
 import PDFKit
 
 /// Splits a "two-up" PDF (two book pages per landscape PDF page)
-/// into a new PDF with one book page per portrait page. Per-page
-/// detection: pages flagged by `TwoUpDetector.isTwoUpPage` get
-/// halved; everything else is passed through unchanged. Output is
-/// rasterized at the chosen DPI — vector content from the source
-/// is lost, but for scanned books the source is already raster-only,
-/// and the OCR pipeline re-renders pages anyway.
+/// into a new PDF with one book page per portrait page. Two modes:
+///
+///   * `forceSplitAllPages: false` — per-page detection. Pages
+///     flagged by `TwoUpDetector.isTwoUpPage` get halved; everything
+///     else is passed through unchanged. Used by the auto-split path.
+///   * `forceSplitAllPages: true` — every landscape page is halved
+///     unconditionally. Used by the manual `Split Two-Up PDF…` menu
+///     command, where the user is asserting "yes, split this."
+///
+/// Output is rasterized at the chosen DPI in display orientation
+/// (rotation honored). Vector content from the source is lost, but
+/// for scanned books the source is already raster-only, and the OCR
+/// pipeline re-renders pages anyway.
 public enum TwoUpSplitter {
     public enum SplitError: Error, LocalizedError {
         case sourceLoadFailed
@@ -30,6 +37,11 @@ public enum TwoUpSplitter {
     /// matches typical print-book scans and stays sharp at editor
     /// zoom levels.
     ///
+    /// `forceSplitAllPages` bypasses the per-page two-up detector
+    /// and halves every landscape page. Portrait pages are still
+    /// passed through unchanged regardless of mode (halving a
+    /// portrait page is meaningless).
+    ///
     /// Returns the count of (output pages, source pages that were
     /// split). A source page that didn't split is counted as one
     /// output page; one that did contributes two.
@@ -37,7 +49,8 @@ public enum TwoUpSplitter {
     public static func split(
         pdfURL: URL,
         outputURL: URL,
-        dpi: CGFloat = 300
+        dpi: CGFloat = 300,
+        forceSplitAllPages: Bool = false
     ) throws -> (outputPages: Int, splitSources: Int) {
         guard let source = PDFDocument(url: pdfURL) else {
             throw SplitError.sourceLoadFailed
@@ -48,26 +61,36 @@ public enum TwoUpSplitter {
 
         for i in 0..<source.pageCount {
             guard let page = source.page(at: i) else { continue }
-            let bounds = page.bounds(for: .mediaBox)
-            if TwoUpDetector.isTwoUpPage(page) {
+            let (displayW, displayH) = TwoUpDetector.displayDimensions(page)
+
+            let shouldSplit: Bool
+            if forceSplitAllPages {
+                // Manual mode: split anything that's wider than tall.
+                // We don't apply the gutter heuristic here — the user
+                // already told us this is a two-up document.
+                shouldSplit = displayH > 0 && displayW / displayH > 1.0
+            } else {
+                shouldSplit = TwoUpDetector.isTwoUpPage(page)
+            }
+
+            if shouldSplit {
                 splitSources += 1
-                let halfWidth = bounds.width / 2
-                let leftBox = CGRect(
-                    x: bounds.minX, y: bounds.minY,
-                    width: halfWidth, height: bounds.height
-                )
-                let rightBox = CGRect(
-                    x: bounds.minX + halfWidth, y: bounds.minY,
-                    width: halfWidth, height: bounds.height
-                )
-                if let leftPage = makePage(of: page, region: leftBox, dpi: dpi) {
+                if let leftPage = makeHalfPage(
+                    of: page, side: .left,
+                    displayWidth: displayW, displayHeight: displayH, dpi: dpi
+                ) {
                     output.insert(leftPage, at: outIdx); outIdx += 1
                 }
-                if let rightPage = makePage(of: page, region: rightBox, dpi: dpi) {
+                if let rightPage = makeHalfPage(
+                    of: page, side: .right,
+                    displayWidth: displayW, displayHeight: displayH, dpi: dpi
+                ) {
                     output.insert(rightPage, at: outIdx); outIdx += 1
                 }
             } else {
-                if let copy = makePage(of: page, region: bounds, dpi: dpi) {
+                if let copy = makeFullPage(
+                    of: page, displayWidth: displayW, displayHeight: displayH, dpi: dpi
+                ) {
                     output.insert(copy, at: outIdx); outIdx += 1
                 }
             }
@@ -80,33 +103,66 @@ public enum TwoUpSplitter {
         return (outIdx, splitSources)
     }
 
-    /// Render `region` of `page` (in PDF point coordinates) at the
-    /// given DPI and wrap the result in a fresh `PDFPage` ready to
-    /// drop into the output document.
-    private static func makePage(
-        of page: PDFPage, region: CGRect, dpi: CGFloat
+    private enum HalfSide { case left, right }
+
+    /// Render the left or right half of `page` (in display
+    /// orientation) at the given DPI and wrap as a fresh PDFPage.
+    /// Implementation note: we render the full page first via
+    /// `PDFPage.thumbnail` (which honors `/Rotate`), then crop the
+    /// resulting image. Going via the rasterized image avoids
+    /// having to rebuild PDFKit's rotation transform manually.
+    private static func makeHalfPage(
+        of page: PDFPage, side: HalfSide,
+        displayWidth: CGFloat, displayHeight: CGFloat, dpi: CGFloat
     ) -> PDFPage? {
-        let scale = dpi / 72.0
-        let pixelWidth = max(1, Int((region.width * scale).rounded()))
-        let pixelHeight = max(1, Int((region.height * scale).rounded()))
-        let cs = CGColorSpaceCreateDeviceRGB()
-        let bitmap = CGImageAlphaInfo.premultipliedFirst.rawValue
-            | CGBitmapInfo.byteOrder32Little.rawValue
-        guard let ctx = CGContext(
-            data: nil, width: pixelWidth, height: pixelHeight,
-            bitsPerComponent: 8, bytesPerRow: 0,
-            space: cs, bitmapInfo: bitmap
+        guard let full = renderDisplayOriented(
+            page: page, displayWidth: displayWidth,
+            displayHeight: displayHeight, dpi: dpi
         ) else { return nil }
-        ctx.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
-        ctx.fill(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
-        ctx.scaleBy(x: scale, y: scale)
-        ctx.translateBy(x: -region.minX, y: -region.minY)
-        page.draw(with: .mediaBox, to: ctx)
-        guard let cgImage = ctx.makeImage() else { return nil }
+        let halfPixels = full.width / 2
+        let cropRect: CGRect
+        switch side {
+        case .left:
+            cropRect = CGRect(x: 0, y: 0, width: halfPixels, height: full.height)
+        case .right:
+            cropRect = CGRect(x: halfPixels, y: 0, width: full.width - halfPixels, height: full.height)
+        }
+        guard let cropped = full.cropping(to: cropRect) else { return nil }
         let nsImage = NSImage(
-            cgImage: cgImage,
-            size: NSSize(width: cgImage.width, height: cgImage.height)
+            cgImage: cropped,
+            size: NSSize(width: cropped.width, height: cropped.height)
         )
         return PDFPage(image: nsImage)
+    }
+
+    /// Re-emit the full page (used for non-two-up pages in a mixed
+    /// document) in display orientation at the chosen DPI.
+    private static func makeFullPage(
+        of page: PDFPage,
+        displayWidth: CGFloat, displayHeight: CGFloat, dpi: CGFloat
+    ) -> PDFPage? {
+        guard let img = renderDisplayOriented(
+            page: page, displayWidth: displayWidth,
+            displayHeight: displayHeight, dpi: dpi
+        ) else { return nil }
+        let nsImage = NSImage(
+            cgImage: img,
+            size: NSSize(width: img.width, height: img.height)
+        )
+        return PDFPage(image: nsImage)
+    }
+
+    /// Render a PDF page to a CGImage in its display orientation
+    /// (rotation applied) at the given DPI.
+    private static func renderDisplayOriented(
+        page: PDFPage,
+        displayWidth: CGFloat, displayHeight: CGFloat, dpi: CGFloat
+    ) -> CGImage? {
+        let scale = dpi / 72.0
+        let w = max(1, Int((displayWidth * scale).rounded()))
+        let h = max(1, Int((displayHeight * scale).rounded()))
+        let nsImage = page.thumbnail(of: NSSize(width: w, height: h), for: .mediaBox)
+        var rect = CGRect(x: 0, y: 0, width: w, height: h)
+        return nsImage.cgImage(forProposedRect: &rect, context: nil, hints: nil)
     }
 }

@@ -22,7 +22,13 @@ enum TwoUpPrompt {
             return nil
         }
         do {
-            let counts = try TwoUpSplitter.split(pdfURL: pdfURL, outputURL: outputURL)
+            // Force-split: the user invoked this from a menu, asserting
+            // "this is a two-up document, just halve it." Skip the
+            // gutter heuristic so a stricter calibration can't make
+            // the menu silently no-op.
+            let counts = try TwoUpSplitter.split(
+                pdfURL: pdfURL, outputURL: outputURL, forceSplitAllPages: true
+            )
             // Confirm to the user — the manual command has no other
             // visible feedback otherwise.
             let done = NSAlert()

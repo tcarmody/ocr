@@ -1,6 +1,9 @@
 import Foundation
+import os
 import SwiftUI
 import PDFIngest
+
+private let twoUpLogger = Logger(subsystem: "humanist", category: "twoup")
 
 /// Async two-up processor. Drives the drop pipeline through three
 /// phases — detect → user decision → split — without blocking the
@@ -185,7 +188,15 @@ final class TwoUpProcessor: ObservableObject {
 
     private static func detect(_ url: URL) async -> Bool {
         await Task.detached(priority: .userInitiated) {
-            TwoUpDetector.detectIsTwoUp(pdfURL: url)
+            let verdict = TwoUpDetector.detectIsTwoUp(pdfURL: url)
+            // Emit per-page signals so Console.app shows exactly why
+            // a PDF was (or wasn't) flagged. Filter the subsystem
+            // "humanist" + category "twoup" to see them.
+            twoUpLogger.info("two-up detection: \(url.lastPathComponent) verdict=\(verdict ? "TWO-UP" : "single")")
+            for d in TwoUpDetector.lastDiagnostics {
+                twoUpLogger.info("  \(d.summary)")
+            }
+            return verdict
         }.value
     }
 

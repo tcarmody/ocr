@@ -82,7 +82,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PipelineTests",
-            dependencies: ["Pipeline", "Document", "EPUB"],
+            dependencies: ["Pipeline", "Document", "EPUB", "PDFIngest"],
             path: "Tests/PipelineTests"
         ),
     ]
