@@ -808,6 +808,24 @@ public actor PDFToEPUBPipeline {
             out += "\n"
         }
 
+        // Header / footer reclassifications — Surya missed the
+        // pageHeader/pageFooter label and tagged the region as
+        // `.text`; the position + size + brevity heuristic dropped
+        // it from the body stream.
+        let hfByPage = RegionAwareReflow.lastHFReclassificationsPerPage
+        if !hfByPage.isEmpty {
+            out += "HEADER/FOOTER RECLASSIFICATIONS (heuristic: extreme zone + short region + ≤100 chars)\n"
+            out += "format: page/regionIdx originalKind → newKind  excerpt\n"
+            out += "         signals: …\n\n"
+            for pageIdx in hfByPage.keys.sorted() {
+                for r in hfByPage[pageIdx] ?? [] {
+                    out += "Page \(pageIdx)/region\(r.regionIndex)  \(r.originalKind) → \(r.newKind)  \"\(r.firstLineExcerpt)\"\n"
+                    out += "   signals: \(r.signals.joined(separator: ", "))\n"
+                }
+            }
+            out += "\n"
+        }
+
         // Surya layout regions per page — when Phase 4 is active.
         let pagesWithLayout = pages.filter { ($0.layoutRegions?.isEmpty == false) }
         if !pagesWithLayout.isEmpty {

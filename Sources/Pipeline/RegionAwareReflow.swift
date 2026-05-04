@@ -77,6 +77,12 @@ enum RegionAwareReflow {
     /// fired (and didn't fire) and tune thresholds.
     static var lastReclassificationsPerPage: [Int: [Reclassification]] = [:]
 
+    /// Per-page record of `.text` regions reclassified as
+    /// `.pageHeader` / `.pageFooter` by the running-furniture
+    /// heuristic. Same shape as the footnote audit so the debug
+    /// log can format them identically.
+    static var lastHFReclassificationsPerPage: [Int: [Reclassification]] = [:]
+
     /// One region's reclassification trace. `signals` is a small
     /// human-readable list ("starts with marker '1.'", "in bottom 60%",
     /// "gap=0.087 > 2× line=0.038") for the debug log.
@@ -92,6 +98,7 @@ enum RegionAwareReflow {
         lastAttributions.removeAll(keepingCapacity: true)
         lastFootnotesPerPage.removeAll(keepingCapacity: true)
         lastReclassificationsPerPage.removeAll(keepingCapacity: true)
+        lastHFReclassificationsPerPage.removeAll(keepingCapacity: true)
         var blocks: [Block] = []
         var allFootnotes: [FootnoteLinker.Parsed] = []
         var pageAnchors: [PageAnchor] = []
@@ -114,11 +121,21 @@ enum RegionAwareReflow {
             // footnotes — Surya often misses these and tags them as
             // body. Conservative heuristic (3 signals must agree)
             // documented on `reclassifyLikelyFootnotes`.
-            let (effectiveRegions, decisions) = reclassifyLikelyFootnotes(
+            let (afterFootnotes, fnDecisions) = reclassifyLikelyFootnotes(
                 regions: regions, observations: page.observations
             )
-            if !decisions.isEmpty {
-                lastReclassificationsPerPage[page.pageIndex] = decisions
+            if !fnDecisions.isEmpty {
+                lastReclassificationsPerPage[page.pageIndex] = fnDecisions
+            }
+            // Now do the same for running heads / footers. Runs
+            // *after* the footnote pass so a 1-line footnote in the
+            // bottom 10% (already retagged to `.footnote`) won't be
+            // re-grabbed as a `.pageFooter` and lose its popup.
+            let (effectiveRegions, hfDecisions) = reclassifyLikelyHeadersFooters(
+                regions: afterFootnotes, observations: page.observations
+            )
+            if !hfDecisions.isEmpty {
+                lastHFReclassificationsPerPage[page.pageIndex] = hfDecisions
             }
             let pageFootnotes = FootnoteLinker.parseFootnotes(
                 pageIndex: page.pageIndex,
@@ -405,5 +422,117 @@ enum RegionAwareReflow {
         _ a: LayoutRegion, _ b: LayoutRegion
     ) -> Bool {
         abs(a.box.midX - b.box.midX) < sameColumnXTolerance
+    }
+
+    // MARK: - header / footer reclassification heuristic
+
+    /// A `.text` region's center must be at least this high
+    /// (normalized, y=0 bottom) to be eligible for `.pageHeader`
+    /// reclassification. Top 10% of the page.
+    private static let pageHeaderMinY: CGFloat = 0.90
+    /// A `.text` region's center must be no higher than this to be
+    /// eligible for `.pageFooter` reclassification. Bottom 10%.
+    private static let pageFooterMaxY: CGFloat = 0.10
+    /// Region's bbox height must be no greater than this to count
+    /// as page furniture. 5% of page eliminates body paragraphs
+    /// (typically 10%+) and section headers (typically 4-6% with
+    /// looser layout) while still admitting one-to-two-line headers
+    /// and standalone page-number regions.
+    private static let pageFurnitureMaxHeight: CGFloat = 0.05
+    /// Total combined text length above which we don't treat a
+    /// region as page furniture, no matter where it sits. Real
+    /// running heads + page numbers are short ("Chapter 3 — Foo
+    /// 47"); body content that strays into the extreme zones is
+    /// typically much longer.
+    private static let pageFurnitureMaxChars: Int = 100
+
+    /// Walk the region list and reclassify any `.text` region as
+    /// `.pageHeader` / `.pageFooter` when **all three** signals agree:
+    ///
+    ///   1. The region's vertical center is in the top 10%
+    ///      (`midY >= 0.90`) → `.pageHeader`, or in the bottom 10%
+    ///      (`midY <= 0.10`) → `.pageFooter`.
+    ///   2. The region itself is short — `box.height <= 0.05`. This
+    ///      is the load-bearing signal that protects body paragraphs
+    ///      that happen to extend into the extreme zones from being
+    ///      mis-dropped.
+    ///   3. Total text length across the region's observations is
+    ///      no more than 100 characters.
+    ///
+    /// Conservative on purpose: a body paragraph that grazes the top
+    /// margin still spans more than 5% of the page in height and so
+    /// fails signal #2. A section header that sits at the page top
+    /// is also typically a couple of lines tall and fails #2 — and
+    /// even if it slipped through, Surya usually labels it
+    /// `.sectionHeader` anyway, which we never reclassify.
+    ///
+    /// Returns the new region list (same indices, kinds possibly
+    /// changed) plus a per-decision audit trail for the debug log.
+    static func reclassifyLikelyHeadersFooters(
+        regions: [LayoutRegion],
+        observations: [TextObservation]
+    ) -> (regions: [LayoutRegion], decisions: [Reclassification]) {
+        var output = regions
+        var decisions: [Reclassification] = []
+
+        for (idx, region) in regions.enumerated() {
+            guard region.kind == .text else { continue }
+
+            // Signal 1: position. Header zone or footer zone, else skip.
+            let targetKind: LayoutRegion.Kind
+            let positionDesc: String
+            if region.box.midY >= pageHeaderMinY {
+                targetKind = .pageHeader
+                positionDesc = String(format: "midY=%.3f ≥ %.2f (top zone)",
+                                      Double(region.box.midY), Double(pageHeaderMinY))
+            } else if region.box.midY <= pageFooterMaxY {
+                targetKind = .pageFooter
+                positionDesc = String(format: "midY=%.3f ≤ %.2f (bottom zone)",
+                                      Double(region.box.midY), Double(pageFooterMaxY))
+            } else {
+                continue
+            }
+
+            // Signal 2: region height ≤ furniture threshold.
+            guard region.box.height <= pageFurnitureMaxHeight else { continue }
+
+            // Signal 3: total text length under the brevity cap. We
+            // also need the first line for the audit excerpt.
+            let inflated = region.box.insetBy(
+                dx: -regionInflation, dy: -regionInflation
+            )
+            let inRegion = observations.filter { obs in
+                inflated.contains(CGPoint(x: obs.box.midX, y: obs.box.midY))
+            }
+            guard !inRegion.isEmpty else { continue }
+            let totalChars = inRegion.reduce(0) { $0 + $1.text.count }
+            guard totalChars <= pageFurnitureMaxChars else { continue }
+
+            let firstObs = inRegion.max(by: { $0.box.midY < $1.box.midY })
+            let excerpt = String((firstObs?.text ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .prefix(60))
+
+            // All three signals agree — reclassify.
+            output[idx] = LayoutRegion(
+                kind: targetKind,
+                box: region.box,
+                readingOrder: region.readingOrder,
+                confidence: region.confidence
+            )
+            decisions.append(Reclassification(
+                regionIndex: idx,
+                originalKind: region.kind.rawValue,
+                newKind: targetKind.rawValue,
+                firstLineExcerpt: excerpt,
+                signals: [
+                    positionDesc,
+                    String(format: "height=%.3f ≤ %.2f", Double(region.box.height), Double(pageFurnitureMaxHeight)),
+                    "chars=\(totalChars) ≤ \(pageFurnitureMaxChars)",
+                ]
+            ))
+        }
+
+        return (output, decisions)
     }
 }
