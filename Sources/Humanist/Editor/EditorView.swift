@@ -60,9 +60,21 @@ struct EditorView: View {
                         get: { vm.reOCRResult },
                         set: { vm.reOCRResult = $0 }
                     )) { result in
-                        ReOCRResultSheet(result: result) {
-                            vm.reOCRResult = nil
-                        }
+                        ReOCRResultSheet(
+                            result: result,
+                            onReplaceInSource: {
+                                switch result.replaceTarget {
+                                case .sourceSelection:
+                                    vm.replaceSourceSelection(with: result.text)
+                                case .pageInSource(let anchorId):
+                                    vm.replacePageInSource(
+                                        anchorId: anchorId, text: result.text
+                                    )
+                                }
+                                vm.reOCRResult = nil
+                            },
+                            onDismiss: { vm.reOCRResult = nil }
+                        )
                     }
                 }
             }
@@ -222,7 +234,10 @@ struct EditorView: View {
                 text: $vm.sourceText,
                 language: CodeEditorView.Language.from(url: file.id),
                 resetID: AnyHashable(file.id),
-                scrollRequest: vm.scrollCodeToAnchor
+                scrollRequest: vm.scrollCodeToAnchor,
+                replaceRequest: vm.replaceSourceRequest,
+                replacePageRequest: vm.replacePageRequest,
+                onCursorAnchorChanged: { id in vm.didMoveCursorToAnchor(id) }
             )
             .id(file.id)
             .onChange(of: vm.sourceText) { _, _ in

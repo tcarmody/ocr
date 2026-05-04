@@ -88,6 +88,13 @@ final class EditorViewModel: ObservableObject {
     /// follows whichever pane the user is steering with.
     @Published private(set) var scrollCodeToAnchor: AnchorScrollRequest?
 
+    /// `hu-page-N` anchor the CodeMirror cursor currently sits inside
+    /// (or `nil` until the file's first cursor activity). Used by
+    /// "Re-OCR Current Page With…" to pick which PDF page to re-OCR
+    /// based on what the user is reading in the source pane, not what
+    /// they selected in the PDF.
+    @Published private(set) var currentSourceAnchor: String?
+
     /// Tagged anchor scroll request — the `nonce` lets the preview
     /// pane's `onChange(of:)` fire even when the same anchor is
     /// targeted twice in a row (because the user clicked away in the
@@ -103,6 +110,30 @@ final class EditorViewModel: ObservableObject {
     /// presented. The sheet is dismissed by setting this back to nil.
     @Published var reOCRResult: ReOCRResult?
 
+    /// "Replace in Source" requests from the Re-OCR sheet. Bumped
+    /// every time the user clicks the button; CodeEditorView watches
+    /// the nonce and pushes the text into CodeMirror via the JS
+    /// bridge.
+    @Published private(set) var replaceSourceRequest: ReplaceSourceRequest?
+
+    struct ReplaceSourceRequest: Equatable {
+        let text: String
+        let nonce: Int
+    }
+    private var replaceNonce: Int = 0
+
+    /// "Replace Page in Source" requests from the Re-OCR sheet —
+    /// splices the text between two `hu-page-N` anchors in the
+    /// chapter file via the JS bridge.
+    @Published private(set) var replacePageRequest: ReplacePageRequest?
+
+    struct ReplacePageRequest: Equatable {
+        let anchorId: String
+        let text: String
+        let nonce: Int
+    }
+    private var replacePageNonce: Int = 0
+
     struct ReOCRResult: Identifiable, Equatable {
         let id: UUID
         let engine: ReOCREngineKind
@@ -111,6 +142,18 @@ final class EditorViewModel: ObservableObject {
         let pageRange: ClosedRange<Int>
         /// Recognized text, joined top-to-bottom-then-left-to-right.
         let text: String
+        /// What the sheet's primary "Replace…" button should target.
+        let replaceTarget: ReplaceTarget
+
+        enum ReplaceTarget: Equatable {
+            /// PDF-selection path — replace whatever's selected in
+            /// the source pane (CodeMirror's `replaceSelection`).
+            case sourceSelection
+            /// Source-page path — replace everything between the
+            /// matching `<span id="hu-page-N">` anchors in the
+            /// current chapter file.
+            case pageInSource(anchorId: String)
+        }
     }
 
     /// In-memory edit buffers, keyed by absolute file URL. Populated
@@ -269,6 +312,40 @@ final class EditorViewModel: ObservableObject {
     /// Looks up the matching PDF page and scrolls the PDF view.
     /// Suppresses the inverse callback during the transition so the
     /// two directions don't fight each other.
+    /// Code → others sync. Called by `CodeEditorView` when the
+    /// CodeMirror cursor crosses into a new `hu-page-N` anchor's
+    /// region. Drives the PDF page + preview scroll without
+    /// republishing the code-scroll request (the cursor is already
+    /// where it needs to be).
+    func didMoveCursorToAnchor(_ anchorId: String) {
+        currentSourceAnchor = anchorId
+        guard let map = pageMap,
+              let entry = map.entries.first(where: { $0.anchorId == anchorId })
+        else { return }
+        // PDF: jump to matching page if not already there. Suppress
+        // the page-change → preview-scroll callback so it doesn't
+        // republish a code-scroll request that ping-pongs us back.
+        if let pdfView = pdfController?.pdfView,
+           let document = pdfView.document,
+           entry.pdfPage >= 0, entry.pdfPage < document.pageCount,
+           let page = document.page(at: entry.pdfPage),
+           pdfView.currentPage !== page {
+            suppressPDFToPreviewSync = true
+            pdfView.go(to: page)
+            DispatchQueue.main.async { [weak self] in
+                self?.suppressPDFToPreviewSync = false
+            }
+        }
+        // Preview: scroll to the anchor. Don't republish
+        // `scrollCodeToAnchor` — the code is already there.
+        scrollNonce &+= 1
+        scrollPreviewToAnchor = AnchorScrollRequest(
+            anchorId: entry.anchorId,
+            xhtmlFile: entry.xhtmlFile,
+            nonce: scrollNonce
+        )
+    }
+
     func scrollPDFTo(anchorId: String) {
         guard let map = pageMap,
               let entry = map.entries.first(where: { $0.anchorId == anchorId })
@@ -305,6 +382,7 @@ final class EditorViewModel: ObservableObject {
     enum ReOCRError: LocalizedError {
         case noPDFAttached
         case noSelection
+        case noSourceAnchor
         case engineUnavailable(ReOCREngineKind)
         case renderFailed
         case ocrFailed(String)
@@ -315,6 +393,8 @@ final class EditorViewModel: ObservableObject {
                 return "No source PDF is attached to this EPUB."
             case .noSelection:
                 return "Select text in the PDF pane first, then re-OCR."
+            case .noSourceAnchor:
+                return "Move the source-pane cursor into a Humanist-converted page (look for `<span id=\"hu-page-…\">` markers), then try again."
             case .engineUnavailable(let kind):
                 return "\(kind.displayName) is not installed on this machine."
             case .renderFailed:
@@ -370,7 +450,79 @@ final class EditorViewModel: ObservableObject {
         } else {
             range = 0...0
         }
-        reOCRResult = ReOCRResult(id: UUID(), engine: kind, pageRange: range, text: text)
+        reOCRResult = ReOCRResult(
+            id: UUID(), engine: kind, pageRange: range,
+            text: text, replaceTarget: .sourceSelection
+        )
+    }
+
+    /// Re-OCR the entire PDF page that contains the cursor in the
+    /// source pane. This is the workflow most users want most of the
+    /// time: pick a bad section in the EPUB, re-OCR with a different
+    /// engine, replace the whole page in source. No PDF-selection
+    /// dance, no length-mismatch headaches.
+    func reOCRCurrentSourcePage(engine kind: ReOCREngineKind) async throws {
+        guard let pdfController else { throw ReOCRError.noPDFAttached }
+        guard let pdfDoc = pdfController.pdfView.document
+        else { throw ReOCRError.noPDFAttached }
+
+        // Find the anchor the source cursor is in. Fall back to the
+        // first anchor in the currently-selected file if the cursor
+        // hasn't reported one yet (e.g. file just opened).
+        let anchorId = currentSourceAnchor
+            ?? firstAnchorIdInSelectedFile()
+        guard let anchorId,
+              let entry = pageMap?.entries.first(where: { $0.anchorId == anchorId })
+        else { throw ReOCRError.noSourceAnchor }
+        guard entry.pdfPage >= 0,
+              entry.pdfPage < pdfDoc.pageCount,
+              let page = pdfDoc.page(at: entry.pdfPage)
+        else { throw ReOCRError.noPDFAttached }
+
+        guard kind.isAvailable, let engine = kind.makeEngine() else {
+            throw ReOCRError.engineUnavailable(kind)
+        }
+
+        let bounds = page.bounds(for: .mediaBox)
+        guard let image = PDFRegionRenderer.render(page: page, region: bounds)
+        else { throw ReOCRError.renderFailed }
+
+        let hints = OCRHints(
+            languages: selectedBCP47Languages(),
+            quality: .accurate
+        )
+        do {
+            let result = try await engine.recognize(image: image, hints: hints)
+            let text = formatObservations(result.observations)
+            reOCRResult = ReOCRResult(
+                id: UUID(), engine: kind, pageRange: entry.pdfPage...entry.pdfPage,
+                text: text, replaceTarget: .pageInSource(anchorId: anchorId)
+            )
+        } catch {
+            throw ReOCRError.ocrFailed(String(describing: error))
+        }
+    }
+
+    /// First `hu-page-*` anchor whose pagemap entry points at the
+    /// currently selected file. Used as a fallback when the source
+    /// cursor hasn't fired a cursor-anchor message yet.
+    private func firstAnchorIdInSelectedFile() -> String? {
+        guard let pkg = package, let map = pageMap, let file = selectedFile else {
+            return nil
+        }
+        let prefix = pkg.workingDirectory.canonicalForFile.path
+        let fileRel = file.id.canonicalForFile.path
+            .replacingOccurrences(of: prefix + "/", with: "")
+        return map.entries.first(where: { $0.xhtmlFile == fileRel })?.anchorId
+    }
+
+    /// "Replace Page in Source" — bumps the publish nonce so
+    /// CodeEditorView pushes the splice through the JS bridge.
+    func replacePageInSource(anchorId: String, text: String) {
+        replacePageNonce &+= 1
+        replacePageRequest = ReplacePageRequest(
+            anchorId: anchorId, text: text, nonce: replacePageNonce
+        )
     }
 
     /// Map the EPUB's metadata language to a BCP-47 list for the
@@ -405,6 +557,14 @@ final class EditorViewModel: ObservableObject {
     /// by menu / toolbar to enable PDF zoom + page-nav commands.
     var canNavigatePDF: Bool {
         pdfController?.pdfView.document != nil
+    }
+
+    /// Push `text` into the source pane, replacing the current
+    /// selection (or inserting at the caret if there's none). Used
+    /// by the Re-OCR sheet's "Replace in Source" button.
+    func replaceSourceSelection(with text: String) {
+        replaceNonce &+= 1
+        replaceSourceRequest = ReplaceSourceRequest(text: text, nonce: replaceNonce)
     }
 
     func pdfZoomIn()    { pdfController?.pdfView.zoomIn(nil) }
@@ -493,6 +653,7 @@ final class EditorViewModel: ObservableObject {
     /// sidecar and marks the package dirty so Save flushes it.
     func attachSourcePDF(_ url: URL) {
         guard let pkg = package else { return }
+        RecentsStore.add(url)
         setSourcePDF(url)
         // Prefer a relative path when the PDF lives next to the EPUB.
         // Compare canonically — `/var/...` vs `/private/var/...` and

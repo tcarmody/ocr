@@ -20,10 +20,13 @@ struct HumanistApp: App {
         // window when the same URL value is reopened, so dragging the
         // same .epub twice doesn't duplicate.
         //
-        // .commands is re-applied here because SwiftUI scopes commands
-        // to the focused scene's window: without this, switching from
-        // the launcher to the editor empties the File / View menus and
-        // breaks ⌘S.
+        // No `.commands` here on purpose. Commands are declared once
+        // on the launcher scene above; they appear in the menu bar
+        // globally and dispatch to the focused editor via
+        // @FocusedObject. Repeating .commands per scene used to be
+        // necessary before we switched to @FocusedObject for the
+        // disable-state observation, but it now produces duplicate
+        // top-level menus in the bar (e.g. three "View" entries).
         WindowGroup("Editor", id: "editor", for: URL.self) { $url in
             if let url {
                 EditorView(epubURL: url)
@@ -31,10 +34,6 @@ struct HumanistApp: App {
             } else {
                 Text("No EPUB loaded.")
             }
-        }
-        .commands {
-            FileMenuCommands()
-            EditorViewMenu()
         }
 
         // PDF viewer window: opened by File > Open on a PDF, or by the
@@ -45,10 +44,6 @@ struct HumanistApp: App {
             } else {
                 Text("No PDF loaded.")
             }
-        }
-        .commands {
-            FileMenuCommands()
-            EditorViewMenu()
         }
     }
 }
@@ -64,11 +59,51 @@ private struct FileMenuCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             OpenCommand()
+            OpenRecentMenu()
             ConvertCommand()
         }
         CommandGroup(replacing: .saveItem) {
             EditorSaveCommand()
             EditorSaveAsCommand()
+        }
+    }
+}
+
+/// File > Open Recent ▸ — the last 10 EPUBs/PDFs the user opened
+/// (deduped, most recent first). Backed by `RecentsStore` via
+/// @AppStorage so the menu re-renders when the list changes.
+private struct OpenRecentMenu: View {
+    @Environment(\.openWindow) private var openWindow
+    // Observed so the menu re-renders when openings update the list.
+    @AppStorage(RecentsStore.key) private var recentsJSON: String = "[]"
+
+    var body: some View {
+        Menu("Open Recent") {
+            let urls = RecentsStore.urls
+            if urls.isEmpty {
+                Text("No Recent Items").disabled(true)
+            } else {
+                ForEach(urls, id: \.self) { url in
+                    Button(url.lastPathComponent) {
+                        OpenRouter.open(url, openWindow: openWindow)
+                    }
+                }
+                Divider()
+                Button("Clear Menu") { RecentsStore.clear() }
+            }
+        }
+    }
+}
+
+/// One place to route a URL to the right window kind. Keeps
+/// recents-recording consistent across menu / drop / convert paths.
+enum OpenRouter {
+    static func open(_ url: URL, openWindow: OpenWindowAction) {
+        RecentsStore.add(url)
+        switch url.pathExtension.lowercased() {
+        case "epub": openWindow(id: "editor", value: url)
+        case "pdf":  openWindow(id: "pdf-viewer", value: url)
+        default: break
         }
     }
 }
@@ -84,11 +119,7 @@ private struct OpenCommand: View {
             panel.canChooseDirectories = false
             panel.canChooseFiles = true
             guard panel.runModal() == .OK, let url = panel.url else { return }
-            switch url.pathExtension.lowercased() {
-            case "epub": openWindow(id: "editor", value: url)
-            case "pdf":  openWindow(id: "pdf-viewer", value: url)
-            default:     break
-            }
+            OpenRouter.open(url, openWindow: openWindow)
         }
         .keyboardShortcut("o", modifiers: .command)
     }
@@ -103,6 +134,7 @@ private struct ConvertCommand: View {
             panel.canChooseDirectories = false
             panel.canChooseFiles = true
             guard panel.runModal() == .OK, let url = panel.url else { return }
+            RecentsStore.add(url)
             // The launcher window owns the conversion ViewModel; route
             // the URL to it. (We can't reach a SwiftUI ViewModel from
             // an App-scope command directly.)

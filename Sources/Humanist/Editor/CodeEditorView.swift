@@ -26,6 +26,17 @@ struct CodeEditorView: View {
     /// source and scrolls / cursor-moves to that line, with a brief
     /// background flash so the jump is visible. Nil → no sync.
     let scrollRequest: EditorViewModel.AnchorScrollRequest?
+    /// Replace-current-selection command from the Re-OCR sheet.
+    /// Nonce-tagged so consecutive replaces with the same text still
+    /// fire.
+    let replaceRequest: EditorViewModel.ReplaceSourceRequest?
+    /// Replace-entire-page command from the Re-OCR sheet — splices
+    /// XHTML between `hu-page-N` and `hu-page-N+1` anchors.
+    let replacePageRequest: EditorViewModel.ReplacePageRequest?
+    /// Called when CodeMirror's cursor crosses a different `hu-page-N`
+    /// anchor than the one we last reported. The editor uses this to
+    /// drive the PDF + preview panes (code → others sync).
+    let onCursorAnchorChanged: ((String) -> Void)?
 
     enum Language: String {
         case xml, htmlmixed, css, javascript
@@ -50,7 +61,10 @@ struct CodeEditorView: View {
                 text: $text,
                 language: language,
                 resetID: resetID,
-                scrollRequest: scrollRequest
+                scrollRequest: scrollRequest,
+                replaceRequest: replaceRequest,
+                replacePageRequest: replacePageRequest,
+                onCursorAnchorChanged: onCursorAnchorChanged
             )
         } else {
             // CodeMirror assets weren't bundled. Plain TextEditor so
@@ -82,9 +96,14 @@ private struct CodeMirrorWebView: NSViewRepresentable {
     let language: CodeEditorView.Language
     let resetID: AnyHashable
     let scrollRequest: EditorViewModel.AnchorScrollRequest?
+    let replaceRequest: EditorViewModel.ReplaceSourceRequest?
+    let replacePageRequest: EditorViewModel.ReplacePageRequest?
+    let onCursorAnchorChanged: ((String) -> Void)?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
+        let c = Coordinator(text: $text)
+        c.onCursorAnchorChanged = onCursorAnchorChanged
+        return c
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -108,6 +127,9 @@ private struct CodeMirrorWebView: NSViewRepresentable {
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
         let coordinator = context.coordinator
+        // Re-bind callback in case the parent re-rendered with a
+        // fresh closure (very common for closures that capture vm).
+        coordinator.onCursorAnchorChanged = onCursorAnchorChanged
         // File switch: reset history + push fresh content.
         if coordinator.lastResetID != resetID {
             coordinator.lastResetID = resetID
@@ -141,6 +163,16 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             coordinator.lastScrollNonce = req.nonce
             coordinator.pushScrollAnchor(req.anchorId)
         }
+        // Replace-current-selection request from the Re-OCR sheet.
+        if let req = replaceRequest, coordinator.lastReplaceNonce != req.nonce {
+            coordinator.lastReplaceNonce = req.nonce
+            coordinator.pushReplaceSelection(req.text)
+        }
+        // Replace-entire-page request from the Re-OCR sheet.
+        if let req = replacePageRequest, coordinator.lastReplacePageNonce != req.nonce {
+            coordinator.lastReplacePageNonce = req.nonce
+            coordinator.pushReplacePage(anchorId: req.anchorId, text: req.text)
+        }
     }
 
     // MARK: - Coordinator
@@ -163,6 +195,17 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         /// Anchor id queued while JS wasn't ready or content hadn't
         /// landed yet. Flushed when ready fires.
         var pendingScrollAnchor: String?
+        /// Last "replace selection" nonce we honored (Re-OCR sheet).
+        var lastReplaceNonce: Int = .min
+        /// Replace-text queued while JS wasn't ready.
+        var pendingReplaceText: String?
+        /// Last "replace page" nonce we honored (Re-OCR sheet).
+        var lastReplacePageNonce: Int = .min
+        /// Replace-page payload queued while JS wasn't ready.
+        var pendingReplacePage: (anchorId: String, text: String)?
+        /// Forwarded back to the VM when CodeMirror reports a new
+        /// cursor-anchor (code → others sync).
+        var onCursorAnchorChanged: ((String) -> Void)?
 
         init(text: Binding<String>) {
             _text = text
@@ -199,6 +242,26 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
+        func pushReplaceSelection(_ text: String) {
+            guard ready, let webView else {
+                pendingReplaceText = text
+                return
+            }
+            pendingReplaceText = nil
+            let js = "humanistReplaceSelection(\(jsString(text)));"
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+
+        func pushReplacePage(anchorId: String, text: String) {
+            guard ready, let webView else {
+                pendingReplacePage = (anchorId, text)
+                return
+            }
+            pendingReplacePage = nil
+            let js = "humanistReplacePageInSource(\(jsString(anchorId)), \(jsString(text)));"
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+
         // WKScriptMessageHandler
 
         func userContentController(_ userContentController: WKUserContentController,
@@ -220,6 +283,16 @@ private struct CodeMirrorWebView: NSViewRepresentable {
                         self?.pushScrollAnchor(anchor)
                     }
                 }
+                if let text = pendingReplaceText {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushReplaceSelection(text)
+                    }
+                }
+                if let payload = pendingReplacePage {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushReplacePage(anchorId: payload.anchorId, text: payload.text)
+                    }
+                }
             case "edit":
                 if let newText = dict["text"] as? String {
                     // Update the binding without re-pushing — record the
@@ -233,6 +306,10 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             case "focus":
                 // Reserved for future menu-enable wiring.
                 break
+            case "cursor-anchor":
+                if let id = dict["id"] as? String {
+                    onCursorAnchorChanged?(id)
+                }
             default:
                 break
             }

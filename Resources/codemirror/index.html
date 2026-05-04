@@ -155,10 +155,73 @@
         editor.refresh();
       };
 
+      // Replace whatever's selected in the editor with `text`, or
+      // insert at the cursor if there's no selection. Used by the
+      // Re-OCR sheet's "Replace in Source" button so the user
+      // doesn't have to round-trip through the system clipboard.
+      window.humanistReplaceSelection = function (text) {
+        if (typeof text !== "string") return;
+        editor.replaceSelection(text, "around");
+        editor.focus();
+      };
+
+      // Replace the entire body of a single page — text between the
+      // closing `>` of `<span id="hu-page-N" …>` and the start of
+      // `<span id="hu-page-N+1" …>` (or end of body, for the last
+      // page). Used by the Re-OCR sheet's "Replace Page in Source"
+      // button. `text` is plain OCR output; we wrap each non-empty
+      // line in <p> tags + XML-escape so the result is valid XHTML.
+      window.humanistReplacePageInSource = function (anchorId, text) {
+        if (!anchorId || typeof text !== "string") return;
+        var doc = editor.getDoc();
+        var content = doc.getValue();
+        var startNeedles = ['id="' + anchorId + '"', "id='" + anchorId + "'"];
+        var startIdx = -1;
+        for (var i = 0; i < startNeedles.length; i++) {
+          var hit = content.indexOf(startNeedles[i]);
+          if (hit >= 0) { startIdx = hit; break; }
+        }
+        if (startIdx < 0) return;
+        // Skip past the opening tag's closing `>` so we don't
+        // overwrite the anchor span itself.
+        var startEnd = content.indexOf(">", startIdx);
+        if (startEnd < 0) return;
+        startEnd += 1;
+        // Find the next hu-page anchor (any id starting with
+        // `hu-page-`) — that's where this page's body ends.
+        var nextRe = /<span[^>]*id=["']hu-page-\d+["'][^>]*>/g;
+        nextRe.lastIndex = startEnd;
+        var nextMatch = nextRe.exec(content);
+        var endIdx = nextMatch ? nextMatch.index : content.length;
+
+        var paragraphs = text
+          .split(/\n+/)
+          .map(function (p) { return p.trim(); })
+          .filter(function (p) { return p.length > 0; });
+        function escapeXml(s) {
+          return s.replace(/[<>&"']/g, function (c) {
+            return ({
+              "<": "&lt;", ">": "&gt;", "&": "&amp;",
+              '"': "&quot;", "'": "&#39;"
+            })[c];
+          });
+        }
+        var xhtml = "\n" + paragraphs.map(function (p) {
+          return "<p>" + escapeXml(p) + "</p>";
+        }).join("\n") + "\n";
+
+        var startPos = doc.posFromIndex(startEnd);
+        var endPos = doc.posFromIndex(endIdx);
+        doc.replaceRange(xhtml, startPos, endPos);
+        editor.focus();
+      };
+
       // Linked-navigation: search the source for the given anchor id
       // (matches `id="hu-page-N"` produced by the converter), move the
       // cursor there, and briefly flash the line so the jump is
       // visible.
+      var lastReportedAnchor = null;
+
       window.humanistScrollToAnchor = function (anchorId) {
         if (!anchorId) return;
         var doc = editor.getDoc();
@@ -176,6 +239,9 @@
         var pos = doc.posFromIndex(idx);
         // Move cursor and scroll the target line ~100px from the top
         // so context above the anchor is still visible.
+        // Stash the anchor as the most recently reported one so the
+        // cursorActivity handler doesn't echo it back as a sync.
+        lastReportedAnchor = anchorId;
         doc.setSelection(pos, pos);
         editor.scrollIntoView(pos, 100);
         // Flash the line briefly. CodeMirror's addLineClass returns
@@ -186,6 +252,35 @@
           if (handle) doc.removeLineClass(handle, "background", "hu-flash-line");
         }, 1100);
       };
+
+      // Code → others sync: when the cursor moves, find the nearest
+      // hu-page anchor that appears BEFORE the cursor and report it
+      // so the PDF + preview can follow. Suppresses the report when
+      // the change is the result of an external scroll (the
+      // `lastReportedAnchor` guard).
+      var anchorRegex = /id=["']hu-page-(\d+)["']/g;
+      function anchorAtCursor() {
+        var doc = editor.getDoc();
+        var idx = doc.indexFromPos(doc.getCursor());
+        var content = doc.getValue();
+        // Walk forward through matches, keeping the last one whose
+        // starting offset is <= cursor. Faster than .match() then
+        // searching backwards for long files.
+        anchorRegex.lastIndex = 0;
+        var lastId = null;
+        var m;
+        while ((m = anchorRegex.exec(content)) !== null) {
+          if (m.index > idx) break;
+          lastId = "hu-page-" + m[1];
+        }
+        return lastId;
+      }
+      editor.on("cursorActivity", function () {
+        var current = anchorAtCursor();
+        if (!current || current === lastReportedAnchor) return;
+        lastReportedAnchor = current;
+        post({ type: "cursor-anchor", id: current });
+      });
 
       ready = true;
       post({ type: "ready" });

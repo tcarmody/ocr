@@ -68,6 +68,7 @@ struct ContentView: View {
         // window on the resulting .epub.
         .onChange(of: vm.phase) { _, newPhase in
             if case .done(let url) = newPhase {
+                RecentsStore.add(url)
                 openWindow(id: "editor", value: url)
             }
         }
@@ -79,10 +80,11 @@ struct ContentView: View {
         let ext = url.pathExtension.lowercased()
         switch ext {
         case "pdf":
+            RecentsStore.add(url)
             startConversion(pdfURL: url)
             return true
         case "epub":
-            openWindow(id: "editor", value: url)
+            OpenRouter.open(url, openWindow: openWindow)
             return true
         default:
             return false

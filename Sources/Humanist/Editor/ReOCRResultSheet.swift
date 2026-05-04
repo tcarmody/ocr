@@ -9,6 +9,12 @@ import AppKit
 /// it's an improvement, and place it where they want.
 struct ReOCRResultSheet: View {
     let result: EditorViewModel.ReOCRResult
+    /// Replace handler — its label and behavior depend on
+    /// `result.replaceTarget`. For `.sourceSelection` it splices the
+    /// OCR text into the current CodeMirror selection; for
+    /// `.pageInSource` it replaces everything between two
+    /// `hu-page-N` anchors.
+    let onReplaceInSource: () -> Void
     let onDismiss: () -> Void
 
     var body: some View {
@@ -54,15 +60,38 @@ struct ReOCRResultSheet: View {
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(result.text.isEmpty)
 
+                Button {
+                    onReplaceInSource()
+                } label: {
+                    Label(replaceLabel, systemImage: "square.and.pencil")
+                }
+                .help(replaceHelp)
+                .disabled(result.text.isEmpty)
+
                 Spacer()
 
                 Button("Close") { onDismiss() }
                     .keyboardShortcut(.cancelAction)
-                    .keyboardShortcut(.return, modifiers: [])
             }
         }
         .padding(20)
         .frame(minWidth: 560, minHeight: 360)
+    }
+
+    private var replaceLabel: String {
+        switch result.replaceTarget {
+        case .sourceSelection:    return "Replace Selection in Source"
+        case .pageInSource:       return "Replace Page in Source"
+        }
+    }
+
+    private var replaceHelp: String {
+        switch result.replaceTarget {
+        case .sourceSelection:
+            return "Replace the current source-pane selection with this text (or insert at the caret if nothing is selected)."
+        case .pageInSource:
+            return "Replace everything between this page's anchors in the source pane with the OCR result, wrapping each line in <p>."
+        }
     }
 
     private var pageRangeLabel: String {

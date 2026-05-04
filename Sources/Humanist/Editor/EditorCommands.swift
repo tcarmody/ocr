@@ -45,13 +45,14 @@ struct EditorSaveAsCommand: View {
 
 // MARK: - View menu (pane toggles + source PDF actions)
 
-/// Top-level View menu that owns the editor's pane toggles. Pane
-/// visibility lives in `@SceneStorage` inside `EditorView`, so the menu
-/// items have to round-trip through the focused viewmodel — we expose
-/// togglers on the VM that the SceneStorage state mirrors.
+/// Top-level "Document" menu — pane toggles, source-PDF actions,
+/// preview controls, and re-OCR commands for the open EPUB. Named
+/// "Document" rather than "View" so it doesn't collide with the
+/// system View menu (Show Toolbar, Enter Full Screen, etc.) and
+/// produce two side-by-side View menus in the bar.
 struct EditorViewMenu: Commands {
     var body: some Commands {
-        CommandMenu("View") {
+        CommandMenu("Document") {
             EditorPaneToggle(pane: .pdf)
             EditorPaneToggle(pane: .source)
             EditorPaneToggle(pane: .preview)
@@ -61,7 +62,8 @@ struct EditorViewMenu: Commands {
             Divider()
             EditorReloadPreviewCommand()
             Divider()
-            EditorReOCRSelectionMenu()
+            EditorReOCRCurrentPageMenu()
+            EditorReOCRPDFSelectionMenu()
         }
     }
 }
@@ -110,21 +112,22 @@ private struct EditorReloadPreviewCommand: View {
     }
 }
 
-/// Submenu: "Re-OCR Selection With ▸ Vision · Surya · Tesseract".
-/// User selects text in the PDF pane, picks an engine, the result
-/// surfaces in a sheet they can copy from. Engines that aren't
-/// installed on this machine show as disabled with "(not installed)".
-private struct EditorReOCRSelectionMenu: View {
+/// Submenu: "Re-OCR Current Page With ▸ Vision · Surya · Tesseract".
+/// Uses the source-pane cursor's enclosing `hu-page-N` anchor to pick
+/// which PDF page to render. Whole-page re-OCR is the workflow most
+/// users want most of the time — no PDF-selection dance, and the
+/// sheet's "Replace Page in Source" splices cleanly between anchors.
+private struct EditorReOCRCurrentPageMenu: View {
     @FocusedObject private var vm: EditorViewModel?
 
     var body: some View {
-        Menu("Re-OCR Selection With") {
+        Menu("Re-OCR Current Page With") {
             ForEach(ReOCREngineKind.allCases) { kind in
                 Button(label(for: kind)) {
                     guard let vm else { return }
                     Task {
-                        do { try await vm.reOCRSelection(engine: kind) }
-                        catch { presentError(error, in: vm) }
+                        do { try await vm.reOCRCurrentSourcePage(engine: kind) }
+                        catch { presentReOCRError(error) }
                     }
                 }
                 .disabled(vm == nil || !kind.isAvailable)
@@ -136,15 +139,42 @@ private struct EditorReOCRSelectionMenu: View {
     private func label(for kind: ReOCREngineKind) -> String {
         kind.isAvailable ? kind.displayName : "\(kind.displayName) (not installed)"
     }
+}
 
-    private func presentError(_ error: Error, in vm: EditorViewModel) {
-        let alert = NSAlert()
-        alert.messageText = "Could not re-OCR selection"
-        alert.informativeText = error.localizedDescription
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+/// Submenu: "Re-OCR PDF Selection With ▸ …". Older flow — works on
+/// whatever's currently text-selected in the PDF pane. Useful when
+/// you want to OCR a tighter rectangle than a whole page.
+private struct EditorReOCRPDFSelectionMenu: View {
+    @FocusedObject private var vm: EditorViewModel?
+
+    var body: some View {
+        Menu("Re-OCR PDF Selection With") {
+            ForEach(ReOCREngineKind.allCases) { kind in
+                Button(label(for: kind)) {
+                    guard let vm else { return }
+                    Task {
+                        do { try await vm.reOCRSelection(engine: kind) }
+                        catch { presentReOCRError(error) }
+                    }
+                }
+                .disabled(vm == nil || !kind.isAvailable)
+            }
+        }
+        .disabled(vm == nil || vm?.sourcePDFURL == nil)
     }
+
+    private func label(for kind: ReOCREngineKind) -> String {
+        kind.isAvailable ? kind.displayName : "\(kind.displayName) (not installed)"
+    }
+}
+
+private func presentReOCRError(_ error: Error) {
+    let alert = NSAlert()
+    alert.messageText = "Could not re-OCR"
+    alert.informativeText = error.localizedDescription
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
 }
 
 private struct EditorPaneToggle: View {
