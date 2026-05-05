@@ -240,6 +240,20 @@ final class EditorViewModel: ObservableObject {
         Task { await self.load(epubURL: epubURL) }
     }
 
+    /// Tear-down. Closing an editor window normally drops the last
+    /// `@StateObject` reference to this VM, which fires deinit. We
+    /// cancel the live-preview task and remove the PDFKit page-change
+    /// observer here so neither survives the window — without these,
+    /// each closed window leaves a notification closure (capturing
+    /// the PDFView, which retains the PDFDocument) and a debounce
+    /// task running in the background.
+    deinit {
+        livePreviewTask?.cancel()
+        if let token = pdfPageObserver {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
     func load(epubURL: URL) async {
         self.state = .loading
         do {

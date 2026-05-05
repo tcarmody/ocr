@@ -401,7 +401,16 @@ public actor PDFToEPUBPipeline {
         options: Options = Options(),
         progress: ProgressHandler? = nil
     ) async throws {
-        let pdf = try loader.load(pdfURL)
+        // Mutable so we can periodically reload to drain PDFKit's
+        // internal page cache. PDFKit `PDFDocument` lazily caches
+        // rendered page representations; on a 600-page book that
+        // cache pushes resident memory into the GB range. Dropping
+        // and re-loading from URL is the only public way to flush.
+        var pdf = try loader.load(pdfURL)
+        let totalPages = pdf.pageCount
+        // Reload every N pages. 50 is a balance — too small thrashes
+        // PDFKit re-parsing; too large lets the cache grow back.
+        let pdfReloadInterval = 50
         let renderer = PDFRenderer(dpi: options.dpi)
         let hints = OCRHints(languages: options.languages, quality: options.ocrQuality)
 
@@ -461,13 +470,30 @@ public actor PDFToEPUBPipeline {
         // degraded treatment in high-accuracy mode.
         var ocrErrors: [Int: String] = [:]
 
-        for i in 0..<pdf.pageCount {
+        for i in 0..<totalPages {
             try Task.checkCancellation()
 
-            let extracted = embeddedExtractor.extract(from: pdf, pageIndex: i)
+            // Periodic reload to drain PDFKit's per-page cache. The
+            // old document deallocates here, taking its accumulated
+            // rendered-page representations with it. Skip i==0 so we
+            // don't re-load on the first iteration.
+            if i > 0 && i % pdfReloadInterval == 0 {
+                pdf = try loader.load(pdfURL)
+            }
+
+            // Sync prep: embedded extraction + quality scoring. Wrap
+            // in autoreleasepool so PDFKit/CoreGraphics NSObject
+            // temporaries (PDFPage instances, NSStrings from text
+            // extraction) drain at the closure boundary instead of
+            // piling up on the convert task's outer pool until the
+            // entire conversion ends.
+            let (extracted, quality) = autoreleasepool { () -> ((lines: [EmbeddedTextExtractor.Line], diagnostics: EmbeddedTextExtractor.Diagnostics), EmbeddedTextQualityScorer.Score) in
+                let e = embeddedExtractor.extract(from: pdf, pageIndex: i)
+                let combined = e.lines.map(\.text).joined(separator: " ")
+                let q = qualityScorer.score(text: combined)
+                return (e, q)
+            }
             extractorDiagnostics[i] = extracted.diagnostics
-            let combinedText = extracted.lines.map(\.text).joined(separator: " ")
-            let quality = qualityScorer.score(text: combinedText)
             qualityScores[i] = quality
 
             var observations: [TextObservation]
@@ -478,31 +504,41 @@ public actor PDFToEPUBPipeline {
             switch quality.verdict {
             case .trust:
                 // Embedded text is good — skip Vision OCR entirely.
-                observations = extracted.lines.map { line in
-                    TextObservation(
-                        text: line.text,
-                        confidence: 0.95,
-                        box: line.box,
-                        source: .embedded
-                    )
+                // Bbox lookup hits PDFKit page accessor (autoreleased).
+                let trustResult = autoreleasepool { () -> (obs: [TextObservation], bounds: CGSize) in
+                    let obs = extracted.lines.map { line in
+                        TextObservation(
+                            text: line.text,
+                            confidence: 0.95,
+                            box: line.box,
+                            source: .embedded
+                        )
+                    }
+                    let bounds: CGSize
+                    if let pdfPage = pdf.document.page(at: i) {
+                        let r = pdfPage.bounds(for: .mediaBox)
+                        bounds = CGSize(width: r.width, height: r.height)
+                    } else {
+                        bounds = .zero
+                    }
+                    return (obs, bounds)
                 }
-                if let pdfPage = pdf.document.page(at: i) {
-                    let r = pdfPage.bounds(for: .mediaBox)
-                    pageBounds = CGSize(width: r.width, height: r.height)
-                } else {
-                    pageBounds = .zero
-                }
+                observations = trustResult.obs
+                pageBounds = trustResult.bounds
                 confidenceForProgress = 1.0
 
             case .reocr:
-                // Render, OCR, gap-fill from embedded.
-                let image = try renderer.renderPage(at: i, of: pdf)
-                // Layout analysis needs a stable image path on disk —
-                // the Surya sidecar takes paths, not raw bytes. PNGs
-                // go into the staging dir (temp by default; sibling
-                // folder when emitDebugLog is on).
+                // Render + savePNG: largest sync allocation in the
+                // loop. CGContext + CFData buffers are CFType so ARC
+                // handles release, but the dispatch infra around
+                // CGImageDestination autoreleases NSURL/NSData
+                // bridging objects.
                 let pngURL = stagingDir.appendingPathComponent("page-\(i).png")
-                Self.savePNG(image, to: pngURL)
+                let image: CGImage = try autoreleasepool {
+                    let img = try renderer.renderPage(at: i, of: pdf)
+                    Self.savePNG(img, to: pngURL)
+                    return img
+                }
                 let pageEngine = selectEngine(
                     for: hints.languages,
                     preferSurya: options.useHighAccuracyOCR
@@ -570,10 +606,18 @@ public actor PDFToEPUBPipeline {
                 layoutRegions: layoutForPage
             ))
             progress?(Progress(
-                totalPages: pdf.pageCount,
+                totalPages: totalPages,
                 completedPages: i + 1,
                 currentPageMeanConfidence: confidenceForProgress
             ))
+
+            // Yield gives the runtime a chance to drain any pool
+            // accumulated by the awaited Vision/Surya work above and
+            // lets cancellation/UI updates propagate. Without this,
+            // long-running convert tasks hold autoreleased temporaries
+            // (Vision NSObject results, dispatch-bridged NSData) for
+            // the entire conversion.
+            await Task.yield()
         }
 
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).
