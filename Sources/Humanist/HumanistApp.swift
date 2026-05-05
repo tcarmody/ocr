@@ -41,6 +41,8 @@ struct HumanistApp: App {
 
     var body: some Scene {
         // Launcher window: queue panel + drop zone for PDFs / folders.
+        // File menu only — no Save / Save As (nothing to save here)
+        // and no Document menu (no document focused).
         WindowGroup("Humanist") {
             ContentView()
                 .environmentObject(queueVM)
@@ -49,21 +51,20 @@ struct HumanistApp: App {
                 .frame(minWidth: 620, minHeight: 520)
         }
         .commands {
-            FileMenuCommands()
-            EditorViewMenu()
+            FileOpenCommands()
         }
 
         // Editor window: one per opened EPUB. macOS reuses an existing
         // window when the same URL value is reopened, so dragging the
         // same .epub twice doesn't duplicate.
         //
-        // No `.commands` attached here. The launcher scene above
-        // declares them once; SwiftUI surfaces command items in the
-        // global menu bar, and `@FocusedObject` inside each command
-        // resolves to whichever editor is currently focused. Adding
-        // `.commands` per-scene would create duplicate "Document"
-        // menus in the bar (one per scene declaring it), which we've
-        // bounced back and forth on — keeping it single-attached.
+        // Commands are re-applied here because SwiftUI scopes menu-bar
+        // command availability to the focused scene's window: with the
+        // modifier only on the launcher, the editor window has no menu
+        // items at all when frontmost — File > Save vanishes and ⌘S
+        // goes nowhere. The Document menu (`EditorViewMenu`) only
+        // attaches to *this* scene to avoid the duplicate top-level
+        // menus we hit when it was attached on every scene.
         WindowGroup("Editor", id: "editor", for: URL.self) { $url in
             if let url {
                 EditorView(epubURL: url)
@@ -72,15 +73,25 @@ struct HumanistApp: App {
                 Text("No EPUB loaded.")
             }
         }
+        .commands {
+            FileOpenCommands()
+            EditorSaveCommands()
+            EditorViewMenu()
+        }
 
         // PDF viewer window: opened by File > Open on a PDF, or by the
         // editor's "Open Source PDF…" command. Same URL → same window.
+        // File menu attached so Open/Convert reach into this scene too;
+        // no Save (PDF is read-only) and no Document menu.
         WindowGroup("PDF", id: "pdf-viewer", for: URL.self) { $url in
             if let url {
                 PDFViewerView(pdfURL: url)
             } else {
                 Text("No PDF loaded.")
             }
+        }
+        .commands {
+            FileOpenCommands()
         }
 
         // Standard macOS Settings (⌘,) scene. Contains AI / Cloud-mode
@@ -92,14 +103,16 @@ struct HumanistApp: App {
     }
 }
 
-/// File menu rebuild. We replace `.newItem` (the default New/Open
-/// pair) with two distinct actions:
+/// File menu — Open / Open Recent / Convert / Split. Replaces the
+/// default `.newItem` placement (which would otherwise carry SwiftUI's
+/// stock New/Open pair). Save / Save As live separately in
+/// `EditorSaveCommands` so they only attach to the editor scene.
 ///
 ///   * **Open** — view-only. PDF → PDF viewer, EPUB → editor.
 ///   * **Convert PDF to EPUB** — runs the OCR pipeline and opens the
 ///     editor on the resulting .epub. Same flow as drag-drop on the
 ///     launcher window.
-private struct FileMenuCommands: Commands {
+private struct FileOpenCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             OpenCommand()
@@ -108,6 +121,15 @@ private struct FileMenuCommands: Commands {
             Divider()
             SplitTwoUpCommand()
         }
+    }
+}
+
+/// File > Save / Save As — attached only to the editor scene so the
+/// commands appear (and ⌘S / ⇧⌘S work) when an editor window is
+/// focused. Each item reads the focused `EditorViewModel` via
+/// `@FocusedObject` and disables itself when no editor is active.
+struct EditorSaveCommands: Commands {
+    var body: some Commands {
         CommandGroup(replacing: .saveItem) {
             EditorSaveCommand()
             EditorSaveAsCommand()
