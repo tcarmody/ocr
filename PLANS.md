@@ -1161,6 +1161,94 @@ to be done.
 
 These are smaller items that follow naturally from work we've done.
 
+## R-Conversion-Summary — Post-conversion stats panel
+
+**Status**: not started. The pipeline runs Cloud-mode features
+silently — there's no UI feedback whether Claude fired, how many
+times, or roughly what it cost. Today the only way to inspect is
+to enable `emitDebugLog: true` and grep `log.txt` for `src=c`
+lines (which is exactly what `SpikeRunner` does, and exactly what
+a real user can't do mid-session).
+
+The Phase 4 spike made this gap concrete: a user with Cloud mode
+on can't tell if the cascade actually escalated to Claude on a
+given book. That's friction we can remove cheaply, and it's a
+prerequisite for the broader AI trail inspector planned in Cloud
+Phase 6.
+
+### Goal
+
+After every conversion, surface a small summary so the user
+knows whether Cloud mode actually did anything. Specifically:
+
+- Claude calls (Sonnet for OCR + table extraction, Haiku for
+  cleanup / classification / TOC) — count + approximate cost.
+- Per-source observation breakdown (Vision / Tesseract / Surya /
+  Claude / embedded-text) so the user can see *which tier* the
+  output mostly came from.
+- Visible in the queue UI as a per-job row (or expandable
+  disclosure) so the user can scan a bulk run and see at a glance
+  which books leaned on Cloud features.
+
+### Approach
+
+```
+Pipeline/
+├── ConversionStats.swift          NEW. Sendable, Codable struct.
+│                                  Per-source obs counts, Claude
+│                                  call count, approximate cost.
+└── PDFToEPUBPipeline.swift        convert() returns ConversionStats
+                                   (was Void). Read counter from
+                                   `ClaudeCallBudget.consumed`.
+
+Humanist/Jobs/
+├── Job.swift                      Add `stats: ConversionStats?`
+│                                  field, persisted in queue store.
+└── JobRunner.swift                Capture stats from convert(),
+                                   write back via store.update().
+
+Humanist/                          New row / column in the queue
+                                   UI. "Claude: 12 calls (~$0.06)"
+                                   when N > 0; "Claude: not invoked"
+                                   when N == 0.
+```
+
+1. `ConversionStats` carries the counters. `Codable` because it
+   gets persisted with the `Job` (the queue store round-trips
+   jobs through JSON).
+2. Cost estimate is a small per-model rate table living in the
+   `AI` module (Sonnet + Haiku input/output rates). The stats
+   struct stores token totals when known and a derived dollar
+   estimate. Honest "≈" prefix in the UI — these are estimates,
+   not invoice numbers.
+3. The reOCR single-page path (editor) returns a stats struct too
+   so the editor can show "this re-OCR cost ~$0.01 / used Claude
+   / used Tesseract" inline.
+
+### Effort
+
+~1 day end-to-end:
+- ~2 hours: stats struct + `convert()` return-type plumbing
+- ~2 hours: queue UI changes
+- ~1 hour: per-model rate table + cost helper
+- ~1 hour: tests
+- ~2 hours: edge cases (jobs persisted before stats existed →
+  nil; cancelled jobs; JobStore JSON migration if needed)
+
+### Dependencies
+
+None hard. `ClaudeCallBudget.consumed` already exposes the
+underlying signal from Phase 3.
+
+### When to ship
+
+Now-ish. Queues naturally before the AI trail inspector (Cloud
+Phase 6) — the inspector needs stats infrastructure anyway, and
+the spike confirmed that "user can't tell if Claude fired" is a
+real friction point, not hypothetical.
+
+---
+
 ## R-Footers — Cross-page running-footer recurrence
 
 **Status**: cross-page recurrence is implemented for top-zone running
@@ -1462,26 +1550,27 @@ use; distribution is lower priority than correctness.
 **What's already done** (so they're off the runway):
 - **Tier 1**: figures, tables (Surya `TableRecPredictor` + heuristic
   fallback), math (figure raster path).
-- **Cloud Phases 1–2**: Anthropic API plumbing, Keychain key store,
-  Settings UI with the Private/Cloud master toggle, `ProcessingMode`
-  threaded end-to-end through the pipeline. Both modes route
-  identically today; the dispatch points are ready for engine swaps.
+- **Cloud Phases 1–3**: Anthropic API plumbing, Keychain key store,
+  Settings UI, `ProcessingMode` plumbed end-to-end, `ClaudeOCREngine`
+  wired into `RegionCascade` as Stage 3.
+- **Cloud Phase 4 spike**: validated against polytonic Greek (Aeschylus
+  *Agamemnon*). Findings in
+  [Tools/spike-results/aeschylus-greek-2026-05-05.md](Tools/spike-results/aeschylus-greek-2026-05-05.md).
+  Headline: cascade as designed never escalates to Claude on this kind
+  of input (Tesseract clears the quality floor); Claude beats local
+  by 3.8 pp when forced. Need Hebrew + Latin data before tuning the
+  per-script floor.
 
 **Next, in roughly this order:**
 
-1. **Cloud Phase 4 spike** before doing more Cloud work — hand-correct
-   ~5 ground-truth pages each in polytonic Greek, Hebrew, and one
-   Latin scan. Run through Surya OCR vs Claude Sonnet. If Claude wins
-   on all three, full speed ahead on Phase 3. If it ties or loses on
-   one, document it and keep Surya as the recommendation for that
-   script family. ~0.5 day. Cheap insurance against a directional bet.
-2. **Cloud Phase 3** — `ClaudeOCREngine` (Sonnet) wired in as the
-   cascade's high-quality tier under `.cloud`. Fires only on regions
-   below the quality floor. ~3-4 days.
-3. **Cloud Phase 5** — `ClaudeTableExtractor` (Sonnet) behind a
+1. **R-Conversion-Summary** (Tier 5) — surface "did Claude fire on
+   this conversion?" in the queue UI. ~1 day. The Phase 4 spike made
+   it clear users have no visibility today, and it's a prerequisite
+   for the broader AI trail inspector planned in Cloud Phase 6.
+2. **Cloud Phase 5** — `ClaudeTableExtractor` (Sonnet) behind a
    `TableExtractor` protocol; Surya path stays as the offline
    fallback. ~2 days.
-4. **Cloud Phase 6** — Haiku features in this order so the editor's
+3. **Cloud Phase 6** — Haiku features in this order so the editor's
    AI-trail inspector ships once and amortizes:
    - **P-LLM-Pass** post-OCR character cleanup. ~5 days standalone,
      less now that the API client is already in place.
@@ -1489,21 +1578,22 @@ use; distribution is lower priority than correctness.
      landmarks. ~2.5 days incremental.
    - **P-TOC-Parsing** — parse printed TOC, supersede heading-based
      splitter when present. ~6 days incremental.
-5. **Tier 1.5 pre-flight intelligence** — `P-Lang-Detect` first
+4. **Tier 1.5 pre-flight intelligence** — `P-Lang-Detect` first
    (~1.5 days, biggest single quality-of-life win), then
-   `P-Cloud-Cost` once Phase 3 is firing real Claude calls,
+   `P-Cloud-Cost` once Phase 5 is firing real Claude calls on tables,
    `P-Profile-Warnings` as a thin layer on top.
-6. **Cloud Phase 7** — first-run UX polish.
-7. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
-   corpus. ~4 days. Naturally follows once Cloud OCR is validated on
-   non-Latin scripts (Phase 4 spike informs this).
-8. **R-Hierarchy** (multi-level chapters) — natural follow-on to
+5. **Cloud Phase 7** — first-run UX polish.
+6. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
+   corpus. ~4 days. Phase 4 spike's findings inform this — current
+   per-region cascade thresholds may need a per-script-family
+   adjustment for Hebrew / Syriac / Coptic where Tesseract is weaker.
+7. **R-Hierarchy** (multi-level chapters) — natural follow-on to
    ChapterSplitter, low effort. ~1 day.
-9. **R-Footers** (cross-page running footers) — symmetric refactor.
+8. **R-Footers** (cross-page running footers) — symmetric refactor.
    ~0.5 day.
-10. **Defer Phase 10 (distribution)** until the user actually wants
-    to share or onboard another machine. The app is signed and runs
-    locally; that's enough for personal use.
+9. **Defer Phase 10 (distribution)** until the user actually wants
+   to share or onboard another machine. The app is signed and runs
+   locally; that's enough for personal use.
 
 Total remaining work to reach "substantially production-grade
 output for the user's working corpus": ~14-16 days through Cloud
