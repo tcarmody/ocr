@@ -294,7 +294,7 @@ struct EditorView: View {
                 workingDirectory: workingDir,
                 reloadTrigger: vm.previewVersion,
                 scrollRequest: vm.scrollPreviewToAnchor,
-                onAnchorVisible: { id in vm.scrollPDFTo(anchorId: id) }
+                onAnchorVisible: { id in vm.didReportPreviewAnchor(id) }
             )
         }
     }

@@ -102,8 +102,19 @@ final class EditorViewModel: ObservableObject {
     /// (or `nil` until the file's first cursor activity). Used by
     /// "Re-OCR Current Page With…" to pick which PDF page to re-OCR
     /// based on what the user is reading in the source pane, not what
-    /// they selected in the PDF.
+    /// they selected in the PDF, and by the explicit "Align Others
+    /// to Source Cursor" command. Updated passively — the source
+    /// pane never drives the others without an explicit command.
     @Published private(set) var currentSourceAnchor: String?
+    /// Topmost `hu-page-N` anchor visible in the rendered preview.
+    /// Updated passively by the IntersectionObserver bridge; consumed
+    /// by the "Align Others to Preview Top" command. Nil before the
+    /// preview has reported its first IO event.
+    @Published private(set) var currentPreviewAnchor: String?
+    /// Last PDF page the embedded PDFView reported. Updated passively
+    /// from `PDFViewPageChanged`; consumed by "Align Others to PDF
+    /// Page". Nil before the user has navigated the PDF.
+    @Published private(set) var currentPDFPage: Int?
 
     /// Tagged anchor scroll request — the `nonce` lets the preview
     /// pane's `onChange(of:)` fire even when the same anchor is
@@ -283,17 +294,30 @@ final class EditorViewModel: ObservableObject {
         }
     }
 
-    // MARK: - linked navigation (Phase 7.D)
+    // MARK: - linked navigation (Phase 7.D, simplified to one-way)
+    //
+    // The three panes are independent. Each tracks its own current
+    // location passively (cursor anchor / preview top anchor / PDF
+    // page) but never auto-drives the others — that bidirectional
+    // auto-sync was the source of two bugs (typing in the source
+    // pane echoed through preview and yanked the cursor back; some
+    // user-driven scrolls were swallowed by stale suppression flags).
+    //
+    // Cross-pane alignment is now an explicit user action via three
+    // commands in the Document menu: "Align Others to Source
+    // Cursor", "Align Others to PDF Page", "Align Others to Preview
+    // Top". Each one drives the *other* two panes one-shot from the
+    // named pane's current location. The driver pane itself is
+    // never moved by these commands, so they can't echo.
+    //
+    // Initial alignment on file switch (clicking a chapter in the
+    // browser) still happens — that's a one-shot align, not the
+    // continuous sync we removed.
 
-    /// Token for the current PDF-page-change observer. Tearing it
-    /// down on detach/reload prevents stale callbacks firing into a
-    /// dead PDFView.
+    /// Token for the PDF-page-change observer. Now used only to
+    /// keep `currentPDFPage` up to date for the alignment commands;
+    /// no cross-pane drive happens from this notification.
     private var pdfPageObserver: NSObjectProtocol?
-    /// True while we're driving the PDF programmatically (preview
-    /// scrolled, we're moving the PDF to match). Suppresses the
-    /// page-change → preview-scroll feedback that would otherwise
-    /// fire back at us.
-    private var suppressPDFToPreviewSync: Bool = false
 
     private func observePDFPageChanges() {
         if let token = pdfPageObserver {
@@ -307,23 +331,82 @@ final class EditorViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                guard !self.suppressPDFToPreviewSync else { return }
                 guard let page = pdfView.currentPage,
                       let pdfPage = pdfView.document?.index(for: page)
                 else { return }
-                self.scrollPreviewTo(pdfPage: pdfPage)
+                self.currentPDFPage = pdfPage
             }
         }
     }
 
-    /// PDF → preview: find the anchor for `pdfPage`, switch the
-    /// selected file if the anchor lives in a different chapter, and
-    /// publish a scroll request.
-    func scrollPreviewTo(pdfPage: Int) {
+    /// CodeMirror-side cursor-anchor reporter. Passive — just keeps
+    /// `currentSourceAnchor` fresh. The cross-pane drive moved to
+    /// `alignOthersToSourceCursor`.
+    func didMoveCursorToAnchor(_ anchorId: String) {
+        currentSourceAnchor = anchorId
+    }
+
+    /// Preview-IO callback. Passive — just keeps
+    /// `currentPreviewAnchor` fresh. The cross-pane drive moved to
+    /// `alignOthersToPreviewTop`.
+    func didReportPreviewAnchor(_ anchorId: String) {
+        currentPreviewAnchor = anchorId
+    }
+
+    /// Scroll source + preview to the anchor that owns the cursor's
+    /// current line in the source pane. PDF jumps to the
+    /// corresponding page. The source pane itself is not touched —
+    /// the cursor stays exactly where the user put it.
+    func alignOthersToSourceCursor() {
+        guard let anchorId = currentSourceAnchor else { return }
+        alignOthers(to: anchorId, drivingPane: .source)
+    }
+
+    /// Scroll source + preview to the anchor for the PDF's
+    /// currently-visible page. PDF stays put.
+    func alignOthersToPDFPage() {
+        guard let map = pageMap,
+              let pdfPage = currentPDFPage,
+              let entry = bestAnchor(for: pdfPage, in: map)
+        else { return }
+        alignOthers(to: entry.anchorId, drivingPane: .pdf)
+    }
+
+    /// Scroll source + PDF to the preview's topmost anchor. Preview
+    /// stays put.
+    func alignOthersToPreviewTop() {
+        guard let anchorId = currentPreviewAnchor else { return }
+        alignOthers(to: anchorId, drivingPane: .preview)
+    }
+
+    /// One-shot alignment to a chapter file's first page anchor —
+    /// called when the user clicks a chapter in the file-tree
+    /// sidebar so the user lands in the right place across all
+    /// three panes.
+    func alignAllToCurrentFile() {
+        guard let pkg = package, let file = selectedFile else { return }
+        guard let map = pageMap else { return }
+        let prefix = pkg.workingDirectory.canonicalForFile.path
+        let fileRel = file.id.canonicalForFile.path
+            .replacingOccurrences(of: prefix + "/", with: "")
+        guard let entry = map.entries.first(where: { $0.xhtmlFile == fileRel })
+        else { return }
+        alignOthers(to: entry.anchorId, drivingPane: .none)
+    }
+
+    /// Drives PDF + preview + source as appropriate for `to`,
+    /// skipping whichever pane is the driver (that pane is the
+    /// authoritative source of the anchor and shouldn't be moved).
+    /// `.none` updates all three (used for file-switch initial
+    /// alignment).
+    private func alignOthers(to anchorId: String, drivingPane: AlignmentDriver) {
         guard let map = pageMap, let pkg = package else { return }
-        guard let entry = bestAnchor(for: pdfPage, in: map) else { return }
-        // Switch file if needed. Path is stored relative to the EPUB
-        // root in the sidecar; resolve against the working dir.
+        guard let entry = map.entries.first(where: { $0.anchorId == anchorId })
+        else { return }
+        // File switch when the anchor lives in a different chapter
+        // than the current selection. Always allowed — switching
+        // file isn't really "driving the source pane", it's
+        // selecting which file the source pane shows.
         let fileURL = pkg.workingDirectory
             .appendingPathComponent(entry.xhtmlFile)
             .canonicalForFile
@@ -337,78 +420,30 @@ final class EditorViewModel: ObservableObject {
             xhtmlFile: entry.xhtmlFile,
             nonce: scrollNonce
         )
-        scrollPreviewToAnchor = req
-        scrollCodeToAnchor = req
-    }
-
-    /// Preview → PDF: called by the IntersectionObserver bridge when
-    /// the topmost-visible anchor in the rendered XHTML changes.
-    /// Looks up the matching PDF page and scrolls the PDF view.
-    /// Suppresses the inverse callback during the transition so the
-    /// two directions don't fight each other.
-    /// Code → others sync. Called by `CodeEditorView` when the
-    /// CodeMirror cursor crosses into a new `hu-page-N` anchor's
-    /// region. Drives the PDF page + preview scroll without
-    /// republishing the code-scroll request (the cursor is already
-    /// where it needs to be).
-    func didMoveCursorToAnchor(_ anchorId: String) {
-        currentSourceAnchor = anchorId
-        guard let map = pageMap,
-              let entry = map.entries.first(where: { $0.anchorId == anchorId })
-        else { return }
-        // PDF: jump to matching page if not already there. Suppress
-        // the page-change → preview-scroll callback so it doesn't
-        // republish a code-scroll request that ping-pongs us back.
-        if let pdfView = pdfController?.pdfView,
+        if drivingPane != .preview {
+            scrollPreviewToAnchor = req
+        }
+        if drivingPane != .source {
+            scrollCodeToAnchor = req
+        }
+        if drivingPane != .pdf,
+           let pdfView = pdfController?.pdfView,
            let document = pdfView.document,
            entry.pdfPage >= 0, entry.pdfPage < document.pageCount,
            let page = document.page(at: entry.pdfPage),
            pdfView.currentPage !== page {
-            suppressPDFToPreviewSync = true
             pdfView.go(to: page)
-            DispatchQueue.main.async { [weak self] in
-                self?.suppressPDFToPreviewSync = false
-            }
         }
-        // Preview: scroll to the anchor. Don't republish
-        // `scrollCodeToAnchor` — the code is already there.
-        scrollNonce &+= 1
-        scrollPreviewToAnchor = AnchorScrollRequest(
-            anchorId: entry.anchorId,
-            xhtmlFile: entry.xhtmlFile,
-            nonce: scrollNonce
-        )
     }
 
-    func scrollPDFTo(anchorId: String) {
-        guard let map = pageMap,
-              let entry = map.entries.first(where: { $0.anchorId == anchorId })
-        else { return }
-        // Code editor follows the preview's current scroll position
-        // too — preview is the source of truth in this direction, but
-        // we still want the source pane to track. (Preview is already
-        // showing the anchor, so don't republish its scroll request.)
-        scrollNonce &+= 1
-        scrollCodeToAnchor = AnchorScrollRequest(
-            anchorId: entry.anchorId,
-            xhtmlFile: entry.xhtmlFile,
-            nonce: scrollNonce
-        )
-        // Drive the PDF to match.
-        guard let pdfView = pdfController?.pdfView,
-              let document = pdfView.document,
-              entry.pdfPage >= 0, entry.pdfPage < document.pageCount,
-              let page = document.page(at: entry.pdfPage)
-        else { return }
-        if pdfView.currentPage === page { return }  // already there
-        suppressPDFToPreviewSync = true
-        pdfView.go(to: page)
-        // Release suppression on next runloop tick — by then the
-        // PDFViewPageChangedNotification has already fired and been
-        // ignored.
-        DispatchQueue.main.async { [weak self] in
-            self?.suppressPDFToPreviewSync = false
-        }
+    /// Identifier for "which pane is driving" — used by `alignOthers`
+    /// to skip moving the driver pane. `.none` means an external
+    /// trigger (file-switch initial align) and all three should
+    /// update. Distinct from the file-level `EditorPane` enum
+    /// (which controls pane visibility): this one identifies the
+    /// authoritative source of an alignment action.
+    enum AlignmentDriver: Sendable, Equatable {
+        case source, pdf, preview, none
     }
 
     // MARK: - re-OCR selection (menu enrichment)
@@ -869,10 +904,18 @@ final class EditorViewModel: ObservableObject {
 
     func select(_ node: FileNode) {
         guard !node.isDirectory else { return }
+        let isFileSwitch = selectedFile?.id != node.id
         // Stash the current file's edits before switching.
         flushSourceTextToBuffer()
         selectedFile = node
         loadSourceForSelectedFile()
+        // One-shot align: when the user picks a chapter from the
+        // browser, align the PDF + preview to that chapter's first
+        // page anchor (if it has one). No continuous sync — that
+        // bidirectional model produced two bugs and was removed.
+        if isFileSwitch {
+            alignAllToCurrentFile()
+        }
     }
 
     /// Copy the live `sourceText` back into `buffers` for the file the

@@ -57,11 +57,59 @@ struct EditorViewMenu: Commands {
             Divider()
             EditorReloadPreviewCommand()
             Divider()
+            EditorAlignFromSourceCommand()
+            EditorAlignFromPDFCommand()
+            EditorAlignFromPreviewCommand()
+            Divider()
             EditorReOCRCurrentPageMenu()
             EditorReOCRPDFSelectionMenu()
             Divider()
             ShowCorrectionTrailCommand()
         }
+    }
+}
+
+// MARK: - alignment commands (replaces continuous bidirectional sync)
+
+/// Drive the PDF + preview to the source pane's current cursor
+/// anchor. The source pane itself isn't moved — the cursor stays
+/// exactly where the user put it. This replaces the auto cursor →
+/// PDF → preview drive that previously ran on every cursor activity
+/// and produced the typing-yanks-cursor bug.
+private struct EditorAlignFromSourceCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Align Others to Source Cursor") {
+            vm?.alignOthersToSourceCursor()
+        }
+        .keyboardShortcut("1", modifiers: [.command, .shift])
+        .disabled(vm?.currentSourceAnchor == nil)
+    }
+}
+
+/// Drive the source + preview to the PDF's currently-visible page.
+/// The PDF stays put.
+private struct EditorAlignFromPDFCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Align Others to PDF Page") {
+            vm?.alignOthersToPDFPage()
+        }
+        .keyboardShortcut("2", modifiers: [.command, .shift])
+        .disabled(vm?.currentPDFPage == nil)
+    }
+}
+
+/// Drive the source + PDF to the preview's topmost-visible anchor.
+/// The preview stays put.
+private struct EditorAlignFromPreviewCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Align Others to Preview Top") {
+            vm?.alignOthersToPreviewTop()
+        }
+        .keyboardShortcut("3", modifiers: [.command, .shift])
+        .disabled(vm?.currentPreviewAnchor == nil)
     }
 }
 
