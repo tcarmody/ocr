@@ -155,12 +155,23 @@ public struct EPUBBuilder {
         let navItem = OPFWriter.Item(
             id: "nav", href: "nav.xhtml", mediaType: "application/xhtml+xml", properties: "nav"
         )
-        let navEntries = chapterItems.enumerated().map { (i, item) in
-            NavWriter.Entry(
-                title: book.chapters[i].title ?? "Chapter \(i + 1)",
-                href: item.href
-            )
-        }
+        // Prefer the parsed TOC over heuristic chapters when it
+        // has a confident inferred offset and at least one entry
+        // resolves to a known page anchor — that gives readers a
+        // structure that matches the printed book. Fall back to
+        // one-entry-per-chapter when:
+        //   * TOC parsing didn't run / produced nothing
+        //   * the offset learner couldn't disambiguate
+        //   * none of the TOC entries map into the pagemap
+        // This is what closed the bug where a book with 1
+        // heuristic chapter + a 20-entry printed TOC produced an
+        // EPUB nav with only 1 entry.
+        let navEntries = Self.makeNavEntries(
+            chapters: book.chapters,
+            chapterItems: chapterItems,
+            pageMapEntries: pageMapEntries,
+            parsedTOC: parsedTOC
+        )
         let navXML = NavWriter(language: book.language, title: book.title, entries: navEntries).render()
         entries.append(EPUBPackager.Entry(
             path: "OEBPS/nav.xhtml",
@@ -183,5 +194,84 @@ public struct EPUBBuilder {
         ))
 
         try packager.write(entries, to: outputURL)
+    }
+
+    /// Build the nav.xhtml entry list. Two paths:
+    ///
+    ///   * **Parsed-TOC path.** When `parsedTOC` has an inferred
+    ///     offset and at least one entry resolves to a page anchor
+    ///     in `pageMapEntries`, emit one nav entry per TOC entry
+    ///     pointing to the matching `<chapter>.xhtml#hu-page-N`.
+    ///     This is what users see when they enable Cloud Phase 6e
+    ///     ("Parse printed TOC"): a navigation tree that mirrors
+    ///     the book's printed contents.
+    ///
+    ///   * **Heuristic-chapter path.** When the parsed TOC is
+    ///     missing or unresolvable, fall back to one entry per
+    ///     chapter, pointing at the chapter file itself. Same as
+    ///     the original implementation.
+    static func makeNavEntries(
+        chapters: [Chapter],
+        chapterItems: [OPFWriter.Item],
+        pageMapEntries: [PageMap.Entry],
+        parsedTOC: ParsedTOC?
+    ) -> [NavWriter.Entry] {
+        if let nav = navEntriesFromParsedTOC(
+            parsedTOC: parsedTOC,
+            pageMapEntries: pageMapEntries
+        ), !nav.isEmpty {
+            return nav
+        }
+        return chapterItems.enumerated().map { (i, item) in
+            NavWriter.Entry(
+                title: chapters[i].title ?? "Chapter \(i + 1)",
+                href: item.href
+            )
+        }
+    }
+
+    /// Compute nav entries directly from a parsed TOC. Returns nil
+    /// when the inputs aren't usable (no TOC, no offset learned, no
+    /// arabic-numeral entries). Entries whose display page doesn't
+    /// resolve to a known anchor are dropped — keeping the entry
+    /// without a working link would just produce a broken table-of-
+    /// contents row in the reader.
+    static func navEntriesFromParsedTOC(
+        parsedTOC: ParsedTOC?,
+        pageMapEntries: [PageMap.Entry]
+    ) -> [NavWriter.Entry]? {
+        guard let toc = parsedTOC,
+              let offset = toc.inferredOffset,
+              !toc.entries.isEmpty,
+              !pageMapEntries.isEmpty
+        else { return nil }
+        // Resolve "anchor at this PDF page" via the pagemap. Some
+        // anchors exist as exact entries; others may be off by one
+        // page (a chapter that starts on a recto landed on the
+        // verso anchor). Try exact first; ±1 fallback second.
+        let byPDFPage = Dictionary(
+            grouping: pageMapEntries, by: \.pdfPage
+        )
+        var nav: [NavWriter.Entry] = []
+        for entry in toc.entries {
+            guard let displayInt = entry.displayPageInt else { continue }
+            let inferredPDF = displayInt + offset - 1
+            // OPF chapter href is `text/chapter-001.xhtml`; pagemap
+            // stores `OEBPS/text/chapter-001.xhtml`. Strip the
+            // `OEBPS/` prefix so the nav href is relative to the
+            // nav.xhtml file (which lives at OEBPS/nav.xhtml).
+            let relativize = { (path: String) -> String in
+                path.hasPrefix("OEBPS/")
+                    ? String(path.dropFirst("OEBPS/".count))
+                    : path
+            }
+            let resolved = byPDFPage[inferredPDF]?.first
+                ?? byPDFPage[inferredPDF + 1]?.first
+                ?? byPDFPage[inferredPDF - 1]?.first
+            guard let mapEntry = resolved else { continue }
+            let href = "\(relativize(mapEntry.xhtmlFile))#\(mapEntry.anchorId)"
+            nav.append(NavWriter.Entry(title: entry.title, href: href))
+        }
+        return nav.isEmpty ? nil : nav
     }
 }

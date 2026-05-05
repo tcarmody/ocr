@@ -60,6 +60,72 @@ final class CorrectionTrailTests: XCTestCase {
         XCTAssertEqual(decoded.entries[1].mode, "vision")
     }
 
+    /// nav.xhtml entries come from the parsed TOC when one is
+    /// passed and at least one entry resolves to a known anchor.
+    /// Each entry's href points to the chapter file + page anchor
+    /// matching its display page (after offset).
+    func test_nav_uses_parsed_TOC_when_offset_resolves() {
+        let chapterItems: [OPFWriter.Item] = [
+            .init(id: "chapter-001", href: "text/chapter-001.xhtml",
+                  mediaType: "application/xhtml+xml", properties: nil),
+        ]
+        let pageMap: [PageMap.Entry] = [
+            .init(pdfPage: 0, xhtmlFile: "OEBPS/text/chapter-001.xhtml",
+                  anchorId: "hu-page-0"),
+            .init(pdfPage: 22, xhtmlFile: "OEBPS/text/chapter-001.xhtml",
+                  anchorId: "hu-page-22"),
+        ]
+        let toc = ParsedTOC(
+            entries: [
+                ParsedTOC.Entry(title: "Body", displayPage: "1"),
+                ParsedTOC.Entry(title: "Conclusion", displayPage: "23"),
+            ],
+            inferredOffset: 0
+        )
+        let chapters = [
+            Chapter(title: "Heuristic Title", blocks: [],
+                    pageAnchors: [
+                        PageAnchor(pdfPage: 0, anchorId: "hu-page-0"),
+                        PageAnchor(pdfPage: 22, anchorId: "hu-page-22"),
+                    ])
+        ]
+        let nav = EPUBBuilder.makeNavEntries(
+            chapters: chapters,
+            chapterItems: chapterItems,
+            pageMapEntries: pageMap,
+            parsedTOC: toc
+        )
+        XCTAssertEqual(nav.count, 2)
+        XCTAssertEqual(nav[0].title, "Body")
+        XCTAssertEqual(nav[0].href, "text/chapter-001.xhtml#hu-page-0")
+        XCTAssertEqual(nav[1].title, "Conclusion")
+        XCTAssertEqual(nav[1].href, "text/chapter-001.xhtml#hu-page-22")
+    }
+
+    /// When the parsed TOC has no inferred offset (offset learner
+    /// couldn't disambiguate), nav falls back to one entry per
+    /// chapter — same as the no-TOC case.
+    func test_nav_falls_back_to_chapters_when_no_offset() {
+        let chapterItems: [OPFWriter.Item] = [
+            .init(id: "chapter-001", href: "text/chapter-001.xhtml",
+                  mediaType: "application/xhtml+xml", properties: nil),
+        ]
+        let toc = ParsedTOC(
+            entries: [ParsedTOC.Entry(title: "Body", displayPage: "1")],
+            inferredOffset: nil
+        )
+        let chapters = [Chapter(title: "Single Heuristic", blocks: [])]
+        let nav = EPUBBuilder.makeNavEntries(
+            chapters: chapters,
+            chapterItems: chapterItems,
+            pageMapEntries: [],
+            parsedTOC: toc
+        )
+        XCTAssertEqual(nav.count, 1)
+        XCTAssertEqual(nav[0].title, "Single Heuristic")
+        XCTAssertEqual(nav[0].href, "text/chapter-001.xhtml")
+    }
+
     /// Building without a trail (or with an empty trail) leaves no
     /// trail sidecar — keeps non-Cleanup-mode EPUBs clean.
     func test_no_trail_means_no_sidecar() throws {
