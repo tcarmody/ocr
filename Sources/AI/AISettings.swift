@@ -1,0 +1,105 @@
+import Foundation
+
+/// User-facing AI configuration, persisted to `UserDefaults`.
+///
+/// The processing-mode toggle and per-feature switches live here.
+/// API keys are *not* in this struct — they live in the keychain
+/// via `AnthropicAPIKeyStore`. Phase 1 only builds the storage
+/// layer + the Settings UI; the pipeline reads `processingMode`
+/// in Phase 2 onward.
+public struct AISettings: Sendable, Codable, Equatable {
+    public var processingMode: ProcessingMode
+    public var cloudFeatures: CloudFeatures
+    /// Hard ceiling on Claude calls per book. Defaults to 200 —
+    /// catches runaway documents (every region triggering Claude)
+    /// without throttling normal use. Settable from 0 (disable
+    /// Cloud features for this book) up to a few thousand.
+    public var perBookCallCap: Int
+
+    public init(
+        processingMode: ProcessingMode = .privateLocal,
+        cloudFeatures: CloudFeatures = CloudFeatures(),
+        perBookCallCap: Int = 200
+    ) {
+        self.processingMode = processingMode
+        self.cloudFeatures = cloudFeatures
+        self.perBookCallCap = perBookCallCap
+    }
+
+    /// Per-feature toggles. Each is independently switchable, but
+    /// none of them activate unless `processingMode == .cloud`. The
+    /// model selection per feature follows our recommendation:
+    /// Sonnet 4.6 for vision-heavy tasks, Haiku 4.5 for text.
+    public struct CloudFeatures: Sendable, Codable, Equatable {
+        /// Vision OCR for hard regions where Vision + Tesseract both
+        /// scored below the quality floor (Sonnet 4.6).
+        public var hardRegionOCR: Bool
+        /// Table-structure extraction from cropped table region
+        /// images (Sonnet 4.6).
+        public var tableExtraction: Bool
+        /// Character-level cleanup pass on OCR output that's already
+        /// "good enough" but has known mojibake / diacritic issues
+        /// (Haiku 4.5).
+        public var postOCRCleanup: Bool
+        /// EPUB 3 `epub:type` per chapter via title classification
+        /// (Haiku 4.5).
+        public var semanticClassification: Bool
+        /// Parse the printed TOC into an authoritative chapter tree
+        /// (Haiku 4.5 default; escalates to Sonnet 4.6 on parse
+        /// failure).
+        public var tocParsing: Bool
+
+        public init(
+            hardRegionOCR: Bool = true,
+            tableExtraction: Bool = true,
+            postOCRCleanup: Bool = false,
+            semanticClassification: Bool = false,
+            tocParsing: Bool = false
+        ) {
+            self.hardRegionOCR = hardRegionOCR
+            self.tableExtraction = tableExtraction
+            self.postOCRCleanup = postOCRCleanup
+            self.semanticClassification = semanticClassification
+            self.tocParsing = tocParsing
+        }
+    }
+}
+
+/// `UserDefaults`-backed persistence for `AISettings`. One JSON blob
+/// under `humanist.ai-settings`; reads return the default-init
+/// settings when nothing is stored or the stored payload is corrupt.
+///
+/// `@unchecked Sendable` because `UserDefaults` is thread-safe by
+/// Apple's documentation (atomic reads / writes per key) but isn't
+/// formally annotated as such in the SDK.
+public struct AISettingsStore: @unchecked Sendable {
+    public let defaults: UserDefaults
+    public let key: String
+
+    public init(
+        defaults: UserDefaults = .standard,
+        key: String = "humanist.ai-settings"
+    ) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    public func load() -> AISettings {
+        guard let data = defaults.data(forKey: key),
+              let settings = try? JSONDecoder().decode(AISettings.self, from: data) else {
+            return AISettings()
+        }
+        return settings
+    }
+
+    public func save(_ settings: AISettings) {
+        guard let data = try? JSONEncoder().encode(settings) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    /// Reset to defaults. Used by the Settings UI's "Restore Defaults"
+    /// button and by tests that need a known starting state.
+    public func reset() {
+        defaults.removeObject(forKey: key)
+    }
+}

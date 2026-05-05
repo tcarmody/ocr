@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "EPUB", targets: ["EPUB"]),
         .library(name: "Layout", targets: ["Layout"]),
         .library(name: "Pipeline", targets: ["Pipeline"]),
+        .library(name: "AI", targets: ["AI"]),
     ],
     dependencies: [
         // ZIPFoundation handles the ZIP packaging — most importantly the
@@ -65,9 +66,20 @@ let package = Package(
             dependencies: ["Document", "PDFIngest", "OCR", "EPUB", "Layout"],
             path: "Sources/Pipeline"
         ),
+        // Anthropic API plumbing for optional Cloud-mode features.
+        // Pure data types + a URLSession transport — depends on no
+        // OCR / PDF / EPUB code. Pipeline + Humanist depend on this
+        // when (in later phases) Claude-backed engines are wired in.
+        // The transport is split behind a protocol so a future bulk
+        // path (Messages Batches API) reuses the same request /
+        // response types without touching the synchronous client.
+        .target(
+            name: "AI",
+            path: "Sources/AI"
+        ),
         .executableTarget(
             name: "Humanist",
-            dependencies: ["Pipeline"],
+            dependencies: ["Pipeline", "AI"],
             path: "Sources/Humanist"
         ),
         .testTarget(
@@ -84,6 +96,11 @@ let package = Package(
             name: "PipelineTests",
             dependencies: ["Pipeline", "Document", "EPUB", "PDFIngest"],
             path: "Tests/PipelineTests"
+        ),
+        .testTarget(
+            name: "AITests",
+            dependencies: ["AI"],
+            path: "Tests/AITests"
         ),
     ]
 )

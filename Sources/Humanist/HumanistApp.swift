@@ -66,6 +66,13 @@ struct HumanistApp: App {
                 Text("No PDF loaded.")
             }
         }
+
+        // Standard macOS Settings (⌘,) scene. Contains AI / Cloud-mode
+        // configuration today; future tabs (e.g. typography, default
+        // languages) slot in here as `TabView` items.
+        Settings {
+            AISettingsView()
+        }
     }
 }
 
