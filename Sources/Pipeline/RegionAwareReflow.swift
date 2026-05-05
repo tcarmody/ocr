@@ -83,6 +83,24 @@ enum RegionAwareReflow {
     /// log can format them identically.
     static var lastHFReclassificationsPerPage: [Int: [Reclassification]] = [:]
 
+    /// Per-page record of heading regions whose Surya-assigned
+    /// reading order placed them after body content despite being
+    /// visually above all of it — promoted to the front of the page
+    /// by `correctHeadingReadingOrder`. Surfaced in the debug log
+    /// so we can see when the heuristic fires.
+    static var lastHeadingPromotionsPerPage: [Int: [HeadingPromotion]] = [:]
+
+    /// One heading region's promotion trace.
+    struct HeadingPromotion: Sendable, Equatable {
+        let regionIndex: Int
+        let kind: String
+        let firstLineExcerpt: String
+        let oldReadingOrder: Int
+        let newReadingOrder: Int
+        let topBodyMidY: Double
+        let headingMidY: Double
+    }
+
     /// One region's reclassification trace. `signals` is a small
     /// human-readable list ("starts with marker '1.'", "in bottom 60%",
     /// "gap=0.087 > 2× line=0.038") for the debug log.
@@ -99,6 +117,7 @@ enum RegionAwareReflow {
         lastFootnotesPerPage.removeAll(keepingCapacity: true)
         lastReclassificationsPerPage.removeAll(keepingCapacity: true)
         lastHFReclassificationsPerPage.removeAll(keepingCapacity: true)
+        lastHeadingPromotionsPerPage.removeAll(keepingCapacity: true)
         var blocks: [Block] = []
         var allFootnotes: [FootnoteLinker.Parsed] = []
         var pageAnchors: [PageAnchor] = []
@@ -131,11 +150,21 @@ enum RegionAwareReflow {
             // *after* the footnote pass so a 1-line footnote in the
             // bottom 10% (already retagged to `.footnote`) won't be
             // re-grabbed as a `.pageFooter` and lose its popup.
-            let (effectiveRegions, hfDecisions) = reclassifyLikelyHeadersFooters(
+            let (afterHF, hfDecisions) = reclassifyLikelyHeadersFooters(
                 regions: afterFootnotes, observations: page.observations
             )
             if !hfDecisions.isEmpty {
                 lastHFReclassificationsPerPage[page.pageIndex] = hfDecisions
+            }
+            // Repair Surya's reading order for `.title`/`.sectionHeader`
+            // regions that sit visually above all body content but got
+            // sorted to the back. Runs last so it operates on the
+            // final region kinds.
+            let (effectiveRegions, headingPromotions) = correctHeadingReadingOrder(
+                regions: afterHF, observations: page.observations
+            )
+            if !headingPromotions.isEmpty {
+                lastHeadingPromotionsPerPage[page.pageIndex] = headingPromotions
             }
             let pageFootnotes = FootnoteLinker.parseFootnotes(
                 pageIndex: page.pageIndex,
@@ -534,5 +563,118 @@ enum RegionAwareReflow {
         }
 
         return (output, decisions)
+    }
+
+    // MARK: - heading reading-order correction
+
+    /// Body-bearing kinds used to anchor "where the body content
+    /// starts" on a page. Excludes captions because captions can
+    /// legitimately sit above a heading (e.g. table caption that
+    /// precedes a section break).
+    private static let headingPromotionBodyAnchors: Set<LayoutRegion.Kind> = [
+        .text, .listItem,
+    ]
+
+    /// Surya occasionally assigns a `.title`/`.sectionHeader` region
+    /// at the top of the page a reading-order index that sorts AFTER
+    /// the body content beneath it. The reflow output then renders
+    /// the heading at the bottom of the page block, which is wrong
+    /// for nearly every book layout.
+    ///
+    /// This pass rebuilds reading-order indices for headings that:
+    ///
+    ///   1. Are `.title` or `.sectionHeader`.
+    ///   2. Sit visually above ALL body-anchor regions on the page
+    ///      (`heading.midY > max(body.midY)`).
+    ///
+    /// Both conditions together guard mid-page section breaks (where
+    /// the heading legitimately follows body content): such a heading
+    /// will have body regions ABOVE it on the page and so fail the
+    /// "above everything" gate.
+    ///
+    /// Promoted headings get reading-order indices placed before the
+    /// minimum existing assigned order; multiple promoted headings
+    /// keep their relative top-down order.
+    static func correctHeadingReadingOrder(
+        regions: [LayoutRegion],
+        observations: [TextObservation]
+    ) -> (regions: [LayoutRegion], promotions: [HeadingPromotion]) {
+        // Need at least one body anchor to compare against; without
+        // one (a page that's entirely headings + figures, say) the
+        // existing reading order is the best we have.
+        let bodyMidYs = regions
+            .filter { headingPromotionBodyAnchors.contains($0.kind) }
+            .map(\.box.midY)
+        guard let topBodyMidY = bodyMidYs.max() else { return (regions, []) }
+
+        // Headings that need promoting: above all body, and currently
+        // ordered AT OR AFTER the topmost body region. (If Surya
+        // already put the heading first, leave it alone.)
+        let bodyMinOrder = regions
+            .filter { headingPromotionBodyAnchors.contains($0.kind) }
+            .compactMap { $0.readingOrder >= 0 ? $0.readingOrder : nil }
+            .min() ?? Int.max
+        var candidates: [(idx: Int, region: LayoutRegion)] = []
+        for (idx, region) in regions.enumerated() {
+            guard region.kind == .title || region.kind == .sectionHeader else { continue }
+            guard region.box.midY > topBodyMidY else { continue }
+            // Already ordered before body? Nothing to do.
+            if region.readingOrder >= 0, region.readingOrder < bodyMinOrder {
+                continue
+            }
+            candidates.append((idx, region))
+        }
+        guard !candidates.isEmpty else { return (regions, []) }
+
+        // Sort top-down (highest midY first) so multiple stacked
+        // headings keep their visual order.
+        candidates.sort { $0.region.box.midY > $1.region.box.midY }
+
+        // The existing sort in `reflowPage` treats negative reading
+        // orders as "unassigned, sort last", so we must use positive
+        // integers smaller than the current minimum positive order.
+        // Shift every existing positive order up by `count` to free
+        // up [0..count-1] for the promoted headings.
+        let count = candidates.count
+        var output = regions
+        for (i, r) in regions.enumerated() {
+            if r.readingOrder >= 0 {
+                output[i] = LayoutRegion(
+                    kind: r.kind, box: r.box,
+                    readingOrder: r.readingOrder + count,
+                    confidence: r.confidence
+                )
+            }
+        }
+        var promotions: [HeadingPromotion] = []
+        for (offset, entry) in candidates.enumerated() {
+            let newOrder = offset  // 0, 1, 2, … in top-down order
+            let r = entry.region
+            output[entry.idx] = LayoutRegion(
+                kind: r.kind, box: r.box,
+                readingOrder: newOrder,
+                confidence: r.confidence
+            )
+            // First-line excerpt for the audit log. Mirrors the
+            // pattern used by the other reclassifiers.
+            let inflated = r.box.insetBy(dx: -regionInflation, dy: -regionInflation)
+            let inRegion = observations.filter { obs in
+                inflated.contains(CGPoint(x: obs.box.midX, y: obs.box.midY))
+            }
+            let firstObs = inRegion.max(by: { $0.box.midY < $1.box.midY })
+            let excerpt = String((firstObs?.text ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .prefix(60))
+            promotions.append(HeadingPromotion(
+                regionIndex: entry.idx,
+                kind: r.kind.rawValue,
+                firstLineExcerpt: excerpt,
+                oldReadingOrder: r.readingOrder,
+                newReadingOrder: newOrder,
+                topBodyMidY: Double(topBodyMidY),
+                headingMidY: Double(r.box.midY)
+            ))
+        }
+        return (output, promotions)
     }
 }

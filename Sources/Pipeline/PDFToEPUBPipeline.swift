@@ -874,6 +874,27 @@ public actor PDFToEPUBPipeline {
             out += "\n"
         }
 
+        // Heading reading-order promotions — Surya tagged the region
+        // as a heading correctly but ordered it after body content;
+        // we moved it to the front because it was visually above all
+        // body on the page.
+        let promotionsByPage = RegionAwareReflow.lastHeadingPromotionsPerPage
+        if !promotionsByPage.isEmpty {
+            out += "HEADING READING-ORDER PROMOTIONS (heuristic: heading visually above all body)\n"
+            out += "format: page/regionIdx kind  excerpt  oldOrder → newOrder  midY=N.NN > topBodyMidY=N.NN\n\n"
+            for pageIdx in promotionsByPage.keys.sorted() {
+                for p in promotionsByPage[pageIdx] ?? [] {
+                    out += String(
+                        format: "Page %d/region%d  %@  \"%@\"  %d → %d  midY=%.3f > topBodyMidY=%.3f\n",
+                        pageIdx, p.regionIndex, p.kind, p.firstLineExcerpt,
+                        p.oldReadingOrder, p.newReadingOrder,
+                        p.headingMidY, p.topBodyMidY
+                    )
+                }
+            }
+            out += "\n"
+        }
+
         // Surya layout regions per page — when Phase 4 is active.
         let pagesWithLayout = pages.filter { ($0.layoutRegions?.isEmpty == false) }
         if !pagesWithLayout.isEmpty {
