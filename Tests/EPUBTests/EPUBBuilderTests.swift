@@ -156,6 +156,134 @@ final class EPUBBuilderTests: XCTestCase {
                       "Cover asset should carry properties=\"cover-image\"")
     }
 
+    // MARK: - tables
+
+    func test_chapter_with_table_renders_table_markup_with_caption() throws {
+        let book = Book(
+            title: "Table Test",
+            language: .en,
+            chapters: [
+                Chapter(
+                    title: "Ch",
+                    blocks: [
+                        .heading(level: 1, runs: [InlineRun("Ch")]),
+                        .table(
+                            rows: [
+                                [
+                                    TableCell(runs: [InlineRun("Author")], isHeader: true),
+                                    TableCell(runs: [InlineRun("Year")], isHeader: true),
+                                ],
+                                [
+                                    TableCell(runs: [InlineRun("Foucault")]),
+                                    TableCell(runs: [InlineRun("1971")]),
+                                ],
+                                [
+                                    TableCell(runs: [InlineRun("Weber")]),
+                                    TableCell(runs: [InlineRun("1922")]),
+                                ],
+                            ],
+                            caption: [InlineRun("Table 1: Bibliography sample.")]
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let outputURL = makeTempURL(ext: "epub")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+        try EPUBBuilder(modificationDate: fixedDate).write(book: book, to: outputURL)
+
+        guard let archive = Archive(url: outputURL, accessMode: .read) else {
+            XCTFail("Could not open produced EPUB"); return
+        }
+        let xhtml = try readEntry("OEBPS/text/chapter-001.xhtml", from: archive)
+        XCTAssertTrue(xhtml.contains("<table role=\"table\">"))
+        XCTAssertTrue(xhtml.contains("<caption>Table 1: Bibliography sample.</caption>"))
+        XCTAssertTrue(xhtml.contains("<thead>"),
+                      "Leading all-header row should land in <thead>")
+        XCTAssertTrue(xhtml.contains("<tbody>"))
+        XCTAssertTrue(xhtml.contains("<th>Author</th><th>Year</th>"))
+        XCTAssertTrue(xhtml.contains("<td>Foucault</td><td>1971</td>"))
+        XCTAssertTrue(xhtml.contains("<td>Weber</td><td>1922</td>"))
+    }
+
+    func test_table_without_header_row_skips_thead() throws {
+        let book = Book(
+            title: "Table Test 2",
+            language: .en,
+            chapters: [
+                Chapter(
+                    title: "Ch",
+                    blocks: [
+                        .table(
+                            rows: [
+                                [
+                                    TableCell(runs: [InlineRun("a")]),
+                                    TableCell(runs: [InlineRun("b")]),
+                                ],
+                                [
+                                    TableCell(runs: [InlineRun("c")]),
+                                    TableCell(runs: [InlineRun("d")]),
+                                ],
+                            ],
+                            caption: []
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let outputURL = makeTempURL(ext: "epub")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+        try EPUBBuilder(modificationDate: fixedDate).write(book: book, to: outputURL)
+        guard let archive = Archive(url: outputURL, accessMode: .read) else {
+            XCTFail("Could not open produced EPUB"); return
+        }
+        let xhtml = try readEntry("OEBPS/text/chapter-001.xhtml", from: archive)
+        XCTAssertTrue(xhtml.contains("<table role=\"table\">"))
+        XCTAssertFalse(xhtml.contains("<thead>"),
+                       "No header cells ⇒ no <thead>")
+        XCTAssertFalse(xhtml.contains("<caption>"),
+                       "Empty caption ⇒ no <caption>")
+        XCTAssertTrue(xhtml.contains("<tbody>"))
+    }
+
+    func test_table_cell_with_rowspan_colspan_emits_attributes() throws {
+        let book = Book(
+            title: "Span Test",
+            language: .en,
+            chapters: [
+                Chapter(
+                    title: "Ch",
+                    blocks: [
+                        .table(
+                            rows: [
+                                [
+                                    TableCell(runs: [InlineRun("merged")], colspan: 2),
+                                ],
+                                [
+                                    TableCell(runs: [InlineRun("a")]),
+                                    TableCell(runs: [InlineRun("b")], rowspan: 2),
+                                ],
+                                [
+                                    TableCell(runs: [InlineRun("c")]),
+                                ],
+                            ],
+                            caption: []
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let outputURL = makeTempURL(ext: "epub")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+        try EPUBBuilder(modificationDate: fixedDate).write(book: book, to: outputURL)
+        guard let archive = Archive(url: outputURL, accessMode: .read) else {
+            XCTFail("Could not open produced EPUB"); return
+        }
+        let xhtml = try readEntry("OEBPS/text/chapter-001.xhtml", from: archive)
+        XCTAssertTrue(xhtml.contains("colspan=\"2\""))
+        XCTAssertTrue(xhtml.contains("rowspan=\"2\""))
+    }
+
     func test_figure_without_caption_omits_figcaption_element() throws {
         let pngStub: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         let asset = FigureAsset(

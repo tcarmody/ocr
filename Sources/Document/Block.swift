@@ -24,4 +24,11 @@ public enum Block: Sendable, Equatable {
     /// is the inline runs that render inside `<figcaption>` (empty
     /// caption ⇒ no figcaption element).
     case figure(assetId: String, alt: String, caption: [InlineRun])
+
+    /// `<table>` with cells laid out as a 2D grid. `rows` is row-major;
+    /// each row is a list of cells in left-to-right order. `caption`
+    /// renders inside `<caption>` directly under the `<table>` (empty
+    /// ⇒ no caption element). The first row's `isHeader` flags drive
+    /// `<thead>` placement; remaining rows go in `<tbody>`.
+    case table(rows: [[TableCell]], caption: [InlineRun])
 }

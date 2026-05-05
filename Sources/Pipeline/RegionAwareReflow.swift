@@ -452,6 +452,58 @@ enum RegionAwareReflow {
                 continue
             }
 
+            // Tables: gather observations inside the region's bbox,
+            // run the heuristic, emit `Block.table`. The observations
+            // get marked as `claimed` so body regions can't grab them
+            // as a fallback paragraph. If the heuristic returns nil
+            // (degenerate grid below the rows × cols floor), the
+            // region's observations fall through and get emitted as
+            // a paragraph by the body path — better than dropping
+            // them entirely.
+            if region.kind == .table {
+                let inflated = region.box.insetBy(dx: -regionInflation, dy: -regionInflation)
+                var inRegion: [TextObservation] = []
+                var inRegionIdx: [Int] = []
+                for (idx, obs) in page.observations.enumerated() {
+                    if claimed.contains(idx) { continue }
+                    let cx = obs.box.midX
+                    let cy = obs.box.midY
+                    if inflated.contains(CGPoint(x: cx, y: cy)) {
+                        inRegion.append(obs)
+                        inRegionIdx.append(idx)
+                    }
+                }
+                if let rows = TableHeuristic.extract(observations: inRegion) {
+                    // Heuristic produced a usable grid — claim every
+                    // observation that contributed and find any
+                    // associated caption.
+                    for idx in inRegionIdx { claimed.insert(idx) }
+                    let captionRuns: [InlineRun]
+                    if let originalIdx = matchOriginalRegionIndex(
+                        region: region, in: originalRegions
+                    ) {
+                        let key = CaptionAssociator.PageRegionKey(
+                            pageIndex: page.pageIndex, regionIndex: originalIdx
+                        )
+                        captionRuns = self.captionRuns(
+                            for: key,
+                            captionByFigure: captionByFigure,
+                            originalRegions: originalRegions,
+                            observations: page.observations,
+                            pageFootnotes: pageFootnotes
+                        )
+                    } else {
+                        captionRuns = []
+                    }
+                    blocks.append(.table(rows: rows, caption: captionRuns))
+                    continue
+                }
+                // Heuristic rejected — fall through to the paragraph
+                // path below by treating the region as if it were
+                // `.text` for this iteration. We drop into the same
+                // observation-claiming loop the body kinds use.
+            }
+
             // Captions matched to a figure are emitted as part of that
             // figure block — skip them here so they don't double-emit
             // as paragraphs. Unmatched captions fall through to the
@@ -466,7 +518,10 @@ enum RegionAwareReflow {
                 if captionsClaimed.contains(key) { continue }
             }
 
-            guard bodyKinds.contains(region.kind) else { continue }
+            // `.table` regions whose heuristic rejected fall through
+            // here so the user still sees the contents as paragraph
+            // text rather than losing it.
+            guard bodyKinds.contains(region.kind) || region.kind == .table else { continue }
             let inflated = region.box.insetBy(dx: -regionInflation, dy: -regionInflation)
             var assigned: [TextObservation] = []
             for (idx, obs) in page.observations.enumerated() {

@@ -110,9 +110,9 @@ public enum ChapterSplitter {
     /// A pre-H1 segment with only invisible page-break anchors (very
     /// common: cover page renders as a single anchor + nothing) would
     /// otherwise produce an empty front-matter chapter that just
-    /// confuses readers' navigation panels. A figure on its own counts
-    /// as substantive — a frontispiece illustration shouldn't get
-    /// silently dropped from the front-matter chapter.
+    /// confuses readers' navigation panels. A figure or table on its
+    /// own counts as substantive — a frontispiece illustration or a
+    /// front-matter table shouldn't get silently dropped.
     private static func hasSubstantiveContent(_ blocks: [Block]) -> Bool {
         for b in blocks {
             switch b {
@@ -122,7 +122,7 @@ public enum ChapterSplitter {
                 let joined = runs.map(\.text).joined()
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !joined.isEmpty { return true }
-            case .figure:
+            case .figure, .table:
                 return true
             }
         }
@@ -168,6 +168,17 @@ public enum ChapterSplitter {
             case .figure(_, _, let caption):
                 for r in caption {
                     if let id = r.noterefId { ids.insert(id) }
+                }
+            case .table(let rows, let caption):
+                for r in caption {
+                    if let id = r.noterefId { ids.insert(id) }
+                }
+                for row in rows {
+                    for cell in row {
+                        for r in cell.runs {
+                            if let id = r.noterefId { ids.insert(id) }
+                        }
+                    }
                 }
             case .anchor:
                 continue

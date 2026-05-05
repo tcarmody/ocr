@@ -46,6 +46,28 @@ public enum XHTMLFragmentRenderer {
                     out += "</figcaption>"
                 }
                 out += "</figure>\n"
+            case .table(let rows, let caption):
+                guard !rows.isEmpty else { continue }
+                out += "<table role=\"table\">"
+                if !caption.isEmpty {
+                    out += "<caption>"
+                    out += renderRuns(caption, parentLanguage: language)
+                    out += "</caption>"
+                }
+                out += "<tbody>"
+                for row in rows {
+                    out += "<tr>"
+                    for cell in row {
+                        let tag = cell.isHeader ? "th" : "td"
+                        var attrs = ""
+                        if cell.rowspan > 1 { attrs += " rowspan=\"\(cell.rowspan)\"" }
+                        if cell.colspan > 1 { attrs += " colspan=\"\(cell.colspan)\"" }
+                        let inner = renderRuns(cell.runs, parentLanguage: language)
+                        out += "<\(tag)\(attrs)>\(inner)</\(tag)>"
+                    }
+                    out += "</tr>"
+                }
+                out += "</tbody></table>\n"
             }
         }
         return out

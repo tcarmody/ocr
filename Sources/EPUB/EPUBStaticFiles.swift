@@ -29,5 +29,9 @@ enum EPUBStaticFiles {
         figure { margin: 1em 0; text-align: center; }
         figure img { max-width: 100%; height: auto; }
         figcaption { font-size: 0.85em; font-style: italic; margin-top: 0.4em; }
+        table { border-collapse: collapse; margin: 1em auto; }
+        th, td { border: 1px solid #ccc; padding: 0.3em 0.5em; text-align: left; vertical-align: top; }
+        th { background: #f5f5f5; font-weight: bold; }
+        caption { font-size: 0.85em; font-style: italic; margin-bottom: 0.4em; }
         """
 }

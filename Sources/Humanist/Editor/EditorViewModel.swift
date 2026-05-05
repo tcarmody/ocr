@@ -543,7 +543,8 @@ final class EditorViewModel: ObservableObject {
     /// display in the Re-OCR sheet. Anchors are skipped (they're
     /// invisible in the rendered output anyway). Figures contribute
     /// only their caption text — the image itself isn't representable
-    /// in a plain-text preview.
+    /// in a plain-text preview. Tables flatten to caption + rows
+    /// joined by tabs / newlines so the user can still read them.
     private func paragraphPlainText(_ blocks: [Block]) -> String {
         var lines: [String] = []
         for block in blocks {
@@ -555,6 +556,15 @@ final class EditorViewModel: ObservableObject {
             case .figure(_, _, let caption):
                 let text = caption.map(\.text).joined()
                 if !text.isEmpty { lines.append(text) }
+            case .table(let rows, let caption):
+                let captionText = caption.map(\.text).joined()
+                if !captionText.isEmpty { lines.append(captionText) }
+                let rowLines = rows.map { row in
+                    row.map { $0.runs.map(\.text).joined() }.joined(separator: "\t")
+                }
+                if !rowLines.isEmpty {
+                    lines.append(rowLines.joined(separator: "\n"))
+                }
             case .anchor:
                 continue
             }

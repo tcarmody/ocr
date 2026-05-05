@@ -1093,6 +1093,14 @@ public actor PDFToEPUBPipeline {
                     out += " caption=\"\(captionText)\""
                 }
                 out += "\n"
+            case .table(let rows, let caption):
+                let captionText = caption.map(\.text).joined()
+                let colCount = rows.first?.count ?? 0
+                out += "[\(i)] TABLE rows=\(rows.count) cols=\(colCount)"
+                if !captionText.isEmpty {
+                    out += " caption=\"\(captionText)\""
+                }
+                out += "\n"
             }
             out += "\n"
         }
@@ -1180,12 +1188,13 @@ public actor PDFToEPUBPipeline {
 
     /// Blocks the cross-paragraph bridging lookback walks past when
     /// finding the previous paragraph. Anchors are invisible
-    /// page-boundary markers; figures are visual content that doesn't
-    /// participate in textual bridging. Both can sit between two
-    /// paragraphs that legitimately want to merge into one sentence.
+    /// page-boundary markers; figures and tables are visual / tabular
+    /// content that don't participate in textual bridging. All three
+    /// can sit between two paragraphs that legitimately want to
+    /// merge into one sentence.
     private static func isBridgePassthrough(_ block: Block) -> Bool {
         switch block {
-        case .anchor, .figure: return true
+        case .anchor, .figure, .table: return true
         case .heading, .paragraph: return false
         }
     }

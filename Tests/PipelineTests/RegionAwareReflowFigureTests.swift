@@ -151,6 +151,7 @@ final class RegionAwareReflowFigureTests: XCTestCase {
             case .heading: return "h"
             case .paragraph: return "p"
             case .figure: return "f"
+            case .table: return "t"
             }
         }
         XCTAssertTrue(kinds.contains("f"), "Should have a figure block")

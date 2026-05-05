@@ -2,8 +2,8 @@ import Foundation
 import CoreGraphics
 import Layout
 
-/// Pair `.picture` (and `.formula`) regions with their nearest
-/// `.caption` regions on the same page.
+/// Pair `.picture`, `.formula`, and `.table` regions with their
+/// nearest `.caption` regions on the same page.
 ///
 /// Why book-wide orientation detection:
 ///   Surya emits `.caption` regions independently of `.picture`. On
@@ -33,9 +33,9 @@ public enum CaptionAssociator {
         }
     }
 
-    /// Output of `associate`: for each picture/formula region, the
-    /// matching caption region (if any), plus the orientation that
-    /// was chosen across the book.
+    /// Output of `associate`: for each picture / formula / table
+    /// region, the matching caption region (if any), plus the
+    /// orientation that was chosen across the book.
     public struct Associations: Sendable, Equatable {
         public let captionByFigure: [PageRegionKey: PageRegionKey]
         public let orientation: Orientation
@@ -65,9 +65,9 @@ public enum CaptionAssociator {
     /// it happens to be vertically nearest.
     private static let minHorizontalOverlap: CGFloat = 0.20
 
-    /// Pair every `.picture` and `.formula` across the book with the
-    /// closest `.caption` in the book's dominant orientation. Returns
-    /// associations and the chosen orientation.
+    /// Pair every `.picture`, `.formula`, and `.table` across the
+    /// book with the closest `.caption` in the book's dominant
+    /// orientation. Returns associations and the chosen orientation.
     public static func associate(
         regionsByPage: [Int: [LayoutRegion]]
     ) -> Associations {
@@ -137,7 +137,7 @@ public enum CaptionAssociator {
         pageIndex: Int, regions: [LayoutRegion]
     ) -> [FigureCandidates] {
         let figures = regions.enumerated().filter { (_, r) in
-            r.kind == .picture || r.kind == .formula
+            r.kind == .picture || r.kind == .formula || r.kind == .table
         }
         guard !figures.isEmpty else { return [] }
         let captions = regions.enumerated().filter { (_, r) in r.kind == .caption }

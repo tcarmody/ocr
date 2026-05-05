@@ -55,6 +55,11 @@ struct XHTMLWriter {
                     body += "</figcaption>"
                 }
                 body += "</figure>\n"
+            case .table(let rows, let caption):
+                body += renderTable(
+                    rows: rows, caption: caption,
+                    defaultLanguage: defaultLanguage
+                )
             }
         }
 
@@ -87,6 +92,61 @@ struct XHTMLWriter {
         \(body)</body>
         </html>
         """
+    }
+
+    /// Render a `Block.table` — `<table role="table">` with optional
+    /// `<caption>`, plus `<thead>` for the leading run of all-header
+    /// rows and `<tbody>` for the rest. Empty tables (zero rows) emit
+    /// nothing rather than a degenerate empty `<table>`.
+    private func renderTable(
+        rows: [[TableCell]], caption: [InlineRun],
+        defaultLanguage: BCP47
+    ) -> String {
+        guard !rows.isEmpty else { return "" }
+        var out = "<table role=\"table\">\n"
+        if !caption.isEmpty {
+            out += "<caption>"
+            out += renderRuns(caption, parentLanguage: defaultLanguage)
+            out += "</caption>\n"
+        }
+        // Leading rows whose every cell is a header live in <thead>;
+        // remaining rows go in <tbody>. Heuristic-built tables emit
+        // all-data (no thead); a future Surya table-model integration
+        // sets header flags correctly.
+        let headerRowCount = rows.prefix { row in
+            !row.isEmpty && row.allSatisfy { $0.isHeader }
+        }.count
+        if headerRowCount > 0 {
+            out += "<thead>\n"
+            for row in rows.prefix(headerRowCount) {
+                out += renderRow(row, defaultLanguage: defaultLanguage)
+            }
+            out += "</thead>\n"
+        }
+        let bodyRows = Array(rows.dropFirst(headerRowCount))
+        if !bodyRows.isEmpty {
+            out += "<tbody>\n"
+            for row in bodyRows {
+                out += renderRow(row, defaultLanguage: defaultLanguage)
+            }
+            out += "</tbody>\n"
+        }
+        out += "</table>\n"
+        return out
+    }
+
+    private func renderRow(_ row: [TableCell], defaultLanguage: BCP47) -> String {
+        var out = "<tr>"
+        for cell in row {
+            let tag = cell.isHeader ? "th" : "td"
+            var attrs = ""
+            if cell.rowspan > 1 { attrs += " rowspan=\"\(cell.rowspan)\"" }
+            if cell.colspan > 1 { attrs += " colspan=\"\(cell.colspan)\"" }
+            let inner = renderRuns(cell.runs, parentLanguage: defaultLanguage)
+            out += "<\(tag)\(attrs)>\(inner)</\(tag)>"
+        }
+        out += "</tr>\n"
+        return out
     }
 
     private func renderRuns(_ runs: [InlineRun], parentLanguage: BCP47) -> String {
