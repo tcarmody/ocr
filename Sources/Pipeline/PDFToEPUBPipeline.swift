@@ -77,7 +77,11 @@ public actor PDFToEPUBPipeline {
     public init(
         visionEngine: any OCREngine = VisionOCREngine(),
         tesseractEngine: (any OCREngine)? = TesseractOCREngine.detect(),
-        suryaConnection: SuryaConnection? = SuryaConnection.detect()
+        // Default to the process-wide shared SuryaConnection so all
+        // pipelines (one per job in bulk runs) talk to the same Python
+        // sidecar. `.detect()` here would spawn a fresh ~5-15 GB
+        // interpreter per pipeline and orphan the previous one.
+        suryaConnection: SuryaConnection? = SuryaConnection.shared
     ) {
         self.visionEngine = visionEngine
         self.tesseractEngine = tesseractEngine

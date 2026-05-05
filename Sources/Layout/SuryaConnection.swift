@@ -7,9 +7,20 @@ import CoreGraphics
 /// holding two Python processes would mean ~2.6 GB resident *per
 /// predictor*. One process, lazy-loaded models, two ops.
 public actor SuryaConnection {
+    /// Process-wide shared connection. Lazy: `detect()` runs on
+    /// first access, returning nil if Surya isn't installed (the
+    /// pipeline falls back to Vision/Tesseract in that case). Once
+    /// non-nil, every pipeline reuses the same Python sidecar so
+    /// weights load once for the lifetime of the app. Without this,
+    /// JobRunner constructing a fresh `PDFToEPUBPipeline()` per job
+    /// spawned a new ~5-15 GB Python interpreter per book and never
+    /// reaped them.
+    public static let shared: SuryaConnection? = SuryaConnection.detect()
+
     /// Auto-detect the Python interpreter from `uv tool install
     /// surya-ocr` and the bundled sidecar script. Returns nil if
-    /// either component is missing.
+    /// either component is missing. Prefer `.shared` for production
+    /// callers — `detect()` builds a fresh connection every time.
     public static func detect() -> SuryaConnection? {
         guard let pythonPath = Self.detectSuryaPython() else { return nil }
         guard let scriptPath = Self.detectSidecarScript() else { return nil }

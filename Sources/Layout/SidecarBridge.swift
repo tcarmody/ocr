@@ -52,6 +52,19 @@ public actor SidecarBridge {
         self.config = config
     }
 
+    /// Safety net: if the bridge actor itself is deallocated without
+    /// `stop()` being called, terminate the child Python process so
+    /// it doesn't keep running with several GB of model weights
+    /// resident. Production goes through `SuryaConnection.shared`
+    /// which lives for the app's lifetime, but tests / accidental
+    /// throwaway bridges go through here.
+    deinit {
+        if let process, process.isRunning {
+            process.terminate()
+        }
+        try? stdin?.close()
+    }
+
     /// Start the sidecar if not already running, blocking on its
     /// hello message.
     public func startIfNeeded() async throws {
