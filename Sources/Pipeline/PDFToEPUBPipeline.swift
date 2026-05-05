@@ -874,6 +874,25 @@ public actor PDFToEPUBPipeline {
             out += "\n"
         }
 
+        // Region splits — Surya merged body + footnote into a single
+        // `.text` region; we detected an internal vertical gap with
+        // a footnote marker on the lower side and split it in two.
+        let splitsByPage = RegionAwareReflow.lastRegionSplitsPerPage
+        if !splitsByPage.isEmpty {
+            out += "REGION SPLITS (heuristic: large internal gap + footnote marker on lower side)\n"
+            out += "format: page/originalRegionIdx upperKind/lowerKind  excerpt  gap=N.NNN > 2.5×medianH=N.NNN\n\n"
+            for pageIdx in splitsByPage.keys.sorted() {
+                for s in splitsByPage[pageIdx] ?? [] {
+                    out += String(
+                        format: "Page %d/region%d  %@/%@  \"%@\"  gap=%.3f > 2.5×medianH=%.3f\n",
+                        pageIdx, s.originalRegionIndex, s.upperKind, s.lowerKind,
+                        s.footnoteExcerpt, s.gap, s.medianLineHeight
+                    )
+                }
+            }
+            out += "\n"
+        }
+
         // Heading reading-order promotions — Surya tagged the region
         // as a heading correctly but ordered it after body content;
         // we moved it to the front because it was visually above all

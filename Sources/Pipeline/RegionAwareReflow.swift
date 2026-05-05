@@ -101,6 +101,21 @@ enum RegionAwareReflow {
         let headingMidY: Double
     }
 
+    /// Per-page record of `.text` regions Surya merged body+footnote
+    /// into one chunk; we split them into a `.text` upper + `.footnote`
+    /// lower based on a large internal gap + leading footnote marker.
+    static var lastRegionSplitsPerPage: [Int: [RegionSplit]] = [:]
+
+    /// Audit trace for one region split.
+    struct RegionSplit: Sendable, Equatable {
+        let originalRegionIndex: Int
+        let upperKind: String
+        let lowerKind: String
+        let footnoteExcerpt: String
+        let gap: Double
+        let medianLineHeight: Double
+    }
+
     /// One region's reclassification trace. `signals` is a small
     /// human-readable list ("starts with marker '1.'", "in bottom 60%",
     /// "gap=0.087 > 2× line=0.038") for the debug log.
@@ -118,6 +133,7 @@ enum RegionAwareReflow {
         lastReclassificationsPerPage.removeAll(keepingCapacity: true)
         lastHFReclassificationsPerPage.removeAll(keepingCapacity: true)
         lastHeadingPromotionsPerPage.removeAll(keepingCapacity: true)
+        lastRegionSplitsPerPage.removeAll(keepingCapacity: true)
         var blocks: [Block] = []
         var allFootnotes: [FootnoteLinker.Parsed] = []
         var pageAnchors: [PageAnchor] = []
@@ -136,12 +152,24 @@ enum RegionAwareReflow {
                 blocks.append(contentsOf: heuristicFallback(for: page))
                 continue
             }
+            // First: split any `.text` region where Surya merged
+            // body + footnote(s) into one chunk. Those merged regions
+            // can't be reclassified later because the upper half
+            // (body) doesn't match any footnote signal — splitting
+            // produces a separate lower `.footnote` region that the
+            // downstream linker can pick up.
+            let (afterSplit, splitDecisions) = splitTextRegionsAtFootnoteGap(
+                regions: regions, observations: page.observations
+            )
+            if !splitDecisions.isEmpty {
+                lastRegionSplitsPerPage[page.pageIndex] = splitDecisions
+            }
             // Reclassify Surya `.text` regions that look like
             // footnotes — Surya often misses these and tags them as
             // body. Conservative heuristic (3 signals must agree)
             // documented on `reclassifyLikelyFootnotes`.
             let (afterFootnotes, fnDecisions) = reclassifyLikelyFootnotes(
-                regions: regions, observations: page.observations
+                regions: afterSplit, observations: page.observations
             )
             if !fnDecisions.isEmpty {
                 lastReclassificationsPerPage[page.pageIndex] = fnDecisions
@@ -522,11 +550,8 @@ enum RegionAwareReflow {
                 continue
             }
 
-            // Signal 2: region height ≤ furniture threshold.
-            guard region.box.height <= pageFurnitureMaxHeight else { continue }
-
-            // Signal 3: total text length under the brevity cap. We
-            // also need the first line for the audit excerpt.
+            // Pull observations once — needed both for the brevity
+            // gate and the page-number-only fallback below.
             let inflated = region.box.insetBy(
                 dx: -regionInflation, dy: -regionInflation
             )
@@ -535,34 +560,186 @@ enum RegionAwareReflow {
             }
             guard !inRegion.isEmpty else { continue }
             let totalChars = inRegion.reduce(0) { $0 + $1.text.count }
-            guard totalChars <= pageFurnitureMaxChars else { continue }
+            let combinedText = inRegion
+                .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Page-number bypass: if the region contains nothing but
+            // a page number (digits, roman numerals, or short
+            // decorations like "— 47 —"), reclassify regardless of
+            // height. This catches Surya bundling a horizontal rule
+            // with the page number into one taller region.
+            let isPureNumeric = HeaderFooterClassifier.isPageNumberLike(combinedText)
+            if !isPureNumeric {
+                // Signal 2 (standard path): region height ≤ furniture threshold.
+                guard region.box.height <= pageFurnitureMaxHeight else { continue }
+                // Signal 3 (standard path): brevity cap.
+                guard totalChars <= pageFurnitureMaxChars else { continue }
+            }
 
             let firstObs = inRegion.max(by: { $0.box.midY < $1.box.midY })
             let excerpt = String((firstObs?.text ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .prefix(60))
 
-            // All three signals agree — reclassify.
+            // Signals all agree — reclassify.
             output[idx] = LayoutRegion(
                 kind: targetKind,
                 box: region.box,
                 readingOrder: region.readingOrder,
                 confidence: region.confidence
             )
+            let signals: [String] = isPureNumeric
+                ? [positionDesc, "page-number bypass: text=\"\(combinedText)\""]
+                : [
+                    positionDesc,
+                    String(format: "height=%.3f ≤ %.2f", Double(region.box.height), Double(pageFurnitureMaxHeight)),
+                    "chars=\(totalChars) ≤ \(pageFurnitureMaxChars)",
+                ]
             decisions.append(Reclassification(
                 regionIndex: idx,
                 originalKind: region.kind.rawValue,
                 newKind: targetKind.rawValue,
                 firstLineExcerpt: excerpt,
-                signals: [
-                    positionDesc,
-                    String(format: "height=%.3f ≤ %.2f", Double(region.box.height), Double(pageFurnitureMaxHeight)),
-                    "chars=\(totalChars) ≤ \(pageFurnitureMaxChars)",
-                ]
+                signals: signals
             ))
         }
 
         return (output, decisions)
+    }
+
+    // MARK: - region split at footnote gap
+
+    /// Vertical gap (in units of median line height) within a `.text`
+    /// region that triggers split consideration. A real paragraph has
+    /// ~1× line gap; a body→footnote separator (with horizontal rule
+    /// + visual padding) typically yields 2.5× or more.
+    private static let regionSplitGapMultiplier: CGFloat = 2.5
+
+    /// When Surya merges body content + footnote(s) into a single
+    /// `.text` region (it occasionally misses the horizontal rule
+    /// separator), the existing reclassifiers can't fix it because
+    /// they operate per-region and the body part of the merged region
+    /// doesn't match any footnote signal.
+    ///
+    /// Detect the merge by walking observations within each `.text`
+    /// region top-to-bottom and looking for a vertical gap >
+    /// `2.5 × median line height` whose bottom side starts with a
+    /// footnote marker (`^\d{1,3}[.)\s]` or a symbolic marker). When
+    /// found, split the region in two:
+    ///
+    ///   * upper: original kind (`.text`), bbox tight around the upper
+    ///     observations, original reading order kept.
+    ///   * lower: new `.footnote` region, bbox tight around the lower
+    ///     observations, reading order = original (downstream
+    ///     `bodyKinds` filter drops it from the body stream anyway).
+    ///
+    /// Conservative on purpose: requires both the gap signal AND the
+    /// marker signal, the same dual gate as `reclassifyLikelyFootnotes`.
+    /// A standalone footnote region (Surya did split correctly) is
+    /// untouched — it has only one chunk, no internal gap to detect.
+    static func splitTextRegionsAtFootnoteGap(
+        regions: [LayoutRegion],
+        observations: [TextObservation]
+    ) -> (regions: [LayoutRegion], decisions: [RegionSplit]) {
+        var output: [LayoutRegion] = []
+        output.reserveCapacity(regions.count)
+        var decisions: [RegionSplit] = []
+
+        for (idx, region) in regions.enumerated() {
+            guard region.kind == .text else {
+                output.append(region)
+                continue
+            }
+            let inflated = region.box.insetBy(
+                dx: -regionInflation, dy: -regionInflation
+            )
+            // Observations within the region, sorted top-to-bottom
+            // (highest midY first).
+            let inRegion = observations
+                .filter { obs in
+                    inflated.contains(CGPoint(x: obs.box.midX, y: obs.box.midY))
+                }
+                .sorted { $0.box.midY > $1.box.midY }
+            guard inRegion.count >= 2 else {
+                output.append(region)
+                continue
+            }
+            let medianH = medianObservationHeight(in: inRegion)
+            guard medianH > 0 else {
+                output.append(region)
+                continue
+            }
+            // Find largest gap between consecutive observations.
+            var bestGap: CGFloat = 0
+            var bestSplitAfter = -1  // index in inRegion where gap follows
+            for i in 0..<(inRegion.count - 1) {
+                let upper = inRegion[i]
+                let lower = inRegion[i + 1]
+                let gap = upper.box.minY - lower.box.maxY
+                if gap > bestGap {
+                    bestGap = gap
+                    bestSplitAfter = i
+                }
+            }
+            guard bestSplitAfter >= 0,
+                  bestGap >= regionSplitGapMultiplier * medianH else {
+                output.append(region)
+                continue
+            }
+            // Footnote marker check on the first observation BELOW
+            // the gap.
+            let firstBelow = inRegion[bestSplitAfter + 1]
+            let belowText = firstBelow.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard leadingFootnoteMarker(belowText) != nil else {
+                output.append(region)
+                continue
+            }
+
+            // Split. Compute tight bboxes from observations.
+            let upperObs = Array(inRegion.prefix(bestSplitAfter + 1))
+            let lowerObs = Array(inRegion.suffix(from: bestSplitAfter + 1))
+            let upperBox = boundingBox(of: upperObs)
+            let lowerBox = boundingBox(of: lowerObs)
+
+            output.append(LayoutRegion(
+                kind: .text, box: upperBox,
+                readingOrder: region.readingOrder,
+                confidence: region.confidence
+            ))
+            output.append(LayoutRegion(
+                kind: .footnote, box: lowerBox,
+                readingOrder: region.readingOrder,
+                confidence: region.confidence
+            ))
+            decisions.append(RegionSplit(
+                originalRegionIndex: idx,
+                upperKind: "text",
+                lowerKind: "footnote",
+                footnoteExcerpt: String(belowText.prefix(60)),
+                gap: Double(bestGap),
+                medianLineHeight: Double(medianH)
+            ))
+        }
+        return (output, decisions)
+    }
+
+    /// Tight bounding box around a group of observations. Returns
+    /// `.zero` for an empty group.
+    private static func boundingBox(of observations: [TextObservation]) -> CGRect {
+        guard let first = observations.first else { return .zero }
+        var minX = first.box.minX
+        var minY = first.box.minY
+        var maxX = first.box.maxX
+        var maxY = first.box.maxY
+        for o in observations.dropFirst() {
+            minX = min(minX, o.box.minX)
+            minY = min(minY, o.box.minY)
+            maxX = max(maxX, o.box.maxX)
+            maxY = max(maxY, o.box.maxY)
+        }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
     // MARK: - heading reading-order correction
