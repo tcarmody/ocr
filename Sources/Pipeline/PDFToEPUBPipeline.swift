@@ -70,6 +70,7 @@ public actor PDFToEPUBPipeline {
     private let tesseractEngine: (any OCREngine)?
     private let suryaEngine: (any OCREngine)?
     private let layoutAnalyzer: SuryaLayoutAnalyzer?
+    private let tableExtractor: SuryaTableExtractor?
     private let embeddedExtractor = EmbeddedTextExtractor()
     private let gapFiller = EmbeddedTextGapFiller()
     private let qualityScorer = EmbeddedTextQualityScorer()
@@ -85,15 +86,18 @@ public actor PDFToEPUBPipeline {
     ) {
         self.visionEngine = visionEngine
         self.tesseractEngine = tesseractEngine
-        // Surya layout + OCR share one Python process. Constructing
-        // both wrappers from the same connection means the sidecar
-        // loads weights once even when both modes are exercised.
+        // Surya layout + OCR + table all share one Python process.
+        // Constructing every wrapper from the same connection means
+        // weights for whichever modes are exercised load once for
+        // the lifetime of the app.
         if let suryaConnection {
             self.suryaEngine = SuryaOCREngine(connection: suryaConnection)
             self.layoutAnalyzer = SuryaLayoutAnalyzer(connection: suryaConnection)
+            self.tableExtractor = SuryaTableExtractor(connection: suryaConnection)
         } else {
             self.suryaEngine = nil
             self.layoutAnalyzer = nil
+            self.tableExtractor = nil
         }
     }
 
@@ -482,6 +486,11 @@ public actor PDFToEPUBPipeline {
         // OEBPS/images/* asset bytes.
         var figureExtractionsByPage: [Int: [FigureExtractor.ExtractedFigure]] = [:]
         let figureExtractor = FigureExtractor()
+        // (pageIdx, regionIdx) → Surya-derived table rows. Built
+        // during pass 1 (sidecar requires the cropped page image).
+        // Reflow consumes this; when no entry is present for a
+        // `.table` region, reflow falls back to `TableHeuristic`.
+        var tableExtractionsByKey: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:]
 
         for i in 0..<totalPages {
             try Task.checkCancellation()
@@ -621,6 +630,30 @@ public actor PDFToEPUBPipeline {
                     }
                 }
 
+                // Phase 6 (Path A): for each `.table` region, run
+                // Surya's table-structure model on a cropped image
+                // and map this page's OCR observations onto cells.
+                // Skipped when the sidecar isn't available; reflow
+                // falls back to `TableHeuristic` for those regions.
+                if let tableExtractor, let regions = layoutForPage {
+                    for (regionIdx, region) in regions.enumerated()
+                    where region.kind == .table {
+                        if let rows = await tableExtractor.extract(
+                            pageImage: image,
+                            regionBox: region.box,
+                            observations: observations,
+                            stagingDir: stagingDir,
+                            pageIndex: i,
+                            regionIndex: regionIdx
+                        ) {
+                            let key = CaptionAssociator.PageRegionKey(
+                                pageIndex: i, regionIndex: regionIdx
+                            )
+                            tableExtractionsByKey[key] = rows
+                        }
+                    }
+                }
+
                 // No per-page PNG cleanup — the staging dir's lifecycle
                 // (temp removed in `defer`, debug folder kept) handles
                 // it as a single batch.
@@ -666,6 +699,7 @@ public actor PDFToEPUBPipeline {
             reflowed = Self.reflow(
                 pageResults: pageResults,
                 figureExtractions: figureExtractionsByPage,
+                tableExtractions: tableExtractionsByKey,
                 captionAssociations: captionAssociations,
                 debugLogURL: logURL,
                 extractorDiagnostics: extractorDiagnostics,
@@ -677,6 +711,7 @@ public actor PDFToEPUBPipeline {
             reflowed = Self.reflow(
                 pageResults: pageResults,
                 figureExtractions: figureExtractionsByPage,
+                tableExtractions: tableExtractionsByKey,
                 captionAssociations: captionAssociations
             )
         }
@@ -737,6 +772,7 @@ public actor PDFToEPUBPipeline {
     static func reflow(
         pageResults: [PageObservations],
         figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
+        tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:],
         captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
             captionByFigure: [:], orientation: .below
         ),
@@ -762,6 +798,7 @@ public actor PDFToEPUBPipeline {
             let result = RegionAwareReflow.reflow(
                 pageResults: pageResults,
                 figureExtractions: figureExtractions,
+                tableExtractions: tableExtractions,
                 captionAssociations: captionAssociations
             )
             merged = result.blocks

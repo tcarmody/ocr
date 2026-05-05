@@ -27,6 +27,27 @@ Response (success):
   - position is the reading-order index Surya assigned.
 
 Request:
+  {"op": "table", "image_path": "/abs/path/to/cropped-table.png"}
+
+Response (success):
+  {
+    "op": "table.result",
+    "cells": [
+      {"bbox": [x1, y1, x2, y2], "row_id": 0, "col_id": 0,
+       "within_row_id": 0, "rowspan": 1, "colspan": 1,
+       "is_header": true, "confidence": 0.92},
+      ...
+    ],
+    "rows": [{"row_id": 0, "is_header": true, "bbox": [...]}, ...],
+    "image_size": [W, H]
+  }
+  - bbox is in pixel coords (top-left origin) of the cropped table
+    image, not the full page. Caller is responsible for the crop and
+    for translating coordinates back to the full page.
+  - Cell text is NOT populated by this op; the caller maps OCR
+    observations onto cell bboxes.
+
+Request:
   {"op": "ping"}
 Response:
   {"op": "pong", "now": 1733257812.345}
@@ -111,6 +132,7 @@ def read_msg() -> dict[str, Any] | None:
 
 _layout_predictor = None
 _ocr_predictors = None  # tuple of (recognition, detection)
+_table_predictor = None
 
 
 def get_layout_predictor():
@@ -151,6 +173,23 @@ def get_ocr_predictors():
         detection = DetectionPredictor()
         _ocr_predictors = (recognition, detection)
     return _ocr_predictors
+
+
+def get_table_predictor():
+    """Lazily construct Surya's TableRecPredictor.
+
+    The table predictor is a third model on top of layout and OCR
+    (~1.3 GB more). It only loads if the caller actually invokes
+    `handle_table` — books with no `.table` regions never pay the
+    weight-load cost. The predictor outputs cell *structure* only
+    (polygons, spans, is_header); cell text comes from the same OCR
+    observations the rest of the pipeline already has.
+    """
+    global _table_predictor
+    if _table_predictor is None:
+        from surya.table_rec import TableRecPredictor  # type: ignore
+        _table_predictor = TableRecPredictor()
+    return _table_predictor
 
 
 def probe_environment() -> dict[str, Any]:
@@ -301,6 +340,92 @@ def handle_ocr(msg: dict[str, Any]) -> dict[str, Any]:
         reclaim_memory()
 
 
+def _polygon_to_bbox(polygon: list[list[float]]) -> list[float] | None:
+    """Convert Surya's 4-point polygon (clockwise from top-left) to
+    an axis-aligned [x1, y1, x2, y2] in the same coordinate system.
+    Returns None for malformed input.
+    """
+    try:
+        xs = [float(p[0]) for p in polygon]
+        ys = [float(p[1]) for p in polygon]
+    except Exception:
+        return None
+    if not xs or not ys:
+        return None
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def handle_table(msg: dict[str, Any]) -> dict[str, Any]:
+    """Run Surya table-structure recognition on a cropped table image.
+
+    Caller crops the full-page raster to the `.table` region's bbox
+    and saves the result; this op only returns cell *structure*
+    (polygons, spans, is_header). Mapping OCR text onto the cells
+    happens on the Swift side using observations the pipeline
+    already has.
+    """
+    image_path = msg.get("image_path")
+    if not image_path:
+        return {"op": "error", "message": "table requires image_path"}
+
+    from PIL import Image  # type: ignore
+
+    img = Image.open(image_path)
+    rgb = img.convert("RGB")
+    img.close()
+    width, height = rgb.size
+
+    predictor = get_table_predictor()
+    results = predictor([rgb])
+    try:
+        if not results:
+            return {
+                "op": "table.result",
+                "cells": [],
+                "rows": [],
+                "image_size": [width, height],
+            }
+
+        result = results[0]
+        cells: list[dict[str, Any]] = []
+        for cell in getattr(result, "cells", []):
+            polygon = getattr(cell, "polygon", None)
+            bbox = _polygon_to_bbox(polygon) if polygon else None
+            if bbox is None:
+                continue
+            cells.append({
+                "bbox": bbox,
+                "row_id": int(getattr(cell, "row_id", 0) or 0),
+                "col_id": int(getattr(cell, "col_id", 0) or 0) if getattr(cell, "col_id", None) is not None else None,
+                "within_row_id": int(getattr(cell, "within_row_id", 0) or 0),
+                "rowspan": int(getattr(cell, "rowspan", 1) or 1) if getattr(cell, "rowspan", None) is not None else 1,
+                "colspan": int(getattr(cell, "colspan", 1) or 1),
+                "is_header": bool(getattr(cell, "is_header", False)),
+                "confidence": float(getattr(cell, "confidence", 0.0) or 0.0),
+            })
+
+        rows: list[dict[str, Any]] = []
+        for row in getattr(result, "rows", []):
+            polygon = getattr(row, "polygon", None)
+            bbox = _polygon_to_bbox(polygon) if polygon else None
+            rows.append({
+                "row_id": int(getattr(row, "row_id", 0) or 0),
+                "is_header": bool(getattr(row, "is_header", False)),
+                "bbox": bbox,
+            })
+
+        return {
+            "op": "table.result",
+            "cells": cells,
+            "rows": rows,
+            "image_size": [width, height],
+        }
+    finally:
+        rgb.close()
+        del results
+        reclaim_memory()
+
+
 def handle_ping(_msg: dict[str, Any]) -> dict[str, Any]:
     return {"op": "pong", "now": time.time()}
 
@@ -308,6 +433,7 @@ def handle_ping(_msg: dict[str, Any]) -> dict[str, Any]:
 HANDLERS = {
     "layout": handle_layout,
     "ocr":    handle_ocr,
+    "table":  handle_table,
     "ping":   handle_ping,
 }
 

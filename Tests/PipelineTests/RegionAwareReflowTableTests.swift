@@ -126,6 +126,89 @@ final class RegionAwareReflowTableTests: XCTestCase {
                       "Table cells should not also emit as a paragraph")
     }
 
+    // MARK: - Path A priority
+
+    /// When a Surya-derived row set is supplied for a `.table`
+    /// region, reflow uses it verbatim — including any header flags
+    /// and merged-cell spans the heuristic could never produce —
+    /// instead of running the heuristic.
+    func test_surya_table_extraction_takes_priority_over_heuristic() {
+        let tableBox = CGRect(x: 0.05, y: 0.30, width: 0.90, height: 0.40)
+        let regions = [region(.table, tableBox, 0)]
+        // The same cells the heuristic would also detect — but we'll
+        // confirm Surya's structure (with isHeader + colspan) wins.
+        let observations = [
+            obs("Author",   x: 0.10, y: 0.65),
+            obs("Year",     x: 0.50, y: 0.65),
+            obs("Foucault", x: 0.10, y: 0.55),
+            obs("1971",     x: 0.50, y: 0.55),
+        ]
+        let page = PageObservations(
+            pageIndex: 0,
+            pageBounds: CGSize(width: 800, height: 1000),
+            observations: observations,
+            layoutRegions: regions
+        )
+        // Pre-cooked Path A output: header row + a merged-spanning cell.
+        let suryaRows: [[TableCell]] = [
+            [
+                TableCell(runs: [InlineRun("Author")], isHeader: true),
+                TableCell(runs: [InlineRun("Year")], isHeader: true),
+            ],
+            [
+                TableCell(runs: [InlineRun("Foucault")], colspan: 2),
+            ],
+        ]
+        let key = CaptionAssociator.PageRegionKey(pageIndex: 0, regionIndex: 0)
+        let result = RegionAwareReflow.reflow(
+            pageResults: [page],
+            tableExtractions: [key: suryaRows]
+        )
+        let nonAnchorBlocks = result.blocks.filter {
+            if case .anchor = $0 { return false } else { return true }
+        }
+        XCTAssertEqual(nonAnchorBlocks.count, 1)
+        guard case let .table(rows, _) = nonAnchorBlocks[0] else {
+            XCTFail("Expected .table"); return
+        }
+        // Surya rows used verbatim — heuristic would have produced
+        // a different shape (no isHeader, no colspan).
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(rows[0][0].isHeader)
+        XCTAssertTrue(rows[0][1].isHeader)
+        XCTAssertEqual(rows[1].count, 1)
+        XCTAssertEqual(rows[1][0].colspan, 2)
+    }
+
+    /// When `tableExtractions` doesn't include this region (e.g.
+    /// sidecar wasn't available), reflow still falls through to the
+    /// heuristic. Belt-and-braces test of the fallback path.
+    func test_no_surya_extraction_still_uses_heuristic() {
+        let tableBox = CGRect(x: 0.05, y: 0.30, width: 0.90, height: 0.40)
+        let regions = [region(.table, tableBox, 0)]
+        let observations = [
+            obs("A", x: 0.10, y: 0.65),
+            obs("B", x: 0.50, y: 0.65),
+            obs("1", x: 0.10, y: 0.55),
+            obs("2", x: 0.50, y: 0.55),
+        ]
+        let page = PageObservations(
+            pageIndex: 0,
+            pageBounds: CGSize(width: 800, height: 1000),
+            observations: observations,
+            layoutRegions: regions
+        )
+        let result = RegionAwareReflow.reflow(
+            pageResults: [page],
+            tableExtractions: [:]  // no Surya output
+        )
+        let tableBlocks = result.blocks.filter {
+            if case .table = $0 { return true } else { return false }
+        }
+        XCTAssertEqual(tableBlocks.count, 1,
+                       "Heuristic should still fire when Surya output absent")
+    }
+
     func test_degenerate_table_falls_back_to_paragraph() {
         // Only 2 observations on the same row — heuristic rejects.
         // The region should fall through to paragraph emission so

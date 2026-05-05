@@ -83,6 +83,30 @@ public actor SuryaConnection {
         public let imageSize: CGSize  // Surya echoes back the source image dims
     }
 
+    /// One cell of a `table` op response. Coordinates are pixel /
+    /// top-left in the **cropped** table image — the caller is
+    /// responsible for translating back to full-page coordinates.
+    /// Cell text is NOT populated by the sidecar; the pipeline maps
+    /// OCR observations onto cells.
+    public struct RawTableCell: Sendable {
+        public let bbox: CGRect
+        public let rowId: Int
+        public let colId: Int?
+        public let withinRowId: Int
+        public let rowspan: Int
+        public let colspan: Int
+        public let isHeader: Bool
+        public let confidence: Double
+    }
+
+    /// Result of a `table` op: cells + the pixel size of the cropped
+    /// image they live in (for coordinate translation back to the
+    /// full page).
+    public struct RawTableStructure: Sendable {
+        public let cells: [RawTableCell]
+        public let imageSize: CGSize
+    }
+
     /// Layout analysis — typed regions + reading order.
     public func layout(imageURL: URL, pageBounds: CGSize) async throws -> [LayoutRegion] {
         let reply = try await bridge.send([
@@ -140,6 +164,41 @@ public actor SuryaConnection {
                 imageSize: imgSize
             )
         }
+    }
+
+    /// Table-structure recognition on a cropped table image. Returns
+    /// cell polygons + spans + header flags. Cell text comes from
+    /// OCR observations the caller has on the full page, mapped onto
+    /// each cell's translated bbox.
+    public func table(imageURL: URL) async throws -> RawTableStructure {
+        let reply = try await bridge.send([
+            "op": "table",
+            "image_path": imageURL.path,
+        ])
+        let imgSize = Self.imageSize(from: reply, fallback: .zero)
+        guard let raw = reply["cells"] as? [[String: Any]] else {
+            return RawTableStructure(cells: [], imageSize: imgSize)
+        }
+        let cells: [RawTableCell] = raw.compactMap { dict in
+            guard let bbox = dict["bbox"] as? [Double], bbox.count == 4 else {
+                return nil
+            }
+            let pixelBox = CGRect(
+                x: bbox[0], y: bbox[1],
+                width: bbox[2] - bbox[0], height: bbox[3] - bbox[1]
+            )
+            return RawTableCell(
+                bbox: pixelBox,
+                rowId: (dict["row_id"] as? Int) ?? 0,
+                colId: dict["col_id"] as? Int,
+                withinRowId: (dict["within_row_id"] as? Int) ?? 0,
+                rowspan: (dict["rowspan"] as? Int) ?? 1,
+                colspan: (dict["colspan"] as? Int) ?? 1,
+                isHeader: (dict["is_header"] as? Bool) ?? false,
+                confidence: (dict["confidence"] as? Double) ?? 0
+            )
+        }
+        return RawTableStructure(cells: cells, imageSize: imgSize)
     }
 
     // MARK: - shared helpers

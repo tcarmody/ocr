@@ -148,6 +148,7 @@ enum RegionAwareReflow {
     static func reflow(
         pageResults: [PageObservations],
         figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
+        tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:],
         captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
             captionByFigure: [:], orientation: .below
         )
@@ -299,7 +300,8 @@ enum RegionAwareReflow {
                 pageFootnotes: pageFootnotes,
                 assetIdByFigureKey: assetIdByFigureKey,
                 captionByFigure: captionAssociations.captionByFigure,
-                captionsClaimed: captionsClaimed
+                captionsClaimed: captionsClaimed,
+                tableExtractions: tableExtractions
             ))
         }
         let bridged = PDFToEPUBPipeline.bridgeBoundaries(blocks)
@@ -404,7 +406,8 @@ enum RegionAwareReflow {
         pageFootnotes: [FootnoteLinker.Parsed],
         assetIdByFigureKey: [CaptionAssociator.PageRegionKey: String],
         captionByFigure: [CaptionAssociator.PageRegionKey: CaptionAssociator.PageRegionKey],
-        captionsClaimed: Set<CaptionAssociator.PageRegionKey>
+        captionsClaimed: Set<CaptionAssociator.PageRegionKey>,
+        tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]]
     ) -> [Block] {
         // Sort by reading order; -1 (unassigned) sorts to the end so
         // it doesn't disrupt the ordered regions.
@@ -452,14 +455,16 @@ enum RegionAwareReflow {
                 continue
             }
 
-            // Tables: gather observations inside the region's bbox,
-            // run the heuristic, emit `Block.table`. The observations
-            // get marked as `claimed` so body regions can't grab them
-            // as a fallback paragraph. If the heuristic returns nil
-            // (degenerate grid below the rows × cols floor), the
-            // region's observations fall through and get emitted as
-            // a paragraph by the body path — better than dropping
-            // them entirely.
+            // Tables: prefer the Surya table model's structured output
+            // when the pipeline pre-pass produced one for this region;
+            // otherwise fall back to the Y/X clustering heuristic.
+            // Either way, mark observations inside the region as
+            // `claimed` so body regions can't double-emit them.
+            //
+            // If both paths reject (Surya wasn't available + heuristic
+            // grid too sparse), the region falls through to the
+            // paragraph emission path below — better than dropping
+            // the text entirely.
             if region.kind == .table {
                 let inflated = region.box.insetBy(dx: -regionInflation, dy: -regionInflation)
                 var inRegion: [TextObservation] = []
@@ -473,18 +478,27 @@ enum RegionAwareReflow {
                         inRegionIdx.append(idx)
                     }
                 }
-                if let rows = TableHeuristic.extract(observations: inRegion) {
-                    // Heuristic produced a usable grid — claim every
-                    // observation that contributed and find any
-                    // associated caption.
+
+                let originalIdx = matchOriginalRegionIndex(
+                    region: region, in: originalRegions
+                )
+                let regionKey = originalIdx.map {
+                    CaptionAssociator.PageRegionKey(
+                        pageIndex: page.pageIndex, regionIndex: $0
+                    )
+                }
+
+                // Path A: Surya table-rec preferred when available.
+                let suryaRows: [[TableCell]]? = regionKey.flatMap {
+                    tableExtractions[$0]
+                }
+                let chosenRows = suryaRows
+                    ?? TableHeuristic.extract(observations: inRegion)
+
+                if let rows = chosenRows {
                     for idx in inRegionIdx { claimed.insert(idx) }
                     let captionRuns: [InlineRun]
-                    if let originalIdx = matchOriginalRegionIndex(
-                        region: region, in: originalRegions
-                    ) {
-                        let key = CaptionAssociator.PageRegionKey(
-                            pageIndex: page.pageIndex, regionIndex: originalIdx
-                        )
+                    if let key = regionKey {
                         captionRuns = self.captionRuns(
                             for: key,
                             captionByFigure: captionByFigure,
@@ -498,10 +512,8 @@ enum RegionAwareReflow {
                     blocks.append(.table(rows: rows, caption: captionRuns))
                     continue
                 }
-                // Heuristic rejected — fall through to the paragraph
-                // path below by treating the region as if it were
-                // `.text` for this iteration. We drop into the same
-                // observation-claiming loop the body kinds use.
+                // Both paths rejected — fall through to the paragraph
+                // path below so the user still sees the text.
             }
 
             // Captions matched to a figure are emitted as part of that
