@@ -114,13 +114,19 @@ private struct FileOpenCommands: Commands {
     }
 }
 
-/// File > Save / Save As — attached only to the editor scene so the
-/// commands appear (and ⌘S / ⇧⌘S work) when an editor window is
-/// focused. Each item reads the focused `EditorViewModel` via
-/// `@FocusedObject` and disables itself when no editor is active.
+/// File > Save / Save As. Placed `after: .newItem` (i.e. right below
+/// our Open / Convert section) rather than `replacing: .saveItem`
+/// because the `.saveItem` placement appears to be silently dropped
+/// on some macOS / SwiftUI builds when the app isn't a DocumentGroup
+/// — items declared there never reach the menu bar at all. `after`
+/// is unambiguous: it always inserts in the File menu after the
+/// `.newItem` placement we already populate. Items route through
+/// `EditorCommandRouter`, not `@FocusedObject`, so the enable/disable
+/// state tracks the active editor reliably.
 struct EditorSaveCommands: Commands {
     var body: some Commands {
-        CommandGroup(replacing: .saveItem) {
+        CommandGroup(after: .newItem) {
+            Divider()
             EditorSaveCommand()
             EditorSaveAsCommand()
         }
