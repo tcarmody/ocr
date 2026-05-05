@@ -124,17 +124,22 @@ final class JobRunner: ObservableObject {
     private func runPipeline(for job: Job) async {
         let pipeline = PDFToEPUBPipeline()
         let languages = job.options.languages.map { BCP47($0) }
-        // Read the user's current AI processing mode at job-start
-        // time. Per-book overrides are deferred (Phase 8 in the
-        // migration plan); the global setting applies to every
-        // queued conversion. Today this only changes which dispatch
-        // arm runs in the pipeline — both arms behave identically
-        // until Cloud-mode engines ship in later phases.
+        // Read the user's current AI processing mode + per-feature
+        // toggles + cost cap at job-start time. Per-book overrides
+        // are deferred (Phase 8 in the migration plan); the global
+        // setting applies to every queued conversion.
         let aiSettings = AISettingsStore().load()
+        let keyStore = AnthropicAPIKeyStore()
         let options = PDFToEPUBPipeline.Options(
             languages: languages,
             useHighAccuracyOCR: job.options.useHighAccuracyOCR,
-            processingMode: aiSettings.processingMode
+            processingMode: aiSettings.processingMode,
+            cloudFeatures: aiSettings.cloudFeatures,
+            perBookCallCap: aiSettings.perBookCallCap,
+            // Closure (not a captured string) so a key rotation in
+            // Settings UI takes effect on the next request without
+            // rebuilding the pipeline.
+            anthropicAPIKeyProvider: { keyStore.read() }
         )
         let storeRef = store
         let jobID = job.id

@@ -46,13 +46,21 @@ public actor PDFToEPUBPipeline {
         /// engines for hard-region OCR + table extraction + cleanup).
         /// Defaults to `.privateLocal` — first-run conversions need
         /// no setup and no data leaves the machine.
-        ///
-        /// In Phase 2 this field is plumbed end-to-end but produces
-        /// identical output in either mode: `.cloud` falls through
-        /// to the same Surya-backed paths as `.privateLocal` until
-        /// later phases wire in Claude engines. Existing tests
-        /// continue to pass on `.privateLocal` unchanged.
         public var processingMode: ProcessingMode
+        /// Per-feature toggles consulted only when
+        /// `processingMode == .cloud`. In `.privateLocal` mode the
+        /// values are inert.
+        public var cloudFeatures: AISettings.CloudFeatures
+        /// Hard ceiling on Claude calls per book, shared across all
+        /// Cloud-mode features. Pipeline constructs one
+        /// `ClaudeCallBudget` per `convert(...)` from this value and
+        /// passes it to every Claude engine the conversion uses.
+        public var perBookCallCap: Int
+        /// API key resolver. Held as a closure so the keychain-backed
+        /// store can rotate keys without rebuilding `Options`. Returns
+        /// nil → Cloud mode degrades silently to local-only with a
+        /// debug-log line.
+        public var anthropicAPIKeyProvider: @Sendable () -> String?
 
         public init(
             dpi: CGFloat = 400,
@@ -60,7 +68,10 @@ public actor PDFToEPUBPipeline {
             ocrQuality: OCRHints.Quality = .accurate,
             emitDebugLog: Bool = false,
             useHighAccuracyOCR: Bool = false,
-            processingMode: ProcessingMode = .privateLocal
+            processingMode: ProcessingMode = .privateLocal,
+            cloudFeatures: AISettings.CloudFeatures = AISettings.CloudFeatures(),
+            perBookCallCap: Int = 200,
+            anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil }
         ) {
             self.dpi = dpi
             self.languages = languages
@@ -68,6 +79,9 @@ public actor PDFToEPUBPipeline {
             self.emitDebugLog = emitDebugLog
             self.useHighAccuracyOCR = useHighAccuracyOCR
             self.processingMode = processingMode
+            self.cloudFeatures = cloudFeatures
+            self.perBookCallCap = perBookCallCap
+            self.anthropicAPIKeyProvider = anthropicAPIKeyProvider
         }
     }
 
@@ -113,6 +127,26 @@ public actor PDFToEPUBPipeline {
             self.layoutAnalyzer = nil
             self.tableExtractor = nil
         }
+    }
+
+    /// Build the Cloud-mode OCR engine for one conversion, or nil
+    /// when Cloud mode is off, the hard-region-OCR feature toggle
+    /// is off, or no API key is configured. Returning nil from any
+    /// of those conditions makes `RegionCascade` skip Stage 3
+    /// entirely — `.cloud` mode without a key behaves like
+    /// `.privateLocal`, which is the right "fail open" posture.
+    static func makeClaudeOCREngine(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeOCREngine? {
+        guard options.processingMode == .cloud else { return nil }
+        guard options.cloudFeatures.hardRegionOCR else { return nil }
+        // Capture the key once per conversion. Rotation mid-conversion
+        // is rare; if it happens, this conversion uses the key it
+        // started with. The next conversion picks up the rotated key.
+        guard let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        let client = AnthropicAPIClient(apiKeyProvider: { key })
+        return ClaudeOCREngine(client: client, budget: budget)
     }
 
     /// Route an OCR call to the right engine.
@@ -506,6 +540,16 @@ public actor PDFToEPUBPipeline {
         // `.table` region, reflow falls back to `TableHeuristic`.
         var tableExtractionsByKey: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:]
 
+        // Cloud-mode engines, constructed once per conversion and
+        // shared across pages. Nil unless `processingMode == .cloud`
+        // AND the relevant per-feature toggle is on AND an API key
+        // is configured. The cascade falls back to local-only when
+        // any of those conditions fail.
+        let claudeBudget = ClaudeCallBudget(cap: options.perBookCallCap)
+        let claudeOCREngine: ClaudeOCREngine? = Self.makeClaudeOCREngine(
+            options: options, budget: claudeBudget
+        )
+
         for i in 0..<totalPages {
             try Task.checkCancellation()
 
@@ -637,19 +681,21 @@ public actor PDFToEPUBPipeline {
                             tesseractEngine: tesseractEngine
                         )
                     case .cloud:
-                        // TODO Phase 3: replace `suryaEngine` with a
-                        // `ClaudeOCREngine` fed by `AnthropicAPIClient`
-                        // when `AISettings.cloudFeatures.hardRegionOCR`
-                        // is enabled. Falls back to Surya when the
-                        // Claude path declines (cost cap hit, key
-                        // missing, rate-limited beyond retry budget).
+                        // Phase 3: Claude wired in as the cascade's
+                        // final tier (after Vision → Surya →
+                        // Tesseract). Engine is non-nil only when the
+                        // user has Cloud mode on, the hard-region-OCR
+                        // toggle on, and an API key configured —
+                        // otherwise the cascade behaves identically
+                        // to `.privateLocal`.
                         observations = await RegionCascade.run(
                             observations: observations,
                             regions: regions,
                             pageImage: image,
                             hints: hints,
                             suryaEngine: suryaEngine,
-                            tesseractEngine: tesseractEngine
+                            tesseractEngine: tesseractEngine,
+                            claudeEngine: claudeOCREngine
                         )
                     }
                 }
@@ -1163,6 +1209,7 @@ public actor PDFToEPUBPipeline {
                 case .tesseract: src = "t"
                 case .surya:     src = "s"
                 case .embedded:  src = "e"
+                case .claude:    src = "c"
                 }
                 let regionInfo: String
                 if let attr = RegionAwareReflow.lastAttributions[key] {

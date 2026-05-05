@@ -51,13 +51,18 @@ enum RegionCascade {
     /// Run the cascade on a single page. Returns the (possibly
     /// updated) observation list. Callers pass in the page's source
     /// CGImage so we can crop it for per-region Tesseract calls.
+    ///
+    /// `claudeEngine` is the Cloud-mode-only final tier — populated
+    /// only when `processingMode == .cloud` AND
+    /// `cloudFeatures.hardRegionOCR` is on. Nil in `.privateLocal` mode.
     static func run(
         observations: [TextObservation],
         regions: [LayoutRegion],
         pageImage: CGImage,
         hints: OCRHints,
         suryaEngine: (any OCREngine)?,
-        tesseractEngine: (any OCREngine)?
+        tesseractEngine: (any OCREngine)?,
+        claudeEngine: (any OCREngine)? = nil
     ) async -> [TextObservation] {
         // Pre-flight: which regions are problematic?
         var problemIndices = problematicRegionIndices(
@@ -112,6 +117,68 @@ enum RegionCascade {
                 } catch {
                     // continue with whatever we have
                 }
+            }
+            // Re-evaluate after Tesseract so Claude only fires on
+            // regions Tesseract didn't fix.
+            problemIndices = problematicRegionIndices(
+                observations: result, regions: regions, candidates: problemIndices
+            )
+        }
+
+        // --- Stage 3: per-region Claude crops (Cloud-mode only) ---
+        //
+        // Per-region cropping (not whole-page) for cost — Claude vision
+        // is the most expensive tier, and we only want to spend tokens
+        // on regions the local stack couldn't handle. Each call is
+        // guardrail-gated: if Claude's text differs from the prior
+        // tier's by more than `OCRChangeGuardrail`'s thresholds (length
+        // delta, script drift, edit distance) we keep the prior text
+        // rather than ship a possible hallucination.
+        //
+        // Budget exhaustion (per-book cap reached) is signaled by
+        // `ClaudeOCREngine.ClaudeOCRError.budgetExhausted` — caught
+        // here so the pipeline keeps converting on the prior tier.
+        if !problemIndices.isEmpty, let claude = claudeEngine {
+            cascadeClaudeLoop: for i in problemIndices {
+                let region = regions[i]
+                guard let cropped = cropImage(pageImage, to: region.box) else { continue }
+
+                // Capture prior-tier text for this region — that's what
+                // the guardrail compares against.
+                let priorObs = filter(observations: result, inRegion: region)
+                    .sorted { $0.box.midY > $1.box.midY }
+                let priorText = priorObs.map(\.text).joined(separator: " ")
+
+                let cropResult: OCRResult
+                do {
+                    cropResult = try await claude.recognize(image: cropped, hints: hints)
+                } catch ClaudeOCREngine.ClaudeOCRError.budgetExhausted {
+                    // Budget hit — don't try any more regions this
+                    // page, keep the prior tier.
+                    break cascadeClaudeLoop
+                } catch {
+                    // Network blip, refusal, decode failure — skip
+                    // this region, try the next.
+                    continue
+                }
+
+                // Compare candidate vs prior. Reject hallucinations.
+                let candidateText = cropResult.observations.map(\.text)
+                    .joined(separator: " ")
+                let decision = OCRChangeGuardrail.accept(
+                    prior: priorText, candidate: candidateText
+                )
+                guard decision.accepted else { continue }
+
+                let translated = translate(
+                    observations: cropResult.observations,
+                    fromCropOf: region.box,
+                    intoFullPage: pageImage
+                )
+                let confined = filter(observations: translated, inRegion: region)
+                result = replace(
+                    observations: result, inRegion: region, with: confined
+                )
             }
         }
 
