@@ -106,6 +106,22 @@ enum RegionAwareReflow {
     /// lower based on a large internal gap + leading footnote marker.
     static var lastRegionSplitsPerPage: [Int: [RegionSplit]] = [:]
 
+    /// Per-page record of `.text` regions reclassified by the
+    /// cross-page recurrence pass. Either promoted to `.sectionHeader`
+    /// (unique top-of-page brief text) or demoted to `.pageHeader`
+    /// (recurring across many pages).
+    static var lastCrossPageDecisionsPerPage: [Int: [CrossPageDecision]] = [:]
+
+    /// Audit trace for one cross-page recurrence decision.
+    struct CrossPageDecision: Sendable, Equatable {
+        let regionIndex: Int
+        let originalKind: String
+        let newKind: String
+        let firstLineExcerpt: String
+        let normalizedText: String
+        let recurrenceCount: Int  // distinct pages this normalized text appeared on
+    }
+
     /// Audit trace for one region split.
     struct RegionSplit: Sendable, Equatable {
         let originalRegionIndex: Int
@@ -134,6 +150,20 @@ enum RegionAwareReflow {
         lastHFReclassificationsPerPage.removeAll(keepingCapacity: true)
         lastHeadingPromotionsPerPage.removeAll(keepingCapacity: true)
         lastRegionSplitsPerPage.removeAll(keepingCapacity: true)
+        lastCrossPageDecisionsPerPage.removeAll(keepingCapacity: true)
+
+        // Document-level pass: classify top-of-page short `.text`
+        // regions as either `.pageHeader` (recurring across many
+        // pages — running heads) or `.sectionHeader` (unique to one
+        // page — chapter titles Surya missed). Returns a per-page
+        // override map applied below before the per-page passes run.
+        let crossPageOverrides = classifyTopRegionsByRecurrence(
+            pageResults: pageResults
+        )
+        for (pageIdx, decisions) in crossPageOverrides.decisionsByPage {
+            lastCrossPageDecisionsPerPage[pageIdx] = decisions
+        }
+
         var blocks: [Block] = []
         var allFootnotes: [FootnoteLinker.Parsed] = []
         var pageAnchors: [PageAnchor] = []
@@ -148,9 +178,24 @@ enum RegionAwareReflow {
 
             // Fall back to the heuristic path when no regions were
             // produced (no analyzer, or analyzer returned nothing).
-            guard let regions = page.layoutRegions, !regions.isEmpty else {
+            guard let originalRegions = page.layoutRegions, !originalRegions.isEmpty else {
                 blocks.append(contentsOf: heuristicFallback(for: page))
                 continue
+            }
+            // Apply the document-level cross-page overrides first so
+            // downstream passes (split + footnote/HF reclassifiers +
+            // heading reading-order) see the corrected kinds.
+            var regions = originalRegions
+            if let overrides = crossPageOverrides.overridesByPage[page.pageIndex] {
+                for (regionIdx, newKind) in overrides {
+                    let r = regions[regionIdx]
+                    regions[regionIdx] = LayoutRegion(
+                        kind: newKind,
+                        box: r.box,
+                        readingOrder: r.readingOrder,
+                        confidence: r.confidence
+                    )
+                }
             }
             // First: split any `.text` region where Surya merged
             // body + footnote(s) into one chunk. Those merged regions
@@ -854,4 +899,149 @@ enum RegionAwareReflow {
         }
         return (output, promotions)
     }
+
+    // MARK: - cross-page recurrence classification
+
+    /// A `.text` region's vertical center must be at least this high
+    /// to be considered as a section-header / running-head candidate.
+    /// Top 15% — slightly looser than the H/F gate's 10% so we catch
+    /// section headers that sit a touch lower on the page (with a
+    /// small visual gap above).
+    private static let crossPageTopZoneMinY: CGFloat = 0.85
+    /// Region must be at most this tall to be a candidate. Real
+    /// running heads + chapter section titles fit in a couple of
+    /// lines; body paragraphs that graze the top zone exceed this.
+    private static let crossPageMaxRegionHeight: CGFloat = 0.06
+    /// Combined text length cap. Section headers and running heads
+    /// are short; body content is long.
+    private static let crossPageMaxChars: Int = 100
+    /// Cluster size (distinct pages with matching normalized text)
+    /// at which we consider a candidate a running head and demote
+    /// it to `.pageHeader`. Anything below threshold is treated as
+    /// section-header content.
+    private static let crossPageRunningHeadMinPages: Int = 3
+    /// Document must have at least this many pages with regions for
+    /// the cross-page pass to do anything. Below this we don't have
+    /// enough signal to distinguish recurring from unique.
+    private static let crossPageMinDocumentPages: Int = 3
+
+    /// Output of `classifyTopRegionsByRecurrence` — keyed by page,
+    /// `overridesByPage[pageIdx]` maps regionIndex → newKind.
+    /// `decisionsByPage` carries the audit trail for the debug log.
+    struct CrossPageOverrides {
+        var overridesByPage: [Int: [Int: LayoutRegion.Kind]]
+        var decisionsByPage: [Int: [CrossPageDecision]]
+    }
+
+    /// Document-level scan: identify `.text` regions that look like
+    /// section-headers OR running-heads (top of page, short, brief
+    /// text), and decide which is which using cross-page recurrence.
+    ///
+    /// Why this exists: Surya often labels both running heads and
+    /// section headers as `.text`. Local heuristics can't tell them
+    /// apart — both look similar on a single page. The discriminator
+    /// is recurrence: running heads repeat (in the same y-band) on
+    /// many pages of a section; chapter titles appear on exactly one.
+    ///
+    /// Algorithm:
+    ///   1. Collect all candidate regions across all pages.
+    ///   2. Normalize each candidate's text via the same digit-
+    ///      collapsing rule HeaderFooterClassifier uses (so
+    ///      "Chapter 3 Foo 47" and "Chapter 3 Foo 48" cluster).
+    ///   3. Cluster candidates by normalized text.
+    ///   4. For each cluster:
+    ///        - Appears on ≥ 3 distinct pages → all members become
+    ///          `.pageHeader` (running head, drop from body stream).
+    ///        - Appears on < 3 distinct pages → all members become
+    ///          `.sectionHeader` (chapter/section title, promote).
+    ///
+    /// Conservative defaults: short documents (< 3 pages) skip the
+    /// pass entirely — too little data to discriminate. Cluster
+    /// threshold tuneable if running-head false positives surface.
+    static func classifyTopRegionsByRecurrence(
+        pageResults: [PageObservations]
+    ) -> CrossPageOverrides {
+        let pagesWithRegions = pageResults.filter { ($0.layoutRegions?.isEmpty == false) }
+        guard pagesWithRegions.count >= crossPageMinDocumentPages else {
+            return CrossPageOverrides(overridesByPage: [:], decisionsByPage: [:])
+        }
+
+        // Per-candidate record so we can apply overrides + log decisions.
+        struct Candidate {
+            let pageIndex: Int
+            let regionIndex: Int
+            let originalKind: LayoutRegion.Kind
+            let normalizedText: String
+            let firstLineExcerpt: String
+        }
+
+        // Bucket by normalized text → list of candidates.
+        var byNormalized: [String: [Candidate]] = [:]
+        for page in pagesWithRegions {
+            guard let regions = page.layoutRegions else { continue }
+            for (idx, region) in regions.enumerated() {
+                guard region.kind == .text else { continue }
+                guard region.box.midY >= crossPageTopZoneMinY else { continue }
+                guard region.box.height <= crossPageMaxRegionHeight else { continue }
+
+                let inflated = region.box.insetBy(
+                    dx: -regionInflation, dy: -regionInflation
+                )
+                let inRegion = page.observations.filter { obs in
+                    inflated.contains(CGPoint(x: obs.box.midX, y: obs.box.midY))
+                }
+                guard !inRegion.isEmpty else { continue }
+                let totalChars = inRegion.reduce(0) { $0 + $1.text.count }
+                guard totalChars <= crossPageMaxChars else { continue }
+
+                let combined = inRegion
+                    .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .joined(separator: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalized = HeaderFooterClassifier.normalize(combined)
+                // Skip noise: empty / single-character normalized
+                // strings would over-cluster.
+                guard normalized.count >= 3 else { continue }
+
+                let topObs = inRegion.max(by: { $0.box.midY < $1.box.midY })
+                let excerpt = String((topObs?.text ?? combined).prefix(60))
+                byNormalized[normalized, default: []].append(Candidate(
+                    pageIndex: page.pageIndex,
+                    regionIndex: idx,
+                    originalKind: region.kind,
+                    normalizedText: normalized,
+                    firstLineExcerpt: excerpt
+                ))
+            }
+        }
+
+        var overridesByPage: [Int: [Int: LayoutRegion.Kind]] = [:]
+        var decisionsByPage: [Int: [CrossPageDecision]] = [:]
+
+        for (normalized, candidates) in byNormalized {
+            // Distinct pages this normalized text appears on.
+            let distinctPageCount = Set(candidates.map(\.pageIndex)).count
+            let newKind: LayoutRegion.Kind = distinctPageCount >= crossPageRunningHeadMinPages
+                ? .pageHeader
+                : .sectionHeader
+
+            for c in candidates {
+                overridesByPage[c.pageIndex, default: [:]][c.regionIndex] = newKind
+                decisionsByPage[c.pageIndex, default: []].append(CrossPageDecision(
+                    regionIndex: c.regionIndex,
+                    originalKind: c.originalKind.rawValue,
+                    newKind: newKind.rawValue,
+                    firstLineExcerpt: c.firstLineExcerpt,
+                    normalizedText: normalized,
+                    recurrenceCount: distinctPageCount
+                ))
+            }
+        }
+
+        return CrossPageOverrides(
+            overridesByPage: overridesByPage,
+            decisionsByPage: decisionsByPage
+        )
+    }
 }
+

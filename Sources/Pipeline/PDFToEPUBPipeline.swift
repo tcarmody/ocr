@@ -874,6 +874,21 @@ public actor PDFToEPUBPipeline {
             out += "\n"
         }
 
+        // Cross-page recurrence decisions — `.text` regions in the
+        // top zone classified as either `.pageHeader` (recurring
+        // running heads) or `.sectionHeader` (unique chapter titles).
+        let crossPageByPage = RegionAwareReflow.lastCrossPageDecisionsPerPage
+        if !crossPageByPage.isEmpty {
+            out += "CROSS-PAGE TOP-REGION CLASSIFICATION (recurrence ≥3 pages → pageHeader, else sectionHeader)\n"
+            out += "format: page/regionIdx originalKind → newKind  excerpt  normalized=\"…\"  pages=N\n\n"
+            for pageIdx in crossPageByPage.keys.sorted() {
+                for d in crossPageByPage[pageIdx] ?? [] {
+                    out += "Page \(pageIdx)/region\(d.regionIndex)  \(d.originalKind) → \(d.newKind)  \"\(d.firstLineExcerpt)\"  normalized=\"\(d.normalizedText)\"  pages=\(d.recurrenceCount)\n"
+                }
+            }
+            out += "\n"
+        }
+
         // Region splits — Surya merged body + footnote into a single
         // `.text` region; we detected an internal vertical gap with
         // a footnote marker on the lower side and split it in two.
