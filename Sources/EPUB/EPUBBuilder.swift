@@ -17,6 +17,7 @@ public struct EPUBBuilder {
     public func write(
         book: Book,
         correctionTrail: CorrectionTrail? = nil,
+        parsedTOC: ParsedTOC? = nil,
         to outputURL: URL
     ) throws {
         // Layout inside the ZIP:
@@ -130,6 +131,21 @@ public struct EPUBBuilder {
             if let data = try? encoder.encode(trail) {
                 entries.append(EPUBPackager.Entry(
                     path: CorrectionTrail.pathInsideEPUB,
+                    data: data
+                ))
+            }
+        }
+
+        // 4d. Parsed-TOC sidecar — Haiku-driven TOC parse. Same
+        // META-INF treatment. Persisted regardless of whether title
+        // override succeeded so the editor can show the original
+        // parsed list independently of how it landed in nav.xhtml.
+        if let toc = parsedTOC, !toc.entries.isEmpty {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(toc) {
+                entries.append(EPUBPackager.Entry(
+                    path: ParsedTOC.pathInsideEPUB,
                     data: data
                 ))
             }

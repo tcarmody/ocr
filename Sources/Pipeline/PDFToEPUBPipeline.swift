@@ -188,6 +188,19 @@ public actor PDFToEPUBPipeline {
         return ClaudePostProcessor(client: client, budget: budget)
     }
 
+    /// Build the Cloud-mode TOC parser for one conversion.
+    /// Same gating shape as the OCR engine and post-processor.
+    static func makeClaudeTOCParser(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeTOCParser? {
+        guard options.processingMode == .cloud else { return nil }
+        guard options.cloudFeatures.tocParsing else { return nil }
+        guard let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        let client = AnthropicAPIClient(apiKeyProvider: { key })
+        return ClaudeTOCParser(client: client, budget: budget)
+    }
+
     /// Output of `applyPostOCRCleanup`: the (possibly-rewritten)
     /// observations plus a trail of every correction the pass
     /// considered (accepted *and* rejected). The trail feeds
@@ -716,6 +729,20 @@ public actor PDFToEPUBPipeline {
         let claudePostProcessor: ClaudePostProcessor? = Self.makeClaudePostProcessor(
             options: options, budget: claudeBudget
         )
+        let claudeTOCParser: ClaudeTOCParser? = Self.makeClaudeTOCParser(
+            options: options, budget: claudeBudget
+        )
+
+        // Cloud Phase 6e: parse the printed table of contents up
+        // front (one Haiku call, embedded text only). The result
+        // is consumed after `ChapterSplitter` to override the
+        // heuristic chapter titles. Runs in parallel with the
+        // page-OCR loop — the result isn't needed until book
+        // assembly. Returns nil on any failure path so the
+        // pipeline degrades to heuristic titles unchanged.
+        let parsedTOCTask: Task<ParsedTOC?, Never>? = claudeTOCParser.map { parser in
+            Task.detached { await parser.parse(pdfURL: pdfURL) }
+        }
 
         // Per-page record of which branch fired (trust vs reocr,
         // post-`forceOCR` override). Surfaced in the conversion
@@ -1076,13 +1103,33 @@ public actor PDFToEPUBPipeline {
         // Footnotes, page anchors, and figure assets are distributed
         // to the chapter they belong to so EPUB readers see a real
         // multi-chapter navigation tree.
-        let chapters = ChapterSplitter.split(
+        let rawChapters = ChapterSplitter.split(
             blocks: reflowed.blocks,
             footnotes: reflowed.footnotes,
             pageAnchors: reflowed.pageAnchors,
             figureAssets: reflowed.figureAssets,
             bookFallbackTitle: title
         )
+        // If TOC parsing was enabled and Haiku produced a result,
+        // override chapter titles where the TOC entry's display
+        // page maps to the chapter's first PDF page (after
+        // learning the offset). Falls through to the heuristic
+        // titles when the parser returned nil or no offset
+        // matched.
+        let parsedTOC: ParsedTOC? = await parsedTOCTask?.value
+        let chapters: [Chapter]
+        let appliedTOC: ParsedTOC?
+        if let toc = parsedTOC {
+            let outcome = TOCTitleApplier.apply(toc: toc, chapters: rawChapters)
+            chapters = outcome.chapters
+            appliedTOC = ParsedTOC(
+                entries: toc.entries,
+                inferredOffset: outcome.inferredOffset
+            )
+        } else {
+            chapters = rawChapters
+            appliedTOC = nil
+        }
         let book = Book(
             title: title,
             language: language,
@@ -1095,6 +1142,7 @@ public actor PDFToEPUBPipeline {
         try EPUBBuilder().write(
             book: book,
             correctionTrail: trail,
+            parsedTOC: appliedTOC,
             to: outputURL
         )
 
