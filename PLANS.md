@@ -6,12 +6,16 @@ document.
 
 For deep design docs on the AI-assisted structured-document work,
 see [Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md)
-and [Plans/Phase3-TOC-Parsing.md](Plans/Phase3-TOC-Parsing.md). Both are
-deferred for now but fully designed.
+and [Plans/Phase3-TOC-Parsing.md](Plans/Phase3-TOC-Parsing.md). The
+prompt shapes / guardrails / editor-trail designs in those docs
+remain architecturally valid; they predate the hybrid Private/Cloud
+architecture decision and now slot into Cloud Phase 6 (Tier 2
+below). The `AnthropicAPIClient` and Keychain plumbing they assume
+already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-04)
+## Status snapshot (as of 2026-05-05)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -20,13 +24,18 @@ deferred for now but fully designed.
 - Phase 3: Tesseract integration (linked via C API, not the CLI)
 - Phase 4: Surya layout sidecar + per-region cascade
 - Phase 5: footnote detection + EPUB 3 popup linking
+- Phase 6: figure extraction (raster crop + caption association),
+  table extraction (Surya `TableRecPredictor` integration with
+  heuristic Y/X clustering as fallback), math (`.formula` regions
+  take the figure raster path with `alt="formula"`)
 - Phase 7: bulk job queue + drag-drop folders + GRDB-free persistence
 - Phase 8: side-by-side editor (PDF / source / preview, linked nav)
 
 **Done above the original plan** (quality + robustness):
 - Two-up scan detection + auto-split pipeline
 - Memory hardening (per-page autoreleasepool, periodic PDF reload,
-  shared Surya sidecar singleton, editor deinit)
+  shared Surya sidecar singleton, editor deinit, drain sidecar
+  PyTorch cache + Vision NSObject pool)
 - Header / footer reclassification (per-page heuristic + page-number
   bypass + cross-page recurrence pass)
 - Footnote heuristic for `.text` regions Surya mislabeled
@@ -35,18 +44,48 @@ deferred for now but fully designed.
   ordered after body)
 - ChapterSplitter — flat block stream → multi-chapter Book IR
 
+**Done — Cloud-mode foundation** (Tier 2's first two phases of
+the hybrid Private + Cloud architecture):
+- **Cloud Phase 1**: Anthropic API plumbing in a new `AI` library
+  target. Request / response types with prompt-caching support,
+  `URLSessionTransport` behind a protocol so a future Batches
+  API runner reuses every other type unchanged, Keychain-backed
+  `AnthropicAPIKeyStore`, `AISettings` persisted to UserDefaults,
+  Settings scene (⌘,) with the master Private/Cloud toggle +
+  per-feature switches + cost cap + connection test.
+- **Cloud Phase 2**: `ProcessingMode` plumbed end-to-end through
+  `PDFToEPUBPipeline.Options` and `JobRunner`. Explicit dispatch
+  switches at the OCR cascade and table-extractor sites. Both
+  arms route identically today — they're scaffolding for the
+  per-engine swaps that ship in Cloud Phases 3+. Existing tests
+  pass unchanged on `.privateLocal`.
+
 **Remaining from the original 10-phase plan**:
-- Phase 6 — Figure extraction (images dropped today)
 - Phase 9 — Language extensibility (RTL: Hebrew / Syriac / Coptic)
 - Phase 10 — Polish + distribution (Sparkle, DMG, bundled Python)
 
-**Designed, not built** (slotted into Tier 2 below — picked up
-together once we're ready to take a Claude dependency):
-- Post-OCR LLM accuracy pass (corrects character-level OCR errors)
-- Semantic chapter classification (`epub:type` per chapter +
-  EPUB landmarks)
-- PDF TOC parsing (extract printed TOC, use as authoritative
-  chapter / hierarchy source)
+**Cloud-mode features remaining** (Tier 2 phases 3–7 — see Tier 2
+below for the per-phase rundown):
+- **Cloud Phase 3**: `ClaudeOCREngine` — Sonnet vision as the
+  cascade's high-quality tier for hard regions (polytonic Greek,
+  Hebrew, mixed scripts). Replaces what was originally
+  P-LLM-Pass's "vision mode."
+- **Cloud Phase 4**: corpus validation spike — measure CER vs
+  Surya/Tesseract on hand-corrected ground truth before
+  committing further.
+- **Cloud Phase 5**: `ClaudeTableExtractor` — Sonnet-driven table
+  structure behind a `TableExtractor` protocol. Surya path stays
+  as the offline fallback.
+- **Cloud Phase 6**: three Haiku-driven text features —
+  post-OCR character cleanup (formerly P-LLM-Pass "passages
+  mode"), semantic chapter classification, printed-TOC parsing.
+- **Cloud Phase 7**: first-run UX polish (Cloud-upgrade prompt,
+  README docs).
+
+**Pre-flight intelligence** (Tier 1.5, deferred until Cloud
+Phase 3 lands so the value is real): language auto-detect at
+queue-add, Cloud-mode cost estimation, content-vs-config
+warnings. See Tier 1.5 below.
 
 ---
 
@@ -57,9 +96,16 @@ open an academic / illustrated book.
 
 ## P6 — Figure extraction
 
-**Status**: not started. Surya emits `.picture`, `.table`, `.formula`
-regions; `RegionAwareReflow.bodyKinds` filters them out and we
-silently drop every image in every book.
+**Status**: shipped (commits `81109c4`, `a145dcc`).
+`FigureExtractor` raster-crops `.picture` and `.formula` regions
+from the rendered page; `CaptionAssociator` pairs each figure
+with the nearest `.caption` (orientation locked book-wide from
+the first 5 figures); `RegionAwareReflow` emits `Block.figure`;
+`EPUBBuilder` writes `OEBPS/images/<id>.png` with proper OPF
+manifest entries (and `properties="cover-image"` for the
+page-0 dominant-figure cover heuristic). Vector-XObject
+extraction deferred — raster path is correct for scanned
+facsimiles and fine for born-digital at our render DPI.
 
 ### Goal
 
@@ -149,7 +195,16 @@ None. Self-contained. Could ship next.
 
 ## P-Tables — Table extraction
 
-**Status**: not started. Surya emits `.table` regions; we drop them.
+**Status**: shipped, both paths (commits `915c1d0`, `5473199`).
+Path A — Surya `TableRecPredictor` integration in the Python
+sidecar — runs first; `SuryaTableExtractor` crops the page,
+sends to the sidecar, translates pixel polygons back to
+full-page normalized coords, and maps OCR observations onto
+cells. Path B — `TableHeuristic` Y/X clustering — is the
+fallback when the sidecar isn't available or returns nothing
+usable. Both feed `Block.table`; `XHTMLWriter` renders proper
+`<table role="table">` with `<thead>` / `<tbody>` /
+`<caption>` / merged-cell spans. CSS in `book.css`.
 
 ### Goal
 
@@ -205,7 +260,11 @@ plumbing patterns.
 
 ## P-Math — Math / formula handling
 
-**Status**: not started. Surya emits `.formula` regions; we drop them.
+**Status**: shipped as part of Phase 6 figures (commit `a145dcc`).
+`.formula` regions take the same raster path as `.picture` and
+emit `Block.figure` with `alt="formula"` (or the caption text,
+when a caption is associated). Real MathML / Mathpix / Latex-OCR
+remains deferred — no corpus has demanded it yet.
 
 ### Goal
 
@@ -394,29 +453,62 @@ this is a thin presentation layer on top — a list of
 
 # Tier 2: AI-assisted enhancements (Claude)
 
-This tier collects every feature that depends on calling out to an
-LLM (Claude via the Anthropic API). Bundled together so the
-shared infrastructure — `URLSession` API client, Keychain key
-storage, Settings pane, editor "AI trail" inspector — gets built
-once and reused by all three.
+This tier collects every feature that depends on calling out to
+Claude via the Anthropic API. The architecture is **hybrid by
+design**: Private mode (all-Surya, all-local) and Cloud mode
+(Claude as cascade tail + table extractor + cleanup) are both
+first-class, switchable from a top-level Settings toggle. Surya
+is **not** removed — it remains the default and the offline
+guarantee for sensitive material.
 
-Recommended ship order *within* the tier:
+The user picks `Processing Mode: Private | Cloud` once; per-feature
+toggles inside Cloud mode (hard-region OCR, table extraction,
+post-OCR cleanup, semantic classification, TOC parsing) gate
+individual Claude calls and let the user dial cost up or down.
 
-1. **P-LLM-Pass** first. It builds the foundational plumbing
-   every later AI feature reuses. Smallest, most testable.
-2. **P-Semantic-Classification** second. Tiny incremental code
-   on top of P-LLM-Pass plumbing.
-3. **P-TOC-Parsing** third. Largest of the three; reuses
-   everything from the first two.
+## Per-feature model selection
 
-The full design docs for items 2 and 3 already exist as
-[Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md)
-and [Plans/Phase3-TOC-Parsing.md](Plans/Phase3-TOC-Parsing.md);
-the entries below summarize them and call out shared dependencies.
+| Feature | Model | Why |
+|---|---|---|
+| Hard-region OCR (Cloud cascade tail) | Sonnet 4.6 | Trusted as ground truth; multilingual + ancient scripts demand the strongest visual reasoning |
+| Table extraction (replacing Path A) | Sonnet 4.6 | Spatial reasoning + structure understanding; tables are rare per book so cost is bounded |
+| Post-OCR character cleanup | Haiku 4.5 | Targeted edits (ligatures, diacritics, long-s); no need for Sonnet |
+| Semantic chapter classification | Haiku 4.5 | Tiny prompt, closed label set, ~per-chapter |
+| TOC parsing | Haiku 4.5 (Sonnet escalation if quality bad) | One call per book, ~$0.001 either way |
+
+Mental model: **Haiku for "polish / classify text we already
+have," Sonnet for "look at this image and produce ground-truth
+content."**
+
+## Cloud-migration phase status
+
+| Phase | What | Status |
+|---|---|---|
+| 1 | Anthropic API plumbing (`AI` library: client + transport + key store + settings + Settings UI) | **Done** (commit `567d2c3`) |
+| 2 | `ProcessingMode` plumbed end-to-end into `PDFToEPUBPipeline.Options` + `JobRunner`; dispatch switches added at engine sites | **Done** (commit `0e00a76`) |
+| 3 | `ClaudeOCREngine` (Sonnet vision) wired in as the cascade's high-quality tier under `.cloud` | Not started |
+| 4 | Validation spike: CER comparison vs Surya / Tesseract on hand-corrected ground truth (polytonic Greek, Hebrew, Latin scan) | Not started |
+| 5 | `ClaudeTableExtractor` (Sonnet) behind a `TableExtractor` protocol; Surya path stays as offline fallback | Not started |
+| 6 | Three Haiku features: post-OCR cleanup (P-LLM-Pass design below), semantic classification (`Plans/Phase2-…md`), TOC parsing (`Plans/Phase3-…md`) | Not started |
+| 7 | First-run UX polish (Cloud-upgrade prompt, README docs) | Not started |
+| 8 | (Deferred) Per-book mode override for sensitive material when default is Cloud | Deferred |
+
+Phases 1–2 ship the foundation; everything else is incremental
+on top of that infrastructure. The `AnthropicAPIClient`,
+Keychain store, Settings UI, and `ProcessingMode` dispatch
+points are reused unchanged across phases 3–6.
+
+The detailed design docs for the three Haiku features predate
+the hybrid-architecture decision but remain architecturally
+valid — they describe the prompt shape, guardrails, and editor
+trail. The entries below summarize each. Phase-3 ClaudeOCREngine
+absorbs what was originally P-LLM-Pass's "vision mode";
+P-LLM-Pass's "passages mode" is what becomes the Cloud Phase 6
+post-OCR cleanup feature.
 
 ---
 
-## P-LLM-Pass — LLM-corrected OCR output
+## P-LLM-Pass — Post-OCR character cleanup (Cloud Phase 6, Haiku)
 
 **Status**: not started. Existing `OCRTextQualityScorer` flags
 low-quality regions (mojibake, single-character runs, language
@@ -704,7 +796,7 @@ Total: ~5 days for a polished implementation.
 
 ---
 
-## P-Semantic-Classification — per-chapter `epub:type` tagging
+## P-Semantic-Classification — per-chapter `epub:type` tagging (Cloud Phase 6, Haiku)
 
 **Status**: not started. Full design at
 [Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md)
@@ -759,7 +851,7 @@ handles the third.
 
 ---
 
-## P-TOC-Parsing — Parse the printed TOC into an authoritative tree
+## P-TOC-Parsing — Parse the printed TOC into an authoritative tree (Cloud Phase 6, Haiku)
 
 **Status**: not started. Full design at
 [Plans/Phase3-TOC-Parsing.md](Plans/Phase3-TOC-Parsing.md) — read
@@ -1367,31 +1459,53 @@ If picking up from here cold, this is roughly the order I'd tackle
 things in. The user's stated priorities are quality output + personal
 use; distribution is lower priority than correctness.
 
-1. **Phase 6 (figures + tables + math-as-image)** — biggest visible
-   gap. ~5-6 days for figures + tables. Math-as-image included.
-2. **Tier 2 AI work** — taken as a single arc, in this order so
-   the shared infrastructure (Anthropic API client, Keychain key
-   storage, Settings pane, editor "AI trail" inspector) gets
-   built once and amortizes:
-   - **P-LLM-Pass** — post-OCR Claude correction. Ships the
-     plumbing. ~5 days.
+**What's already done** (so they're off the runway):
+- **Tier 1**: figures, tables (Surya `TableRecPredictor` + heuristic
+  fallback), math (figure raster path).
+- **Cloud Phases 1–2**: Anthropic API plumbing, Keychain key store,
+  Settings UI with the Private/Cloud master toggle, `ProcessingMode`
+  threaded end-to-end through the pipeline. Both modes route
+  identically today; the dispatch points are ready for engine swaps.
+
+**Next, in roughly this order:**
+
+1. **Cloud Phase 4 spike** before doing more Cloud work — hand-correct
+   ~5 ground-truth pages each in polytonic Greek, Hebrew, and one
+   Latin scan. Run through Surya OCR vs Claude Sonnet. If Claude wins
+   on all three, full speed ahead on Phase 3. If it ties or loses on
+   one, document it and keep Surya as the recommendation for that
+   script family. ~0.5 day. Cheap insurance against a directional bet.
+2. **Cloud Phase 3** — `ClaudeOCREngine` (Sonnet) wired in as the
+   cascade's high-quality tier under `.cloud`. Fires only on regions
+   below the quality floor. ~3-4 days.
+3. **Cloud Phase 5** — `ClaudeTableExtractor` (Sonnet) behind a
+   `TableExtractor` protocol; Surya path stays as the offline
+   fallback. ~2 days.
+4. **Cloud Phase 6** — Haiku features in this order so the editor's
+   AI-trail inspector ships once and amortizes:
+   - **P-LLM-Pass** post-OCR character cleanup. ~5 days standalone,
+     less now that the API client is already in place.
    - **P-Semantic-Classification** — `epub:type` per chapter +
      landmarks. ~2.5 days incremental.
-   - **P-TOC-Parsing** — parse printed TOC, supersede
-     heading-based splitter when present. ~6 days incremental.
-
-   Total Tier 2: ~13.5 days for the full AI arc.
-3. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
-   corpus. ~4 days.
-4. **R-Hierarchy** (multi-level chapters) — natural follow-on to
+   - **P-TOC-Parsing** — parse printed TOC, supersede heading-based
+     splitter when present. ~6 days incremental.
+5. **Tier 1.5 pre-flight intelligence** — `P-Lang-Detect` first
+   (~1.5 days, biggest single quality-of-life win), then
+   `P-Cloud-Cost` once Phase 3 is firing real Claude calls,
+   `P-Profile-Warnings` as a thin layer on top.
+6. **Cloud Phase 7** — first-run UX polish.
+7. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
+   corpus. ~4 days. Naturally follows once Cloud OCR is validated on
+   non-Latin scripts (Phase 4 spike informs this).
+8. **R-Hierarchy** (multi-level chapters) — natural follow-on to
    ChapterSplitter, low effort. ~1 day.
-5. **R-Footers** (cross-page running footers) — symmetric refactor.
+9. **R-Footers** (cross-page running footers) — symmetric refactor.
    ~0.5 day.
-6. **Defer Phase 10 (distribution)** until the user actually wants
-   to share or onboard another machine. The app is signed and runs
-   locally; that's enough for personal use.
+10. **Defer Phase 10 (distribution)** until the user actually wants
+    to share or onboard another machine. The app is signed and runs
+    locally; that's enough for personal use.
 
-Total Tiers 1-3: ~22-24 days. After Phase 6 + Tier 2, output
-quality is substantially production-grade for the user's working
-corpus. After Phase 9, the app handles essentially any book a
+Total remaining work to reach "substantially production-grade
+output for the user's working corpus": ~14-16 days through Cloud
+Phase 6. After Phase 9, the app handles essentially any book a
 working researcher would feed it.
