@@ -642,15 +642,21 @@ public actor PDFToEPUBPipeline {
             reflowed = Self.reflow(pageResults: pageResults)
         }
 
+        // Phase 1 of structured-document detection: split the flat
+        // block stream into chapters at every level-1 heading.
+        // Footnotes + page anchors are distributed to the chapter
+        // they belong to so EPUB readers see a real multi-chapter
+        // navigation tree.
+        let chapters = ChapterSplitter.split(
+            blocks: reflowed.blocks,
+            footnotes: reflowed.footnotes,
+            pageAnchors: reflowed.pageAnchors,
+            bookFallbackTitle: title
+        )
         let book = Book(
             title: title,
             language: language,
-            chapters: [Chapter(
-                title: title,
-                blocks: reflowed.blocks,
-                footnotes: reflowed.footnotes,
-                pageAnchors: reflowed.pageAnchors
-            )]
+            chapters: chapters
         )
 
         try EPUBBuilder().write(book: book, to: outputURL)
