@@ -1,4 +1,5 @@
 import Foundation
+import PDFIngest
 import Pipeline
 
 /// One bulk-conversion task: PDF in, EPUB out, current status, progress.
@@ -6,6 +7,12 @@ import Pipeline
 /// across app launches.
 struct Job: Identifiable, Codable, Equatable {
     enum Status: String, Codable {
+        /// Briefly held in this state while `DocumentProfiler` samples
+        /// the PDF for language detection. The runner skips
+        /// `.profiling` jobs — they flip to `.queued` once the
+        /// profile completes (or `.queued` immediately on profile
+        /// failure, which is non-fatal).
+        case profiling
         case queued, running, done, failed, cancelled
     }
 
@@ -34,6 +41,12 @@ struct Job: Identifiable, Codable, Equatable {
     /// field existed (the queue store JSON-decodes optionally) and
     /// for queued/running jobs that haven't completed yet.
     var stats: ConversionStats?
+    /// Pre-flight document profile — primary/secondary language
+    /// detection and scan flag. Populated by `QueueViewModel` after
+    /// `DocumentProfiler` runs at queue-add time. Nil for jobs
+    /// persisted before this field existed and for jobs currently
+    /// in `.profiling` state.
+    var profile: DocumentProfile?
 
     init(
         id: UUID = UUID(),
@@ -46,7 +59,8 @@ struct Job: Identifiable, Codable, Equatable {
         addedAt: Date = Date(),
         startedAt: Date? = nil,
         finishedAt: Date? = nil,
-        stats: ConversionStats? = nil
+        stats: ConversionStats? = nil,
+        profile: DocumentProfile? = nil
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -59,6 +73,30 @@ struct Job: Identifiable, Codable, Equatable {
         self.startedAt = startedAt
         self.finishedAt = finishedAt
         self.stats = stats
+        self.profile = profile
+    }
+
+    /// Custom decoder so the optional `profile` and (already-optional)
+    /// `stats` survive a queue store JSON written before either field
+    /// existed.
+    enum CodingKeys: String, CodingKey {
+        case id, sourceURL, outputURL, options, status, progress, error
+        case addedAt, startedAt, finishedAt, stats, profile
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.sourceURL = try c.decode(URL.self, forKey: .sourceURL)
+        self.outputURL = try c.decode(URL.self, forKey: .outputURL)
+        self.options = try c.decode(ConversionOptions.self, forKey: .options)
+        self.status = try c.decode(Status.self, forKey: .status)
+        self.progress = try c.decodeIfPresent(JobProgress.self, forKey: .progress)
+        self.error = try c.decodeIfPresent(String.self, forKey: .error)
+        self.addedAt = try c.decode(Date.self, forKey: .addedAt)
+        self.startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
+        self.finishedAt = try c.decodeIfPresent(Date.self, forKey: .finishedAt)
+        self.stats = try c.decodeIfPresent(ConversionStats.self, forKey: .stats)
+        self.profile = try c.decodeIfPresent(DocumentProfile.self, forKey: .profile)
     }
 }
 

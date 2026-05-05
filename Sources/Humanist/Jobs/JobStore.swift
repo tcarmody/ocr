@@ -45,6 +45,14 @@ final class JobStore: ObservableObject {
             decoded[i].progress = nil
             decoded[i].startedAt = nil
         }
+        // `.profiling` jobs got persisted before the profiler finished.
+        // The runner skips them, so without this they'd stick forever.
+        // Promote to `.queued` — picker languages were set at create
+        // time, so they're already runnable; the user just won't get
+        // the auto-detected language for that one job.
+        for i in decoded.indices where decoded[i].status == .profiling {
+            decoded[i].status = .queued
+        }
         jobs = decoded
         save()
     }
@@ -77,8 +85,8 @@ final class JobStore: ObservableObject {
     func clearFinished() {
         jobs.removeAll { job in
             switch job.status {
-            case .done, .failed, .cancelled: return true
-            case .queued, .running:          return false
+            case .done, .failed, .cancelled:        return true
+            case .queued, .running, .profiling:     return false
             }
         }
         save()
@@ -91,6 +99,8 @@ final class JobStore: ObservableObject {
     }
 
     var hasPendingWork: Bool {
-        jobs.contains { $0.status == .queued || $0.status == .running }
+        jobs.contains {
+            $0.status == .queued || $0.status == .running || $0.status == .profiling
+        }
     }
 }

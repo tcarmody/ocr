@@ -79,7 +79,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Humanist",
-            dependencies: ["Pipeline", "AI"],
+            dependencies: ["Pipeline", "AI", "PDFIngest"],
             path: "Sources/Humanist"
         ),
         // One-shot CLI for the Cloud-mode validation spike (PLANS.md

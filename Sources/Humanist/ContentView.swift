@@ -217,6 +217,25 @@ private struct JobRow: View {
     @EnvironmentObject private var runner: JobRunner
     @Environment(\.openWindow) private var openWindow
 
+    /// Compact summary of the document profile for the queue row —
+    /// "Latin auto-detected", "Likely scan; using picker default",
+    /// etc. Only shows when there's something interesting to say,
+    /// so users on born-digital English books aren't visually nagged.
+    private func profileSummary(_ job: Job) -> String? {
+        guard let p = job.profile else { return nil }
+        if let primary = p.primaryLanguage,
+           p.confidence >= QueueViewModel.applyConfidenceFloor,
+           QueueViewModel.supportedLanguages.contains(where: { $0.id == primary }) {
+            let label = QueueViewModel.supportedLanguages
+                .first(where: { $0.id == primary })?.label ?? primary
+            return "Detected: \(label)"
+        }
+        if p.isLikelyScan {
+            return "Likely scan; using picker default"
+        }
+        return nil
+    }
+
     /// Per-source observation breakdown for the row's tooltip,
     /// plus per-page verdict counts (trust vs reocr) so the user
     /// can see whether OCR actually ran. Useful for verifying the
@@ -261,6 +280,8 @@ private struct JobRow: View {
     @ViewBuilder
     private var statusIcon: some View {
         switch job.status {
+        case .profiling:
+            ProgressView().controlSize(.small)
         case .queued:
             Image(systemName: "circle.dashed").foregroundStyle(.secondary)
         case .running:
@@ -277,8 +298,15 @@ private struct JobRow: View {
     @ViewBuilder
     private var statusLine: some View {
         switch job.status {
+        case .profiling:
+            Text("Profiling…").font(.caption).foregroundStyle(.secondary)
         case .queued:
-            Text("Queued").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Queued").font(.caption).foregroundStyle(.secondary)
+                if let detected = profileSummary(job) {
+                    Text(detected).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
         case .running:
             if let p = job.progress, p.totalPages > 0 {
                 VStack(alignment: .leading, spacing: 2) {
@@ -319,6 +347,12 @@ private struct JobRow: View {
     @ViewBuilder
     private var actionButtons: some View {
         switch job.status {
+        case .profiling:
+            // Profile completes within a fraction of a second on most
+            // PDFs — don't bother offering a Cancel button for the
+            // brief flash of `.profiling`. The job becomes cancelable
+            // as soon as it flips to `.queued`.
+            EmptyView()
         case .queued:
             Button("Cancel", role: .destructive) {
                 runner.cancel(jobID: job.id)
@@ -367,8 +401,8 @@ private struct JobRow: View {
 private extension Job {
     var isFinished: Bool {
         switch status {
-        case .done, .failed, .cancelled: return true
-        case .queued, .running:          return false
+        case .done, .failed, .cancelled:        return true
+        case .queued, .running, .profiling:     return false
         }
     }
 }
