@@ -61,6 +61,18 @@ public actor PDFToEPUBPipeline {
         /// nil → Cloud mode degrades silently to local-only with a
         /// debug-log line.
         public var anthropicAPIKeyProvider: @Sendable () -> String?
+        /// **Experimental / spike use only.** When true and
+        /// `processingMode == .cloud`, the OCR cascade pulls Surya
+        /// + Tesseract out of the escalation chain *and* feeds every
+        /// text-bearing region to Claude unconditionally (bypassing
+        /// the quality-floor gate and the prior-tier guardrail that
+        /// would otherwise prevent rewrites). Result: a pure-Claude
+        /// CER measurement, suitable for "would Claude beat the
+        /// local stack head-to-head" comparisons. Used by
+        /// `SpikeRunner`; production callers must leave this off
+        /// — the cascade is designed to gate Claude behind a quality
+        /// floor for cost control.
+        public var disableLocalCascadeEscalation: Bool
 
         public init(
             dpi: CGFloat = 400,
@@ -71,7 +83,8 @@ public actor PDFToEPUBPipeline {
             processingMode: ProcessingMode = .privateLocal,
             cloudFeatures: AISettings.CloudFeatures = AISettings.CloudFeatures(),
             perBookCallCap: Int = 200,
-            anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil }
+            anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
+            disableLocalCascadeEscalation: Bool = false
         ) {
             self.dpi = dpi
             self.languages = languages
@@ -82,6 +95,7 @@ public actor PDFToEPUBPipeline {
             self.cloudFeatures = cloudFeatures
             self.perBookCallCap = perBookCallCap
             self.anthropicAPIKeyProvider = anthropicAPIKeyProvider
+            self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
         }
     }
 
@@ -688,14 +702,27 @@ public actor PDFToEPUBPipeline {
                         // toggle on, and an API key configured —
                         // otherwise the cascade behaves identically
                         // to `.privateLocal`.
+                        //
+                        // Spike-only: `disableLocalCascadeEscalation`
+                        // pulls Surya + Tesseract out of the cascade
+                        // AND tells the cascade to feed every region
+                        // to Claude unconditionally (`forceClaudeOnAllRegions`).
+                        // Layout still runs — we still need regions
+                        // to crop for Claude. Production never sets
+                        // this combination.
+                        let cascadeSurya = options.disableLocalCascadeEscalation
+                            ? nil : suryaEngine
+                        let cascadeTess = options.disableLocalCascadeEscalation
+                            ? nil : tesseractEngine
                         observations = await RegionCascade.run(
                             observations: observations,
                             regions: regions,
                             pageImage: image,
                             hints: hints,
-                            suryaEngine: suryaEngine,
-                            tesseractEngine: tesseractEngine,
-                            claudeEngine: claudeOCREngine
+                            suryaEngine: cascadeSurya,
+                            tesseractEngine: cascadeTess,
+                            claudeEngine: claudeOCREngine,
+                            forceClaudeOnAllRegions: options.disableLocalCascadeEscalation
                         )
                     }
                 }

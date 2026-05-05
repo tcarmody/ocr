@@ -55,6 +55,15 @@ enum RegionCascade {
     /// `claudeEngine` is the Cloud-mode-only final tier — populated
     /// only when `processingMode == .cloud` AND
     /// `cloudFeatures.hardRegionOCR` is on. Nil in `.privateLocal` mode.
+    ///
+    /// `forceClaudeOnAllRegions` is a spike-only knob: when true,
+    /// every text-bearing region is fed to Claude unconditionally,
+    /// and the guardrail comparison against the prior tier is
+    /// bypassed (since the comparison would just keep prior-tier
+    /// text and contaminate a Claude-only CER measurement).
+    /// Production code must leave this off — the cascade is
+    /// designed to gate Claude behind a quality floor for cost
+    /// control.
     static func run(
         observations: [TextObservation],
         regions: [LayoutRegion],
@@ -62,12 +71,20 @@ enum RegionCascade {
         hints: OCRHints,
         suryaEngine: (any OCREngine)?,
         tesseractEngine: (any OCREngine)?,
-        claudeEngine: (any OCREngine)? = nil
+        claudeEngine: (any OCREngine)? = nil,
+        forceClaudeOnAllRegions: Bool = false
     ) async -> [TextObservation] {
         // Pre-flight: which regions are problematic?
-        var problemIndices = problematicRegionIndices(
-            observations: observations, regions: regions
-        )
+        var problemIndices: Set<Int>
+        if forceClaudeOnAllRegions, claudeEngine != nil {
+            problemIndices = Set(regions.indices.filter {
+                textBearingKinds.contains(regions[$0].kind)
+            })
+        } else {
+            problemIndices = problematicRegionIndices(
+                observations: observations, regions: regions
+            )
+        }
         if problemIndices.isEmpty { return observations }
 
         var result = observations
@@ -163,12 +180,18 @@ enum RegionCascade {
                 }
 
                 // Compare candidate vs prior. Reject hallucinations.
-                let candidateText = cropResult.observations.map(\.text)
-                    .joined(separator: " ")
-                let decision = OCRChangeGuardrail.accept(
-                    prior: priorText, candidate: candidateText
-                )
-                guard decision.accepted else { continue }
+                // Skipped under `forceClaudeOnAllRegions` — there
+                // the spike is measuring Claude's absolute quality,
+                // and a guardrail rejection would resurrect the
+                // prior tier's text and contaminate the CER number.
+                if !forceClaudeOnAllRegions {
+                    let candidateText = cropResult.observations.map(\.text)
+                        .joined(separator: " ")
+                    let decision = OCRChangeGuardrail.accept(
+                        prior: priorText, candidate: candidateText
+                    )
+                    guard decision.accepted else { continue }
+                }
 
                 let translated = translate(
                     observations: cropResult.observations,

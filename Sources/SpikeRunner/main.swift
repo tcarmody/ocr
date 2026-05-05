@@ -68,15 +68,17 @@ struct SpikeRunner {
         let privateCER = Double(privateDistance) / Double(max(normGT.count, 1))
         log("  privateLocal: \(normPrivate.count) chars, CER \(String(format: "%.3f", privateCER)), \(String(format: "%.1f", privateElapsed))s")
 
-        // ── Run 2: .cloud (only if we have a key) ─────────────────
+        // ── Run 2 + 3: cloud variants (only if we have a key) ─────
         let cloudResult: CloudResult?
+        let claudeOnlyResult: CloudResult?
         if let apiKey, !apiKey.isEmpty {
-            log("running .cloud …")
+            log("running .cloud (full cascade with Claude as Stage 3) …")
             let cloudStart = Date()
             let (cloudText, claudeCallCount) = try await runConversionCloud(
                 pdfPath: workingPDFPath,
                 language: language,
-                apiKey: apiKey
+                apiKey: apiKey,
+                disableLocalCascadeEscalation: false
             )
             let cloudElapsed = Date().timeIntervalSince(cloudStart)
             let normCloud = normalize(cloudText)
@@ -91,9 +93,32 @@ struct SpikeRunner {
                 elapsed: cloudElapsed,
                 claudeObservations: claudeCallCount
             )
+
+            log("running .cloud claude-only (Surya + Tesseract bypassed) …")
+            let onlyStart = Date()
+            let (onlyText, onlyClaudeCallCount) = try await runConversionCloud(
+                pdfPath: workingPDFPath,
+                language: language,
+                apiKey: apiKey,
+                disableLocalCascadeEscalation: true
+            )
+            let onlyElapsed = Date().timeIntervalSince(onlyStart)
+            let normOnly = normalize(onlyText)
+            let onlyDistance = levenshtein(normGT, normOnly)
+            let onlyCER = Double(onlyDistance) / Double(max(normGT.count, 1))
+            log("  claude-only: \(normOnly.count) chars, CER \(String(format: "%.3f", onlyCER)), \(String(format: "%.1f", onlyElapsed))s, \(onlyClaudeCallCount) Claude obs")
+            claudeOnlyResult = CloudResult(
+                text: onlyText,
+                normChars: normOnly.count,
+                editDistance: onlyDistance,
+                cer: onlyCER,
+                elapsed: onlyElapsed,
+                claudeObservations: onlyClaudeCallCount
+            )
         } else {
-            log("no API key (env or keychain) — skipping .cloud run")
+            log("no API key (env or keychain) — skipping .cloud runs")
             cloudResult = nil
+            claudeOnlyResult = nil
         }
 
         // ── Report ────────────────────────────────────────────────
@@ -108,7 +133,8 @@ struct SpikeRunner {
                 cer: privateCER,
                 elapsed: privateElapsed
             ),
-            cloudResult: cloudResult
+            cloudResult: cloudResult,
+            claudeOnlyResult: claudeOnlyResult
         )
         let reportURL = URL(fileURLWithPath: reportPath)
         try FileManager.default.createDirectory(
@@ -163,21 +189,20 @@ struct SpikeRunner {
     /// Runs the cloud conversion with debug-log emission so we can
     /// count `.claude`-source observations afterward. Returns
     /// (extracted text, claude observation count).
+    /// `disableLocalCascadeEscalation` drives the Claude-only variant
+    /// where Surya + Tesseract are pulled out of the cascade.
     static func runConversionCloud(
         pdfPath: String,
         language: BCP47,
-        apiKey: String
+        apiKey: String,
+        disableLocalCascadeEscalation: Bool
     ) async throws -> (String, Int) {
         let pdfURL = URL(fileURLWithPath: pdfPath)
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("spike-cloud-\(UUID().uuidString).epub")
-        defer {
-            try? FileManager.default.removeItem(at: outputURL)
-            // Debug folder lives alongside the EPUB.
-            let debugFolder = outputURL.deletingPathExtension()
-                .appendingPathExtension("humanist-debug")
-            try? FileManager.default.removeItem(at: debugFolder)
-        }
+        // Note: NOT cleaning up the debug folder — needed for
+        // post-run inspection during the spike. The log path is
+        // printed to stderr below.
 
         var features = AISettings.CloudFeatures()
         features.hardRegionOCR = true
@@ -189,7 +214,8 @@ struct SpikeRunner {
             processingMode: .cloud,
             cloudFeatures: features,
             perBookCallCap: 200,
-            anthropicAPIKeyProvider: { apiKey }
+            anthropicAPIKeyProvider: { apiKey },
+            disableLocalCascadeEscalation: disableLocalCascadeEscalation
         )
 
         let pipeline = PDFToEPUBPipeline()
@@ -206,6 +232,7 @@ struct SpikeRunner {
             .appendingPathExtension("humanist-debug")
             .appendingPathComponent("log.txt")
         let claudeCount = countClaudeObservations(at: logURL)
+        log("    debug log preserved at \(logURL.path)")
         return (text, claudeCount)
     }
 
@@ -414,7 +441,8 @@ struct SpikeRunner {
         language: BCP47,
         groundTruthChars: Int,
         privateResult: PrivateResult,
-        cloudResult: CloudResult?
+        cloudResult: CloudResult?,
+        claudeOnlyResult: CloudResult?
     ) -> String {
         var out = ""
         out += "# Spike — \(language.rawValue) — \(URL(fileURLWithPath: pdfPath).lastPathComponent)\n\n"
@@ -432,25 +460,47 @@ struct SpikeRunner {
         out += "| \(String(format: "%.1fs", privateResult.elapsed)) "
         out += "| — |\n"
         if let c = cloudResult {
-            out += "| `.cloud` "
+            out += "| `.cloud` (full cascade) "
             out += "| \(c.normChars) "
             out += "| \(c.editDistance) "
             out += "| \(String(format: "%.1f%%", c.cer * 100)) "
             out += "| \(String(format: "%.1fs", c.elapsed)) "
             out += "| \(c.claudeObservations) |\n"
+        }
+        if let claude = claudeOnlyResult {
+            out += "| `.cloud` claude-only "
+            out += "| \(claude.normChars) "
+            out += "| \(claude.editDistance) "
+            out += "| \(String(format: "%.1f%%", claude.cer * 100)) "
+            out += "| \(String(format: "%.1fs", claude.elapsed)) "
+            out += "| \(claude.claudeObservations) |\n"
+        }
+        out += "\n"
 
-            let cerDelta = privateResult.cer - c.cer
-            let direction: String
-            if cerDelta > 0.005 {
-                direction = "Cloud wins by \(String(format: "%.1f", cerDelta * 100)) percentage points."
-            } else if cerDelta < -0.005 {
-                direction = "Private wins by \(String(format: "%.1f", -cerDelta * 100)) percentage points."
-            } else {
-                direction = "Effectively a tie (Δ ≤ 0.5 pp)."
-            }
-            out += "\n**Verdict**: \(direction)\n\n"
-        } else {
-            out += "\n_(no `.cloud` run — API key not configured)_\n\n"
+        if cloudResult == nil && claudeOnlyResult == nil {
+            out += "_(no Cloud runs — API key not configured)_\n\n"
+        }
+
+        // Verdicts: pairwise comparisons with sub-0.5pp tied as "effectively
+        // a tie" (matches the user's intuition that small CER deltas on
+        // small fixtures are noise).
+        if let c = cloudResult {
+            let delta = privateResult.cer - c.cer
+            out += "**`.privateLocal` vs `.cloud`** (full cascade): "
+            out += verdictLine(delta: delta, winnerName: "Cloud", loserName: "Private")
+            out += "\n\n"
+        }
+        if let claude = claudeOnlyResult {
+            let delta = privateResult.cer - claude.cer
+            out += "**`.privateLocal` vs `.cloud` claude-only**: "
+            out += verdictLine(delta: delta, winnerName: "Claude", loserName: "Private")
+            out += "\n\n"
+        }
+        if let c = cloudResult, let claude = claudeOnlyResult {
+            let delta = c.cer - claude.cer
+            out += "**`.cloud` (full cascade) vs claude-only**: "
+            out += verdictLine(delta: delta, winnerName: "Claude-only", loserName: "Full cascade")
+            out += "\n\n"
         }
 
         out += "## Methodology\n\n"
@@ -466,6 +516,20 @@ struct SpikeRunner {
         out += "- The pipeline produces an EPUB, then we strip HTML to compare text. Whitespace + paragraph break differences can inflate CER by a few characters per region — both modes pay the same penalty.\n"
 
         return out
+    }
+
+    /// One-line CER comparison verdict. Positive `delta` means the
+    /// "winner" mode beat the "loser" mode by that fraction; we
+    /// require ≥0.5 percentage points to call a winner (smaller
+    /// deltas are noise on a single short fixture).
+    static func verdictLine(delta: Double, winnerName: String, loserName: String) -> String {
+        if delta > 0.005 {
+            return "\(winnerName) wins by \(String(format: "%.1f", delta * 100)) pp."
+        } else if delta < -0.005 {
+            return "\(loserName) wins by \(String(format: "%.1f", -delta * 100)) pp."
+        } else {
+            return "Effectively a tie (Δ ≤ 0.5 pp)."
+        }
     }
 
     static func log(_ message: String) {

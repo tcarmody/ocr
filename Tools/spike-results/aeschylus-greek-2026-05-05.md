@@ -1,37 +1,44 @@
 # Spike — grc — Aeschylus.pdf
 
-Run 2026-05-05T17:09:38Z. Document: [/Users/tim/Desktop/Aeschylus.pdf](/Users/tim/Desktop/Aeschylus.pdf). Ground truth: 4132 normalized chars.
+Run 2026-05-05T17:28:04Z. Document: [/Users/tim/Desktop/Aeschylus.pdf](/Users/tim/Desktop/Aeschylus.pdf). Ground truth: 4132 normalized chars.
 
 ## Results
 
 | Mode | Norm chars | Edit distance | CER | Elapsed | Claude obs |
 |---|---:|---:|---:|---:|---:|
-| `.privateLocal` | 3914 | 622 | 15.1% | 18.4s | — |
-| `.cloud` | 3914 | 622 | 15.1% | 16.5s | 0 |
+| `.privateLocal` | 3914 | 622 | 15.1% | 18.1s | — |
+| `.cloud` (full cascade) | 3914 | 622 | 15.1% | 16.5s | 0 |
+| `.cloud` claude-only | 4122 | 465 | 11.3% | 175.8s | 23 |
 
-**Verdict**: `.cloud` mode produced **byte-identical output** to `.privateLocal`. The cascade's Stage 3 (Claude) **never fired** — after Stage 1 (Surya whole-page re-OCR), no regions remained problematic enough to escalate. Surya's polytonic Greek output was good enough that Vision's deficits were patched and the result passed the quality floor. Claude saw zero pages.
+**`.privateLocal` vs `.cloud`** (full cascade): Effectively a tie (Δ ≤ 0.5 pp).
 
-## What this tells us
+**`.privateLocal` vs `.cloud` claude-only**: Claude wins by 3.8 pp.
 
-1. **The cascade does what it's supposed to.** Cost guardrails work: when local engines handle the material, Cloud mode incurs no cost.
-2. **Surya is competent on classical Greek scan-quality input.** ~15% CER from a Vision → Surya cascade on rasterized polytonic Greek is a real number, not great but a baseline. Most of the errors are diacritic / breathing-mark variants, not gross word-level OCR failures.
-3. **This is a green light for Cloud mode as designed**, *not* a verdict on whether Claude would beat Surya in absolute terms. The cascade simply didn't ask Claude.
+**`.cloud` (full cascade) vs claude-only**: Claude-only wins by 3.8 pp.
 
-## Caveats / what we still don't know
+## Findings
 
-- **Whether Claude would have done better in absolute terms.** A "Claude-only" run that bypasses Surya entirely and feeds every region to Sonnet would tell us. Worth a follow-up experiment.
-- **Whether Cloud mode helps on harder input.** This document is rasterized from a clean digital source — print quality is excellent. Real-world polytonic Greek scans (Loeb, OCT, Teubner facsimiles) have faded ink, fainter diacritics, and noise that may push the cascade to escalate. Need a scan-source fixture to test.
-- **Hebrew, Syriac, Coptic.** Untested. If Surya handles those as well as it handles Greek here, Cloud mode's value proposition narrows considerably.
-- **The 15.1% CER itself.** Looking at the failure modes (whether it's diacritic confusion, line-break/whitespace artifacts, or gross word errors) would tell us where the cascade is weak — useful regardless of Cloud mode.
+1. **Tesseract on polytonic Greek is competitive.** `selectEngine` correctly routes `grc` to Tesseract (which has `grc_best` traineddata), and Tesseract delivers 15.1% CER. That's not great in absolute terms, but it's a real working baseline — diacritic / line-break artifacts dominate the error budget, not gross word-level OCR failures.
+2. **The cascade as designed never invokes Claude on this kind of input.** Tesseract's output passes the cascade's quality floor (`meanConfidence ≥ 0.85`, `textQuality ≥ 0.5`) cleanly. Cloud mode adds zero observations — and zero cost.
+3. **Claude beats the local stack by 3.8 pp when given the chance** (11.3% CER). Materially better on its own, but the local stack already cleared the cascade's quality bar, so the cascade never asked Claude. The bar is the binding constraint, not Claude's quality.
+4. **Latency is ~10× higher for Claude-only.** 175s vs 18s for 5 pages. ~35s/page vs Surya layout + Tesseract OCR's ~3.5s/page.
+5. **Cost was ~$0.10** for 23 successful Claude calls (Sonnet 4.6). Well under the per-book cap.
 
-## Recommendation
+## Implication: the cascade's quality floor is too generous for classical scripts
 
-Don't draw the "Cloud is unnecessary" conclusion from this single doc — Claude didn't get a chance to demonstrate value. Two follow-up experiments before deciding:
+The cascade was tuned against Latin-script body text, where Vision's confidence is well-calibrated. Tesseract on polytonic Greek hits high confidence even when it's making predictable errors (dropped breathing marks, miscategorized accents). Two ways to tighten this for Cloud-mode users who actually want Claude's quality:
 
-1. **Claude-only baseline.** Add a third mode to the spike that disables Surya + Tesseract from the cascade, forcing Claude to handle every region. Compare CER directly. Tells us "would Claude beat Surya if it fired?"
-2. **Harder fixture.** A scanned-facsimile polytonic Greek page (visibly lower print quality) to see whether the local cascade actually escalates and whether Claude meaningfully improves over Surya in those cases.
+- **Per-script lower confidence floor** — when languages include `grc`/`he`/`syr`/`cop`, raise `meanConfidenceFloor` (e.g., to 0.95) so Tesseract's "confident enough" output still escalates.
+- **A "prefer Claude when available" Cloud toggle** that bypasses the quality floor on any region with a flagged-script language hint — opt-in to "Claude transcribes everything in this script" semantics with a clear cost expectation.
 
-Both are small extensions of the existing harness. Pick up after Hebrew + Latin ground truth lands.
+Both are small changes, but they're real product decisions, not just plumbing. Worth holding off on until we have Hebrew + Latin data points too — Latin would tell us whether the floor is actually well-tuned for the common case (and we just need to special-case rare scripts), or whether the cascade is uniformly under-escalating.
+
+## Caveats
+
+- Single document, single script. Claude's 3.8 pp win on this fixture is meaningful but not proof of a general pattern.
+- Print quality here is excellent (rasterized digital source). On low-quality scans both engines would degrade, but Claude likely degrades less. Need a scan fixture to confirm.
+- The 23 Claude observations < the full set of text-bearing regions across 5 pages — some calls failed silently (refusal / decode / network). Worth instrumenting if we make Claude-only a real production mode.
+- **Do not productionize `disableLocalCascadeEscalation`.** It bypasses the guardrail layer that protects against hallucinated Claude rewrites. The right production answer to "use Claude more" is to tighten the quality floor (above), not bypass the guardrail.
 
 ## Methodology
 
