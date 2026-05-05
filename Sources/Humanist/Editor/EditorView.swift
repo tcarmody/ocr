@@ -10,6 +10,7 @@ import EPUB
 struct EditorView: View {
     let epubURL: URL
     @StateObject private var vm: EditorViewModel
+    @State private var showingCorrectionTrail = false
     @Environment(\.openWindow) private var openWindow
 
     init(epubURL: URL) {
@@ -88,6 +89,22 @@ struct EditorView: View {
                             },
                             onDismiss: { vm.reOCRResult = nil }
                         )
+                    }
+                    .sheet(isPresented: $showingCorrectionTrail) {
+                        CorrectionTrailSheet(
+                            vm: vm,
+                            isPresented: $showingCorrectionTrail
+                        )
+                    }
+                    // Document menu's "Show Correction Trail" command
+                    // posts this notification so the menu item can
+                    // reach this scene's local @State `showingCorrectionTrail`
+                    // (commands attach to the launcher scene; @State
+                    // here can't be read from there).
+                    .onReceive(NotificationCenter.default.publisher(
+                        for: .humanistShowCorrectionTrail
+                    )) { _ in
+                        showingCorrectionTrail = true
                     }
                 }
             }

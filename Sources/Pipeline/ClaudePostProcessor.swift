@@ -70,10 +70,19 @@ public struct ClaudePostProcessor: Sendable {
     }
 
     public struct Result: Sendable, Equatable {
+        /// The text the caller should use. On accept this is the
+        /// guardrail-approved correction; on reject it's the trimmed
+        /// original (so callers can use the result uniformly without
+        /// juggling two paths).
         public let corrected: String
+        /// Haiku's raw output before the guardrail vetted it. Equal
+        /// to `corrected` on accept; the guardrail-rejected suggestion
+        /// on reject. The editor's correction-trail UI uses this so
+        /// users can see what Haiku proposed even when we didn't take
+        /// it — and accept it manually if they disagree with the
+        /// guardrail.
+        public let modelOutput: String
         /// True when `OCRChangeGuardrail` accepted the candidate.
-        /// `corrected` carries the original text on reject so callers
-        /// can use the result uniformly without juggling two paths.
         public let accepted: Bool
         public let rejectionReason: OCRChangeGuardrail.RejectionReason?
     }
@@ -174,12 +183,14 @@ public struct ClaudePostProcessor: Sendable {
         if decision.accepted {
             return Result(
                 corrected: corrected,
+                modelOutput: corrected,
                 accepted: true,
                 rejectionReason: nil
             )
         } else {
             return Result(
                 corrected: trimmed,
+                modelOutput: corrected,
                 accepted: false,
                 rejectionReason: decision.rejectionReason
             )

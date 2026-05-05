@@ -14,10 +14,15 @@ public struct EPUBBuilder {
         self.modificationDate = modificationDate
     }
 
-    public func write(book: Book, to outputURL: URL) throws {
+    public func write(
+        book: Book,
+        correctionTrail: CorrectionTrail? = nil,
+        to outputURL: URL
+    ) throws {
         // Layout inside the ZIP:
         //   mimetype                      (uncompressed, first)
         //   META-INF/container.xml
+        //   META-INF/com.humanist.correction-trail.json (if any entries)
         //   OEBPS/content.opf
         //   OEBPS/nav.xhtml
         //   OEBPS/css/book.css
@@ -110,6 +115,21 @@ public struct EPUBBuilder {
             if let data = try? encoder.encode(pageMap) {
                 entries.append(EPUBPackager.Entry(
                     path: PageMap.pathInsideEPUB,
+                    data: data
+                ))
+            }
+        }
+
+        // 4c. Editor-only correction trail sidecar — Haiku post-OCR
+        // cleanup decisions per region. Same META-INF treatment as
+        // the pagemap. Skipped when the conversion didn't run cleanup
+        // or no regions tripped the trigger.
+        if let trail = correctionTrail, !trail.entries.isEmpty {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(trail) {
+                entries.append(EPUBPackager.Entry(
+                    path: CorrectionTrail.pathInsideEPUB,
                     data: data
                 ))
             }

@@ -59,7 +59,27 @@ struct EditorViewMenu: Commands {
             Divider()
             EditorReOCRCurrentPageMenu()
             EditorReOCRPDFSelectionMenu()
+            Divider()
+            ShowCorrectionTrailCommand()
         }
+    }
+}
+
+/// Document > Show Correction Trail — opens the sheet listing every
+/// Haiku post-OCR cleanup decision the conversion made on this book.
+/// Disabled when no editor is focused or the open EPUB has no trail
+/// sidecar (book wasn't converted with cleanup enabled, or no regions
+/// tripped the trigger gate).
+private struct ShowCorrectionTrailCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+
+    var body: some View {
+        Button("Show Correction Trail…") {
+            NotificationCenter.default.post(
+                name: .humanistShowCorrectionTrail, object: nil
+            )
+        }
+        .disabled(vm?.correctionTrail == nil)
     }
 }
 

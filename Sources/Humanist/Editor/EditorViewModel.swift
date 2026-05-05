@@ -76,6 +76,15 @@ final class EditorViewModel: ObservableObject {
     /// (or one that predates the anchor-emitting pipeline) and sync
     /// stays dormant.
     @Published private(set) var pageMap: PageMap?
+    /// Cloud Phase 6 sidecar — every Haiku post-OCR cleanup decision
+    /// from the conversion. Nil when the cleanup feature wasn't run
+    /// or no regions tripped the trigger gate. Surfaces in the
+    /// editor's "Correction Trail" sheet.
+    @Published private(set) var correctionTrail: CorrectionTrail?
+    /// Transient feedback for the trail panel — populated by
+    /// `applyCorrection` / `revertCorrection` when an action runs (or
+    /// fails to find a unique text match). UI clears it manually.
+    @Published var correctionTrailMessage: String?
     /// Anchor id the preview pane should scroll to. Bumped (or rather
     /// replaced with a new value carrying the same id but a fresh
     /// sequence number) every time we want the preview to re-scroll,
@@ -266,6 +275,9 @@ final class EditorViewModel: ObservableObject {
             self.loadSourceForSelectedFile()
             self.attachInitialSourcePDF(epubURL: epubURL, package: pkg)
             self.pageMap = PageMap.read(workingDirectory: pkg.workingDirectory)
+            self.correctionTrail = CorrectionTrail.read(
+                workingDirectory: pkg.workingDirectory
+            )
         } catch {
             self.state = .failed(error.localizedDescription)
         }
@@ -634,6 +646,113 @@ final class EditorViewModel: ObservableObject {
     func replaceSourceSelection(with text: String) {
         replaceNonce &+= 1
         replaceSourceRequest = ReplaceSourceRequest(text: text, nonce: replaceNonce)
+    }
+
+    // MARK: - Correction trail actions (Cloud Phase 6)
+
+    /// Switch the editor's selected file to the XHTML chapter that
+    /// owns this trail entry (per the pagemap join), and scroll the
+    /// source pane to the entry's page anchor. Returns `true` when
+    /// the navigation succeeded — `false` when the pagemap doesn't
+    /// resolve the entry's anchor (which would mean the trail and
+    /// pagemap got out of sync, shouldn't happen in practice).
+    @discardableResult
+    func revealInSource(entry: CorrectionTrail.Entry) -> Bool {
+        guard let pkg = package, let map = pageMap else { return false }
+        guard let mapEntry = map.entries.first(
+            where: { $0.anchorId == entry.anchorId }
+        ) else { return false }
+        let fileURL = pkg.workingDirectory
+            .appendingPathComponent(mapEntry.xhtmlFile)
+            .canonicalForFile
+        if selectedFile?.id.canonicalForFile != fileURL,
+           let node = Self.findLeaf(in: pkg.fileTree, matching: fileURL) {
+            select(node)
+        }
+        scrollNonce &+= 1
+        scrollCodeToAnchor = AnchorScrollRequest(
+            anchorId: mapEntry.anchorId,
+            xhtmlFile: mapEntry.xhtmlFile,
+            nonce: scrollNonce
+        )
+        return true
+    }
+
+    /// Apply the trail entry's suggested correction. Used for entries
+    /// the guardrail rejected — the source currently has the original
+    /// text and the user wants Haiku's suggestion instead.
+    func applyCorrection(_ entry: CorrectionTrail.Entry) {
+        revealInSource(entry: entry)
+        replaceInLoadedSource(
+            find: entry.original,
+            with: entry.suggested,
+            actionLabel: "apply"
+        )
+    }
+
+    /// Revert the trail entry — restore the original OCR text. Used
+    /// for accepted entries where the user disagrees with Haiku's
+    /// correction and wants the pre-cleanup version back.
+    func revertCorrection(_ entry: CorrectionTrail.Entry) {
+        revealInSource(entry: entry)
+        replaceInLoadedSource(
+            find: entry.suggested,
+            with: entry.original,
+            actionLabel: "revert"
+        )
+    }
+
+    /// Try to replace `find` with `with` in the currently-loaded
+    /// `sourceText`. Tries the literal string first, then an
+    /// entity-escaped variant (covers the common `& < > "` cases).
+    /// Surfaces user-facing feedback in `correctionTrailMessage`.
+    ///
+    /// This is best-effort: the text we're matching on came from the
+    /// pipeline's joined-observations buffer, which doesn't always
+    /// survive reflow + XHTML serialization byte-for-byte. When the
+    /// match is missing or ambiguous, we tell the user to apply
+    /// manually rather than silently mangling the file.
+    private func replaceInLoadedSource(
+        find: String, with: String, actionLabel: String
+    ) {
+        let candidates = [find, Self.xhtmlEscape(find)]
+        for candidate in candidates {
+            let count = sourceText.components(separatedBy: candidate).count - 1
+            switch count {
+            case 1:
+                sourceText = sourceText.replacingOccurrences(
+                    of: candidate, with: Self.xhtmlEscape(with)
+                )
+                correctionTrailMessage =
+                    "Correction \(actionLabel) applied. Save (⌘S) to persist."
+                return
+            case 0:
+                continue
+            default:
+                correctionTrailMessage = """
+                    Cannot \(actionLabel) automatically — text appears \
+                    \(count) times in this file. Use Reveal in Source \
+                    and replace it by hand.
+                    """
+                return
+            }
+        }
+        correctionTrailMessage = """
+            Cannot \(actionLabel) automatically — text from the OCR \
+            stage didn't survive reflow byte-for-byte. Use Reveal in \
+            Source, then copy the suggested text and replace by hand.
+            """
+    }
+
+    /// Minimal XHTML entity-escape. Covers the four characters that
+    /// need escaping inside element content (`<`, `>`, `&`) plus
+    /// double-quote — enough for the common cases. Apostrophes are
+    /// left alone (XHTML doesn't require escaping them in content).
+    static func xhtmlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     func pdfZoomIn()    { pdfController?.pdfView.zoomIn(nil) }

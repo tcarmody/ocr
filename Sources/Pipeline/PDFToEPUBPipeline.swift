@@ -188,6 +188,15 @@ public actor PDFToEPUBPipeline {
         return ClaudePostProcessor(client: client, budget: budget)
     }
 
+    /// Output of `applyPostOCRCleanup`: the (possibly-rewritten)
+    /// observations plus a trail of every correction the pass
+    /// considered (accepted *and* rejected). The trail feeds
+    /// `CorrectionTrail` so the editor can surface what Haiku changed.
+    struct PostOCRCleanupOutcome {
+        var observations: [TextObservation]
+        var trailEntries: [CorrectionTrail.Entry]
+    }
+
     /// Walk text-bearing layout regions, score the joined OCR text in
     /// each, and ask the post-processor to fix character-level errors
     /// where the score is low. Accepted corrections replace the
@@ -200,16 +209,27 @@ public actor PDFToEPUBPipeline {
     /// sent alongside the OCR text. A region whose crop comes back
     /// nil falls through silently (nothing to send) — the processor's
     /// own gate also catches this case.
+    ///
+    /// The returned `trailEntries` capture every region that **made
+    /// it past the trigger gate** (i.e. Haiku actually saw it).
+    /// Skipped regions (clean text, too short, budget exhausted, no
+    /// network response) produce no trail entry — there's nothing
+    /// for the editor to show on those.
     static func applyPostOCRCleanup(
         observations: [TextObservation],
         regions: [LayoutRegion],
         pageImage: CGImage,
+        pageIndex: Int,
         hints: OCRHints,
         mode: ClaudePostProcessor.Mode,
         postProcessor: ClaudePostProcessor
-    ) async -> [TextObservation] {
+    ) async -> PostOCRCleanupOutcome {
         var working = observations
-        for region in regions {
+        var trail: [CorrectionTrail.Entry] = []
+        let modeKey = (mode == .vision) ? "vision" : "passages"
+        let pageAnchor = RegionAwareReflow.anchorId(forPageIndex: pageIndex)
+
+        for (regionIdx, region) in regions.enumerated() {
             // Only text-bearing regions. Captions, page numbers,
             // headers / footers fall under the post-processor's own
             // length floor, but skipping them up here is cheaper than
@@ -237,9 +257,28 @@ public actor PDFToEPUBPipeline {
                 languages: hints.languages,
                 mode: mode,
                 regionImage: regionImage
-            ), result.accepted else {
+            ) else {
                 continue
             }
+
+            // Record the trail entry whether accepted or rejected.
+            // `modelOutput` carries Haiku's raw suggestion (pre-
+            // guardrail), so rejected entries surface the rejected
+            // text in the editor panel. Users can manually apply if
+            // they disagree with the guardrail's call.
+            trail.append(CorrectionTrail.Entry(
+                pageIndex: pageIndex,
+                regionIndex: regionIdx,
+                anchorId: pageAnchor,
+                original: joined,
+                suggested: result.modelOutput,
+                accepted: result.accepted,
+                rejectionReason: result.rejectionReason?.rawValue,
+                mode: modeKey
+            ))
+
+            guard result.accepted else { continue }
+
             // Replace the region's observations with a single Claude-
             // sourced observation that covers the full region bbox.
             // Mirrors how `ClaudeOCREngine` packages its output.
@@ -255,7 +294,7 @@ public actor PDFToEPUBPipeline {
                 with: [replacement]
             )
         }
-        return working
+        return PostOCRCleanupOutcome(observations: working, trailEntries: trail)
     }
 
     /// Region kinds eligible for post-OCR cleanup. Body text is the
@@ -683,6 +722,12 @@ public actor PDFToEPUBPipeline {
         // stats so the user can see "OCR ran on N of M pages."
         var verdictsByPage: [Int: EmbeddedTextQualityScorer.Verdict] = [:]
 
+        // Accumulator for the post-OCR cleanup correction trail.
+        // Empty when the cleanup feature is off or no regions
+        // tripped the trigger gate. Written as a META-INF sidecar
+        // when non-empty so the editor can surface what Haiku did.
+        var correctionTrailEntries: [CorrectionTrail.Entry] = []
+
         for i in 0..<totalPages {
             try Task.checkCancellation()
 
@@ -881,14 +926,17 @@ public actor PDFToEPUBPipeline {
                     let mode: ClaudePostProcessor.Mode =
                         options.cloudFeatures.postOCRCleanupVisionMode
                             ? .vision : .passages
-                    observations = await Self.applyPostOCRCleanup(
+                    let outcome = await Self.applyPostOCRCleanup(
                         observations: observations,
                         regions: regions,
                         pageImage: image,
+                        pageIndex: i,
                         hints: hints,
                         mode: mode,
                         postProcessor: postProcessor
                     )
+                    observations = outcome.observations
+                    correctionTrailEntries.append(contentsOf: outcome.trailEntries)
                 }
 
                 // Phase 6: extract figures (.picture, .formula) from
@@ -1041,7 +1089,14 @@ public actor PDFToEPUBPipeline {
             chapters: chapters
         )
 
-        try EPUBBuilder().write(book: book, to: outputURL)
+        let trail = correctionTrailEntries.isEmpty
+            ? nil
+            : CorrectionTrail(entries: correctionTrailEntries)
+        try EPUBBuilder().write(
+            book: book,
+            correctionTrail: trail,
+            to: outputURL
+        )
 
         // Tally observations by source across every page. This walks
         // the post-cascade pageResults (i.e. the observations the

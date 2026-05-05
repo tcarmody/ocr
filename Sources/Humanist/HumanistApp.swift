@@ -233,4 +233,10 @@ private struct ConvertCommand: View {
 extension Notification.Name {
     /// The launcher window listens for this and starts a conversion.
     static let humanistConvertPDF = Notification.Name("humanistConvertPDF")
+    /// Editor windows listen for this and show the correction-trail
+    /// sheet. Posted by the Document menu item, which lives on the
+    /// launcher scene and can't reach an editor's @State directly.
+    static let humanistShowCorrectionTrail = Notification.Name(
+        "humanistShowCorrectionTrail"
+    )
 }
