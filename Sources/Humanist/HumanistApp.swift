@@ -21,6 +21,22 @@ struct HumanistApp: App {
         _jobStore  = StateObject(wrappedValue: store)
         _jobRunner = StateObject(wrappedValue: runner)
         _queueVM   = StateObject(wrappedValue: vm)
+
+        // When launched as a raw executable (e.g. `swift run` or
+        // `./.build/debug/Humanist`) instead of from a notarized
+        // `.app` bundle, macOS treats the process as `.accessory`
+        // by default — no Dock icon, no menu bar takeover, the
+        // calling Terminal keeps keyboard focus and the user can't
+        // reach Settings via ⌘,. Forcing `.regular` + activating
+        // explicitly fixes both. No-op when launched from a bundled
+        // .app (Phase 10 distribution path) since the bundle's
+        // Info.plist already sets the right policy.
+        // `NSApp` (the implicitly-unwrapped global) isn't set yet
+        // during App.init — SwiftUI hasn't booted the runtime. Use
+        // `NSApplication.shared` instead; that accessor creates the
+        // singleton if needed.
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     var body: some Scene {

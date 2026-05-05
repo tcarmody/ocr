@@ -82,6 +82,16 @@ let package = Package(
             dependencies: ["Pipeline", "AI"],
             path: "Sources/Humanist"
         ),
+        // One-shot CLI for the Cloud-mode validation spike (PLANS.md
+        // Tier 2 Phase 4). Compares CER of `.privateLocal` vs `.cloud`
+        // pipeline output against a hand-corrected RTF reference.
+        // Not part of `swift test` — needs the user's API key + spends
+        // tokens. Invoke via `swift run SpikeRunner`.
+        .executableTarget(
+            name: "SpikeRunner",
+            dependencies: ["Pipeline", "AI", "EPUB", "ZIPFoundation"],
+            path: "Sources/SpikeRunner"
+        ),
         .testTarget(
             name: "EPUBTests",
             dependencies: ["EPUB", "Document"],
