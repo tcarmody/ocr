@@ -232,7 +232,297 @@ Phase 6 (figures) — same plumbing.
 
 ---
 
-# Tier 2: Language + corpus expansion
+# Tier 2: Post-OCR LLM accuracy pass
+
+## P-LLM-Pass — LLM-corrected OCR output
+
+**Status**: not started. Existing `OCRTextQualityScorer` flags
+low-quality regions (mojibake, single-character runs, language
+confidence below threshold) and the `RegionCascade` retries with
+a different OCR engine, but if every engine produces mediocre
+text the bad output ships to the EPUB as-is.
+
+### Goal
+
+Optional post-OCR pass that sends low-quality regions (or whole
+pages) to an LLM with the original text and a request to correct
+obvious OCR errors. Targeted at the ~5-15% of regions our cascade
+can't fix on its own — long-s misreads in 18th-century scans,
+polytonic Greek where Tesseract dropped diacritics, mixed-script
+boundaries, ligature confusions (`rn`→`m`, `cl`→`d`, `vv`→`w`),
+missing accents on French / Spanish text Vision corrected away.
+
+### Why this matters
+
+The structured-doc work (chapter splitting, header/footer
+classification, region splitting) is now load-bearing for output
+quality but operates on whatever text the OCR cascade produces.
+An LLM correction pass is the cheapest way to substantially
+improve the actual character-level fidelity of the body text —
+the thing the user is actually reading. Cost is well under a
+penny per book at Haiku rates.
+
+### Scope (what's in / what's out)
+
+In:
+- `OCRPostProcessor` protocol with one impl: `ClaudePostProcessor`.
+- Per-region invocation gated on `OCRTextQualityScorer.combined`
+  below a configurable floor (default 0.6).
+- A "passages mode" — text-only correction. Send the OCR text +
+  language hint + 1-2 sentence context window from neighbors.
+  Cheap and fast.
+- An optional "vision mode" — multimodal correction. Send the
+  rendered region image + the OCR text. Higher quality on hard
+  cases (worn type, faint scans), more expensive.
+- A guardrail layer that compares LLM output against original
+  and rejects "corrections" that look like rewrites (high edit
+  distance, language drift, length explosion). Original wins on
+  reject.
+- An audit log per region capturing original / LLM-suggested /
+  whether-accepted, surfaced in the editor's per-region inspector
+  so the user can review what was changed.
+- Settings: enable/disable (off by default), passages-vs-vision
+  mode, quality floor for triggering, hard upper bound on calls
+  per book (cost cap).
+
+Out:
+- LLM-driven layout decisions (use Surya for that).
+- LLM-driven language detection (already handled by NLLanguageRecognizer
+  + script-frequency analysis).
+- Whole-document rewrites or stylistic edits — only character-level
+  OCR corrections.
+
+### Architecture
+
+```
+Pipeline/
+├── OCRPostProcessor.swift              protocol + ChangeGuardrail
+├── ClaudePostProcessor.swift           AnthropicAPIClient impl
+├── OCRPostProcessorWiring.swift        gate decisions, batching
+└── PDFToEPUBPipeline.swift             wire after RegionCascade
+
+Document/
+└── (no changes — the corrected text just replaces obs.text)
+
+Humanist/
+├── Settings/SettingsView.swift         + LLM correction pane
+└── Editor/RegionInspector.swift        + "Show LLM correction trail"
+```
+
+### `OCRPostProcessor` protocol
+
+```swift
+public protocol OCRPostProcessor: Sendable {
+    /// Correct character-level OCR errors in `text`. Returns the
+    /// corrected string, or nil when the processor declines to
+    /// touch this input (low confidence, off-topic content,
+    /// validation failure). Caller falls back to the original
+    /// when nil.
+    func correct(
+        text: String,
+        languages: [BCP47],
+        regionImage: CGImage?,         // nil for passages mode
+        contextBefore: String?,        // 1-2 sentences
+        contextAfter: String?
+    ) async -> CorrectionResult?
+}
+
+public struct CorrectionResult: Sendable {
+    public let corrected: String
+    public let editDistance: Int        // chars changed
+    public let confidence: Double       // model's stated confidence
+    public let rationale: String?       // optional: model's note
+}
+```
+
+Two impls planned:
+- **`ClaudePostProcessor`** — wraps Anthropic API. Handles both
+  passages mode and vision mode behind the same protocol.
+- **`MockPostProcessor`** — for tests. Returns canned corrections
+  keyed off input text.
+
+### `ClaudePostProcessor` prompt design
+
+**Passages mode** (text-only):
+```
+You are correcting OCR output. Fix obvious character-level OCR errors:
+ligature confusions (rn→m, cl→d, vv→w), missing diacritics for the
+indicated language, dropped/extra spaces around punctuation, long-s →
+s in pre-1800 reprints. Do NOT change wording, do NOT translate, do
+NOT modernize spelling, do NOT add or remove sentences. If the input
+is already clean or you can't tell what's intended, return it
+unchanged.
+
+Languages expected: <BCP-47 list>
+Context (preceding text): <up to 200 chars>
+Context (following text): <up to 200 chars>
+
+OCR text to correct:
+<text>
+
+Return JSON: {"corrected": "...", "confidence": 0.NN}
+```
+
+**Vision mode** (multimodal): same prompt, plus the rendered region
+image attached. Costs ~10× more in tokens. Reserve for the lowest-
+quality regions where the model genuinely needs to see the glyphs.
+
+Pin to a specific snapshot (`claude-haiku-4-5-20251001`) for
+reproducibility.
+
+### Cost model
+
+Haiku 4.5 at $1/MTok input, $5/MTok output.
+
+- **Passages mode**: ~500 tokens in / 200 out per region. ~$0.001
+  per region. A book with 200 pages × 5 regions/page × 10% trigger
+  rate = 100 calls = $0.10/book. Cheap.
+- **Vision mode**: an image at 800×600 region resolution is ~600
+  image tokens. ~$0.005 per region. Same trigger rate = $0.50/book.
+  Manageable but noticeable for bulk runs.
+- **Hard upper bound**: configurable cap (default: 200 calls/book)
+  catches runaway documents (a book where every region triggers
+  would otherwise blow the budget).
+
+### Trigger logic
+
+The processor doesn't run on every region. Gate stack:
+
+1. **Quality floor**: only fires when
+   `OCRTextQualityScorer().score(text:).combined < 0.6`. Adjustable.
+   Already-clean text is skipped — no need to spend tokens on it.
+2. **Length sanity**: skip regions under 30 chars (captions,
+   single-line headers — the model often makes these worse).
+3. **Cost cap**: per-book counter; once exceeded, remaining calls
+   skip with a debug log entry.
+4. **Settings master switch**: off by default. User opts in.
+
+### Guardrails
+
+The `ChangeGuardrail` rejects LLM output when:
+- **Edit distance > 30%** of original length: the model rewrote
+  rather than corrected.
+- **Length delta > 25%**: a much longer or shorter result usually
+  means hallucinated content or skipped chunks.
+- **Language drift**: detect script change (e.g., Latin OCR became
+  Cyrillic LLM output). Reject.
+- **Empty result**: model returned "" or whitespace.
+- **Validation parse failure**: returned non-JSON or missing
+  fields.
+
+When rejected, original wins. Logged for editor inspection.
+
+### Wiring into the pipeline
+
+After `RegionCascade.run` produces final per-page observations:
+
+```swift
+if let postProcessor = ocrPostProcessor {
+    observations = await applyLLMCorrections(
+        observations: observations,
+        regions: layoutForPage,
+        pageImage: image,                  // optional, for vision mode
+        languages: hints.languages,
+        postProcessor: postProcessor
+    )
+}
+```
+
+`applyLLMCorrections` walks each text-bearing region, scores the
+joined region text, fires the post-processor where the floor
+allows, and replaces matching observation text with the
+corrections (preserving bbox, confidence, source).
+
+### Concurrency
+
+Process regions in parallel via `TaskGroup` with concurrency = 5
+(matches Anthropic Build-tier RPM headroom). Bulk runs serialize
+books anyway, so cross-book parallelism doesn't apply.
+
+A simple per-second token-bucket prevents bursts from tripping
+rate limits on long pages.
+
+### Settings UI
+
+New "OCR Correction (Claude)" pane:
+- "Enable post-OCR Claude correction" — master toggle
+- "Mode" — Passages (text-only) | Vision (multimodal, costlier)
+- "Trigger threshold" — slider for the quality floor (0-1)
+- "Per-book cost cap" — number of calls before fall-back
+- "Anthropic API key" — shared with Phase 2 / Phase 3 if those
+  ship; standalone otherwise
+
+### Editor integration
+
+The region inspector pane gains a "Correction trail" disclosure
+showing original / LLM-suggested / accepted / rationale per
+region. Users can manually accept the LLM suggestion if our
+guardrail rejected it, or revert to the original if a borderline
+case got through.
+
+### Testing
+
+- Unit: `ChangeGuardrail` against pairs that should accept / reject
+  (clean correction, hallucinated rewrite, language drift, length
+  explosion).
+- Unit: `ClaudePostProcessor` with mocked URLSession verifying
+  prompt shape + response parsing.
+- Unit: trigger-gate logic — quality floor, length sanity, cost
+  cap.
+- Integration: pin a fixture page with known OCR errors (1700s
+  long-s text, polytonic Greek with stripped diacritics), run
+  the post-processor live, assert specific corrections.
+- Manual: convert a book end-to-end with correction enabled,
+  verify the editor shows the trail and corrections look correct.
+
+### Risks
+
+1. **Hallucinated corrections**. The guardrails (edit-distance,
+   length-delta, language-drift) catch the obvious cases but not
+   subtle rewrites. The editor trail makes them auditable.
+2. **Cost runaway** on a book where every region triggers. The
+   per-book cap defends.
+3. **Latency at bulk scale**. 200 calls × 1 second each is 3
+   minutes added per book. Concurrency helps; the user can opt
+   out for time-sensitive runs.
+4. **API key dependency**. Same posture as Phase 2 / 3 — store in
+   Keychain, fall back silently when missing.
+5. **Multilingual reliability**. Haiku handles classical Latin and
+   French well; less reliable on polytonic Greek, Hebrew, Syriac.
+   Vision mode helps for the harder cases. Worst case: corrections
+   reject and we keep the original Tesseract output.
+6. **Reading-order coupling**: the post-processor sees one region
+   at a time, so it can't fix errors that cross region boundaries
+   (a hyphenated word split across regions). Acceptable scope
+   limitation.
+
+### Effort estimate
+
+- ~1 day: protocol + ChangeGuardrail + tests
+- ~1 day: ClaudePostProcessor (passages mode) + tests
+- ~0.5 day: Vision-mode extension
+- ~0.5 day: wiring into pipeline + trigger gate
+- ~0.5 day: Settings UI + Keychain integration (or share with
+  Phase 2/3 if they shipped first)
+- ~0.5 day: editor inspector "Correction trail" pane
+- ~1 day: corpus testing (5-10 fixture books) + threshold tuning
+
+Total: ~5 days for a polished implementation.
+
+### Dependencies
+
+- **Anthropic API client** is shared with Phase 2 / Phase 3. If
+  this ships first, those plans inherit the `URLSession`
+  wrapper + Keychain code. Build it cleanly here so reuse is
+  trivial.
+- **Editor inspector** already shows per-region info; just adds
+  a new disclosure section.
+- **Quality scorer** is already in place — this consumes its
+  output, no changes needed there.
+
+---
+
+# Tier 3: Language + corpus expansion
 
 ## P9 — RTL languages: Hebrew, Syriac, Coptic
 
@@ -359,7 +649,7 @@ None.
 
 ---
 
-# Tier 3: Distribution + polish
+# Tier 4: Distribution + polish
 
 ## P10 — Distribution
 
@@ -462,7 +752,7 @@ to be done.
 
 ---
 
-# Tier 4: Quality refinements
+# Tier 5: Quality refinements
 
 These are smaller items that follow naturally from work we've done.
 
@@ -591,7 +881,7 @@ needed without redoing every book individually.
 
 ---
 
-# Tier 5: Performance + observability
+# Tier 6: Performance + observability
 
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
@@ -667,7 +957,7 @@ Keep no-telemetry-by-default. Document it in the README.
 
 ---
 
-# Tier 6: Testing + CI
+# Tier 7: Testing + CI
 
 ## T-CI — GitHub Actions CI
 
@@ -737,20 +1027,13 @@ automatically.
 
 ---
 
-# Tier 7: Stretch / speculative
+# Tier 8: Stretch / speculative
 
 ## S-Apple-Intelligence-Polish
 
 When macOS 26+ becomes the realistic minimum, use Foundation Models
 (see [Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md))
 for chapter classification. Cleaner than cloud Claude and free.
-
-## S-OCR-Accuracy-LLM-Pass
-
-Optional post-OCR pass that sends each page's text to Claude Haiku
-asking "is this OCR output coherent? If not, here are the
-characters you might have misread; please correct." Cost: ~$0.01
-per book. Latency: a few seconds per page.
 
 ## S-Custom-Footnote-Style
 
@@ -773,19 +1056,25 @@ use; distribution is lower priority than correctness.
 
 1. **Phase 6 (figures + tables + math-as-image)** — biggest visible
    gap. ~5-6 days for figures + tables. Math-as-image included.
-2. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
+2. **P-LLM-Pass (post-OCR Claude correction)** — biggest invisible
+   gap. The OCR cascade does what it can; the final ~5-15% of
+   character-level errors need an LLM to clean up. Ships the
+   Anthropic API client, Keychain key storage, and editor
+   correction-trail UI that Phase 2/3 will reuse. ~5 days.
+3. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
    corpus. ~4 days.
-3. **R-Hierarchy** (multi-level chapters) — natural follow-on to
+4. **R-Hierarchy** (multi-level chapters) — natural follow-on to
    ChapterSplitter, low effort. ~1 day.
-4. **R-Footers** (cross-page running footers) — symmetric refactor.
+5. **R-Footers** (cross-page running footers) — symmetric refactor.
    ~0.5 day.
-5. **Defer Phase 10 (distribution)** until the user actually wants
+6. **Defer Phase 10 (distribution)** until the user actually wants
    to share or onboard another machine. The app is signed and runs
    locally; that's enough for personal use.
-6. **AI-assisted Phase 2/3** — pick up when the user wants
+7. **AI-assisted Phase 2/3** — pick up when the user wants
    structured TOCs or semantic landmarks. Existing plans in
-   `/Plans/`.
+   `/Plans/`. Builds on the API key + Keychain plumbing P-LLM-Pass
+   ships first.
 
-Total Tier 1 + 2: ~10-12 days for substantial quality + corpus
+Total Tiers 1-3: ~15-17 days for substantial quality + corpus
 expansion. After that the app handles essentially any book a
 working researcher would feed it.
