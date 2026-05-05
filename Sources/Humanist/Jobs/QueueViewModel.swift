@@ -120,11 +120,14 @@ final class QueueViewModel: ObservableObject {
             status: .profiling
         )
         store.add(job)
+        let highAccuracy = useHighAccuracyOCR
         Task.detached(priority: .userInitiated) { [store, weak runner] in
             let profile = DocumentProfiler.profile(pdfURL: url)
-            // Compute the Cloud-mode cost estimate from the profile +
-            // the user's current AI settings. Cheap (no I/O) — runs
-            // in the same detached Task as the profiler.
+            // Compute the Cloud-mode cost estimate + content/config
+            // warnings from the profile + the user's current AI
+            // settings. Cheap (no I/O); the keychain read for
+            // `hasAPIKey` runs once in this detached Task so we don't
+            // hop main-thread for it later.
             let aiSettings = AISettingsStore().load()
             let estimate: CostEstimator.Estimate = aiSettings.processingMode == .cloud
                 ? CostEstimator.estimate(
@@ -133,10 +136,22 @@ final class QueueViewModel: ObservableObject {
                     perBookCallCap: aiSettings.perBookCallCap
                 )
                 : .empty
+            let hasAPIKey = (AnthropicAPIKeyStore().read() ?? "").isEmpty == false
+            let warnings = ProfileWarningEvaluator.evaluate(
+                ProfileWarningInputs(
+                    profile: profile,
+                    useHighAccuracyOCR: highAccuracy,
+                    processingMode: aiSettings.processingMode,
+                    cloudFeatures: aiSettings.cloudFeatures,
+                    hasAPIKey: hasAPIKey,
+                    pickerSupportedLanguages: Self.supportedLanguages.map(\.id)
+                )
+            )
             await MainActor.run {
                 store.update(job.id) { mutable in
                     mutable.profile = profile
                     mutable.costEstimate = estimate
+                    mutable.profileWarnings = warnings
                     // Apply detected language when:
                     //   * detection is confident (≥0.7 weighted)
                     //   * the detected language is one we support

@@ -353,6 +353,11 @@ private struct JobRow: View {
                         .foregroundStyle(.secondary)
                         .help(costEstimateTooltip(job) ?? "")
                 }
+                ForEach(job.profileWarnings ?? [], id: \.rawValue) { warning in
+                    Label(warning.headline, systemImage: warning.systemImage)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
         case .running:
             if let p = job.progress, p.totalPages > 0 {
