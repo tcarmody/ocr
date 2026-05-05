@@ -195,10 +195,17 @@ public actor PDFToEPUBPipeline {
     /// observation spanning the region — same shape `ClaudeOCREngine`
     /// produces for the cascade. Rejected corrections (guardrail trip,
     /// budget exhausted, processor declined) leave the region intact.
+    ///
+    /// In `.vision` mode the page image is cropped per region and
+    /// sent alongside the OCR text. A region whose crop comes back
+    /// nil falls through silently (nothing to send) — the processor's
+    /// own gate also catches this case.
     static func applyPostOCRCleanup(
         observations: [TextObservation],
         regions: [LayoutRegion],
+        pageImage: CGImage,
         hints: OCRHints,
+        mode: ClaudePostProcessor.Mode,
         postProcessor: ClaudePostProcessor
     ) async -> [TextObservation] {
         var working = observations
@@ -218,8 +225,18 @@ public actor PDFToEPUBPipeline {
             // when Claude re-OCRs a region.
             let joined = inRegion.map(\.text)
                 .joined(separator: "\n")
+
+            // Crop only when we actually need the image — passages
+            // mode skips this work entirely.
+            let regionImage: CGImage? = mode == .vision
+                ? RegionCascade.cropImage(pageImage, to: region.box)
+                : nil
+
             guard let result = await postProcessor.correct(
-                text: joined, languages: hints.languages
+                text: joined,
+                languages: hints.languages,
+                mode: mode,
+                regionImage: regionImage
             ), result.accepted else {
                 continue
             }
@@ -855,13 +872,21 @@ public actor PDFToEPUBPipeline {
                 // post-processor's trigger threshold. The processor
                 // gates internally on quality + length + budget;
                 // accepted corrections replace the region's
-                // observations, rejected ones are no-ops.
+                // observations, rejected ones are no-ops. When
+                // vision mode is enabled the page image is passed in
+                // so each region can be cropped and sent alongside
+                // the OCR text — costlier but higher quality.
                 if let postProcessor = claudePostProcessor,
                    let regions = layoutForPage, !regions.isEmpty {
+                    let mode: ClaudePostProcessor.Mode =
+                        options.cloudFeatures.postOCRCleanupVisionMode
+                            ? .vision : .passages
                     observations = await Self.applyPostOCRCleanup(
                         observations: observations,
                         regions: regions,
+                        pageImage: image,
                         hints: hints,
+                        mode: mode,
                         postProcessor: postProcessor
                     )
                 }

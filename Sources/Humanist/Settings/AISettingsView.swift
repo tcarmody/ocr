@@ -52,6 +52,9 @@ struct AISettingsView: View {
                            isOn: $vm.settings.cloudFeatures.tableExtraction)
                     Toggle("Post-OCR character cleanup (Haiku)",
                            isOn: $vm.settings.cloudFeatures.postOCRCleanup)
+                    Toggle("  …in vision mode (send region image; ~5–10× cost)",
+                           isOn: $vm.settings.cloudFeatures.postOCRCleanupVisionMode)
+                        .disabled(!vm.settings.cloudFeatures.postOCRCleanup)
                     Toggle("Semantic chapter classification (Haiku)",
                            isOn: $vm.settings.cloudFeatures.semanticClassification)
                     Toggle("Parse printed TOC (Haiku)",

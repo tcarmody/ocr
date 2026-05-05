@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 import AI
 import Document
 import OCR
@@ -296,6 +297,83 @@ final class ClaudePostProcessorTests: XCTestCase {
         let result = await p.correct(text: lowQualityText, languages: [.en])
         XCTAssertNil(result)
     }
+
+    // MARK: - Vision mode
+
+    private func makeImage(width: Int = 100, height: Int = 50) -> CGImage {
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let info = CGImageAlphaInfo.noneSkipLast.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue
+        let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: cs, bitmapInfo: info
+        )!
+        ctx.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage()!
+    }
+
+    func test_vision_mode_without_image_skips_without_api_call() async {
+        let mock = MockTransport(steps: [])
+        let p = makeProcessor(transport: mock)
+        let result = await p.correct(
+            text: lowQualityText,
+            languages: [.en],
+            mode: .vision,
+            regionImage: nil
+        )
+        XCTAssertNil(result, "Vision mode should refuse without an image")
+        let sent = await mock.sentRequests
+        XCTAssertTrue(sent.isEmpty)
+    }
+
+    func test_vision_mode_request_includes_image_block() async throws {
+        let mock = MockTransport(steps: [
+            .init(status: 200, body: successBody(text: lowQualityText))
+        ])
+        let p = makeProcessor(transport: mock)
+        _ = await p.correct(
+            text: lowQualityText,
+            languages: [.en],
+            mode: .vision,
+            regionImage: makeImage()
+        )
+        let sent = await mock.sentRequests
+        XCTAssertEqual(sent.count, 1)
+        let body = try JSONSerialization.jsonObject(
+            with: sent[0].httpBody!
+        ) as! [String: Any]
+        let messages = body["messages"] as! [[String: Any]]
+        // Vision mode → content is an array of blocks, not a string.
+        let userContent = messages[0]["content"] as! [[String: Any]]
+        XCTAssertEqual(userContent.count, 2)
+        XCTAssertEqual(userContent[0]["type"] as? String, "image")
+        let source = userContent[0]["source"] as! [String: Any]
+        XCTAssertEqual(source["type"] as? String, "base64")
+        XCTAssertEqual(source["media_type"] as? String, "image/png")
+        XCTAssertNotNil(source["data"] as? String)
+        XCTAssertEqual(userContent[1]["type"] as? String, "text")
+    }
+
+    func test_passages_mode_request_uses_plain_string_content() async throws {
+        // Default mode (.passages) keeps the lighter wire shape — a
+        // plain string under content, not an array of blocks.
+        let mock = MockTransport(steps: [
+            .init(status: 200, body: successBody(text: lowQualityText))
+        ])
+        let p = makeProcessor(transport: mock)
+        _ = await p.correct(text: lowQualityText, languages: [.en])
+        let sent = await mock.sentRequests
+        let body = try JSONSerialization.jsonObject(
+            with: sent[0].httpBody!
+        ) as! [String: Any]
+        let messages = body["messages"] as! [[String: Any]]
+        XCTAssertTrue(messages[0]["content"] is String,
+                      "Passages mode should send a string, not blocks")
+    }
+
+    // MARK: - Misc
 
     func test_code_fence_wrapped_response_is_unwrapped() {
         // Haiku occasionally wraps long passages in triple-backtick

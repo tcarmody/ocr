@@ -65,6 +65,13 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// "good enough" but has known mojibake / diacritic issues
         /// (Haiku 4.5).
         public var postOCRCleanup: Bool
+        /// When true, post-OCR cleanup runs in **vision mode** — the
+        /// rendered region image is sent alongside the OCR text so
+        /// Haiku can verify against the actual glyphs. Higher cost
+        /// (~5-10× the tokens per call) but better quality on the
+        /// hardest regions (worn type, faded scans, polytonic Greek).
+        /// Off by default; ignored when `postOCRCleanup` itself is off.
+        public var postOCRCleanupVisionMode: Bool
         /// EPUB 3 `epub:type` per chapter via title classification
         /// (Haiku 4.5).
         public var semanticClassification: Bool
@@ -77,14 +84,35 @@ public struct AISettings: Sendable, Codable, Equatable {
             hardRegionOCR: Bool = true,
             tableExtraction: Bool = true,
             postOCRCleanup: Bool = false,
+            postOCRCleanupVisionMode: Bool = false,
             semanticClassification: Bool = false,
             tocParsing: Bool = false
         ) {
             self.hardRegionOCR = hardRegionOCR
             self.tableExtraction = tableExtraction
             self.postOCRCleanup = postOCRCleanup
+            self.postOCRCleanupVisionMode = postOCRCleanupVisionMode
             self.semanticClassification = semanticClassification
             self.tocParsing = tocParsing
+        }
+
+        /// Decode optionally so settings persisted before
+        /// `postOCRCleanupVisionMode` existed don't break.
+        private enum CodingKeys: String, CodingKey {
+            case hardRegionOCR, tableExtraction, postOCRCleanup
+            case postOCRCleanupVisionMode
+            case semanticClassification, tocParsing
+        }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.hardRegionOCR = try c.decode(Bool.self, forKey: .hardRegionOCR)
+            self.tableExtraction = try c.decode(Bool.self, forKey: .tableExtraction)
+            self.postOCRCleanup = try c.decode(Bool.self, forKey: .postOCRCleanup)
+            self.postOCRCleanupVisionMode = try c.decodeIfPresent(
+                Bool.self, forKey: .postOCRCleanupVisionMode
+            ) ?? false
+            self.semanticClassification = try c.decode(Bool.self, forKey: .semanticClassification)
+            self.tocParsing = try c.decode(Bool.self, forKey: .tocParsing)
         }
     }
 }
