@@ -42,6 +42,13 @@ public actor PDFToEPUBPipeline {
         /// Silicon vs Vision's ~1 s) but recovers lines that Vision
         /// silently drops on certain page typography.
         public var useHighAccuracyOCR: Bool
+        /// When true, bypass `EmbeddedTextQualityScorer` entirely and
+        /// route every page through render + OCR + cascade. Use when
+        /// a PDF carries a low-quality embedded text layer (typically
+        /// the output of a previous bad OCR pass) that the scorer
+        /// can mistake for legitimate prose. Slower but guaranteed
+        /// to actually OCR. Driven by `AISettings.forceOCR`.
+        public var forceOCR: Bool
         /// Master switch for Cloud-mode features (Claude-backed
         /// engines for hard-region OCR + table extraction + cleanup).
         /// Defaults to `.privateLocal` — first-run conversions need
@@ -80,6 +87,7 @@ public actor PDFToEPUBPipeline {
             ocrQuality: OCRHints.Quality = .accurate,
             emitDebugLog: Bool = false,
             useHighAccuracyOCR: Bool = false,
+            forceOCR: Bool = false,
             processingMode: ProcessingMode = .privateLocal,
             cloudFeatures: AISettings.CloudFeatures = AISettings.CloudFeatures(),
             perBookCallCap: Int = 200,
@@ -91,6 +99,7 @@ public actor PDFToEPUBPipeline {
             self.ocrQuality = ocrQuality
             self.emitDebugLog = emitDebugLog
             self.useHighAccuracyOCR = useHighAccuracyOCR
+            self.forceOCR = forceOCR
             self.processingMode = processingMode
             self.cloudFeatures = cloudFeatures
             self.perBookCallCap = perBookCallCap
@@ -566,6 +575,11 @@ public actor PDFToEPUBPipeline {
             options: options, budget: claudeBudget
         )
 
+        // Per-page record of which branch fired (trust vs reocr,
+        // post-`forceOCR` override). Surfaced in the conversion
+        // stats so the user can see "OCR ran on N of M pages."
+        var verdictsByPage: [Int: EmbeddedTextQualityScorer.Verdict] = [:]
+
         for i in 0..<totalPages {
             try Task.checkCancellation()
 
@@ -583,10 +597,19 @@ public actor PDFToEPUBPipeline {
             // extraction) drain at the closure boundary instead of
             // piling up on the convert task's outer pool until the
             // entire conversion ends.
+            //
+            // The scorer takes the user's expected languages so it
+            // can downgrade `.trust` → `.reocr` on language mismatch
+            // — catches PDFs whose embedded text is coherent but
+            // in the wrong language (usually the artifact of a
+            // previous bad OCR pass).
+            let expectedLanguages = options.languages.map(\.rawValue)
             let (extracted, quality) = autoreleasepool { () -> ((lines: [EmbeddedTextExtractor.Line], diagnostics: EmbeddedTextExtractor.Diagnostics), EmbeddedTextQualityScorer.Score) in
                 let e = embeddedExtractor.extract(from: pdf, pageIndex: i)
                 let combined = e.lines.map(\.text).joined(separator: " ")
-                let q = qualityScorer.score(text: combined)
+                let q = qualityScorer.score(
+                    text: combined, expectedLanguages: expectedLanguages
+                )
                 return (e, q)
             }
             extractorDiagnostics[i] = extracted.diagnostics
@@ -597,7 +620,16 @@ public actor PDFToEPUBPipeline {
             let confidenceForProgress: Double
             var layoutForPage: [LayoutRegion]? = nil
 
-            switch quality.verdict {
+            // `forceOCR` overrides the scorer's `.trust` verdict for
+            // every page. The scorer's score/diagnostics are still
+            // recorded (`qualityScores` already populated above) so
+            // the debug log shows what *would* have happened — but
+            // the dispatch always takes the `.reocr` branch.
+            let effectiveVerdict: EmbeddedTextQualityScorer.Verdict =
+                options.forceOCR ? .reocr : quality.verdict
+            verdictsByPage[i] = effectiveVerdict
+
+            switch effectiveVerdict {
             case .trust:
                 // Embedded text is good — skip Vision OCR entirely.
                 // Bbox lookup hits PDFKit page accessor (autoreleased).
@@ -897,9 +929,13 @@ public actor PDFToEPUBPipeline {
         // table + Haiku features will accumulate here too).
         let claudeCallCount = await claudeBudget.consumed
         let claudeUsage = await claudeBudget.modelUsage
+        let trusted = verdictsByPage.values.filter { $0 == .trust }.count
+        let reocrd = verdictsByPage.values.filter { $0 == .reocr }.count
         return ConversionStats.make(
             elapsed: Date().timeIntervalSince(conversionStart),
             observationsBySource: bySource,
+            pagesTrustedEmbeddedText: trusted,
+            pagesReOCRd: reocrd,
             claudeCallCount: claudeCallCount,
             claudeUsageByModel: claudeUsage
         )

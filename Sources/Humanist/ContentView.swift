@@ -217,9 +217,9 @@ private struct JobRow: View {
     @EnvironmentObject private var runner: JobRunner
     @Environment(\.openWindow) private var openWindow
 
-    /// Per-source observation breakdown for the row's tooltip.
-    /// Renders as one line per non-zero source: "vision: 142,
-    /// tesseract: 28, claude: 12". Useful for verifying the
+    /// Per-source observation breakdown for the row's tooltip,
+    /// plus per-page verdict counts (trust vs reocr) so the user
+    /// can see whether OCR actually ran. Useful for verifying the
     /// cascade did what was expected on a given book.
     private func statsTooltip(_ stats: ConversionStats) -> String {
         let perSource = stats.observationsBySource
@@ -228,6 +228,12 @@ private struct JobRow: View {
             .map { "\($0.key): \($0.value)" }
             .joined(separator: ", ")
         var lines: [String] = []
+        let totalPages = stats.pagesTrustedEmbeddedText + stats.pagesReOCRd
+        if totalPages > 0 {
+            lines.append(
+                "Pages — OCR'd: \(stats.pagesReOCRd), trusted embedded: \(stats.pagesTrustedEmbeddedText)"
+            )
+        }
         if !perSource.isEmpty { lines.append("Observations — \(perSource)") }
         if stats.claudeCallCount > 0 {
             lines.append("Estimated cost: \(stats.formattedCost)")

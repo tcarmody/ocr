@@ -21,6 +21,46 @@ final class ConversionStatsTests: XCTestCase {
         XCTAssertEqual(stats.summary, "Claude: 12 calls (~$0.06)")
     }
 
+    func test_summary_calls_out_when_all_pages_trusted_embedded_text() {
+        // The classic "Claude wasn't invoked, but neither was OCR"
+        // scenario — we trusted the PDF's embedded text on every page.
+        // Surfaced explicitly so the user doesn't think the cascade
+        // approved the result; OCR was bypassed entirely.
+        let stats = ConversionStats(
+            pagesTrustedEmbeddedText: 42,
+            pagesReOCRd: 0,
+            claudeCallCount: 0
+        )
+        XCTAssertEqual(
+            stats.summary,
+            "Trusted embedded PDF text on all 42 pages — OCR did not run"
+        )
+    }
+
+    func test_summary_handles_partial_mix_without_claude() {
+        let stats = ConversionStats(
+            pagesTrustedEmbeddedText: 10,
+            pagesReOCRd: 5,
+            claudeCallCount: 0
+        )
+        XCTAssertEqual(
+            stats.summary,
+            "OCR'd 5 of 15 pages (rest trusted embedded text); Claude not invoked"
+        )
+    }
+
+    func test_summary_prefers_claude_string_when_both_apply() {
+        // Mixed verdicts AND Claude fired — the Claude line is the
+        // more important signal, so it wins.
+        let stats = ConversionStats(
+            pagesTrustedEmbeddedText: 10,
+            pagesReOCRd: 5,
+            claudeCallCount: 3,
+            estimatedCostUSD: 0.04
+        )
+        XCTAssertEqual(stats.summary, "Claude: 3 calls (~$0.04)")
+    }
+
     func test_formatted_cost_uses_under_one_cent_threshold() {
         let stats = ConversionStats(claudeCallCount: 1, estimatedCostUSD: 0.003)
         XCTAssertEqual(stats.formattedCost, "<$0.01")
@@ -96,6 +136,8 @@ final class ConversionStatsTests: XCTestCase {
         let original = ConversionStats(
             elapsed: 18.4,
             observationsBySource: ["vision": 100, "claude": 12],
+            pagesTrustedEmbeddedText: 5,
+            pagesReOCRd: 17,
             claudeCallCount: 12,
             claudeUsageByModel: [
                 "claude-sonnet-4-6": ClaudeCallBudget.AggregateUsage(
@@ -107,6 +149,27 @@ final class ConversionStatsTests: XCTestCase {
         let encoded = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(ConversionStats.self, from: encoded)
         XCTAssertEqual(original, decoded)
+    }
+
+    /// Stats persisted before the trust-verdict fields existed should
+    /// still decode — `pagesTrustedEmbeddedText` and `pagesReOCRd`
+    /// default to 0 when absent so the queue store doesn't crash on
+    /// an old persisted job.
+    func test_decode_legacy_stats_without_verdict_fields() throws {
+        let legacyJSON = """
+        {
+            "elapsed": 12.0,
+            "observationsBySource": {"vision": 50},
+            "claudeCallCount": 0,
+            "claudeUsageByModel": {},
+            "estimatedCostUSD": 0.0
+        }
+        """
+        let data = legacyJSON.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ConversionStats.self, from: data)
+        XCTAssertEqual(decoded.pagesTrustedEmbeddedText, 0)
+        XCTAssertEqual(decoded.pagesReOCRd, 0)
+        XCTAssertEqual(decoded.elapsed, 12.0)
     }
 }
 

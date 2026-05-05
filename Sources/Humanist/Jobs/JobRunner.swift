@@ -133,6 +133,7 @@ final class JobRunner: ObservableObject {
         let options = PDFToEPUBPipeline.Options(
             languages: languages,
             useHighAccuracyOCR: job.options.useHighAccuracyOCR,
+            forceOCR: aiSettings.forceOCR,
             processingMode: aiSettings.processingMode,
             cloudFeatures: aiSettings.cloudFeatures,
             perBookCallCap: aiSettings.perBookCallCap,

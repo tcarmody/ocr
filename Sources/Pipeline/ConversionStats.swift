@@ -19,6 +19,15 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     /// keeps the JSON encoding stable across `ObservationSource`
     /// case additions / renames.
     public var observationsBySource: [String: Int]
+    /// Pages whose embedded text the scorer trusted — OCR did NOT
+    /// run on these. Important to surface separately from the
+    /// observation counts because trusted-text observations come
+    /// out as `source: .embedded` in the tally, and the user
+    /// reading "100% embedded" might mistakenly think the cascade
+    /// approved the result when in fact OCR was bypassed entirely.
+    public var pagesTrustedEmbeddedText: Int
+    /// Pages that went through render + OCR + cascade.
+    public var pagesReOCRd: Int
     /// Number of Claude API calls granted by the budget over this
     /// conversion. Includes refused calls (which still cost tokens)
     /// but not budget-exhausted attempts (which never reached the
@@ -36,24 +45,57 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     public init(
         elapsed: TimeInterval = 0,
         observationsBySource: [String: Int] = [:],
+        pagesTrustedEmbeddedText: Int = 0,
+        pagesReOCRd: Int = 0,
         claudeCallCount: Int = 0,
         claudeUsageByModel: [String: ClaudeCallBudget.AggregateUsage] = [:],
         estimatedCostUSD: Double = 0
     ) {
         self.elapsed = elapsed
         self.observationsBySource = observationsBySource
+        self.pagesTrustedEmbeddedText = pagesTrustedEmbeddedText
+        self.pagesReOCRd = pagesReOCRd
         self.claudeCallCount = claudeCallCount
         self.claudeUsageByModel = claudeUsageByModel
         self.estimatedCostUSD = estimatedCostUSD
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case elapsed, observationsBySource
+        case pagesTrustedEmbeddedText, pagesReOCRd
+        case claudeCallCount, claudeUsageByModel, estimatedCostUSD
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.elapsed = try c.decode(TimeInterval.self, forKey: .elapsed)
+        self.observationsBySource = try c.decode([String: Int].self, forKey: .observationsBySource)
+        // Decode the trust-verdict fields optionally so stats persisted
+        // before this field existed don't break the queue store.
+        self.pagesTrustedEmbeddedText = try c.decodeIfPresent(Int.self, forKey: .pagesTrustedEmbeddedText) ?? 0
+        self.pagesReOCRd = try c.decodeIfPresent(Int.self, forKey: .pagesReOCRd) ?? 0
+        self.claudeCallCount = try c.decode(Int.self, forKey: .claudeCallCount)
+        self.claudeUsageByModel = try c.decode([String: ClaudeCallBudget.AggregateUsage].self, forKey: .claudeUsageByModel)
+        self.estimatedCostUSD = try c.decode(Double.self, forKey: .estimatedCostUSD)
+    }
+
     /// One-line summary for log output and quick UI rendering.
-    /// Examples:
-    ///   "Claude not invoked"
-    ///   "Claude: 12 calls (~$0.06)"
+    /// Calls out the trust verdict explicitly when *every* page was
+    /// trusted (so OCR didn't run at all) — that's a frequent
+    /// source of "the output looks bad and Claude wasn't invoked,
+    /// what gives" confusion.
     public var summary: String {
-        guard claudeCallCount > 0 else { return "Claude not invoked" }
-        return "Claude: \(claudeCallCount) calls (~\(formattedCost))"
+        let totalPages = pagesTrustedEmbeddedText + pagesReOCRd
+        if totalPages > 0, pagesReOCRd == 0 {
+            return "Trusted embedded PDF text on all \(totalPages) pages — OCR did not run"
+        }
+        if claudeCallCount > 0 {
+            return "Claude: \(claudeCallCount) calls (~\(formattedCost))"
+        }
+        if pagesTrustedEmbeddedText > 0 && pagesReOCRd > 0 {
+            return "OCR'd \(pagesReOCRd) of \(totalPages) pages (rest trusted embedded text); Claude not invoked"
+        }
+        return "Claude not invoked"
     }
 
     /// Formatted cost string with sensible precision: "<$0.01" for
@@ -72,6 +114,8 @@ extension ConversionStats {
     static func make(
         elapsed: TimeInterval,
         observationsBySource: [ObservationSource: Int],
+        pagesTrustedEmbeddedText: Int = 0,
+        pagesReOCRd: Int = 0,
         claudeCallCount: Int,
         claudeUsageByModel: [AnthropicModel: ClaudeCallBudget.AggregateUsage]
     ) -> ConversionStats {
@@ -91,6 +135,8 @@ extension ConversionStats {
         return ConversionStats(
             elapsed: elapsed,
             observationsBySource: sources,
+            pagesTrustedEmbeddedText: pagesTrustedEmbeddedText,
+            pagesReOCRd: pagesReOCRd,
             claudeCallCount: claudeCallCount,
             claudeUsageByModel: usage,
             estimatedCostUSD: cost

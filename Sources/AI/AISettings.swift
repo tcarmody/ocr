@@ -15,15 +15,39 @@ public struct AISettings: Sendable, Codable, Equatable {
     /// without throttling normal use. Settable from 0 (disable
     /// Cloud features for this book) up to a few thousand.
     public var perBookCallCap: Int
+    /// When true, bypass the embedded-text trust path entirely —
+    /// every page goes through render + OCR + cascade regardless
+    /// of how well-formed the PDF's embedded text layer looks.
+    /// Use when a PDF carries a low-quality embedded text layer
+    /// (typically the output of a previous bad OCR pass) that the
+    /// quality scorer mistakes for legitimate prose. Slower but
+    /// guaranteed to actually OCR.
+    public var forceOCR: Bool
 
     public init(
         processingMode: ProcessingMode = .privateLocal,
         cloudFeatures: CloudFeatures = CloudFeatures(),
-        perBookCallCap: Int = 200
+        perBookCallCap: Int = 200,
+        forceOCR: Bool = false
     ) {
         self.processingMode = processingMode
         self.cloudFeatures = cloudFeatures
         self.perBookCallCap = perBookCallCap
+        self.forceOCR = forceOCR
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case processingMode, cloudFeatures, perBookCallCap, forceOCR
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.processingMode = try c.decode(ProcessingMode.self, forKey: .processingMode)
+        self.cloudFeatures = try c.decode(CloudFeatures.self, forKey: .cloudFeatures)
+        self.perBookCallCap = try c.decode(Int.self, forKey: .perBookCallCap)
+        // Decode optionally so settings persisted before this field
+        // existed don't fail to round-trip.
+        self.forceOCR = try c.decodeIfPresent(Bool.self, forKey: .forceOCR) ?? false
     }
 
     /// Per-feature toggles. Each is independently switchable, but

@@ -77,6 +77,15 @@ struct AISettingsView: View {
                 }
             }
 
+            Section("OCR Behavior") {
+                Toggle("Force OCR (ignore embedded PDF text)",
+                       isOn: $vm.settings.forceOCR)
+                Text("Skip the PDF's embedded text layer and run OCR on every page. Use when a PDF's embedded text is the output of a previous bad OCR pass — gibberish that the trust-path scorer can mistake for legitimate prose. Slower but guaranteed to actually OCR.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section {
                 Button("Restore Defaults", role: .destructive) {
                     vm.resetToDefaults()
