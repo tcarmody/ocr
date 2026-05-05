@@ -79,34 +79,43 @@ public struct VisionOCREngine: OCREngine {
         usesLanguageCorrection: Bool,
         automaticallyDetectsLanguage: Bool
     ) throws -> OCRResult {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = (hints.quality == .accurate) ? .accurate : .fast
-        request.usesLanguageCorrection = usesLanguageCorrection
-        request.automaticallyDetectsLanguage = automaticallyDetectsLanguage
-        if !automaticallyDetectsLanguage {
-            request.recognitionLanguages = hints.languages.map(\.rawValue)
+        // Wrap in an explicit autoreleasepool. The dispatch queue this
+        // runs on has its own pool, but it only drains between work
+        // items — bulk OCR runs queue many items back-to-back and
+        // VNRecognizeTextRequest / VNImageRequestHandler / VNRecognized-
+        // TextObservation pile up (each holding pixel-buffer references)
+        // until the queue idles. Draining per-call keeps the host
+        // process's resident memory bounded across long bulk runs.
+        try autoreleasepool {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = (hints.quality == .accurate) ? .accurate : .fast
+            request.usesLanguageCorrection = usesLanguageCorrection
+            request.automaticallyDetectsLanguage = automaticallyDetectsLanguage
+            if !automaticallyDetectsLanguage {
+                request.recognitionLanguages = hints.languages.map(\.rawValue)
+            }
+
+            let handler = VNImageRequestHandler(cgImage: image)
+            try handler.perform([request])
+
+            let observations = (request.results ?? [])
+            var collected: [TextObservation] = []
+            collected.reserveCapacity(observations.count)
+            var confidenceSum: Double = 0
+
+            for obs in observations {
+                guard let candidate = obs.topCandidates(1).first else { continue }
+                let conf = Double(candidate.confidence)
+                confidenceSum += conf
+                collected.append(
+                    TextObservation(text: candidate.string, confidence: conf, box: obs.boundingBox)
+                )
+            }
+
+            let mean = collected.isEmpty ? .nan : confidenceSum / Double(collected.count)
+            let text = collected.map(\.text).joined(separator: "\n")
+            return OCRResult(text: text, meanConfidence: mean, observations: collected)
         }
-
-        let handler = VNImageRequestHandler(cgImage: image)
-        try handler.perform([request])
-
-        let observations = (request.results ?? [])
-        var collected: [TextObservation] = []
-        collected.reserveCapacity(observations.count)
-        var confidenceSum: Double = 0
-
-        for obs in observations {
-            guard let candidate = obs.topCandidates(1).first else { continue }
-            let conf = Double(candidate.confidence)
-            confidenceSum += conf
-            collected.append(
-                TextObservation(text: candidate.string, confidence: conf, box: obs.boundingBox)
-            )
-        }
-
-        let mean = collected.isEmpty ? .nan : confidenceSum / Double(collected.count)
-        let text = collected.map(\.text).joined(separator: "\n")
-        return OCRResult(text: text, meanConfidence: mean, observations: collected)
     }
 
     // MARK: - merge helpers
