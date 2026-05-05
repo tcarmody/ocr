@@ -236,6 +236,162 @@ Phase 6 (figures) — same plumbing.
 
 ---
 
+# Tier 1.5: Pre-flight intelligence
+
+Smart defaults set at queue-add time. Same architectural shape as
+`TwoUpDetector` — sample a few pages at low DPI, populate
+`ConversionOptions` defaults, surface info in the queue UI. **Doesn't
+touch the runtime cascade**; the cascade is already an adaptive
+per-region system. This tier is about user-facing defaults,
+warnings, and cost transparency, not engine selection.
+
+**Why this exists**: the cascade adapts at runtime, but the
+user-facing defaults are static. Today the user picks a language
+manually, doesn't see Cloud-mode cost until after the conversion
+has already run, and can mismatch options to content (English
+picker on a Greek book). Pre-flight closes those gaps without
+fighting the cascade's existing adaptivity.
+
+**What this tier is NOT** (and should never become):
+
+- **Per-document engine routing** — picking which OCR engine to
+  use for a whole PDF. Documents are heterogeneous (preface in
+  Latin, body in Greek, footnotes in English); the per-region
+  cascade is correct here, and a per-document override would
+  fight it.
+- **Auto-toggling Cloud features** based on detected content.
+  Nudges yes; auto-spend no.
+- **Document-similarity ML** ("books like this one used
+  Tesseract"). Premature — no telemetry to learn from, cascade
+  does the routing dynamically anyway.
+
+## P-Lang-Detect — Auto-detect document language(s)
+
+**Status**: not started.
+
+### Goal
+
+At queue-add time, sample a few pages, run `NLLanguageRecognizer`
++ Unicode script-frequency analysis, override the user's language
+picker default to match what's actually in the book.
+
+### Approach
+
+```
+Pipeline/DocumentProfiler.swift          shape parallels TwoUpDetector
+Pipeline/DocumentProfile.swift           output struct: primary +
+                                         secondary language codes,
+                                         scan-vs-born-digital flag,
+                                         page-count, region-density
+                                         summary
+Humanist/Jobs/QueueViewModel.swift       consume profile → seed
+                                         language picker default
+```
+
+1. Profiler samples first / middle / last pages at 150 DPI.
+2. For each sample: extract embedded text (when present, cheap),
+   or do a fast Vision pass (when scanned).
+3. Feed each text sample to `NLLanguageRecognizer`; combine with
+   Unicode-script-frequency analysis (already used by
+   `EmbeddedTextQualityScorer`).
+4. Aggregate detected languages with per-page confidence; emit a
+   `DocumentProfile` containing primary + secondary language codes
+   and overall confidence.
+
+### Effort
+
+~1.5 days: profiler + plumbing into queue UI + tests against a
+small fixture corpus (English scan, English born-digital, Greek
+scan, mixed-script).
+
+### Dependencies
+
+None hard.
+
+### When to ship
+
+After **Phase 3** (Claude OCR engine, in Tier 2) lands. The value
+of correct language defaults grows sharply once we have a tier
+that's expensive to run on the wrong language. Until then it's
+a nice-to-have that shaves a few seconds off the user's setup.
+
+## P-Cloud-Cost — Pre-flight Cloud-mode cost estimate
+
+**Status**: not started.
+
+### Goal
+
+In `.cloud` mode, show the user an estimated number of Claude
+calls + dollar cost before kicking off conversion. Avoids the
+"I just spent $5 on a 600-page book I didn't realize was that
+big" surprise.
+
+### Approach
+
+1. Reuse `DocumentProfiler` from `P-Lang-Detect`. Add: total page
+   count, regions per page, scan vs born-digital, table density.
+2. Apply a per-feature trigger-rate model — e.g.:
+   - Hard-region OCR fires on ~10% of regions on a scanned book,
+     ~0% on a born-digital one.
+   - Table extraction fires on detected `.table` regions
+     (Surya layout pre-pass on 1 sample page).
+3. Multiply trigger counts by current Sonnet / Haiku rates pinned
+   in `AnthropicModel`.
+4. Surface in the queue UI as "≈80 Claude calls, ≈$0.25 estimated"
+   with a "Convert" / "Cancel" gate before the job actually starts.
+
+### Effort
+
+~1 day on top of `P-Lang-Detect` (rate table + UI banner +
+gate flow).
+
+### Dependencies
+
+Phase 3 (Claude OCR) at minimum; ideally Phase 5 (Claude tables)
+too so the estimate reflects all enabled features.
+
+## P-Profile-Warnings — Banner warnings for content-vs-config mismatches
+
+**Status**: not started.
+
+### Goal
+
+Non-blocking info banner when the document profile suggests a
+different config would do better. Examples:
+
+- Polytonic Greek detected, English picker selected → "Better
+  quality with Greek + Tesseract"
+- Heavy table density detected, table extraction toggle off →
+  "Table extraction will skip this book"
+- Math density detected, no formula handling planned →
+  "Formulas will render as raster images"
+- Document detected as scanned facsimile but
+  `useHighAccuracyOCR == false` → "Surya may help — try the
+  high-accuracy toggle"
+
+### Approach
+
+The profile already exists from `P-Lang-Detect` + `P-Cloud-Cost`;
+this is a thin presentation layer on top — a list of
+`ProfileWarning` rules + a queue-UI banner.
+
+### Effort
+
+~0.5 day on top of `P-Lang-Detect`.
+
+### Dependencies
+
+`P-Lang-Detect`.
+
+## Recommended sequencing within this tier
+
+1. `P-Lang-Detect` first — biggest single quality-of-life win,
+   self-contained.
+2. `P-Cloud-Cost` once Phase 3 is shipping real Claude calls.
+3. `P-Profile-Warnings` as a thin layer on the same profile.
+
+---
+
 # Tier 2: AI-assisted enhancements (Claude)
 
 This tier collects every feature that depends on calling out to an
