@@ -63,7 +63,7 @@ let package = Package(
         ),
         .target(
             name: "Pipeline",
-            dependencies: ["Document", "PDFIngest", "OCR", "EPUB", "Layout"],
+            dependencies: ["Document", "PDFIngest", "OCR", "EPUB", "Layout", "AI"],
             path: "Sources/Pipeline"
         ),
         // Anthropic API plumbing for optional Cloud-mode features.
@@ -94,7 +94,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PipelineTests",
-            dependencies: ["Pipeline", "Document", "EPUB", "PDFIngest"],
+            dependencies: ["Pipeline", "Document", "EPUB", "PDFIngest", "AI"],
             path: "Tests/PipelineTests"
         ),
         .testTarget(

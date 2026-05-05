@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import AI
 import Document
 import PDFIngest
 import OCR
@@ -41,19 +42,32 @@ public actor PDFToEPUBPipeline {
         /// Silicon vs Vision's ~1 s) but recovers lines that Vision
         /// silently drops on certain page typography.
         public var useHighAccuracyOCR: Bool
+        /// Master switch for Cloud-mode features (Claude-backed
+        /// engines for hard-region OCR + table extraction + cleanup).
+        /// Defaults to `.privateLocal` — first-run conversions need
+        /// no setup and no data leaves the machine.
+        ///
+        /// In Phase 2 this field is plumbed end-to-end but produces
+        /// identical output in either mode: `.cloud` falls through
+        /// to the same Surya-backed paths as `.privateLocal` until
+        /// later phases wire in Claude engines. Existing tests
+        /// continue to pass on `.privateLocal` unchanged.
+        public var processingMode: ProcessingMode
 
         public init(
             dpi: CGFloat = 400,
             languages: [BCP47] = [.en],
             ocrQuality: OCRHints.Quality = .accurate,
             emitDebugLog: Bool = false,
-            useHighAccuracyOCR: Bool = false
+            useHighAccuracyOCR: Bool = false,
+            processingMode: ProcessingMode = .privateLocal
         ) {
             self.dpi = dpi
             self.languages = languages
             self.ocrQuality = ocrQuality
             self.emitDebugLog = emitDebugLog
             self.useHighAccuracyOCR = useHighAccuracyOCR
+            self.processingMode = processingMode
         }
     }
 
@@ -604,16 +618,40 @@ public actor PDFToEPUBPipeline {
                 // already forced Surya for the whole page (no point
                 // re-OCRing what's already Surya output) or when
                 // there's no layout to localize problems.
+                //
+                // Phase 2 dispatch on `processingMode`: `.privateLocal`
+                // takes the existing local-only path; `.cloud` will
+                // route the high-quality tier to Claude in Phase 3.
+                // For now the two arms are identical so behavior is
+                // unchanged regardless of mode.
                 if !options.useHighAccuracyOCR,
                    let regions = layoutForPage, !regions.isEmpty {
-                    observations = await RegionCascade.run(
-                        observations: observations,
-                        regions: regions,
-                        pageImage: image,
-                        hints: hints,
-                        suryaEngine: suryaEngine,
-                        tesseractEngine: tesseractEngine
-                    )
+                    switch options.processingMode {
+                    case .privateLocal:
+                        observations = await RegionCascade.run(
+                            observations: observations,
+                            regions: regions,
+                            pageImage: image,
+                            hints: hints,
+                            suryaEngine: suryaEngine,
+                            tesseractEngine: tesseractEngine
+                        )
+                    case .cloud:
+                        // TODO Phase 3: replace `suryaEngine` with a
+                        // `ClaudeOCREngine` fed by `AnthropicAPIClient`
+                        // when `AISettings.cloudFeatures.hardRegionOCR`
+                        // is enabled. Falls back to Surya when the
+                        // Claude path declines (cost cap hit, key
+                        // missing, rate-limited beyond retry budget).
+                        observations = await RegionCascade.run(
+                            observations: observations,
+                            regions: regions,
+                            pageImage: image,
+                            hints: hints,
+                            suryaEngine: suryaEngine,
+                            tesseractEngine: tesseractEngine
+                        )
+                    }
                 }
 
                 // Phase 6: extract figures (.picture, .formula) from
@@ -635,21 +673,53 @@ public actor PDFToEPUBPipeline {
                 // and map this page's OCR observations onto cells.
                 // Skipped when the sidecar isn't available; reflow
                 // falls back to `TableHeuristic` for those regions.
-                if let tableExtractor, let regions = layoutForPage {
-                    for (regionIdx, region) in regions.enumerated()
-                    where region.kind == .table {
-                        if let rows = await tableExtractor.extract(
-                            pageImage: image,
-                            regionBox: region.box,
-                            observations: observations,
-                            stagingDir: stagingDir,
-                            pageIndex: i,
-                            regionIndex: regionIdx
-                        ) {
-                            let key = CaptionAssociator.PageRegionKey(
-                                pageIndex: i, regionIndex: regionIdx
-                            )
-                            tableExtractionsByKey[key] = rows
+                //
+                // Phase 2 dispatch: `.privateLocal` uses the Surya
+                // table-rec model; `.cloud` will route to a future
+                // `ClaudeTableExtractor` (Sonnet) in Phase 5 when
+                // `AISettings.cloudFeatures.tableExtraction` is on.
+                // Today both arms are identical.
+                if let regions = layoutForPage {
+                    switch options.processingMode {
+                    case .privateLocal:
+                        if let tableExtractor {
+                            for (regionIdx, region) in regions.enumerated()
+                            where region.kind == .table {
+                                if let rows = await tableExtractor.extract(
+                                    pageImage: image,
+                                    regionBox: region.box,
+                                    observations: observations,
+                                    stagingDir: stagingDir,
+                                    pageIndex: i,
+                                    regionIndex: regionIdx
+                                ) {
+                                    let key = CaptionAssociator.PageRegionKey(
+                                        pageIndex: i, regionIndex: regionIdx
+                                    )
+                                    tableExtractionsByKey[key] = rows
+                                }
+                            }
+                        }
+                    case .cloud:
+                        // TODO Phase 5: route through ClaudeTableExtractor.
+                        // Falls back to Surya path when Claude declines.
+                        if let tableExtractor {
+                            for (regionIdx, region) in regions.enumerated()
+                            where region.kind == .table {
+                                if let rows = await tableExtractor.extract(
+                                    pageImage: image,
+                                    regionBox: region.box,
+                                    observations: observations,
+                                    stagingDir: stagingDir,
+                                    pageIndex: i,
+                                    regionIndex: regionIdx
+                                ) {
+                                    let key = CaptionAssociator.PageRegionKey(
+                                        pageIndex: i, regionIndex: regionIdx
+                                    )
+                                    tableExtractionsByKey[key] = rows
+                                }
+                            }
                         }
                     }
                 }
