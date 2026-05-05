@@ -9,37 +9,32 @@ import AppKit
 
 // MARK: - File menu items (Save, Save As, Close)
 
+/// Save / Save As route through `EditorCommandRouter`, a singleton
+/// the editor scene registers itself with on appear / unregisters
+/// on disappear. We previously read the focused viewmodel via
+/// `@FocusedObject`, but that wrapper doesn't reliably propagate to
+/// items inside `CommandGroup(replacing: .saveItem)` — the items
+/// either stayed disabled or didn't render at all in the menu bar.
+/// The router pattern is robust because it uses NSApp.keyWindow as
+/// the source of truth, which always tracks the focused window.
+
 struct EditorSaveCommand: View {
-    @FocusedObject private var vm: EditorViewModel?
+    @ObservedObject private var router = EditorCommandRouter.shared
 
     var body: some View {
-        Button("Save") {
-            guard let vm else { return }
-            Task { await vm.save() }
-        }
-        .keyboardShortcut("s", modifiers: .command)
-        .disabled(vm == nil || vm?.isDirty != true || vm?.saveState == .saving)
+        Button("Save") { router.save() }
+            .keyboardShortcut("s", modifiers: .command)
+            .disabled(!router.canSave)
     }
 }
 
 struct EditorSaveAsCommand: View {
-    @FocusedObject private var vm: EditorViewModel?
+    @ObservedObject private var router = EditorCommandRouter.shared
 
     var body: some View {
-        Button("Save As…") {
-            guard let vm, let pkg = vm.package else { return }
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [.epub]
-            panel.nameFieldStringValue = pkg.sourceURL
-                .deletingPathExtension()
-                .lastPathComponent + " copy.epub"
-            panel.directoryURL = pkg.sourceURL.deletingLastPathComponent()
-            if panel.runModal() == .OK, let url = panel.url {
-                Task { await vm.saveAs(to: url) }
-            }
-        }
-        .keyboardShortcut("s", modifiers: [.command, .shift])
-        .disabled(vm == nil || vm?.saveState == .saving)
+        Button("Save As…") { router.saveAs() }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(!router.canSaveAs)
     }
 }
 

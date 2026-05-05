@@ -41,8 +41,14 @@ struct HumanistApp: App {
 
     var body: some Scene {
         // Launcher window: queue panel + drop zone for PDFs / folders.
-        // File menu only — no Save / Save As (nothing to save here)
-        // and no Document menu (no document focused).
+        // All menu-bar commands attach here — the items appear in the
+        // global menu bar regardless of which window is focused, and
+        // the Save / Save As items use `EditorCommandRouter` (driven
+        // by NSApp.keyWindow) instead of `@FocusedObject` so they
+        // reliably enable/disable as the user switches between editor
+        // windows. The Document menu also attaches once here; its
+        // items use `@FocusedObject` and disable themselves when no
+        // editor is focused.
         WindowGroup("Humanist") {
             ContentView()
                 .environmentObject(queueVM)
@@ -52,19 +58,13 @@ struct HumanistApp: App {
         }
         .commands {
             FileOpenCommands()
+            EditorSaveCommands()
+            EditorViewMenu()
         }
 
         // Editor window: one per opened EPUB. macOS reuses an existing
         // window when the same URL value is reopened, so dragging the
         // same .epub twice doesn't duplicate.
-        //
-        // Commands are re-applied here because SwiftUI scopes menu-bar
-        // command availability to the focused scene's window: with the
-        // modifier only on the launcher, the editor window has no menu
-        // items at all when frontmost — File > Save vanishes and ⌘S
-        // goes nowhere. The Document menu (`EditorViewMenu`) only
-        // attaches to *this* scene to avoid the duplicate top-level
-        // menus we hit when it was attached on every scene.
         WindowGroup("Editor", id: "editor", for: URL.self) { $url in
             if let url {
                 EditorView(epubURL: url)
@@ -73,25 +73,15 @@ struct HumanistApp: App {
                 Text("No EPUB loaded.")
             }
         }
-        .commands {
-            FileOpenCommands()
-            EditorSaveCommands()
-            EditorViewMenu()
-        }
 
         // PDF viewer window: opened by File > Open on a PDF, or by the
         // editor's "Open Source PDF…" command. Same URL → same window.
-        // File menu attached so Open/Convert reach into this scene too;
-        // no Save (PDF is read-only) and no Document menu.
         WindowGroup("PDF", id: "pdf-viewer", for: URL.self) { $url in
             if let url {
                 PDFViewerView(pdfURL: url)
             } else {
                 Text("No PDF loaded.")
             }
-        }
-        .commands {
-            FileOpenCommands()
         }
 
         // Standard macOS Settings (⌘,) scene. Contains AI / Cloud-mode

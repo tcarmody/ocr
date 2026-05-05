@@ -49,18 +49,21 @@ struct EditorView: View {
                     .navigationSubtitle(saveStatusSubtitle)
                     .toolbar { toolbarContent }
                     .background(WindowDirtyBridge(isDirty: vm.isDirty))
-                    // Publish the viewmodel via `focusedObject` (paired
-                    // with `@FocusedObject` in EditorCommands.swift) so
-                    // menu-bar commands (File > Save, Document > …) act
-                    // on this window when it's focused. We previously
-                    // used `focusedSceneObject` here, but that's read
-                    // by `@FocusedSceneObject` — a different property
-                    // wrapper. The mismatch made `vm` always nil in
-                    // the command bodies, which left File > Save and
-                    // ⌘S disabled (and on some SwiftUI versions hidden
-                    // entirely). `focusedObject` re-renders on
-                    // @Published changes the same way.
+                    // Two routing channels for menu-bar commands:
+                    //   * `.focusedObject` — read by `@FocusedObject`
+                    //     in EditorCommands' Document menu (pane
+                    //     toggles, re-OCR, etc.). Works for items
+                    //     declared in CommandMenu.
+                    //   * `EditorCommandRouter` — keyWindow-driven
+                    //     singleton for Save / Save As. The
+                    //     focused-object path didn't propagate
+                    //     reliably into items inside
+                    //     `CommandGroup(replacing: .saveItem)`; the
+                    //     router uses NSApp.keyWindow and the vm's
+                    //     @Published state to drive enable/disable.
                     .focusedObject(vm)
+                    .onAppear { EditorCommandRouter.shared.bind(vm) }
+                    .onDisappear { EditorCommandRouter.shared.unbind(vm) }
                     .sheet(item: Binding(
                         get: { vm.reOCRResult },
                         set: { vm.reOCRResult = $0 }
