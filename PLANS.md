@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-05)
+## Status snapshot (as of 2026-05-05, late)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -60,32 +60,92 @@ the hybrid Private + Cloud architecture):
   per-engine swaps that ship in Cloud Phases 3+. Existing tests
   pass unchanged on `.privateLocal`.
 
-**Remaining from the original 10-phase plan**:
-- Phase 9 — Language extensibility (RTL: Hebrew / Syriac / Coptic)
-- Phase 10 — Polish + distribution (Sparkle, DMG, bundled Python)
+**Done — Cloud-mode hard-region OCR + post-OCR cleanup**:
+- **Cloud Phase 3** (commits `9a4adfd`, `567d2c3`): `ClaudeOCREngine`
+  wired in as the cascade's final tier under `.cloud` mode. Sonnet
+  vision; gated on `cloudFeatures.hardRegionOCR` + per-book
+  `ClaudeCallBudget`. Replaces what was originally P-LLM-Pass's
+  "vision mode."
+- **Cloud Phase 4** (commit `9a4adfd`): validation spike against the
+  Aeschylus polytonic-Greek ground truth — Local 15.1% CER, Cloud
+  full-cascade 15.1% (Claude not invoked because Tesseract output
+  passed the quality floor), Claude-only 11.3%. Confirmed the
+  cascade gating works and Claude-only is the upper-bound quality
+  for this content.
+- **Cloud Phase 6 — passages mode** (commit `c6564bd`):
+  `ClaudePostProcessor` with Haiku 4.5, gated on
+  `OCRTextQualityScorer.combined < 0.6`. Reuses
+  `OCRChangeGuardrail` for accept/reject. Wires into the pipeline
+  after `RegionCascade.run`.
+- **Cloud Phase 6 — vision mode** (commit `ae99693`):
+  `ClaudePostProcessor.Mode = .passages | .vision`. Vision sends
+  the cropped region image alongside the OCR text. Costs ~5–10×
+  more in tokens; reserve for the hardest regions. Sub-toggle in
+  Settings disabled when cleanup itself is off.
+- **Cloud Phase 6 — interactive correction trail** (commit `f91d0e0`):
+  Per-region trail entries (accepted *and* guardrail-rejected) write
+  to `META-INF/com.humanist.correction-trail.json` as an editor-only
+  sidecar. New `CorrectionTrailSheet` shows entries grouped by page
+  with side-by-side original/suggested text, status badges, copy
+  buttons, **Reveal in Source**, and **Apply / Revert** actions.
+  Apply/revert use whitespace-tolerant find-and-replace with
+  graceful fallback ("text didn't survive reflow byte-for-byte —
+  use Reveal in Source and paste manually") rather than mangling
+  the file when the match is missing or ambiguous.
 
-**Cloud-mode features remaining** (Tier 2 phases 3–7 — see Tier 2
-below for the per-phase rundown):
-- **Cloud Phase 3**: `ClaudeOCREngine` — Sonnet vision as the
-  cascade's high-quality tier for hard regions (polytonic Greek,
-  Hebrew, mixed scripts). Replaces what was originally
-  P-LLM-Pass's "vision mode."
-- **Cloud Phase 4**: corpus validation spike — measure CER vs
-  Surya/Tesseract on hand-corrected ground truth before
-  committing further.
+**Done — Tier 1.5 first piece**:
+- **P-Lang-Detect** (commit `5a65827`): `DocumentProfiler` samples
+  three evenly-spaced body pages of each dropped PDF, runs
+  `NLLanguageRecognizer` on the embedded text, and emits a
+  `DocumentProfile` (primary + secondary languages, confidence,
+  scan-likely flag). Confidence ≥ 0.7 + supported language → the
+  job's `options.languages` is overridden to match. New
+  `.profiling` job status during the brief detection window;
+  recovers cleanly across crashes.
+
+**Done — UX cleanups during this session**:
+- Force OCR toggle bypassing the embedded-text trust path (commit
+  `7654e68`).
+- Embedded-text scorer language gates: language-mismatch downgrade
+  + language-confidence floor + confusable allowlist
+  (`grc↔el`, `la↔Romance`, `chu↔Slavic`) (commit `7654e68`).
+- Conversion-stats summary calls out the trust verdict — "Trusted
+  embedded PDF text on all N pages — OCR did not run" (commit
+  `7654e68`).
+- Build/launch pipeline switched to `Scripts/run-app.sh` so the
+  built `.app` bundle includes CodeMirror + sidecars (without it,
+  the source-editor pane was blank).
+- File menu Save / Save As routed via `EditorCommandRouter` (a
+  keyWindow-driven singleton) instead of the unreliable
+  `@FocusedObject` propagation through `CommandGroup(replacing:
+  .saveItem)`. `replacing: .saveItem` switched to `after: .newItem`
+  on macOS 26 / Tahoe where the former placement was a silent
+  no-op for non-DocumentGroup apps.
+- 3-way editor sync rewritten to one-way explicit alignment
+  (commit `d4e3c41`). Bidirectional auto-sync removed; three new
+  Document menu commands (⇧⌘1/2/3) drive alignment from the
+  source / PDF / preview pane on demand. File switch via the
+  browser still aligns once.
+
+**Cloud-mode features remaining** (Tier 2):
 - **Cloud Phase 5**: `ClaudeTableExtractor` — Sonnet-driven table
   structure behind a `TableExtractor` protocol. Surya path stays
-  as the offline fallback.
-- **Cloud Phase 6**: three Haiku-driven text features —
-  post-OCR character cleanup (formerly P-LLM-Pass "passages
-  mode"), semantic chapter classification, printed-TOC parsing.
+  as the offline fallback. Only relevant for table-heavy academic
+  books.
+- **Cloud Phase 6 remaining**: two structural Haiku features —
+  semantic chapter classification (`epub:type` per chapter) and
+  printed-TOC parsing.
 - **Cloud Phase 7**: first-run UX polish (Cloud-upgrade prompt,
   README docs).
 
-**Pre-flight intelligence** (Tier 1.5, deferred until Cloud
-Phase 3 lands so the value is real): language auto-detect at
-queue-add, Cloud-mode cost estimation, content-vs-config
-warnings. See Tier 1.5 below.
+**Pre-flight intelligence remaining** (Tier 1.5):
+- **P-Cloud-Cost**: pre-flight Cloud-mode cost estimate.
+- **P-Profile-Warnings**: banner warnings for content-vs-config
+  mismatches.
+
+**Original-plan items still outstanding**:
+- Phase 9 — Language extensibility (RTL: Hebrew / Syriac / Coptic)
+- Phase 10 — Polish + distribution (Sparkle, DMG, bundled Python)
 
 ---
 
@@ -326,53 +386,17 @@ fighting the cascade's existing adaptivity.
 
 ## P-Lang-Detect — Auto-detect document language(s)
 
-**Status**: not started.
-
-### Goal
-
-At queue-add time, sample a few pages, run `NLLanguageRecognizer`
-+ Unicode script-frequency analysis, override the user's language
-picker default to match what's actually in the book.
-
-### Approach
-
-```
-Pipeline/DocumentProfiler.swift          shape parallels TwoUpDetector
-Pipeline/DocumentProfile.swift           output struct: primary +
-                                         secondary language codes,
-                                         scan-vs-born-digital flag,
-                                         page-count, region-density
-                                         summary
-Humanist/Jobs/QueueViewModel.swift       consume profile → seed
-                                         language picker default
-```
-
-1. Profiler samples first / middle / last pages at 150 DPI.
-2. For each sample: extract embedded text (when present, cheap),
-   or do a fast Vision pass (when scanned).
-3. Feed each text sample to `NLLanguageRecognizer`; combine with
-   Unicode-script-frequency analysis (already used by
-   `EmbeddedTextQualityScorer`).
-4. Aggregate detected languages with per-page confidence; emit a
-   `DocumentProfile` containing primary + secondary language codes
-   and overall confidence.
-
-### Effort
-
-~1.5 days: profiler + plumbing into queue UI + tests against a
-small fixture corpus (English scan, English born-digital, Greek
-scan, mixed-script).
-
-### Dependencies
-
-None hard.
-
-### When to ship
-
-After **Phase 3** (Claude OCR engine, in Tier 2) lands. The value
-of correct language defaults grows sharply once we have a tier
-that's expensive to run on the wrong language. Until then it's
-a nice-to-have that shaves a few seconds off the user's setup.
+**Status**: shipped (commit `5a65827`).
+`PDFIngest/DocumentProfiler` samples 3 evenly-spaced body pages,
+reads embedded text via PDFKit, runs `NLLanguageRecognizer`, and
+emits a `DocumentProfile` (primary + secondary language codes,
+confidence, scan-likely flag). When confidence ≥ 0.7 and the
+detected language is in the picker's supported set, the job's
+`options.languages` is overridden to match. New `.profiling` job
+status during the brief detection window. Vision-OCR fallback for
+scanned PDFs is deferred — would block queue-add on per-page
+Vision latency; current path returns `isLikelyScan: true` and the
+picker fallback covers it.
 
 ## P-Cloud-Cost — Pre-flight Cloud-mode cost estimate
 
@@ -444,10 +468,11 @@ this is a thin presentation layer on top — a list of
 
 ## Recommended sequencing within this tier
 
-1. `P-Lang-Detect` first — biggest single quality-of-life win,
-   self-contained.
-2. `P-Cloud-Cost` once Phase 3 is shipping real Claude calls.
-3. `P-Profile-Warnings` as a thin layer on the same profile.
+1. ~~`P-Lang-Detect`~~ shipped.
+2. `P-Cloud-Cost` next — Phases 3 and 6 are now shipping real
+   Claude calls, so the dollar visibility actually matters.
+3. `P-Profile-Warnings` as a thin layer on the same profile after
+   that.
 
 ---
 
@@ -486,10 +511,14 @@ content."**
 |---|---|---|
 | 1 | Anthropic API plumbing (`AI` library: client + transport + key store + settings + Settings UI) | **Done** (commit `567d2c3`) |
 | 2 | `ProcessingMode` plumbed end-to-end into `PDFToEPUBPipeline.Options` + `JobRunner`; dispatch switches added at engine sites | **Done** (commit `0e00a76`) |
-| 3 | `ClaudeOCREngine` (Sonnet vision) wired in as the cascade's high-quality tier under `.cloud` | Not started |
-| 4 | Validation spike: CER comparison vs Surya / Tesseract on hand-corrected ground truth (polytonic Greek, Hebrew, Latin scan) | Not started |
+| 3 | `ClaudeOCREngine` (Sonnet vision) wired in as the cascade's high-quality tier under `.cloud` | **Done** (commit `9a4adfd`) |
+| 4 | Validation spike: CER comparison vs Surya / Tesseract on hand-corrected ground truth (polytonic Greek) | **Done** — Local 15.1% / Cloud cascade 15.1% / Claude-only 11.3% (commit `9a4adfd`) |
 | 5 | `ClaudeTableExtractor` (Sonnet) behind a `TableExtractor` protocol; Surya path stays as offline fallback | Not started |
-| 6 | Three Haiku features: post-OCR cleanup (P-LLM-Pass design below), semantic classification (`Plans/Phase2-…md`), TOC parsing (`Plans/Phase3-…md`) | Not started |
+| 6a | Post-OCR Haiku cleanup — passages mode (text-only) | **Done** (commit `c6564bd`) |
+| 6b | Post-OCR Haiku cleanup — vision mode (multimodal) | **Done** (commit `ae99693`) |
+| 6c | Correction trail sidecar + interactive editor sheet (apply / revert) | **Done** (commit `f91d0e0`) |
+| 6d | Semantic chapter classification (`epub:type` per chapter, Haiku) | Not started |
+| 6e | Printed-TOC parsing (Haiku, Sonnet escalation if needed) | Not started |
 | 7 | First-run UX polish (Cloud-upgrade prompt, README docs) | Not started |
 | 8 | (Deferred) Per-book mode override for sensitive material when default is Cloud | Deferred |
 
@@ -510,11 +539,19 @@ post-OCR cleanup feature.
 
 ## P-LLM-Pass — Post-OCR character cleanup (Cloud Phase 6, Haiku)
 
-**Status**: not started. Existing `OCRTextQualityScorer` flags
-low-quality regions (mojibake, single-character runs, language
-confidence below threshold) and the `RegionCascade` retries with
-a different OCR engine, but if every engine produces mediocre
-text the bad output ships to the EPUB as-is.
+**Status**: shipped — passages mode (commit `c6564bd`), vision
+mode (commit `ae99693`), and the interactive correction-trail
+editor sheet (commit `f91d0e0`). The implementation matched this
+plan closely; one notable simplification is that we reused the
+existing `OCRChangeGuardrail` (designed for the OCR cascade) for
+post-OCR vetting rather than building a separate
+`ChangeGuardrail`. Apply / revert in the editor uses
+whitespace-tolerant find-and-replace with graceful fallback when
+the OCR-stage text didn't survive reflow byte-for-byte; full
+XHTML-aware replacement is deferred until that fallback proves
+inadequate in practice.
+
+The original design notes below are kept for reference.
 
 ### Goal
 
