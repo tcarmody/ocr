@@ -19,6 +19,9 @@ struct OPFWriter {
     let chapterItems: [Item]
     let navItem: Item
     let cssItem: Item
+    /// Image manifest entries (figures, cover). Already deduplicated
+    /// by id at the caller. Empty for books with no figures.
+    let imageItems: [Item]
     let modificationDate: Date
 
     func render() -> String {
@@ -38,7 +41,7 @@ struct OPFWriter {
         </metadata>
         """
 
-        let allItems = [navItem, cssItem] + chapterItems
+        let allItems = [navItem, cssItem] + chapterItems + imageItems
         let manifest = "<manifest>\n" + allItems.map { item in
             let propsAttr = item.properties.map { " properties=\"\(XMLEscape.attribute($0))\"" } ?? ""
             return "<item id=\"\(XMLEscape.attribute(item.id))\" href=\"\(XMLEscape.attribute(item.href))\" media-type=\"\(XMLEscape.attribute(item.mediaType))\"\(propsAttr)/>"

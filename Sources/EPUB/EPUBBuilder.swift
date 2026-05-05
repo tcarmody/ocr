@@ -22,6 +22,7 @@ public struct EPUBBuilder {
         //   OEBPS/nav.xhtml
         //   OEBPS/css/book.css
         //   OEBPS/text/chapter-001.xhtml ...
+        //   OEBPS/images/fig-NNNNN.png    (Phase 6 figures)
 
         var entries: [EPUBPackager.Entry] = []
 
@@ -48,6 +49,12 @@ public struct EPUBBuilder {
         let xhtmlWriter = XHTMLWriter(cssPath: "../css/book.css")
         var chapterItems: [OPFWriter.Item] = []
         var pageMapEntries: [PageMap.Entry] = []
+        // Asset id → manifest item, deduped across chapters. A figure
+        // can in principle be referenced from multiple chapters
+        // (today: it cannot, because each chapter owns its own asset
+        // copy from ChapterSplitter — but the dedup still protects
+        // against id collisions and duplicate manifest entries).
+        var imageItemsById: [String: OPFWriter.Item] = [:]
         for (index, chapter) in book.chapters.enumerated() {
             let id = String(format: "chapter-%03d", index + 1)
             let href = "text/\(id).xhtml"
@@ -70,7 +77,27 @@ public struct EPUBBuilder {
                     anchorId: anchor.anchorId
                 ))
             }
+            for asset in chapter.figureAssets {
+                let imageHref = "images/\(asset.id).\(asset.fileExtension)"
+                // Only emit bytes + manifest entry once per asset id.
+                guard imageItemsById[asset.id] == nil else { continue }
+                entries.append(EPUBPackager.Entry(
+                    path: "OEBPS/\(imageHref)",
+                    data: asset.data
+                ))
+                imageItemsById[asset.id] = OPFWriter.Item(
+                    id: asset.id,
+                    href: imageHref,
+                    mediaType: asset.mediaType,
+                    properties: asset.isCover ? "cover-image" : nil
+                )
+            }
         }
+        // Sort by id for deterministic OPF output (eases EPUB diff /
+        // snapshot tests).
+        let imageItems = imageItemsById
+            .sorted { $0.key < $1.key }
+            .map { $0.value }
 
         // 4b. Editor-only pagemap sidecar — only emitted when at least
         // one chapter contributed anchors (i.e. the book came through
@@ -111,6 +138,7 @@ public struct EPUBBuilder {
             chapterItems: chapterItems,
             navItem: navItem,
             cssItem: cssItem,
+            imageItems: imageItems,
             modificationDate: modificationDate
         ).render()
         entries.append(EPUBPackager.Entry(

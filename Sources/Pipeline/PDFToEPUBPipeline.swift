@@ -475,6 +475,13 @@ public actor PDFToEPUBPipeline {
         // or Vision fallback. Lets the user see which pages got
         // degraded treatment in high-accuracy mode.
         var ocrErrors: [Int: String] = [:]
+        // Page index → figures extracted from `.picture` / `.formula`
+        // regions on that page. Built during pass 1 because we need
+        // the rendered page CGImage; consumed by the reflow pass to
+        // emit `Block.figure` and by EPUBBuilder to write
+        // OEBPS/images/* asset bytes.
+        var figureExtractionsByPage: [Int: [FigureExtractor.ExtractedFigure]] = [:]
+        let figureExtractor = FigureExtractor()
 
         for i in 0..<totalPages {
             try Task.checkCancellation()
@@ -600,6 +607,20 @@ public actor PDFToEPUBPipeline {
                     )
                 }
 
+                // Phase 6: extract figures (.picture, .formula) from
+                // the rendered page so the reflow can emit
+                // `Block.figure` and the EPUB writer can embed the
+                // bytes. Done here because the page CGImage is only
+                // alive during this loop iteration.
+                if let regions = layoutForPage, !regions.isEmpty {
+                    let figures = figureExtractor.extract(
+                        pageIndex: i, regions: regions, pageImage: image
+                    )
+                    if !figures.isEmpty {
+                        figureExtractionsByPage[i] = figures
+                    }
+                }
+
                 // No per-page PNG cleanup — the staging dir's lifecycle
                 // (temp removed in `defer`, debug folder kept) handles
                 // it as a single batch.
@@ -626,6 +647,16 @@ public actor PDFToEPUBPipeline {
             await Task.yield()
         }
 
+        // Build caption associations once across the whole book — the
+        // orientation (caption-above vs caption-below) is decided
+        // book-wide and locked, so we have to see all pages first.
+        let regionsByPage: [Int: [LayoutRegion]] = pageResults.reduce(into: [:]) {
+            $0[$1.pageIndex] = $1.layoutRegions ?? []
+        }
+        let captionAssociations = CaptionAssociator.associate(
+            regionsByPage: regionsByPage
+        )
+
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).
         let reflowed: ReflowOutput
         if options.emitDebugLog {
@@ -634,6 +665,8 @@ public actor PDFToEPUBPipeline {
             let logURL = stagingDir.appendingPathComponent("log.txt")
             reflowed = Self.reflow(
                 pageResults: pageResults,
+                figureExtractions: figureExtractionsByPage,
+                captionAssociations: captionAssociations,
                 debugLogURL: logURL,
                 extractorDiagnostics: extractorDiagnostics,
                 qualityScores: qualityScores,
@@ -641,18 +674,23 @@ public actor PDFToEPUBPipeline {
                 ocrErrors: ocrErrors
             )
         } else {
-            reflowed = Self.reflow(pageResults: pageResults)
+            reflowed = Self.reflow(
+                pageResults: pageResults,
+                figureExtractions: figureExtractionsByPage,
+                captionAssociations: captionAssociations
+            )
         }
 
         // Phase 1 of structured-document detection: split the flat
         // block stream into chapters at every level-1 heading.
-        // Footnotes + page anchors are distributed to the chapter
-        // they belong to so EPUB readers see a real multi-chapter
-        // navigation tree.
+        // Footnotes, page anchors, and figure assets are distributed
+        // to the chapter they belong to so EPUB readers see a real
+        // multi-chapter navigation tree.
         let chapters = ChapterSplitter.split(
             blocks: reflowed.blocks,
             footnotes: reflowed.footnotes,
             pageAnchors: reflowed.pageAnchors,
+            figureAssets: reflowed.figureAssets,
             bookFallbackTitle: title
         )
         let book = Book(
@@ -667,15 +705,23 @@ public actor PDFToEPUBPipeline {
     /// Result of `reflow` — body block stream + chapter-level
     /// footnotes that body runs reference via `InlineRun.noterefId`,
     /// + page-boundary anchors emitted into the block stream so the
-    /// editor can sync preview scroll with PDF page (Phase 7.D).
+    /// editor can sync preview scroll with PDF page (Phase 7.D),
+    /// + figure assets referenced by `Block.figure` blocks (Phase 6).
     public struct ReflowOutput: Sendable, Equatable {
         public let blocks: [Block]
         public let footnotes: [Footnote]
         public let pageAnchors: [PageAnchor]
-        public init(blocks: [Block], footnotes: [Footnote], pageAnchors: [PageAnchor] = []) {
+        public let figureAssets: [FigureAsset]
+        public init(
+            blocks: [Block],
+            footnotes: [Footnote],
+            pageAnchors: [PageAnchor] = [],
+            figureAssets: [FigureAsset] = []
+        ) {
             self.blocks = blocks
             self.footnotes = footnotes
             self.pageAnchors = pageAnchors
+            self.figureAssets = figureAssets
         }
     }
 
@@ -690,6 +736,10 @@ public actor PDFToEPUBPipeline {
     /// Visible for testing.
     static func reflow(
         pageResults: [PageObservations],
+        figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
+        captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
+            captionByFigure: [:], orientation: .below
+        ),
         debugLogURL: URL? = nil,
         extractorDiagnostics: [Int: EmbeddedTextExtractor.Diagnostics] = [:],
         qualityScores: [Int: EmbeddedTextQualityScorer.Score] = [:],
@@ -701,6 +751,7 @@ public actor PDFToEPUBPipeline {
         let merged: [Block]
         let footnotes: [Footnote]
         let pageAnchors: [PageAnchor]
+        let figureAssets: [FigureAsset]
         let classification: HeaderFooterClassifier.Result
 
         if hasAnyLayout {
@@ -708,10 +759,15 @@ public actor PDFToEPUBPipeline {
             // log can show what *would* have been dropped, but the
             // region-aware reflow makes its own structural decisions.
             classification = HeaderFooterClassifier().classifyWithReasons(pageResults)
-            let result = RegionAwareReflow.reflow(pageResults: pageResults)
+            let result = RegionAwareReflow.reflow(
+                pageResults: pageResults,
+                figureExtractions: figureExtractions,
+                captionAssociations: captionAssociations
+            )
             merged = result.blocks
             footnotes = result.footnotes
             pageAnchors = result.pageAnchors
+            figureAssets = result.figureAssets
         } else {
             // Heuristic-only path (Phase 1.5 behavior). No layout
             // regions means no footnote regions, so no popups either.
@@ -730,6 +786,7 @@ public actor PDFToEPUBPipeline {
             merged = Self.bridgeBoundaries(blocks)
             footnotes = []
             pageAnchors = []
+            figureAssets = []
         }
 
         if let debugLogURL {
@@ -745,7 +802,12 @@ public actor PDFToEPUBPipeline {
                 to: debugLogURL
             )
         }
-        return ReflowOutput(blocks: merged, footnotes: footnotes, pageAnchors: pageAnchors)
+        return ReflowOutput(
+            blocks: merged,
+            footnotes: footnotes,
+            pageAnchors: pageAnchors,
+            figureAssets: figureAssets
+        )
     }
 
     /// Save a CGImage as PNG to the given URL. Used by the debug-log
@@ -1024,6 +1086,13 @@ public actor PDFToEPUBPipeline {
                 out += "[\(i)] P: \(runs.map(\.text).joined())\n"
             case .anchor(let id, let label):
                 out += "[\(i)] ANCHOR id=\(id) label=\(label)\n"
+            case .figure(let assetId, let alt, let caption):
+                let captionText = caption.map(\.text).joined()
+                out += "[\(i)] FIGURE asset=\(assetId) alt=\"\(alt)\""
+                if !captionText.isEmpty {
+                    out += " caption=\"\(captionText)\""
+                }
+                out += "\n"
             }
             out += "\n"
         }
@@ -1052,20 +1121,25 @@ public actor PDFToEPUBPipeline {
         var out: [Block] = []
         out.reserveCapacity(blocks.count)
         for block in blocks {
-            // Anchors aren't paragraphs and never bridge — pass them
-            // through. Real cross-page bridging happens in the lookback
-            // below, which steps past any trailing anchors to find the
-            // previous paragraph.
+            // Anchors and figures aren't paragraphs and never bridge —
+            // pass them through. Real cross-page bridging happens in
+            // the lookback below, which steps past any trailing
+            // anchors / figures to find the previous paragraph.
             if case .anchor = block {
                 out.append(block)
                 continue
             }
+            if case .figure = block {
+                out.append(block)
+                continue
+            }
 
-            // Walk back over any anchors that landed at the end of
-            // `out` (page-boundary markers between two paragraphs that
-            // really should be merged into one sentence).
+            // Walk back over anchors and figures that landed at the
+            // end of `out` (page-boundary markers / figures that
+            // landed between two paragraphs that really should be
+            // merged into one sentence).
             var prevIndex = out.count - 1
-            while prevIndex >= 0, case .anchor = out[prevIndex] {
+            while prevIndex >= 0, isBridgePassthrough(out[prevIndex]) {
                 prevIndex -= 1
             }
             let prev: Block? = prevIndex >= 0 ? out[prevIndex] : nil
@@ -1102,6 +1176,18 @@ public actor PDFToEPUBPipeline {
             out[prevIndex] = .paragraph(runs: combinedRuns)
         }
         return out
+    }
+
+    /// Blocks the cross-paragraph bridging lookback walks past when
+    /// finding the previous paragraph. Anchors are invisible
+    /// page-boundary markers; figures are visual content that doesn't
+    /// participate in textual bridging. Both can sit between two
+    /// paragraphs that legitimately want to merge into one sentence.
+    private static func isBridgePassthrough(_ block: Block) -> Bool {
+        switch block {
+        case .anchor, .figure: return true
+        case .heading, .paragraph: return false
+        }
     }
 
     private enum BridgeKind { case softHyphen, midSentence }

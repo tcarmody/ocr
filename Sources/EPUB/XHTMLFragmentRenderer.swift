@@ -28,6 +28,24 @@ public enum XHTMLFragmentRenderer {
                 let labelAttr = XMLEscape.attribute(label)
                 out += "<span id=\"\(idAttr)\" epub:type=\"pagebreak\" "
                 out += "role=\"doc-pagebreak\" aria-label=\"\(labelAttr)\"></span>\n"
+            case .figure(let assetId, let alt, let caption):
+                // Fragment renderer doesn't have asset access, so it
+                // emits a placeholder `<img>` keyed off the assetId.
+                // The fragment is only used by the editor's "Replace
+                // Page in Source" splice — figures in re-OCR'd pages
+                // pre-existed in the chapter file with their src
+                // already wired up, so this href never round-trips
+                // through asset lookup.
+                let href = "../images/\(assetId).png"
+                let hrefAttr = XMLEscape.attribute(href)
+                let altAttr = XMLEscape.attribute(alt)
+                out += "<figure><img src=\"\(hrefAttr)\" alt=\"\(altAttr)\"/>"
+                if !caption.isEmpty {
+                    out += "<figcaption>"
+                    out += renderRuns(caption, parentLanguage: language)
+                    out += "</figcaption>"
+                }
+                out += "</figure>\n"
             }
         }
         return out

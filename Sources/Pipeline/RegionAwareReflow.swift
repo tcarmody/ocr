@@ -53,11 +53,13 @@ enum RegionAwareReflow {
     /// Output of one reflow pass: the body block stream plus the
     /// chapter-level footnote collection that body runs reference via
     /// `InlineRun.noterefId`. Footnotes only get populated when the
-    /// layout analyzer found `.footnote` regions.
+    /// layout analyzer found `.footnote` regions. `figureAssets`
+    /// carries any image bytes referenced by `Block.figure` blocks.
     struct Result: Sendable, Equatable {
         let blocks: [Block]
         let footnotes: [Footnote]
         let pageAnchors: [PageAnchor]
+        let figureAssets: [FigureAsset]
     }
 
     /// Anchor id format. `EditorViewModel`'s linked-navigation feature
@@ -143,7 +145,13 @@ enum RegionAwareReflow {
         let signals: [String]
     }
 
-    static func reflow(pageResults: [PageObservations]) -> Result {
+    static func reflow(
+        pageResults: [PageObservations],
+        figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
+        captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
+            captionByFigure: [:], orientation: .below
+        )
+    ) -> Result {
         lastAttributions.removeAll(keepingCapacity: true)
         lastFootnotesPerPage.removeAll(keepingCapacity: true)
         lastReclassificationsPerPage.removeAll(keepingCapacity: true)
@@ -151,6 +159,42 @@ enum RegionAwareReflow {
         lastHeadingPromotionsPerPage.removeAll(keepingCapacity: true)
         lastRegionSplitsPerPage.removeAll(keepingCapacity: true)
         lastCrossPageDecisionsPerPage.removeAll(keepingCapacity: true)
+
+        // Decide which picture region (if any) becomes the EPUB cover.
+        // Page-0 single dominant picture (≥ 50% of page area) qualifies.
+        let coverFigureKey = detectCoverFigure(pageResults: pageResults)
+
+        // Reverse the caption→figure index for fast lookup during
+        // reflow: when we hit a caption region, we want to know
+        // whether some figure already claimed it.
+        var captionsClaimed = Set<CaptionAssociator.PageRegionKey>()
+        for cap in captionAssociations.captionByFigure.values {
+            captionsClaimed.insert(cap)
+        }
+
+        // Assign book-wide unique asset ids in document order. The id
+        // is the manifest item id and the filename stem.
+        var assetIdByFigureKey: [CaptionAssociator.PageRegionKey: String] = [:]
+        var figureAssets: [FigureAsset] = []
+        var nextAssetIndex = 0
+        for page in pageResults.sorted(by: { $0.pageIndex < $1.pageIndex }) {
+            guard let figures = figureExtractions[page.pageIndex] else { continue }
+            for fig in figures {
+                let assetId = String(format: "fig-%05d", nextAssetIndex)
+                nextAssetIndex += 1
+                let key = CaptionAssociator.PageRegionKey(
+                    pageIndex: page.pageIndex, regionIndex: fig.regionIndex
+                )
+                assetIdByFigureKey[key] = assetId
+                figureAssets.append(FigureAsset(
+                    id: assetId,
+                    data: fig.data,
+                    mediaType: fig.mediaType,
+                    intrinsicSize: fig.intrinsicSize,
+                    isCover: key == coverFigureKey
+                ))
+            }
+        }
 
         // Document-level pass: classify top-of-page short `.text`
         // regions as either `.pageHeader` (recurring across many
@@ -249,25 +293,118 @@ enum RegionAwareReflow {
                 allFootnotes.append(contentsOf: pageFootnotes)
             }
             blocks.append(contentsOf: reflowPage(
-                page: page, regions: effectiveRegions, pageFootnotes: pageFootnotes
+                page: page,
+                originalRegions: originalRegions,
+                regions: effectiveRegions,
+                pageFootnotes: pageFootnotes,
+                assetIdByFigureKey: assetIdByFigureKey,
+                captionByFigure: captionAssociations.captionByFigure,
+                captionsClaimed: captionsClaimed
             ))
         }
         let bridged = PDFToEPUBPipeline.bridgeBoundaries(blocks)
         return Result(
             blocks: bridged,
             footnotes: FootnoteLinker.footnotesForChapter(allFootnotes),
-            pageAnchors: pageAnchors
+            pageAnchors: pageAnchors,
+            figureAssets: figureAssets
         )
+    }
+
+    /// Identify the page-0 picture region (if any) that should be the
+    /// EPUB cover. We require:
+    ///   * page index 0,
+    ///   * exactly one `.picture` region on the page (so we don't
+    ///     flag a multi-figure layout as having a cover), and
+    ///   * that region's bbox covers ≥ 50% of the page.
+    /// Conservative: false negatives just mean no cover-image is
+    /// declared (still valid EPUB), but a false positive would stamp
+    /// a body figure as the cover.
+    private static func detectCoverFigure(
+        pageResults: [PageObservations]
+    ) -> CaptionAssociator.PageRegionKey? {
+        guard let firstPage = pageResults.first(where: { $0.pageIndex == 0 }) else {
+            return nil
+        }
+        guard let regions = firstPage.layoutRegions else { return nil }
+        let pictures = regions.enumerated().filter { _, r in r.kind == .picture }
+        guard pictures.count == 1 else { return nil }
+        let (idx, region) = pictures[0]
+        let area = region.box.width * region.box.height
+        guard area >= 0.5 else { return nil }
+        return CaptionAssociator.PageRegionKey(pageIndex: 0, regionIndex: idx)
     }
 
     private static func heuristicFallback(for page: PageObservations) -> [Block] {
         ParagraphReflow().reflow(page.observations)
     }
 
+    /// Find the index of `region` within `originalRegions`. Picture /
+    /// caption / formula regions are passed through unmodified by
+    /// every pre-pass, so an exact `kind == kind && box == box` match
+    /// uniquely identifies the original region. Returns nil if no
+    /// match (shouldn't happen in practice).
+    private static func matchOriginalRegionIndex(
+        region: LayoutRegion, in originalRegions: [LayoutRegion]
+    ) -> Int? {
+        originalRegions.firstIndex {
+            $0.kind == region.kind && $0.box == region.box
+        }
+    }
+
+    /// Build the inline runs for a figure's caption by extracting text
+    /// from the matched caption region's observations. Returns an
+    /// empty array when no caption is associated.
+    private static func captionRuns(
+        for figureKey: CaptionAssociator.PageRegionKey,
+        captionByFigure: [CaptionAssociator.PageRegionKey: CaptionAssociator.PageRegionKey],
+        originalRegions: [LayoutRegion],
+        observations: [TextObservation],
+        pageFootnotes: [FootnoteLinker.Parsed]
+    ) -> [InlineRun] {
+        guard let captionKey = captionByFigure[figureKey] else { return [] }
+        guard captionKey.regionIndex >= 0,
+              captionKey.regionIndex < originalRegions.count else { return [] }
+        let captionRegion = originalRegions[captionKey.regionIndex]
+        let inflated = captionRegion.box.insetBy(
+            dx: -regionInflation, dy: -regionInflation
+        )
+        let inRegion = observations.filter { obs in
+            inflated.contains(CGPoint(x: obs.box.midX, y: obs.box.midY))
+        }
+        guard !inRegion.isEmpty else { return [] }
+        let sorted = inRegion.sorted { a, b in
+            if abs(a.box.midY - b.box.midY) > 0.005 { return a.box.midY > b.box.midY }
+            return a.box.minX < b.box.minX
+        }
+        let text = joinWithDehyphenation(sorted.map(\.text))
+        guard !text.isEmpty else { return [] }
+        // Captions can carry footnote markers (rare, but possible);
+        // run them through the same splicer so a noteref in a caption
+        // links correctly.
+        return FootnoteLinker.splice(text: text, footnotes: pageFootnotes)
+    }
+
+    /// Pick alt text for a figure. Use the caption text when available
+    /// — accessibility readers will read it; otherwise a generic
+    /// "figure" / "formula" label.
+    private static func altText(
+        forKind kind: LayoutRegion.Kind, captionRuns: [InlineRun]
+    ) -> String {
+        let captionText = captionRuns.map(\.text).joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !captionText.isEmpty { return captionText }
+        return kind == .formula ? "formula" : "figure"
+    }
+
     private static func reflowPage(
         page: PageObservations,
+        originalRegions: [LayoutRegion],
         regions: [LayoutRegion],
-        pageFootnotes: [FootnoteLinker.Parsed]
+        pageFootnotes: [FootnoteLinker.Parsed],
+        assetIdByFigureKey: [CaptionAssociator.PageRegionKey: String],
+        captionByFigure: [CaptionAssociator.PageRegionKey: CaptionAssociator.PageRegionKey],
+        captionsClaimed: Set<CaptionAssociator.PageRegionKey>
     ) -> [Block] {
         // Sort by reading order; -1 (unassigned) sorts to the end so
         // it doesn't disrupt the ordered regions.
@@ -287,6 +424,48 @@ enum RegionAwareReflow {
         // Walk regions in reading order and let the first claimant win.
         var claimed = Set<Int>()
         for region in ordered {
+            // Pictures and formulas: emit `Block.figure` if we have an
+            // extracted asset for them. Pre-passes don't modify these
+            // regions, so finding the asset key by box+kind match
+            // against `originalRegions` is unique.
+            if region.kind == .picture || region.kind == .formula {
+                if let originalIdx = matchOriginalRegionIndex(
+                    region: region, in: originalRegions
+                ) {
+                    let key = CaptionAssociator.PageRegionKey(
+                        pageIndex: page.pageIndex, regionIndex: originalIdx
+                    )
+                    if let assetId = assetIdByFigureKey[key] {
+                        let captionRuns = captionRuns(
+                            for: key,
+                            captionByFigure: captionByFigure,
+                            originalRegions: originalRegions,
+                            observations: page.observations,
+                            pageFootnotes: pageFootnotes
+                        )
+                        let alt = altText(forKind: region.kind, captionRuns: captionRuns)
+                        blocks.append(.figure(
+                            assetId: assetId, alt: alt, caption: captionRuns
+                        ))
+                    }
+                }
+                continue
+            }
+
+            // Captions matched to a figure are emitted as part of that
+            // figure block — skip them here so they don't double-emit
+            // as paragraphs. Unmatched captions fall through to the
+            // standard paragraph path.
+            if region.kind == .caption,
+               let originalIdx = matchOriginalRegionIndex(
+                   region: region, in: originalRegions
+               ) {
+                let key = CaptionAssociator.PageRegionKey(
+                    pageIndex: page.pageIndex, regionIndex: originalIdx
+                )
+                if captionsClaimed.contains(key) { continue }
+            }
+
             guard bodyKinds.contains(region.kind) else { continue }
             let inflated = region.box.insetBy(dx: -regionInflation, dy: -regionInflation)
             var assigned: [TextObservation] = []

@@ -26,5 +26,8 @@ enum EPUBStaticFiles {
         p:first-of-type { text-indent: 0; }
         a[epub|type~="noteref"] { vertical-align: super; font-size: 0.75em; }
         aside[epub|type~="footnote"] { display: none; }
+        figure { margin: 1em 0; text-align: center; }
+        figure img { max-width: 100%; height: auto; }
+        figcaption { font-size: 0.85em; font-style: italic; margin-top: 0.4em; }
         """
 }

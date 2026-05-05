@@ -41,6 +41,7 @@ public enum ChapterSplitter {
         blocks: [Block],
         footnotes: [Footnote],
         pageAnchors: [PageAnchor],
+        figureAssets: [FigureAsset] = [],
         bookFallbackTitle: String
     ) -> [Chapter] {
         let h1Indices = blocks.indices.filter { isH1(blocks[$0]) }
@@ -54,7 +55,8 @@ public enum ChapterSplitter {
                 title: bookFallbackTitle,
                 blocks: blocks,
                 footnotes: footnotes,
-                pageAnchors: pageAnchors
+                pageAnchors: pageAnchors,
+                figureAssets: figureAssets
             )]
         }
 
@@ -67,7 +69,8 @@ public enum ChapterSplitter {
                 title: frontMatterTitle,
                 segment: frontMatterBlocks,
                 allFootnotes: footnotes,
-                allPageAnchors: pageAnchors
+                allPageAnchors: pageAnchors,
+                allFigureAssets: figureAssets
             ))
         }
 
@@ -81,7 +84,8 @@ public enum ChapterSplitter {
                 title: title,
                 segment: segment,
                 allFootnotes: footnotes,
-                allPageAnchors: pageAnchors
+                allPageAnchors: pageAnchors,
+                allFigureAssets: figureAssets
             ))
         }
 
@@ -106,7 +110,9 @@ public enum ChapterSplitter {
     /// A pre-H1 segment with only invisible page-break anchors (very
     /// common: cover page renders as a single anchor + nothing) would
     /// otherwise produce an empty front-matter chapter that just
-    /// confuses readers' navigation panels.
+    /// confuses readers' navigation panels. A figure on its own counts
+    /// as substantive — a frontispiece illustration shouldn't get
+    /// silently dropped from the front-matter chapter.
     private static func hasSubstantiveContent(_ blocks: [Block]) -> Bool {
         for b in blocks {
             switch b {
@@ -116,6 +122,8 @@ public enum ChapterSplitter {
                 let joined = runs.map(\.text).joined()
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !joined.isEmpty { return true }
+            case .figure:
+                return true
             }
         }
         return false
@@ -127,17 +135,21 @@ public enum ChapterSplitter {
         title: String?,
         segment: [Block],
         allFootnotes: [Footnote],
-        allPageAnchors: [PageAnchor]
+        allPageAnchors: [PageAnchor],
+        allFigureAssets: [FigureAsset]
     ) -> Chapter {
         let noterefIds = collectNoterefIds(in: segment)
         let footnotes = allFootnotes.filter { noterefIds.contains($0.id) }
         let anchorIds = collectAnchorIds(in: segment)
         let anchors = allPageAnchors.filter { anchorIds.contains($0.anchorId) }
+        let figureIds = collectFigureAssetIds(in: segment)
+        let figures = allFigureAssets.filter { figureIds.contains($0.id) }
         return Chapter(
             title: title,
             blocks: segment,
             footnotes: footnotes,
-            pageAnchors: anchors
+            pageAnchors: anchors,
+            figureAssets: figures
         )
     }
 
@@ -153,9 +165,24 @@ public enum ChapterSplitter {
                 for r in runs {
                     if let id = r.noterefId { ids.insert(id) }
                 }
+            case .figure(_, _, let caption):
+                for r in caption {
+                    if let id = r.noterefId { ids.insert(id) }
+                }
             case .anchor:
                 continue
             }
+        }
+        return ids
+    }
+
+    /// All `figureAssetId` values referenced by figure blocks in
+    /// `blocks`. Mirrors `collectNoterefIds` so per-chapter assets
+    /// stay scoped to the chapter that actually uses them.
+    private static func collectFigureAssetIds(in blocks: [Block]) -> Set<String> {
+        var ids = Set<String>()
+        for block in blocks {
+            if case .figure(let assetId, _, _) = block { ids.insert(assetId) }
         }
         return ids
     }

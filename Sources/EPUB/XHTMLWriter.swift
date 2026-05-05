@@ -12,6 +12,10 @@ struct XHTMLWriter {
         let title = (chapter.title ?? fallbackTitle)
         let langAttr = defaultLanguage.rawValue
 
+        let assetIndex = Dictionary(
+            uniqueKeysWithValues: chapter.figureAssets.map { ($0.id, $0) }
+        )
+
         var body = ""
         for block in chapter.blocks {
             switch block {
@@ -28,6 +32,29 @@ struct XHTMLWriter {
                 let idAttr = XMLEscape.attribute(id)
                 let labelAttr = XMLEscape.attribute(label)
                 body += "<span id=\"\(idAttr)\" epub:type=\"pagebreak\" role=\"doc-pagebreak\" aria-label=\"\(labelAttr)\"></span>\n"
+            case .figure(let assetId, let alt, let caption):
+                // Skip silently when the asset is missing — chapter
+                // splitting filters assets to only those referenced,
+                // but a stale block can outlive its asset (e.g. tests
+                // that build chapters by hand). Better an empty body
+                // than a broken `<img>` tag with a dead src.
+                guard let asset = assetIndex[assetId] else { continue }
+                let href = "../images/\(asset.id).\(asset.fileExtension)"
+                let hrefAttr = XMLEscape.attribute(href)
+                let altAttr = XMLEscape.attribute(alt)
+                var imgAttrs = "src=\"\(hrefAttr)\" alt=\"\(altAttr)\""
+                if let size = asset.intrinsicSize {
+                    imgAttrs += " width=\"\(Int(size.width))\""
+                    imgAttrs += " height=\"\(Int(size.height))\""
+                }
+                body += "<figure>"
+                body += "<img \(imgAttrs)/>"
+                if !caption.isEmpty {
+                    body += "<figcaption>"
+                    body += renderRuns(caption, parentLanguage: defaultLanguage)
+                    body += "</figcaption>"
+                }
+                body += "</figure>\n"
             }
         }
 

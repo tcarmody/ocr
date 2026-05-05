@@ -16,4 +16,12 @@ public enum Block: Sendable, Equatable {
     /// feature to align preview scroll with PDF page; honored by EPUB
     /// readers as a print-page break for "skip to page N" navigation.
     case anchor(id: String, label: String)
+
+    /// `<figure>` with an embedded image and optional caption.
+    /// `assetId` keys into the owning `Chapter.figureAssets`; the EPUB
+    /// writer resolves it to the right `OEBPS/images/...` href when
+    /// rendering. `alt` is the `<img alt>` (accessibility); `caption`
+    /// is the inline runs that render inside `<figcaption>` (empty
+    /// caption ⇒ no figcaption element).
+    case figure(assetId: String, alt: String, caption: [InlineRun])
 }

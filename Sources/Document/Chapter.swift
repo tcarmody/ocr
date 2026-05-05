@@ -14,14 +14,20 @@ public struct Chapter: Sendable, Equatable {
     /// during reflow. Mirrored here so the EPUB writer can collect a
     /// chapter-by-chapter pagemap without re-walking blocks.
     public var pageAnchors: [PageAnchor]
+    /// Image assets referenced by `Block.figure(assetId:)` inside
+    /// `blocks`. Bytes live here so blocks stay cheap to copy / log;
+    /// the EPUB writer copies these into `OEBPS/images/`.
+    public var figureAssets: [FigureAsset]
 
     public init(title: String? = nil,
                 blocks: [Block] = [],
                 footnotes: [Footnote] = [],
-                pageAnchors: [PageAnchor] = []) {
+                pageAnchors: [PageAnchor] = [],
+                figureAssets: [FigureAsset] = []) {
         self.title = title
         self.blocks = blocks
         self.footnotes = footnotes
         self.pageAnchors = pageAnchors
+        self.figureAssets = figureAssets
     }
 }
