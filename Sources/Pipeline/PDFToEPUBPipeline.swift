@@ -465,12 +465,14 @@ public actor PDFToEPUBPipeline {
         return false
     }
 
+    @discardableResult
     public func convert(
         pdfURL: URL,
         outputURL: URL,
         options: Options = Options(),
         progress: ProgressHandler? = nil
-    ) async throws {
+    ) async throws -> ConversionStats {
+        let conversionStart = Date()
         // Mutable so we can periodically reload to drain PDFKit's
         // internal page cache. PDFKit `PDFDocument` lazily caches
         // rendered page representations; on a 600-page book that
@@ -878,6 +880,29 @@ public actor PDFToEPUBPipeline {
         )
 
         try EPUBBuilder().write(book: book, to: outputURL)
+
+        // Tally observations by source across every page. This walks
+        // the post-cascade pageResults (i.e. the observations the
+        // EPUB was actually built from), so a `.claude`-source
+        // observation reflects work Claude did that survived the
+        // guardrail check, not just calls attempted.
+        var bySource: [ObservationSource: Int] = [:]
+        for page in pageResults {
+            for obs in page.observations {
+                bySource[obs.source, default: 0] += 1
+            }
+        }
+        // Pull final budget snapshot. Per-model usage is recorded by
+        // every Claude-backed engine (today: ClaudeOCREngine; future
+        // table + Haiku features will accumulate here too).
+        let claudeCallCount = await claudeBudget.consumed
+        let claudeUsage = await claudeBudget.modelUsage
+        return ConversionStats.make(
+            elapsed: Date().timeIntervalSince(conversionStart),
+            observationsBySource: bySource,
+            claudeCallCount: claudeCallCount,
+            claudeUsageByModel: claudeUsage
+        )
     }
 
     /// Result of `reflow` — body block stream + chapter-level

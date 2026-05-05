@@ -144,7 +144,7 @@ final class JobRunner: ObservableObject {
         let storeRef = store
         let jobID = job.id
         do {
-            try await pipeline.convert(
+            let stats = try await pipeline.convert(
                 pdfURL: job.sourceURL,
                 outputURL: job.outputURL,
                 options: options,
@@ -162,6 +162,7 @@ final class JobRunner: ObservableObject {
             store.update(jobID) { mutable in
                 mutable.status = .done
                 mutable.finishedAt = Date()
+                mutable.stats = stats
             }
         } catch is CancellationError {
             store.update(jobID) { mutable in

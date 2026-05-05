@@ -102,6 +102,11 @@ public struct ClaudeOCREngine: OCREngine {
             throw ClaudeOCRError.underlying(apiError)
         }
 
+        // Record token usage even on refusal — it still cost tokens.
+        // The stats panel surfaces "Claude was called and refused"
+        // as part of the per-model usage breakdown.
+        await budget.recordUsage(response.usage, for: model)
+
         // Refused / safety-blocked: surface as empty so the cascade
         // keeps the prior tier instead of replacing it with whatever
         // text the refusal produced.

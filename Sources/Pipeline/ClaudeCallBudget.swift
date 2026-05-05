@@ -1,4 +1,5 @@
 import Foundation
+import AI
 
 /// Per-book ceiling on Claude API calls, shared across every Cloud-mode
 /// feature that consumes the API (OCR, table extraction, post-OCR
@@ -15,15 +16,60 @@ import Foundation
 /// see `tryConsume()` return `false` and should fall back to the prior
 /// tier (the cascade does this for OCR; future phases follow the same
 /// pattern).
+///
+/// Also accumulates per-model token usage via `recordUsage(_:for:)` so
+/// the post-conversion stats panel can report Claude calls + estimated
+/// cost. Engines should call `recordUsage` after every successful
+/// API call.
 public actor ClaudeCallBudget {
     /// Initial cap (i.e., `AISettings.perBookCallCap`). `nonisolated`
     /// because it's set once at init and never mutates — callers can
     /// read it without a hop into the actor.
     public nonisolated let cap: Int
-    /// Calls already granted this conversion. Surfaceable post-run for
-    /// telemetry and audit (the editor's "AI trail" inspector will read
-    /// this when it ships).
+    /// Calls already granted this conversion.
     public private(set) var consumed: Int = 0
+    /// Aggregate token usage by model. Empty until the first
+    /// `recordUsage` call.
+    public private(set) var modelUsage: [AnthropicModel: AggregateUsage] = [:]
+
+    /// Per-model accumulated token totals across one conversion.
+    /// Sendable + Codable so it can be persisted on a `Job` value
+    /// for the queue UI's stats panel.
+    public struct AggregateUsage: Sendable, Codable, Equatable {
+        public var inputTokens: Int
+        public var outputTokens: Int
+        public var cacheCreationInputTokens: Int
+        public var cacheReadInputTokens: Int
+
+        public init(
+            inputTokens: Int = 0,
+            outputTokens: Int = 0,
+            cacheCreationInputTokens: Int = 0,
+            cacheReadInputTokens: Int = 0
+        ) {
+            self.inputTokens = inputTokens
+            self.outputTokens = outputTokens
+            self.cacheCreationInputTokens = cacheCreationInputTokens
+            self.cacheReadInputTokens = cacheReadInputTokens
+        }
+
+        /// Total billable tokens across all four categories — useful
+        /// for one-line summaries.
+        public var total: Int {
+            inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens
+        }
+
+        /// Convert to an `AI.Usage` snapshot so existing pricing
+        /// helpers (`Pricing.cost(for:)`) work without translation.
+        public var asUsage: Usage {
+            Usage(
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                cacheCreationInputTokens: cacheCreationInputTokens,
+                cacheReadInputTokens: cacheReadInputTokens
+            )
+        }
+    }
 
     public init(cap: Int) {
         self.cap = max(0, cap)
@@ -37,6 +83,19 @@ public actor ClaudeCallBudget {
         guard consumed < cap else { return false }
         consumed += 1
         return true
+    }
+
+    /// Record token usage from one successful API response. Called by
+    /// every Claude-backed engine after `client.send(...)` returns.
+    /// Per-model accumulation lets the stats panel break down cost by
+    /// Sonnet (vision OCR + tables) vs Haiku (cleanup features).
+    public func recordUsage(_ usage: Usage, for model: AnthropicModel) {
+        var aggregate = modelUsage[model] ?? AggregateUsage()
+        aggregate.inputTokens += usage.inputTokens
+        aggregate.outputTokens += usage.outputTokens
+        aggregate.cacheCreationInputTokens += usage.cacheCreationInputTokens
+        aggregate.cacheReadInputTokens += usage.cacheReadInputTokens
+        modelUsage[model] = aggregate
     }
 
     /// Calls still available. Useful for log lines and the cost cap UI.

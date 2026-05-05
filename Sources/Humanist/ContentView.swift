@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import Document
 import PDFIngest
+import Pipeline
 
 /// Launcher window — queue-centric. Drop one PDF or a folder of PDFs;
 /// each becomes a job. Existing jobs from previous sessions persist
@@ -216,6 +217,25 @@ private struct JobRow: View {
     @EnvironmentObject private var runner: JobRunner
     @Environment(\.openWindow) private var openWindow
 
+    /// Per-source observation breakdown for the row's tooltip.
+    /// Renders as one line per non-zero source: "vision: 142,
+    /// tesseract: 28, claude: 12". Useful for verifying the
+    /// cascade did what was expected on a given book.
+    private func statsTooltip(_ stats: ConversionStats) -> String {
+        let perSource = stats.observationsBySource
+            .sorted { $0.key < $1.key }
+            .filter { $0.value > 0 }
+            .map { "\($0.key): \($0.value)" }
+            .joined(separator: ", ")
+        var lines: [String] = []
+        if !perSource.isEmpty { lines.append("Observations — \(perSource)") }
+        if stats.claudeCallCount > 0 {
+            lines.append("Estimated cost: \(stats.formattedCost)")
+        }
+        lines.append("Elapsed: \(String(format: "%.1fs", stats.elapsed))")
+        return lines.joined(separator: "\n")
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             statusIcon
@@ -265,9 +285,20 @@ private struct JobRow: View {
                 Text("Starting…").font(.caption).foregroundStyle(.secondary)
             }
         case .done:
-            Text("Done — \(job.outputURL.lastPathComponent)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Done — \(job.outputURL.lastPathComponent)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let stats = job.stats {
+                    // Surface Cloud-mode usage so the user knows
+                    // whether Claude actually fired on this book.
+                    // Stats persisted on the Job, not recomputed.
+                    Text(stats.summary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help(statsTooltip(stats))
+                }
+            }
         case .failed:
             Text(job.error ?? "Failed")
                 .font(.caption)

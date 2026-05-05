@@ -1,4 +1,5 @@
 import Foundation
+import Pipeline
 
 /// One bulk-conversion task: PDF in, EPUB out, current status, progress.
 /// The store persists these to JSON so a long batch can resume cleanly
@@ -27,6 +28,12 @@ struct Job: Identifiable, Codable, Equatable {
     var addedAt: Date
     var startedAt: Date?
     var finishedAt: Date?
+    /// Post-conversion stats — Claude calls, cost, per-source
+    /// observation counts. Populated by `JobRunner` when convert()
+    /// returns successfully. Nil for jobs persisted before this
+    /// field existed (the queue store JSON-decodes optionally) and
+    /// for queued/running jobs that haven't completed yet.
+    var stats: ConversionStats?
 
     init(
         id: UUID = UUID(),
@@ -38,7 +45,8 @@ struct Job: Identifiable, Codable, Equatable {
         error: String? = nil,
         addedAt: Date = Date(),
         startedAt: Date? = nil,
-        finishedAt: Date? = nil
+        finishedAt: Date? = nil,
+        stats: ConversionStats? = nil
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -50,6 +58,7 @@ struct Job: Identifiable, Codable, Equatable {
         self.addedAt = addedAt
         self.startedAt = startedAt
         self.finishedAt = finishedAt
+        self.stats = stats
     }
 }
 

@@ -36,4 +36,49 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// behavior across deploys. Production code typically uses the
     /// alias above.
     public static let haiku4_5_20251001 = AnthropicModel(rawValue: "claude-haiku-4-5-20251001")
+
+    /// Per-million-token pricing in USD. Used by `ConversionStats` to
+    /// produce ≈-cost estimates for the post-conversion summary.
+    /// Treat as estimates, not invoices — Anthropic's billing is the
+    /// authoritative source.
+    public var pricing: Pricing {
+        switch rawValue {
+        case "claude-sonnet-4-6":
+            return Pricing(inputPerMTok: 3.00, outputPerMTok: 15.00)
+        case "claude-haiku-4-5", "claude-haiku-4-5-20251001":
+            return Pricing(inputPerMTok: 1.00, outputPerMTok: 5.00)
+        case "claude-opus-4-7":
+            return Pricing(inputPerMTok: 5.00, outputPerMTok: 25.00)
+        default:
+            // Unknown / future model — assume Sonnet rates as a
+            // safe upper-middle estimate. Surface in the UI as
+            // "estimated", not authoritative.
+            return Pricing(inputPerMTok: 3.00, outputPerMTok: 15.00)
+        }
+    }
+}
+
+/// Per-million-token rates for one model. Cache-write is 1.25× input
+/// (5-minute TTL) and cache-read is ~0.1× input — both derived rather
+/// than stored to avoid drift if the rate table is updated.
+public struct Pricing: Sendable, Equatable {
+    public let inputPerMTok: Double
+    public let outputPerMTok: Double
+
+    public init(inputPerMTok: Double, outputPerMTok: Double) {
+        self.inputPerMTok = inputPerMTok
+        self.outputPerMTok = outputPerMTok
+    }
+
+    public var cacheCreationPerMTok: Double { inputPerMTok * 1.25 }
+    public var cacheReadPerMTok: Double { inputPerMTok * 0.1 }
+
+    /// Cost in USD for a `Usage` snapshot at this model's rates.
+    public func cost(for usage: Usage) -> Double {
+        let inputCost = Double(usage.inputTokens) / 1_000_000 * inputPerMTok
+        let outputCost = Double(usage.outputTokens) / 1_000_000 * outputPerMTok
+        let writeCost = Double(usage.cacheCreationInputTokens) / 1_000_000 * cacheCreationPerMTok
+        let readCost = Double(usage.cacheReadInputTokens) / 1_000_000 * cacheReadPerMTok
+        return inputCost + outputCost + writeCost + readCost
+    }
 }
