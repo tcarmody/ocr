@@ -157,6 +157,87 @@ final class RegionAwareReflowFigureTests: XCTestCase {
         XCTAssertTrue(kinds.contains("p"), "Unmatched caption should still flow as paragraph")
     }
 
+    // MARK: - formula (math-as-image)
+
+    /// Phase B: `.formula` regions are treated as `.picture` for
+    /// EPUB output. Without a caption, alt text falls back to the
+    /// generic "formula" word so screen readers announce something
+    /// rather than reading nothing.
+    func test_formula_region_without_caption_emits_figure_with_formula_alt() {
+        let formulaBox = CGRect(x: 0.20, y: 0.40, width: 0.60, height: 0.10)
+        let regions = [region(.formula, formulaBox, 0)]
+        let page = PageObservations(
+            pageIndex: 0,
+            pageBounds: CGSize(width: 800, height: 1000),
+            observations: [],
+            layoutRegions: regions
+        )
+        let figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [
+            0: [makeFigureExtraction(
+                pageIndex: 0, regionIndex: 0, regionBox: formulaBox, kind: .formula
+            )],
+        ]
+        let result = RegionAwareReflow.reflow(
+            pageResults: [page],
+            figureExtractions: figureExtractions
+        )
+        let figureBlock = result.blocks.first { if case .figure = $0 { return true } else { return false } }
+        guard case let .figure(_, alt, captionRuns) = figureBlock! else {
+            XCTFail("Expected .figure block for formula region"); return
+        }
+        XCTAssertEqual(alt, "formula",
+                       "Uncaptioned formula should announce as \"formula\"")
+        XCTAssertTrue(captionRuns.isEmpty)
+    }
+
+    /// Captioned formula ("Eq. 3.7. The Pythagorean identity.") gets
+    /// the caption text in both the figcaption and the alt — same
+    /// pairing pipeline as a `.picture` region.
+    func test_formula_with_caption_carries_caption_in_figure_block() {
+        let formulaBox = CGRect(x: 0.20, y: 0.40, width: 0.60, height: 0.10)
+        let captionBox = CGRect(x: 0.20, y: 0.32, width: 0.60, height: 0.05)
+        let regions = [
+            region(.formula, formulaBox, 0),
+            region(.caption, captionBox, 1),
+        ]
+        let observations = [
+            obs("Eq. 3.7. The Pythagorean identity.",
+                CGRect(x: 0.20, y: 0.33, width: 0.60, height: 0.03)),
+        ]
+        let page = PageObservations(
+            pageIndex: 0,
+            pageBounds: CGSize(width: 800, height: 1000),
+            observations: observations,
+            layoutRegions: regions
+        )
+        let figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [
+            0: [makeFigureExtraction(
+                pageIndex: 0, regionIndex: 0, regionBox: formulaBox, kind: .formula
+            )],
+        ]
+        let associations = CaptionAssociator.associate(regionsByPage: [0: regions])
+        XCTAssertEqual(associations.captionByFigure.count, 1,
+                       "Sanity: formula should pair with the caption below it")
+
+        let result = RegionAwareReflow.reflow(
+            pageResults: [page],
+            figureExtractions: figureExtractions,
+            captionAssociations: associations
+        )
+        let nonAnchorBlocks = result.blocks.filter {
+            if case .anchor = $0 { return false } else { return true }
+        }
+        XCTAssertEqual(nonAnchorBlocks.count, 1,
+                       "Caption should be absorbed into the figure block, not double-emitted")
+        guard case let .figure(_, alt, captionRuns) = nonAnchorBlocks[0] else {
+            XCTFail("Expected .figure block"); return
+        }
+        XCTAssertEqual(captionRuns.map(\.text).joined(),
+                       "Eq. 3.7. The Pythagorean identity.")
+        XCTAssertEqual(alt, "Eq. 3.7. The Pythagorean identity.",
+                       "Captioned formula's alt should mirror the caption text")
+    }
+
     // MARK: - cover detection
 
     func test_dominant_page_zero_picture_is_marked_cover() {
