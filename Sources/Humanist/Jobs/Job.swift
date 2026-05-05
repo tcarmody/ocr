@@ -47,6 +47,11 @@ struct Job: Identifiable, Codable, Equatable {
     /// persisted before this field existed and for jobs currently
     /// in `.profiling` state.
     var profile: DocumentProfile?
+    /// Pre-flight Cloud-mode cost estimate. Populated alongside
+    /// `profile` when the user has Cloud mode enabled. `.empty` when
+    /// Cloud mode is off or no Cloud features are toggled. Nil for
+    /// jobs persisted before this field existed.
+    var costEstimate: CostEstimator.Estimate?
 
     init(
         id: UUID = UUID(),
@@ -60,7 +65,8 @@ struct Job: Identifiable, Codable, Equatable {
         startedAt: Date? = nil,
         finishedAt: Date? = nil,
         stats: ConversionStats? = nil,
-        profile: DocumentProfile? = nil
+        profile: DocumentProfile? = nil,
+        costEstimate: CostEstimator.Estimate? = nil
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -74,14 +80,15 @@ struct Job: Identifiable, Codable, Equatable {
         self.finishedAt = finishedAt
         self.stats = stats
         self.profile = profile
+        self.costEstimate = costEstimate
     }
 
-    /// Custom decoder so the optional `profile` and (already-optional)
-    /// `stats` survive a queue store JSON written before either field
-    /// existed.
+    /// Custom decoder so the optional `profile`, `costEstimate`, and
+    /// (already-optional) `stats` survive a queue store JSON written
+    /// before any of those fields existed.
     enum CodingKeys: String, CodingKey {
         case id, sourceURL, outputURL, options, status, progress, error
-        case addedAt, startedAt, finishedAt, stats, profile
+        case addedAt, startedAt, finishedAt, stats, profile, costEstimate
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -97,6 +104,9 @@ struct Job: Identifiable, Codable, Equatable {
         self.finishedAt = try c.decodeIfPresent(Date.self, forKey: .finishedAt)
         self.stats = try c.decodeIfPresent(ConversionStats.self, forKey: .stats)
         self.profile = try c.decodeIfPresent(DocumentProfile.self, forKey: .profile)
+        self.costEstimate = try c.decodeIfPresent(
+            CostEstimator.Estimate.self, forKey: .costEstimate
+        )
     }
 }
 

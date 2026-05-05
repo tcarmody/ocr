@@ -217,6 +217,47 @@ private struct JobRow: View {
     @EnvironmentObject private var runner: JobRunner
     @Environment(\.openWindow) private var openWindow
 
+    /// One-line cost estimate for the queue row, shown only when
+    /// Cloud mode is on and at least one feature is enabled (i.e.
+    /// the estimate is non-zero). Tooltip carries the per-feature
+    /// breakdown.
+    private func costEstimateSummary(_ job: Job) -> String? {
+        guard let est = job.costEstimate, est.estimatedCalls > 0 else {
+            return nil
+        }
+        let prefix = est.clampedByCap ? "Cloud (capped): " : "Cloud: "
+        return "\(prefix)~\(est.estimatedCalls) calls (~\(formatCost(est.estimatedCostUSD)))"
+    }
+
+    /// Multi-line tooltip for the cost-estimate row — per-feature
+    /// breakdown, plus a note about the estimate's coarseness.
+    private func costEstimateTooltip(_ job: Job) -> String? {
+        guard let est = job.costEstimate, !est.perFeature.isEmpty else {
+            return nil
+        }
+        var lines: [String] = []
+        for line in est.perFeature {
+            lines.append(
+                "\(line.label): ~\(line.calls) calls × \(line.model) ≈ \(formatCost(line.costUSD))"
+            )
+        }
+        if est.clampedByCap {
+            lines.append("Capped by per-book limit; unclamped estimate above.")
+        }
+        lines.append(
+            "Estimate is approximate — actual cost depends on which regions trip the cascade's quality floor."
+        )
+        return lines.joined(separator: "\n")
+    }
+
+    /// Format a USD amount for display. Uses the same precision
+    /// rules `ConversionStats.formattedCost` does so the queue row
+    /// reads consistently before vs after conversion.
+    private func formatCost(_ usd: Double) -> String {
+        if usd < 0.01 { return "<$0.01" }
+        return String(format: "$%.2f", usd)
+    }
+
     /// Compact summary of the document profile for the queue row —
     /// "Latin auto-detected", "Likely scan; using picker default",
     /// etc. Only shows when there's something interesting to say,
@@ -305,6 +346,12 @@ private struct JobRow: View {
                 Text("Queued").font(.caption).foregroundStyle(.secondary)
                 if let detected = profileSummary(job) {
                     Text(detected).font(.caption2).foregroundStyle(.secondary)
+                }
+                if let costLine = costEstimateSummary(job) {
+                    Text(costLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help(costEstimateTooltip(job) ?? "")
                 }
             }
         case .running:

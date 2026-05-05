@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import AI
 import Document
 import OCR
 import PDFIngest
@@ -121,9 +122,21 @@ final class QueueViewModel: ObservableObject {
         store.add(job)
         Task.detached(priority: .userInitiated) { [store, weak runner] in
             let profile = DocumentProfiler.profile(pdfURL: url)
+            // Compute the Cloud-mode cost estimate from the profile +
+            // the user's current AI settings. Cheap (no I/O) — runs
+            // in the same detached Task as the profiler.
+            let aiSettings = AISettingsStore().load()
+            let estimate: CostEstimator.Estimate = aiSettings.processingMode == .cloud
+                ? CostEstimator.estimate(
+                    profile: profile,
+                    cloudFeatures: aiSettings.cloudFeatures,
+                    perBookCallCap: aiSettings.perBookCallCap
+                )
+                : .empty
             await MainActor.run {
                 store.update(job.id) { mutable in
                     mutable.profile = profile
+                    mutable.costEstimate = estimate
                     // Apply detected language when:
                     //   * detection is confident (≥0.7 weighted)
                     //   * the detected language is one we support
