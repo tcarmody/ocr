@@ -49,13 +49,18 @@ struct EditorView: View {
                     .navigationSubtitle(saveStatusSubtitle)
                     .toolbar { toolbarContent }
                     .background(WindowDirtyBridge(isDirty: vm.isDirty))
-                    // Publish the viewmodel as a focused scene object
-                    // so menu bar commands (File > Save, View > Show…)
-                    // act on this window when it's focused. Use
-                    // `focusedSceneObject` rather than the value-based
-                    // variant so the menu re-renders on @Published
-                    // changes (isDirty, saveState, sourcePDFURL).
-                    .focusedSceneObject(vm)
+                    // Publish the viewmodel via `focusedObject` (paired
+                    // with `@FocusedObject` in EditorCommands.swift) so
+                    // menu-bar commands (File > Save, Document > …) act
+                    // on this window when it's focused. We previously
+                    // used `focusedSceneObject` here, but that's read
+                    // by `@FocusedSceneObject` — a different property
+                    // wrapper. The mismatch made `vm` always nil in
+                    // the command bodies, which left File > Save and
+                    // ⌘S disabled (and on some SwiftUI versions hidden
+                    // entirely). `focusedObject` re-renders on
+                    // @Published changes the same way.
+                    .focusedObject(vm)
                     .sheet(item: Binding(
                         get: { vm.reOCRResult },
                         set: { vm.reOCRResult = $0 }
