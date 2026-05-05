@@ -40,9 +40,13 @@ deferred for now but fully designed.
 - Phase 9 — Language extensibility (RTL: Hebrew / Syriac / Coptic)
 - Phase 10 — Polish + distribution (Sparkle, DMG, bundled Python)
 
-**Deferred (designed, not built)**:
-- Structured-doc Phase 2 — semantic chapter classification
-- Structured-doc Phase 3 — PDF TOC parsing
+**Designed, not built** (slotted into Tier 2 below — picked up
+together once we're ready to take a Claude dependency):
+- Post-OCR LLM accuracy pass (corrects character-level OCR errors)
+- Semantic chapter classification (`epub:type` per chapter +
+  EPUB landmarks)
+- PDF TOC parsing (extract printed TOC, use as authoritative
+  chapter / hierarchy source)
 
 ---
 
@@ -232,7 +236,29 @@ Phase 6 (figures) — same plumbing.
 
 ---
 
-# Tier 2: Post-OCR LLM accuracy pass
+# Tier 2: AI-assisted enhancements (Claude)
+
+This tier collects every feature that depends on calling out to an
+LLM (Claude via the Anthropic API). Bundled together so the
+shared infrastructure — `URLSession` API client, Keychain key
+storage, Settings pane, editor "AI trail" inspector — gets built
+once and reused by all three.
+
+Recommended ship order *within* the tier:
+
+1. **P-LLM-Pass** first. It builds the foundational plumbing
+   every later AI feature reuses. Smallest, most testable.
+2. **P-Semantic-Classification** second. Tiny incremental code
+   on top of P-LLM-Pass plumbing.
+3. **P-TOC-Parsing** third. Largest of the three; reuses
+   everything from the first two.
+
+The full design docs for items 2 and 3 already exist as
+[Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md)
+and [Plans/Phase3-TOC-Parsing.md](Plans/Phase3-TOC-Parsing.md);
+the entries below summarize them and call out shared dependencies.
+
+---
 
 ## P-LLM-Pass — LLM-corrected OCR output
 
@@ -519,6 +545,137 @@ Total: ~5 days for a polished implementation.
   a new disclosure section.
 - **Quality scorer** is already in place — this consumes its
   output, no changes needed there.
+
+---
+
+## P-Semantic-Classification — per-chapter `epub:type` tagging
+
+**Status**: not started. Full design at
+[Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md)
+— read that first before implementing.
+
+### Goal
+
+Tag each chapter produced by `ChapterSplitter` with an EPUB 3
+Structural Semantics Vocabulary role (`preface`, `introduction`,
+`chapter`, `bibliography`, `index`, `appendix`, etc.). Surface
+those roles to readers via per-chapter `<section epub:type="…">`
+wrappers and an EPUB 3 `<nav epub:type="landmarks">` so navigation
+panels show "Bibliography" / "Index" as direct jump targets the
+way commercially-published EPUBs do.
+
+### Backend choice
+
+Two implementations behind a `SemanticClassifier` protocol:
+- **`EnglishRegexClassifier`** — always available. Pattern table
+  for common English roles. Fallback when no API key.
+- **`ClaudeHaikuClassifier`** — handles multilingual headings
+  (French "Préface", German "Vorwort", Latin "Praefatio", Greek
+  "ΠΡΟΛΟΓΟΣ"). Uses the API client + Keychain plumbing P-LLM-Pass
+  ships first.
+
+The Phase 2 design doc also covers an Apple Foundation Models
+backend variant (macOS 26+, no key, no network, no cost) as a
+mutually-exclusive alternative to Claude Haiku. Pick one based on
+the macOS-version target.
+
+### Key reuse from P-LLM-Pass
+
+- Anthropic `URLSession` wrapper
+- Keychain-backed `AnthropicAPIKeyStore`
+- Settings pane (extends with one toggle: "Use Claude for chapter
+  classification")
+- Failure / fallback pattern (silently fall back to regex on
+  network or key absence)
+
+### Effort estimate
+
+~2.5 days when P-LLM-Pass has shipped first (~3.5 days standalone,
+per the existing design doc — most of the savings is the shared
+API plumbing).
+
+### Risks
+
+Same as P-LLM-Pass: hallucinated labels, key leakage, rate
+limits. Validation against a closed role set catches the first;
+Keychain handles the second; the per-book cost cap (also shared)
+handles the third.
+
+---
+
+## P-TOC-Parsing — Parse the printed TOC into an authoritative tree
+
+**Status**: not started. Full design at
+[Plans/Phase3-TOC-Parsing.md](Plans/Phase3-TOC-Parsing.md) — read
+that first before implementing.
+
+### Goal
+
+When a book has a printed table of contents (most academic and
+commercial books do), extract it, parse it into a structured
+tree of entries with their printed page numbers, then use it as
+the authoritative source for chapter / section / subsection
+structure. Beats heading-detection alone because:
+- TOCs encode hierarchy (Part → Chapter → Section)
+- TOCs have authoritative titles even when Surya OCR'd the
+  page-1 heading wrong
+- TOCs map sections to printed page numbers, which combined with
+  our per-page anchors give us reliable "Chapter 3 starts on PDF
+  page N" links
+
+### Pipeline
+
+1. **`TOCDetector`** — find TOC pages via PDF outline (free if
+   present), text scan ("Contents" / "Sommaire" / "Inhalt"), or
+   layout-shape heuristic.
+2. **`TOCExtractor`** — render + Surya OCR the detected TOC pages.
+3. **`ClaudeTOCParser`** — send TOC text to Claude with a
+   structured prompt, get back a JSON tree of `{title, page,
+   level, type}` entries. Falls back to a regex parser when no
+   API key.
+4. **`PrintedPageMap`** — map printed page numbers (TOC's
+   reference) to PDF page indices (our internal coordinate)
+   using the page-number observations we already detect.
+5. **`TOCAlignedChapterSplitter`** — replaces the heading-based
+   `ChapterSplitter` from Phase 1 when a parsed TOC is available.
+   Uses TOC-derived chapter boundaries + authoritative titles.
+
+### Key reuse from P-LLM-Pass + P-Semantic-Classification
+
+- Same `URLSession` / Keychain plumbing.
+- Same Settings pane (extends with another toggle: "Use Claude
+  for TOC parsing").
+- Same fallback pattern.
+- The parsed TOC's `type` field can supersede
+  P-Semantic-Classification's per-chapter classification when
+  both run (TOC wins; classifier picks up unmapped chapters).
+
+### Failure-mode hierarchy
+
+The system degrades gracefully (per the existing design doc):
+1. **Best**: PDF outline + Claude parse + complete page map →
+   fully aligned chapters with hierarchy.
+2. **Good**: text-scan TOC + Claude parse + partial page map →
+   chapters aligned to TOC but some titles missing.
+3. **Acceptable**: TOC found, parse fails / no API key →
+   heading-based splitting (Phase 1 default).
+4. **Fallback**: no TOC → single chapter or heading-based
+   splitting.
+
+The user always gets a valid EPUB.
+
+### Effort estimate
+
+~7-8 days standalone (per the existing design doc), ~6 days when
+the API client / Keychain / Settings pane are already in place.
+
+### Risks
+
+Per the existing design doc:
+- Hallucinated TOC entries (validation step + monotonic-page check)
+- OCR'd TOC pages garbled (gate on Surya, fall back gracefully)
+- Printed-page resolution failure (interpolation + fall back)
+- Cost runaway (one call per book, ~$0.001 — trivial)
 
 ---
 
@@ -1056,11 +1213,18 @@ use; distribution is lower priority than correctness.
 
 1. **Phase 6 (figures + tables + math-as-image)** — biggest visible
    gap. ~5-6 days for figures + tables. Math-as-image included.
-2. **P-LLM-Pass (post-OCR Claude correction)** — biggest invisible
-   gap. The OCR cascade does what it can; the final ~5-15% of
-   character-level errors need an LLM to clean up. Ships the
-   Anthropic API client, Keychain key storage, and editor
-   correction-trail UI that Phase 2/3 will reuse. ~5 days.
+2. **Tier 2 AI work** — taken as a single arc, in this order so
+   the shared infrastructure (Anthropic API client, Keychain key
+   storage, Settings pane, editor "AI trail" inspector) gets
+   built once and amortizes:
+   - **P-LLM-Pass** — post-OCR Claude correction. Ships the
+     plumbing. ~5 days.
+   - **P-Semantic-Classification** — `epub:type` per chapter +
+     landmarks. ~2.5 days incremental.
+   - **P-TOC-Parsing** — parse printed TOC, supersede
+     heading-based splitter when present. ~6 days incremental.
+
+   Total Tier 2: ~13.5 days for the full AI arc.
 3. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
    corpus. ~4 days.
 4. **R-Hierarchy** (multi-level chapters) — natural follow-on to
@@ -1070,11 +1234,8 @@ use; distribution is lower priority than correctness.
 6. **Defer Phase 10 (distribution)** until the user actually wants
    to share or onboard another machine. The app is signed and runs
    locally; that's enough for personal use.
-7. **AI-assisted Phase 2/3** — pick up when the user wants
-   structured TOCs or semantic landmarks. Existing plans in
-   `/Plans/`. Builds on the API key + Keychain plumbing P-LLM-Pass
-   ships first.
 
-Total Tiers 1-3: ~15-17 days for substantial quality + corpus
-expansion. After that the app handles essentially any book a
+Total Tiers 1-3: ~22-24 days. After Phase 6 + Tier 2, output
+quality is substantially production-grade for the user's working
+corpus. After Phase 9, the app handles essentially any book a
 working researcher would feed it.
