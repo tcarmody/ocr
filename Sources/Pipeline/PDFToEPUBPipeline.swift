@@ -172,6 +172,89 @@ public actor PDFToEPUBPipeline {
         return ClaudeOCREngine(client: client, budget: budget)
     }
 
+    /// Build the Cloud-mode post-OCR cleanup processor for one
+    /// conversion. Same gating shape as `makeClaudeOCREngine` —
+    /// `.cloud` mode + `postOCRCleanup` feature toggle + an API key
+    /// must all be present, otherwise `nil` and the pipeline skips
+    /// the cleanup pass entirely.
+    static func makeClaudePostProcessor(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudePostProcessor? {
+        guard options.processingMode == .cloud else { return nil }
+        guard options.cloudFeatures.postOCRCleanup else { return nil }
+        guard let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        let client = AnthropicAPIClient(apiKeyProvider: { key })
+        return ClaudePostProcessor(client: client, budget: budget)
+    }
+
+    /// Walk text-bearing layout regions, score the joined OCR text in
+    /// each, and ask the post-processor to fix character-level errors
+    /// where the score is low. Accepted corrections replace the
+    /// region's observations with a single `.claude`-source
+    /// observation spanning the region — same shape `ClaudeOCREngine`
+    /// produces for the cascade. Rejected corrections (guardrail trip,
+    /// budget exhausted, processor declined) leave the region intact.
+    static func applyPostOCRCleanup(
+        observations: [TextObservation],
+        regions: [LayoutRegion],
+        hints: OCRHints,
+        postProcessor: ClaudePostProcessor
+    ) async -> [TextObservation] {
+        var working = observations
+        for region in regions {
+            // Only text-bearing regions. Captions, page numbers,
+            // headers / footers fall under the post-processor's own
+            // length floor, but skipping them up here is cheaper than
+            // joining their text just to throw it out.
+            guard Self.isCleanupCandidate(region: region) else { continue }
+            let inRegion = RegionCascade.filter(
+                observations: working, inRegion: region
+            )
+            guard !inRegion.isEmpty else { continue }
+            // Join with newlines — same convention OCRResult.text
+            // uses. Keeps multi-line regions human-readable for the
+            // model and matches what the cascade itself produces
+            // when Claude re-OCRs a region.
+            let joined = inRegion.map(\.text)
+                .joined(separator: "\n")
+            guard let result = await postProcessor.correct(
+                text: joined, languages: hints.languages
+            ), result.accepted else {
+                continue
+            }
+            // Replace the region's observations with a single Claude-
+            // sourced observation that covers the full region bbox.
+            // Mirrors how `ClaudeOCREngine` packages its output.
+            let replacement = TextObservation(
+                text: result.corrected,
+                confidence: 0.95,
+                box: region.box,
+                source: .claude
+            )
+            working = RegionCascade.replace(
+                observations: working,
+                inRegion: region,
+                with: [replacement]
+            )
+        }
+        return working
+    }
+
+    /// Region kinds eligible for post-OCR cleanup. Body text is the
+    /// primary case; `.footnote` is also worth correcting (footnotes
+    /// often have the worst OCR because the type is small). Other
+    /// kinds either don't carry prose worth correcting (`.picture`,
+    /// `.table`, `.formula`) or are short enough that the processor's
+    /// own length floor would skip them anyway (`.caption`,
+    /// `.header`, `.footer`, `.pageNumber`, `.title`).
+    static func isCleanupCandidate(region: LayoutRegion) -> Bool {
+        switch region.kind {
+        case .text, .footnote: return true
+        default:               return false
+        }
+    }
+
     /// Route an OCR call to the right engine.
     ///
     ///   * `preferSurya` (high-accuracy mode): Surya wins if available.
@@ -574,6 +657,9 @@ public actor PDFToEPUBPipeline {
         let claudeOCREngine: ClaudeOCREngine? = Self.makeClaudeOCREngine(
             options: options, budget: claudeBudget
         )
+        let claudePostProcessor: ClaudePostProcessor? = Self.makeClaudePostProcessor(
+            options: options, budget: claudeBudget
+        )
 
         // Per-page record of which branch fired (trust vs reocr,
         // post-`forceOCR` override). Surfaced in the conversion
@@ -759,6 +845,25 @@ public actor PDFToEPUBPipeline {
                             forceClaudeOnAllRegions: options.disableLocalCascadeEscalation
                         )
                     }
+                }
+
+                // Cloud Phase 6: post-OCR Haiku cleanup. After the
+                // cascade has settled the per-region OCR text, walk
+                // the text-bearing regions and ask Haiku to fix
+                // character-level errors on the ones whose
+                // `OCRTextQualityScorer` score falls below the
+                // post-processor's trigger threshold. The processor
+                // gates internally on quality + length + budget;
+                // accepted corrections replace the region's
+                // observations, rejected ones are no-ops.
+                if let postProcessor = claudePostProcessor,
+                   let regions = layoutForPage, !regions.isEmpty {
+                    observations = await Self.applyPostOCRCleanup(
+                        observations: observations,
+                        regions: regions,
+                        hints: hints,
+                        postProcessor: postProcessor
+                    )
                 }
 
                 // Phase 6: extract figures (.picture, .formula) from
