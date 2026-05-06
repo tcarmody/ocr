@@ -893,6 +893,132 @@ final class EditorViewModel: ObservableObject {
     /// `showSpecialCharacterPicker`.
     @Published var showGotoLineSheet: Bool = false
 
+    // MARK: - Find in Files (Phase 5b)
+
+    /// Drives the Search > Find in Files sheet.
+    @Published var showFindInFilesSheet: Bool = false
+
+    @Published var findInFilesQuery: String = ""
+    @Published var findInFilesReplaceText: String = ""
+    @Published var findInFilesCaseSensitive: Bool = false
+    @Published var findInFilesRegex: Bool = false
+    @Published var findInFilesResults: [PackageSearch.Hit] = []
+    /// Last error from the find/replace engine (typically a regex
+    /// parse failure). Surfaced inline in the sheet, not as an
+    /// alert.
+    @Published var findInFilesError: String?
+    /// "Replaced N matches in M files" status, set after a successful
+    /// Replace All. The sheet shows it briefly; nil otherwise.
+    @Published var findInFilesReplaceStatus: String?
+
+    /// Run the current find query across every text-bearing file in
+    /// the working directory. Reads dirty buffers when present so
+    /// in-flight edits are part of the search.
+    func runFindInFiles() {
+        guard let pkg = package else {
+            findInFilesResults = []
+            return
+        }
+        flushSourceTextToBuffer()
+        let urls = PackageSearch.textFileURLs(in: pkg.workingDirectory)
+        let buffersCopy = buffers
+        let provider: (URL) -> String? = { url in
+            if let buf = buffersCopy[url] { return buf }
+            return try? String(contentsOf: url, encoding: .utf8)
+        }
+        do {
+            findInFilesError = nil
+            findInFilesReplaceStatus = nil
+            findInFilesResults = try PackageSearch().search(
+                in: urls,
+                query: findInFilesQuery,
+                caseSensitive: findInFilesCaseSensitive,
+                regex: findInFilesRegex,
+                contentProvider: provider
+            )
+        } catch {
+            findInFilesError = error.localizedDescription
+            findInFilesResults = []
+        }
+    }
+
+    /// Replace every match across every text-bearing file. Updated
+    /// content lands in the in-memory buffer + dirty set so the
+    /// user's next Save flushes it. Re-runs the search after so the
+    /// results list reflects the new state (typically empty when
+    /// query and replacement don't overlap).
+    func replaceAllInFiles() {
+        guard let pkg = package else { return }
+        flushSourceTextToBuffer()
+        let urls = PackageSearch.textFileURLs(in: pkg.workingDirectory)
+        let buffersCopy = buffers
+        let provider: (URL) -> String? = { url in
+            if let buf = buffersCopy[url] { return buf }
+            return try? String(contentsOf: url, encoding: .utf8)
+        }
+        do {
+            let results = try PackageSearch().replaceAll(
+                in: urls,
+                query: findInFilesQuery,
+                replacement: findInFilesReplaceText,
+                caseSensitive: findInFilesCaseSensitive,
+                regex: findInFilesRegex,
+                contentProvider: provider
+            )
+            var totalReplacements = 0
+            for r in results {
+                buffers[r.fileURL] = r.newContent
+                dirtyURLs.insert(r.fileURL)
+                totalReplacements += r.replacementCount
+                // If the user is currently editing this file, push
+                // the new content into the live source-text binding
+                // so the editor reflects the replacement immediately.
+                if r.fileURL == selectedFile?.id {
+                    sourceText = r.newContent
+                }
+            }
+            isDirty = isDirty || !results.isEmpty
+            findInFilesError = nil
+            let fileCount = results.count
+            findInFilesReplaceStatus = totalReplacements == 0
+                ? "No matches found."
+                : "Replaced \(totalReplacements) match\(totalReplacements == 1 ? "" : "es") in \(fileCount) file\(fileCount == 1 ? "" : "s")."
+            // Re-run search so the results list reflects the new
+            // state.
+            runFindInFiles()
+        } catch {
+            findInFilesError = error.localizedDescription
+        }
+    }
+
+    /// Open the file containing `hit` and jump the source pane's
+    /// cursor to the hit's line. Doesn't dismiss the find sheet —
+    /// the user typically clicks several results in a row.
+    func openFindHit(_ hit: PackageSearch.Hit) {
+        // Find the FileNode in the tree matching the hit's URL.
+        guard let pkg = package else { return }
+        if let node = Self.findNode(in: pkg.fileTree, url: hit.fileURL) {
+            select(node)
+        }
+        // Defer the goto-line dispatch by one runloop so the file
+        // switch + content push lands first.
+        let line = hit.line
+        DispatchQueue.main.async { [weak self] in
+            self?.gotoLine(line)
+        }
+    }
+
+    private static func findNode(in node: FileNode, url: URL) -> FileNode? {
+        if node.id.canonicalForFile.path == url.canonicalForFile.path {
+            return node
+        }
+        guard let children = node.children else { return nil }
+        for child in children {
+            if let hit = findNode(in: child, url: url) { return hit }
+        }
+        return nil
+    }
+
     /// Run a fresh `NSSpellChecker` pass over the current source
     /// text and present the document-spelling sheet. Misspellings
     /// inside XHTML tags (attribute values, element names) are

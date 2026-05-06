@@ -148,6 +148,13 @@ struct EditorView: View {
                             onSubmit: { line in vm.gotoLine(line) }
                         )
                     }
+                    // Phase 5b: Search > Find in Files… sheet.
+                    .sheet(isPresented: $vm.showFindInFilesSheet) {
+                        FindInFilesSheet(
+                            vm: vm,
+                            isPresented: $vm.showFindInFilesSheet
+                        )
+                    }
                     // Phase 5b: chapter-operation failures (split,
                     // merge, regen TOC) surface here so the user sees
                     // what went wrong without digging through logs.

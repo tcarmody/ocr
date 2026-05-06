@@ -166,11 +166,21 @@ struct EditorFindCommands: Commands {
             EditorFindNextCommand()
             EditorFindPrevCommand()
             EditorReplaceCommand()
+            EditorFindInFilesCommand()
             Divider()
             EditorGotoLineCommand()
             Divider()
             EditorSpellCheckCommand()
         }
+    }
+}
+
+private struct EditorFindInFilesCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Find in All Files…") { router.showFindInFilesSheet() }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(!router.canFind)
     }
 }
 

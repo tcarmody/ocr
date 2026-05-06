@@ -181,6 +181,14 @@ final class EditorCommandRouter: ObservableObject {
         vm.showGotoLineSheet = true
     }
 
+    /// Toggle the Find in Files sheet. If results from a prior
+    /// invocation are still in the viewmodel, they're left in place
+    /// — reopening the sheet picks up where the user left off.
+    func showFindInFilesSheet() {
+        guard let vm = activeEditor() else { return }
+        vm.showFindInFilesSheet = true
+    }
+
     // MARK: - private
 
     /// Pick the editor whose window is currently key. If none of the
