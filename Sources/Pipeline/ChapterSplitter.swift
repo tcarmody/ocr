@@ -56,9 +56,17 @@ public enum ChapterSplitter {
         figureAssets: [FigureAsset] = [],
         bookFallbackTitle: String
     ) -> [Chapter] {
+        let headingFreq = headingTextFrequency(in: blocks)
         let chapterLevel = detectChapterLevel(in: blocks)
+        // Two-stage filter: only blocks that are (a) headings at the
+        // chapter level *and* (b) "look like" real chapter titles open
+        // a new chapter. Failing the eligibility check leaves the
+        // heading rendered as `<h2>` (or whatever level Surya assigned)
+        // in the chapter's body — we only suppress chapter-boundary
+        // promotion. See `canBreakChapter` for the gates.
         let breakIndices = blocks.indices.filter {
             isHeading(blocks[$0], level: chapterLevel)
+                && canBreakChapter(blocks[$0], headingFrequency: headingFreq)
         }
 
         // Degenerate case: no qualifying heading found. One chapter,
@@ -112,16 +120,24 @@ public enum ChapterSplitter {
 
     /// Pick the heading level to split chapters at. Prefers the
     /// smallest (most prominent) level with at least
-    /// `minHeadingCountForSplit` occurrences. Returns 1 (H1) as the
-    /// fallback when no level qualifies — same as the pre-detection
-    /// behavior, so the degenerate single-chapter case still kicks in
-    /// via the empty-`breakIndices` branch.
+    /// `minHeadingCountForSplit` *eligible* occurrences. Returns 1
+    /// (H1) as the fallback when no level qualifies — same as the
+    /// pre-detection behavior, so the degenerate single-chapter case
+    /// still kicks in via the empty-`breakIndices` branch.
+    ///
+    /// Heading promotions that fail `canBreakChapter` (drop caps,
+    /// body-fragment misclassifications, repeated running heads)
+    /// don't count toward the dominant level — otherwise a book
+    /// flooded with running-head H2s could trick the detector into
+    /// splitting at that level even though every "heading" at that
+    /// level is bogus.
     static func detectChapterLevel(in blocks: [Block]) -> Int {
+        let freq = headingTextFrequency(in: blocks)
         var counts: [Int: Int] = [:]
         for block in blocks {
-            if case .heading(let level, _) = block {
-                counts[level, default: 0] += 1
-            }
+            guard case .heading(let level, _) = block else { continue }
+            guard canBreakChapter(block, headingFrequency: freq) else { continue }
+            counts[level, default: 0] += 1
         }
         for level in 1...6 {
             if (counts[level] ?? 0) >= minHeadingCountForSplit {
@@ -131,11 +147,113 @@ public enum ChapterSplitter {
         return 1
     }
 
-    /// Below this many same-level headings, splitting at that level
-    /// is too aggressive — a single section heading inside a long
-    /// flat document shouldn't carve it up. 2 is the lowest sensible
-    /// floor (a book with 2 chapters has 2 chapter-level headings).
+    /// Below this many same-level *eligible* headings, splitting at
+    /// that level is too aggressive — a single section heading inside
+    /// a long flat document shouldn't carve it up. 2 is the lowest
+    /// sensible floor (a book with 2 chapters has 2 chapter-level
+    /// headings).
     public static let minHeadingCountForSplit = 2
+
+    /// Minimum length (chars, post-trim) for a heading to qualify as
+    /// a chapter boundary. Drop caps come back from layout as
+    /// 1-character `.sectionHeader` regions; a bare "T" should never
+    /// open a new chapter.
+    public static let minChapterHeadingLength = 3
+
+    /// Same heading text repeated this many times (or more) is
+    /// treated as a running head, not a chapter boundary. Real
+    /// chapter titles in a book are unique; running heads echo across
+    /// every page in a section. Threshold of 3 lets a multi-part book
+    /// have two chapters titled "Notes" without false-positiving but
+    /// catches the common "every page of Part I has 'INTRODUCTION'
+    /// at the top" pattern.
+    public static let maxChapterHeadingRepetition = 3
+
+    /// Pre-compiled regex matching mid-text sentence breaks: a
+    /// sentence-terminating mark followed by whitespace and a letter.
+    /// A real chapter title is one statement; multi-sentence prose is
+    /// body content that Surya mis-promoted.
+    private static let midSentenceTerminatorRegex: NSRegularExpression = {
+        try! NSRegularExpression(pattern: #"[.!?]\s+\p{L}"#)
+    }()
+
+    /// Minimum start position (UTF-16 offset) for a mid-sentence
+    /// terminator match to count as a "this is body text" signal.
+    /// Below this offset, the match is almost certainly part of a
+    /// label or abbreviation that's part of the title:
+    ///   * `1. Antitheses` — match at 1
+    ///   * `I. Introduction` — match at 1
+    ///   * `§ 1. Logic` — match at 3
+    ///   * `Mr. Smith` — match at 2
+    ///   * `Dr. Strangelove` — match at 2
+    /// Body content has its first sentence terminator deeper in the
+    /// string after a real word: `He nodded. Then he left.` matches
+    /// at offset 9. 6 is comfortably above the longest common label
+    /// ("Vol. ", "Chap. ", "I.II. ") and below realistic body sentences.
+    public static let midSentenceTerminatorMinOffset = 6
+
+    /// Build a frequency map of every heading's joined text — used
+    /// for the running-head dedup gate. Empty / whitespace-only
+    /// headings are skipped (they wouldn't open a chapter anyway).
+    static func headingTextFrequency(in blocks: [Block]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for block in blocks {
+            guard case .heading(_, let runs) = block else { continue }
+            let text = runs.map(\.text).joined()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                counts[text, default: 0] += 1
+            }
+        }
+        return counts
+    }
+
+    /// Decide whether a heading block looks like a real chapter
+    /// boundary. The four gates target the failure modes we've seen:
+    ///
+    ///   * **Min length** (`minChapterHeadingLength`): kills 1-char
+    ///     drop caps and 2-char fragments.
+    ///   * **First-char polarity**: a heading that starts with a
+    ///     lowercase letter is almost always the tail of a sentence
+    ///     Surya mis-promoted (e.g. "ing, with all the …"). Capitals,
+    ///     digits, §, opening quotes, parentheses all pass.
+    ///   * **No mid-text sentence terminator**: a heading containing
+    ///     `". "` followed by a letter is body text spanning multiple
+    ///     sentences, never a chapter title.
+    ///   * **Running-head dedup**: same text appearing
+    ///     ≥ `maxChapterHeadingRepetition` times across all headings
+    ///     is the per-page running head, not a chapter break.
+    ///
+    /// Headings that fail still render as `<h2>` (or whatever level
+    /// they have) — we don't strip the typography, just suppress the
+    /// chapter-boundary promotion.
+    static func canBreakChapter(
+        _ block: Block,
+        headingFrequency: [String: Int]
+    ) -> Bool {
+        guard case .heading(_, let runs) = block else { return false }
+        let text = runs.map(\.text).joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard text.count >= minChapterHeadingLength else { return false }
+
+        if let first = text.first, first.isLowercase {
+            return false
+        }
+
+        let range = NSRange(text.startIndex..., in: text)
+        let matches = midSentenceTerminatorRegex.matches(in: text, range: range)
+        let hasBodyTerminator = matches.contains { match in
+            match.range.location >= midSentenceTerminatorMinOffset
+        }
+        if hasBodyTerminator { return false }
+
+        if (headingFrequency[text] ?? 0) >= maxChapterHeadingRepetition {
+            return false
+        }
+
+        return true
+    }
 
     // MARK: - block predicates
 
