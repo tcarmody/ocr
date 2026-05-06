@@ -132,7 +132,8 @@ final class JobRunner: ObservableObject {
         let keyStore = AnthropicAPIKeyStore()
         let options = PDFToEPUBPipeline.Options(
             languages: languages,
-            useHighAccuracyOCR: job.options.useHighAccuracyOCR,
+            useHighAccuracyOCR: job.options.useSuryaOCR,
+            useCloudEnhancedOCR: job.options.useCloudEnhancedOCR,
             forceOCR: job.options.forceOCR,
             processingMode: aiSettings.processingMode,
             cloudFeatures: aiSettings.cloudFeatures,

@@ -20,12 +20,17 @@ import Layout
 /// fast and crops are easy.
 enum RegionCascade {
 
-    /// Mean region confidence below this triggers re-OCR.
-    static let meanConfidenceFloor: Double = 0.85
+    /// Mean region confidence below this triggers re-OCR. Raised
+    /// from 0.85 → 0.88 to catch more "looks fine but isn't"
+    /// regions on scanned books — Vision tends to score in the
+    /// high 0.8s on degraded scans where it's missing diacritics
+    /// or running words together.
+    static let meanConfidenceFloor: Double = 0.88
     /// Any single observation in a region with confidence below this
     /// triggers re-OCR. Catches the "Vision is confidently mostly-OK
     /// but one line is garbage" case the mean smooths over.
-    static let minObservationConfidenceFloor: Double = 0.70
+    /// Raised from 0.70 → 0.78 alongside the mean floor.
+    static let minObservationConfidenceFloor: Double = 0.78
     /// Vertical gap between consecutive observations in a region, in
     /// units of median observation height, that triggers re-OCR. A
     /// well-set paragraph has ~zero within-region gap; gap > 1× line
@@ -35,9 +40,15 @@ enum RegionCascade {
     /// · language confidence) below this triggers re-OCR. Catches
     /// over-confident garbage that the confidence/gap floors miss —
     /// Vision sometimes returns 0.9+ on text that's run together or
-    /// split apart. 0.5 is conservative; tighten if false positives
-    /// show up on clean PDFs.
-    static let textQualityFloor: Double = 0.5
+    /// split apart.
+    ///
+    /// Raised from 0.5 → 0.65 system-wide. The previous value let
+    /// regions through with sloppy single-char tokenization or
+    /// missing diacritics as long as `NLLanguageRecognizer`
+    /// confidence stayed high; 0.65 catches the bulk of the
+    /// scanner-noise cases the user kept seeing pass through. Cost
+    /// floor: more Surya / Tesseract / Sonnet calls per book.
+    static let textQualityFloor: Double = 0.65
     /// How much to inflate region bboxes when matching observations
     /// (matches the value RegionAwareReflow uses).
     static let regionInflation: CGFloat = 0.005

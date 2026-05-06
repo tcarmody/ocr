@@ -148,9 +148,24 @@ struct ContentView: View {
             HStack(spacing: 14) {
                 languageMenu
                 Divider().frame(height: 18)
-                Toggle("High-accuracy", isOn: $queue.useHighAccuracyOCR)
+                Toggle("Cloud-enhanced OCR", isOn: $queue.useCloudEnhancedOCR)
                     .toggleStyle(.checkbox)
-                    .help("Force Surya layout + OCR on every page. Slower but better on dense / scanned books.")
+                    .help("""
+                        Vision → Sonnet shortcut. Vision tries first; \
+                        regions whose quality is poor go straight to \
+                        Sonnet, skipping Surya OCR and Tesseract. \
+                        Requires Cloud mode + API key (configure in \
+                        Settings); inert otherwise. Surya layout still \
+                        runs for figures, tables, and footnotes.
+                        """)
+                Toggle("Use Surya OCR", isOn: $queue.useSuryaOCR)
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Force Surya OCR on every region of every page. \
+                        Local-only; works without an API key. Slower \
+                        than the standard cascade — use it when you're \
+                        offline and getting poor Vision results.
+                        """)
                 Toggle("Force OCR", isOn: $queue.forceOCR)
                     .toggleStyle(.checkbox)
                     .help("Skip the PDF's embedded text layer and run OCR on every page. Use when the embedded text is the output of a previous bad OCR pass.")

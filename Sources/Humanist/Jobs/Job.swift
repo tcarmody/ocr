@@ -126,7 +126,24 @@ struct Job: Identifiable, Codable, Equatable {
 /// JSON encoding.
 struct ConversionOptions: Codable, Equatable {
     var languages: [String]
-    var useHighAccuracyOCR: Bool
+    /// Force Surya OCR on every region of every page (bypassing
+    /// the per-region cascade). Slow but a useful local-only
+    /// quality lever for books whose Vision output is poor and
+    /// for which the user has no API key. Previously named
+    /// `useHighAccuracyOCR`; renamed to make the engine explicit.
+    var useSuryaOCR: Bool
+    /// Cloud-enhanced cascade: Vision tries first, regions whose
+    /// quality score falls below the threshold escalate **straight
+    /// to Sonnet** — Surya OCR and Tesseract are skipped from the
+    /// OCR role. Surya **layout** still runs (cheap, fast, and
+    /// load-bearing for the structural extractors — figures,
+    /// tables, footnotes). Only meaningful when the conversion
+    /// is in Cloud mode and an API key is configured.
+    ///
+    /// On the Phase 4 spike (polytonic Greek), Sonnet hit 11.3%
+    /// CER vs the local cascade's 15.1% — this toggle exposes
+    /// that quality on demand.
+    var useCloudEnhancedOCR: Bool
     /// Skip the embedded-text trust path and re-OCR every page.
     /// Per-job because some PDFs ship with bad embedded text
     /// layers (broken `ToUnicode`, mojibake) that the trust scorer
@@ -137,24 +154,51 @@ struct ConversionOptions: Codable, Equatable {
 
     init(
         languages: [String] = ["en"],
-        useHighAccuracyOCR: Bool = false,
+        useSuryaOCR: Bool = false,
+        useCloudEnhancedOCR: Bool = false,
         forceOCR: Bool = false
     ) {
         self.languages = languages
-        self.useHighAccuracyOCR = useHighAccuracyOCR
+        self.useSuryaOCR = useSuryaOCR
+        self.useCloudEnhancedOCR = useCloudEnhancedOCR
         self.forceOCR = forceOCR
     }
 
-    /// Optional decode for `forceOCR` — old persisted jobs predate
-    /// the field; default to false rather than fail to load.
+    /// Codable: decodes both the new `useSuryaOCR` key and the
+    /// legacy `useHighAccuracyOCR` key so persisted jobs from the
+    /// pre-rename versions still load. `useCloudEnhancedOCR` is
+    /// new — defaults to false on legacy decode.
     private enum CodingKeys: String, CodingKey {
-        case languages, useHighAccuracyOCR, forceOCR
+        case languages
+        case useSuryaOCR
+        case useHighAccuracyOCR  // legacy alias
+        case useCloudEnhancedOCR
+        case forceOCR
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.languages = try c.decode([String].self, forKey: .languages)
-        self.useHighAccuracyOCR = try c.decode(Bool.self, forKey: .useHighAccuracyOCR)
+        if let surya = try c.decodeIfPresent(Bool.self, forKey: .useSuryaOCR) {
+            self.useSuryaOCR = surya
+        } else {
+            self.useSuryaOCR = try c.decodeIfPresent(
+                Bool.self, forKey: .useHighAccuracyOCR
+            ) ?? false
+        }
+        self.useCloudEnhancedOCR = try c.decodeIfPresent(
+            Bool.self, forKey: .useCloudEnhancedOCR
+        ) ?? false
         self.forceOCR = try c.decodeIfPresent(Bool.self, forKey: .forceOCR) ?? false
+    }
+
+    /// Encode under the new keys only — the legacy alias is for
+    /// reads, not writes.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(languages, forKey: .languages)
+        try c.encode(useSuryaOCR, forKey: .useSuryaOCR)
+        try c.encode(useCloudEnhancedOCR, forKey: .useCloudEnhancedOCR)
+        try c.encode(forceOCR, forKey: .forceOCR)
     }
 }
 

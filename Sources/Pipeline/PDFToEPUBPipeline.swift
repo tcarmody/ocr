@@ -42,6 +42,17 @@ public actor PDFToEPUBPipeline {
         /// Silicon vs Vision's ~1 s) but recovers lines that Vision
         /// silently drops on certain page typography.
         public var useHighAccuracyOCR: Bool
+        /// Cloud-enhanced OCR mode: Vision is the primary engine,
+        /// regions whose quality score falls below the cascade
+        /// threshold escalate **straight to Sonnet** — Surya OCR
+        /// and Tesseract are pulled out of the OCR role. Surya
+        /// **layout** still runs (cheap pre-pass; load-bearing for
+        /// the structural extractors — figures, tables, footnotes).
+        /// Only fires when `processingMode == .cloud` and an API
+        /// key is configured; in any other configuration the flag
+        /// is inert and the cascade falls back to the standard
+        /// shape.
+        public var useCloudEnhancedOCR: Bool
         /// When true, bypass `EmbeddedTextQualityScorer` entirely and
         /// route every page through render + OCR + cascade. Use when
         /// a PDF carries a low-quality embedded text layer (typically
@@ -87,6 +98,7 @@ public actor PDFToEPUBPipeline {
             ocrQuality: OCRHints.Quality = .accurate,
             emitDebugLog: Bool = false,
             useHighAccuracyOCR: Bool = false,
+            useCloudEnhancedOCR: Bool = false,
             forceOCR: Bool = false,
             processingMode: ProcessingMode = .privateLocal,
             cloudFeatures: AISettings.CloudFeatures = AISettings.CloudFeatures(),
@@ -99,6 +111,7 @@ public actor PDFToEPUBPipeline {
             self.ocrQuality = ocrQuality
             self.emitDebugLog = emitDebugLog
             self.useHighAccuracyOCR = useHighAccuracyOCR
+            self.useCloudEnhancedOCR = useCloudEnhancedOCR
             self.forceOCR = forceOCR
             self.processingMode = processingMode
             self.cloudFeatures = cloudFeatures
@@ -977,16 +990,33 @@ public actor PDFToEPUBPipeline {
                         // otherwise the cascade behaves identically
                         // to `.privateLocal`.
                         //
-                        // Spike-only: `disableLocalCascadeEscalation`
-                        // pulls Surya + Tesseract out of the cascade
-                        // AND tells the cascade to feed every region
-                        // to Claude unconditionally (`forceClaudeOnAllRegions`).
-                        // Layout still runs — we still need regions
-                        // to crop for Claude. Production never sets
-                        // this combination.
-                        let cascadeSurya = options.disableLocalCascadeEscalation
+                        // Two ways to alter the cascade shape from
+                        // its default Vision → Surya → Tesseract →
+                        // Claude:
+                        //
+                        //   * `useCloudEnhancedOCR` (user-facing
+                        //     "Cloud-enhanced OCR (Sonnet)" toggle)
+                        //     pulls Surya OCR and Tesseract out of
+                        //     the OCR escalation chain so problematic
+                        //     regions go straight from Vision to
+                        //     Sonnet. Surya **layout** still runs at
+                        //     the page-prep stage so the structural
+                        //     extractors keep working. Quality wins
+                        //     for hard scripts (Phase 4 spike: 11.3%
+                        //     CER vs 15.1% for the local cascade).
+                        //
+                        //   * `disableLocalCascadeEscalation` (spike
+                        //     only): same engine removal *plus* feeds
+                        //     every text-bearing region to Claude
+                        //     unconditionally — used by SpikeRunner
+                        //     for head-to-head CER measurements.
+                        //     Production never sets this.
+                        let suppressLocalEngines =
+                            options.useCloudEnhancedOCR
+                            || options.disableLocalCascadeEscalation
+                        let cascadeSurya = suppressLocalEngines
                             ? nil : suryaEngine
-                        let cascadeTess = options.disableLocalCascadeEscalation
+                        let cascadeTess = suppressLocalEngines
                             ? nil : tesseractEngine
                         observations = await RegionCascade.run(
                             observations: observations,

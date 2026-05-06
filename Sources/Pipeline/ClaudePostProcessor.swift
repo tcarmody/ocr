@@ -30,8 +30,10 @@ public struct ClaudePostProcessor: Sendable {
     public var model: AnthropicModel
     public var maxOutputTokens: Int
     /// Combined-quality floor below which we send the region to Haiku.
-    /// Already-clean text scores above 0.6 in practice, so the default
-    /// threshold targets only regions that look like they need help.
+    /// Raised from 0.6 → 0.7 alongside the cascade floor bumps —
+    /// catches more scanner-noise cases that previously slipped
+    /// through. Cost floor: more Haiku calls per book on regions
+    /// that score in the 0.6–0.7 band.
     public var triggerThreshold: Double
     /// Don't post-process regions shorter than this. Captions, headers,
     /// page numbers — Haiku tends to make them worse, not better.
@@ -42,7 +44,7 @@ public struct ClaudePostProcessor: Sendable {
         budget: ClaudeCallBudget,
         model: AnthropicModel = .haiku4_5,
         maxOutputTokens: Int = 2048,
-        triggerThreshold: Double = 0.6,
+        triggerThreshold: Double = 0.7,
         minCharsToProcess: Int = 30
     ) {
         self.client = client

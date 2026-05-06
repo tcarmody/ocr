@@ -40,7 +40,21 @@ final class QueueViewModel: ObservableObject {
     ]
 
     @Published var selectedLanguageIds: Set<String> = ["en"]
-    @Published var useHighAccuracyOCR: Bool = false
+    /// "Use Surya OCR (local-only, slower)" toggle in the launcher.
+    /// Forces Surya to run OCR on every region, bypassing the
+    /// per-region cascade. Was previously called `useHighAccuracyOCR`
+    /// — renamed to make the engine explicit now that there's also
+    /// a Cloud-enhanced toggle.
+    @Published var useSuryaOCR: Bool = false
+    /// "Cloud-enhanced OCR (Sonnet)" toggle. Vision is the primary
+    /// OCR engine; regions whose quality score falls below the
+    /// threshold escalate straight to Sonnet, skipping Surya OCR
+    /// and Tesseract. Surya layout still runs for figures / tables /
+    /// footnotes. Only fires when the conversion is in Cloud mode
+    /// with a configured API key — the toggle is allowed to be on
+    /// in any mode but produces no Sonnet calls when those gates
+    /// aren't met.
+    @Published var useCloudEnhancedOCR: Bool = false
     /// Force-OCR override for new conversions in this session.
     /// Promoted from Settings to a launcher toggle since it's
     /// inherently per-conversion (some PDFs need it; most don't).
@@ -119,13 +133,14 @@ final class QueueViewModel: ObservableObject {
             outputURL: outputURL,
             options: ConversionOptions(
                 languages: selectedLanguages.map { $0.rawValue },
-                useHighAccuracyOCR: useHighAccuracyOCR,
+                useSuryaOCR: useSuryaOCR,
+                useCloudEnhancedOCR: useCloudEnhancedOCR,
                 forceOCR: forceOCR
             ),
             status: .profiling
         )
         store.add(job)
-        let highAccuracy = useHighAccuracyOCR
+        let suryaOn = useSuryaOCR
         Task.detached(priority: .userInitiated) { [store, weak runner] in
             let profile = DocumentProfiler.profile(pdfURL: url)
             // Compute the Cloud-mode cost estimate + content/config
@@ -145,7 +160,7 @@ final class QueueViewModel: ObservableObject {
             let warnings = ProfileWarningEvaluator.evaluate(
                 ProfileWarningInputs(
                     profile: profile,
-                    useHighAccuracyOCR: highAccuracy,
+                    useHighAccuracyOCR: suryaOn,
                     processingMode: aiSettings.processingMode,
                     cloudFeatures: aiSettings.cloudFeatures,
                     hasAPIKey: hasAPIKey,
