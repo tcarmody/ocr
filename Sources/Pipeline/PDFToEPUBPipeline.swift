@@ -365,57 +365,65 @@ public actor PDFToEPUBPipeline {
         }
     }
 
-    /// Apply `DictionaryCorrector` to the joined text of every
-    /// text-bearing region. For each region:
-    ///   * Detect the dominant language from its text via NLR (when
-    ///     long enough to be confident); fall back to the document
-    ///     primary language otherwise.
-    ///   * Run the corrector — it gates internally on script,
-    ///     length, distance, and casing.
-    ///   * Replace the region's observations with a single corrected
-    ///     observation iff the corrector actually changed anything.
+    /// Apply `DictionaryCorrector` to the reflowed block stream.
+    /// Walks each `.paragraph` / `.heading` block, joins its
+    /// `InlineRun` text, runs the corrector, and writes the result
+    /// back when the text actually changed.
     ///
-    /// Synchronous — the per-region NSSpellChecker calls are IPC
-    /// but cheap enough that the marginal latency is acceptable
-    /// inside the per-page loop. Could be moved off-main if it ever
-    /// becomes a bottleneck.
-    static func applyDictionaryCorrections(
-        observations: [TextObservation],
-        regions: [LayoutRegion],
-        documentLanguage: String?,
+    /// Multi-run blocks (paragraphs with explicit per-run language
+    /// switches — Greek quotation in an English paragraph, etc.)
+    /// are skipped to preserve their structure. Single-run blocks
+    /// are the common case for OCR'd output.
+    ///
+    /// Runs **post-reflow** (after `RegionAwareReflow.reflow`
+    /// returned its `[Block]` stream) so hyphenated line-breaks
+    /// and cross-page paragraph continuations are already resolved
+    /// — the corrector sees full words, not fragments. Putting
+    /// this earlier in the pipeline (per-region, pre-reflow)
+    /// produced fragment-correction bugs (`approxi-` → `approve`
+    /// before reflow could join with `mation` from the next line).
+    static func applyDictionaryToBlocks(
+        _ blocks: [Block],
         corrector: DictionaryCorrector
-    ) -> [TextObservation] {
-        var working = observations
-        for region in regions {
-            guard Self.isCleanupCandidate(region: region) else { continue }
-            let inRegion = RegionCascade.filter(
-                observations: working, inRegion: region
-            )
-            guard !inRegion.isEmpty else { continue }
-            let joined = inRegion.map(\.text).joined(separator: "\n")
-            let corrected = corrector.correct(joined)
-            // No-change case: leave observations alone (preserves
-            // their bbox / confidence / source attribution).
-            guard corrected != joined else { continue }
-            // Replace the region with a single observation carrying
-            // the corrected text. We re-use the highest-confidence
-            // existing observation's source so downstream stats
-            // (which engine produced the OCR) stay attributable.
-            let primarySource = inRegion
-                .max(by: { $0.confidence < $1.confidence })?.source ?? .vision
-            let replacement = TextObservation(
-                text: corrected,
-                confidence: 0.95,
-                box: region.box,
-                source: primarySource
-            )
-            working = RegionCascade.replace(
-                observations: working,
-                inRegion: region,
-                with: [replacement]
-            )
+    ) -> [Block] {
+        return blocks.map { block in applyDictionaryToBlock(block, corrector: corrector) }
+    }
+
+    /// Per-block dispatch. Heading + paragraph go through the
+    /// corrector; figure / table / anchor pass through unchanged.
+    static func applyDictionaryToBlock(
+        _ block: Block,
+        corrector: DictionaryCorrector
+    ) -> Block {
+        switch block {
+        case .paragraph(let runs):
+            guard let corrected = correctedRun(runs, corrector: corrector)
+            else { return block }
+            return .paragraph(runs: [corrected])
+        case .heading(let level, let runs):
+            guard let corrected = correctedRun(runs, corrector: corrector)
+            else { return block }
+            return .heading(level: level, runs: [corrected])
+        case .anchor, .figure, .table:
+            return block
         }
-        return working
+    }
+
+    /// Return a single corrected run when the input `runs` is a
+    /// single-run block and the corrector changed something.
+    /// Returns nil for multi-run blocks (preserve their structure)
+    /// and for single-run blocks where no correction was needed.
+    static func correctedRun(
+        _ runs: [InlineRun],
+        corrector: DictionaryCorrector
+    ) -> InlineRun? {
+        guard runs.count == 1 else { return nil }
+        let original = runs[0].text
+        let corrected = corrector.correct(original)
+        guard corrected != original else { return nil }
+        var newRun = runs[0]
+        newRun.text = corrected
+        return newRun
     }
 
     /// Run the chapter classifier across `chapters`, with a small
@@ -1124,26 +1132,14 @@ public actor PDFToEPUBPipeline {
                 }
 
                 // Cloud Phase 6: post-OCR Haiku cleanup. After the
-                // Dictionary-match cleanup. Runs **before** the
-                // Haiku cleanup so single-typo garblings (`thc` →
-                // `the`, `Engiish` → `English`) get fixed cheaply
-                // up front, leaving Haiku to handle the harder
-                // multi-word / structural issues. Per-region
-                // language hint comes from `NLLanguageRecognizer`
-                // when the region's text is long enough; falls back
-                // to the document's primary language. Conservative —
-                // only applies single-character corrections with an
-                // unambiguous dictionary winner; non-Latin tokens
-                // are skipped entirely so we don't damage Greek /
-                // Hebrew / etc.
-                if let regions = layoutForPage, !regions.isEmpty {
-                    observations = Self.applyDictionaryCorrections(
-                        observations: observations,
-                        regions: regions,
-                        documentLanguage: options.documentProfile?.primaryLanguage,
-                        corrector: dictionaryCorrector
-                    )
-                }
+                // (Dictionary-match cleanup moved out of the
+                //  per-page loop and into the post-reflow stage —
+                //  see `applyDictionaryToBlocks` after reflow runs.
+                //  Running per-region missed the cross-region and
+                //  cross-page word joins, leading to truncated
+                //  fragments getting "corrected" before the reflow
+                //  pass had a chance to see them as halves of a
+                //  hyphenated word.)
 
                 // cascade has settled the per-region OCR text, walk
                 // the text-bearing regions and ask Haiku to fix
@@ -1306,13 +1302,30 @@ public actor PDFToEPUBPipeline {
             )
         }
 
+        // Dictionary-match cleanup. Runs **after** reflow so the
+        // corrector sees fully-joined paragraphs — line-end
+        // hyphenation (`approxi-\nmation` → `approximation`) and
+        // cross-page paragraph continuations are already resolved
+        // by the time we tokenize. Running before reflow caused
+        // the corrector to "fix" word fragments like `approxi`
+        // into plausible-but-wrong neighbors before the reflow
+        // could see them as halves of a single word.
+        //
+        // Conservative policy stays the same: Latin-script only,
+        // Levenshtein-1 candidates only, casing preserved, skip
+        // anything that looks like a proper noun.
+        let dehyphenatedBlocks = Self.applyDictionaryToBlocks(
+            reflowed.blocks,
+            corrector: dictionaryCorrector
+        )
+
         // Phase 1 of structured-document detection: split the flat
         // block stream into chapters at every level-1 heading.
         // Footnotes, page anchors, and figure assets are distributed
         // to the chapter they belong to so EPUB readers see a real
         // multi-chapter navigation tree.
         let rawChapters = ChapterSplitter.split(
-            blocks: reflowed.blocks,
+            blocks: dehyphenatedBlocks,
             footnotes: reflowed.footnotes,
             pageAnchors: reflowed.pageAnchors,
             figureAssets: reflowed.figureAssets,
