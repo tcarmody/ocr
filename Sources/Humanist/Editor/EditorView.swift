@@ -275,6 +275,7 @@ struct EditorView: View {
                 replaceRequest: vm.replaceSourceRequest,
                 replacePageRequest: vm.replacePageRequest,
                 formatRequest: vm.formatRequest,
+                searchRequest: vm.searchRequest,
                 onCursorAnchorChanged: { id in vm.didMoveCursorToAnchor(id) }
             )
             .id(file.id)

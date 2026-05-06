@@ -179,6 +179,22 @@ final class EditorViewModel: ObservableObject {
     }
     private var formatNonce: Int = 0
 
+    /// Find / replace dispatch from the Edit menu — routes to one
+    /// of the four CodeMirror search commands via the JS bridge.
+    /// The default Edit > Find menu group SwiftUI synthesizes
+    /// otherwise eats ⌘F before it reaches the WebView, so all
+    /// four flow through here.
+    @Published private(set) var searchRequest: SearchRequest?
+
+    struct SearchRequest: Equatable {
+        let kind: Kind
+        let nonce: Int
+        enum Kind: String, Equatable {
+            case find, findNext, findPrev, replace
+        }
+    }
+    private var searchNonce: Int = 0
+
     struct ReOCRResult: Identifiable, Equatable {
         let id: UUID
         let engine: ReOCREngineKind
@@ -767,6 +783,37 @@ final class EditorViewModel: ObservableObject {
             opening: "<span xml:lang=\"\(escaped)\" lang=\"\(escaped)\">",
             closing: "</span>"
         )
+    }
+
+    /// Open the source pane's find dialog (⌘F-equivalent).
+    func openFind() { dispatchSearch(.find) }
+    /// Move to the next find match (⌘G).
+    func findNext() { dispatchSearch(.findNext) }
+    /// Move to the previous find match (⇧⌘G).
+    func findPrev() { dispatchSearch(.findPrev) }
+    /// Open the find-and-replace dialog (⌥⌘F).
+    func openReplace() { dispatchSearch(.replace) }
+
+    private func dispatchSearch(_ kind: SearchRequest.Kind) {
+        searchNonce &+= 1
+        searchRequest = SearchRequest(kind: kind, nonce: searchNonce)
+    }
+
+    /// Replace straight quotes / apostrophes with typographic curly
+    /// equivalents in the loaded source text. `SmartQuoter` walks
+    /// the XHTML and only transforms characters outside tags, so
+    /// attribute values and the document's structural quoting
+    /// stay byte-stable.
+    ///
+    /// Whole-buffer assignment (rather than going through the JS
+    /// bridge for a per-character transform) — preserves the user's
+    /// existing CodeMirror cursor position approximately, and the
+    /// existing dirty-tracking + buffer-flush machinery picks the
+    /// edit up via the standard `sourceText` change path.
+    func smartQuoteSourceText() {
+        let updated = SmartQuoter.smartQuote(sourceText)
+        guard updated != sourceText else { return }
+        sourceText = updated
     }
 
     // MARK: - Correction trail actions (Cloud Phase 6)

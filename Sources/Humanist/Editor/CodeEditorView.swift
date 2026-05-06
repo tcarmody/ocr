@@ -37,6 +37,9 @@ struct CodeEditorView: View {
     /// insert at cursor) with the requested tag(s). Nonce-tagged
     /// so repeated clicks of the same button still fire.
     let formatRequest: EditorViewModel.FormatRequest?
+    /// Edit-menu find / find-next / find-prev / replace command.
+    /// Routes to one of CodeMirror's four search commands.
+    let searchRequest: EditorViewModel.SearchRequest?
     /// Called when CodeMirror's cursor crosses a different `hu-page-N`
     /// anchor than the one we last reported. The editor uses this to
     /// drive the PDF + preview panes (code → others sync).
@@ -69,6 +72,7 @@ struct CodeEditorView: View {
                 replaceRequest: replaceRequest,
                 replacePageRequest: replacePageRequest,
                 formatRequest: formatRequest,
+                searchRequest: searchRequest,
                 onCursorAnchorChanged: onCursorAnchorChanged
             )
         } else {
@@ -104,6 +108,7 @@ private struct CodeMirrorWebView: NSViewRepresentable {
     let replaceRequest: EditorViewModel.ReplaceSourceRequest?
     let replacePageRequest: EditorViewModel.ReplacePageRequest?
     let formatRequest: EditorViewModel.FormatRequest?
+    let searchRequest: EditorViewModel.SearchRequest?
     let onCursorAnchorChanged: ((String) -> Void)?
 
     func makeCoordinator() -> Coordinator {
@@ -189,6 +194,11 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             coordinator.lastFormatNonce = req.nonce
             coordinator.pushFormat(req.action)
         }
+        // Edit-menu find / replace.
+        if let req = searchRequest, coordinator.lastSearchNonce != req.nonce {
+            coordinator.lastSearchNonce = req.nonce
+            coordinator.pushSearch(req.kind)
+        }
     }
 
     // MARK: - Coordinator
@@ -223,6 +233,10 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         var lastFormatNonce: Int = .min
         /// Format action queued while JS wasn't ready.
         var pendingFormatAction: EditorViewModel.FormatRequest.Action?
+        /// Last search-command nonce we honored.
+        var lastSearchNonce: Int = .min
+        /// Search command queued while JS wasn't ready.
+        var pendingSearchKind: EditorViewModel.SearchRequest.Kind?
         /// Forwarded back to the VM when CodeMirror reports a new
         /// cursor-anchor (code → others sync).
         var onCursorAnchorChanged: ((String) -> Void)?
@@ -305,6 +319,25 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
+        /// Dispatch a search command to CodeMirror's search addon.
+        /// Maps directly to one of four JS functions — find / next /
+        /// prev / replace.
+        func pushSearch(_ kind: EditorViewModel.SearchRequest.Kind) {
+            guard ready, let webView else {
+                pendingSearchKind = kind
+                return
+            }
+            pendingSearchKind = nil
+            let js: String
+            switch kind {
+            case .find:     js = "humanistFocusFind();"
+            case .findNext: js = "humanistFindNext();"
+            case .findPrev: js = "humanistFindPrev();"
+            case .replace:  js = "humanistFocusReplace();"
+            }
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+
         // WKScriptMessageHandler
 
         func userContentController(_ userContentController: WKUserContentController,
@@ -339,6 +372,11 @@ private struct CodeMirrorWebView: NSViewRepresentable {
                 if let action = pendingFormatAction {
                     DispatchQueue.main.async { [weak self] in
                         self?.pushFormat(action)
+                    }
+                }
+                if let kind = pendingSearchKind {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushSearch(kind)
                     }
                 }
             case "edit":

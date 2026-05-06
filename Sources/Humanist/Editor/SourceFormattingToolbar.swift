@@ -105,6 +105,18 @@ struct SourceFormattingToolbar: View {
             }
 
             Spacer()
+
+            // Document-wide transform — lives off on the right so
+            // it visually separates from the per-selection wrap
+            // buttons. Walks the loaded source and curlies straight
+            // quotes / apostrophes in text content, leaving tag
+            // contents (attribute quotes, etc.) byte-stable.
+            iconButton(
+                "Convert quotes to smart quotes",
+                systemImage: "text.quote"
+            ) {
+                vm.smartQuoteSourceText()
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)

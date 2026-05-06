@@ -95,9 +95,20 @@
         tabSize: 2,
         styleActiveLine: false,
         autoCloseTags: false,
+        // `contenteditable` input style is required for browser
+        // spellcheck (red squiggles) to work — the default
+        // `textarea` style routes typing through a hidden textarea
+        // that the renderer doesn't see. Browser-side spellcheck
+        // only fires on the visible contenteditable surface.
+        inputStyle: "contenteditable",
+        spellcheck: true,
         // Search/find UI uses these key bindings out of the box once
         // search.js is loaded: ⌘F (find), ⌘G (next), ⇧⌘G (prev),
-        // ⌥⌘F (replace).
+        // ⌥⌘F (replace). Menu items in the macOS Edit menu route
+        // through `humanistFocusFind` / `humanistFindNext` /
+        // `humanistFindPrev` / `humanistFocusReplace` because
+        // SwiftUI's default Edit > Find group otherwise eats the
+        // shortcuts before they reach the WebView.
       });
 
       var suppressEditEvent = false;
@@ -149,6 +160,24 @@
       window.humanistFocusFind = function () {
         // CodeMirror's "find" command is registered by search.js.
         editor.execCommand("find");
+      };
+
+      // Find next / previous match. Cycles through matches once a
+      // search is active. When no search has run yet, behaves the
+      // same as opening the find dialog.
+      window.humanistFindNext = function () {
+        editor.execCommand("findNext");
+      };
+      window.humanistFindPrev = function () {
+        editor.execCommand("findPrev");
+      };
+
+      // Open the find-and-replace dialog. CodeMirror's `replace`
+      // command surfaces a multi-line dialog with separate
+      // "find" and "replace" fields, plus per-match Yes/No/All
+      // confirmation. Bound to ⌥⌘F in the Edit menu.
+      window.humanistFocusReplace = function () {
+        editor.execCommand("replace");
       };
 
       window.humanistRefresh = function () {

@@ -105,6 +105,23 @@ final class EditorCommandRouter: ObservableObject {
         }
     }
 
+    /// Edit-menu Find / Find Next / Find Previous / Find and
+    /// Replace dispatch. The default Edit > Find group SwiftUI
+    /// synthesizes from `CommandGroup(replacing: .textEditing)`
+    /// fires `performTextFinderAction:` against the responder chain,
+    /// which CodeMirror's WKWebView doesn't pick up. We replace the
+    /// group with menu items that route through the active
+    /// editor's `searchRequest` instead.
+    func openFind()    { activeEditor()?.openFind() }
+    func findNext()    { activeEditor()?.findNext() }
+    func findPrev()    { activeEditor()?.findPrev() }
+    func openReplace() { activeEditor()?.openReplace() }
+
+    /// True when there's an editor available to receive a find /
+    /// replace command. The Edit-menu items disable when no editor
+    /// is active.
+    var canFind: Bool { activeEditor() != nil }
+
     // MARK: - private
 
     /// Pick the editor whose window is currently key. If none of the

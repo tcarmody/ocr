@@ -59,6 +59,7 @@ struct HumanistApp: App {
         .commands {
             FileOpenCommands()
             EditorSaveCommands()
+            EditorFindCommands()
             EditorViewMenu()
             CommandGroup(after: .help) {
                 Button("Show Welcome…") {
@@ -137,6 +138,62 @@ struct EditorSaveCommands: Commands {
             EditorSaveCommand()
             EditorSaveAsCommand()
         }
+    }
+}
+
+/// Edit > Find / Find Next / Find Previous / Find and Replace.
+/// CodeMirror's search dialog is the right surface, but the
+/// default SwiftUI Edit > Find group dispatches via
+/// `performTextFinderAction:` which CodeMirror's WKWebView doesn't
+/// participate in — ⌘F does nothing without our intervention. We
+/// add items routed through `EditorCommandRouter` (keyWindow-driven)
+/// so the JS bridge actually receives the commands. Placed
+/// `after: .pasteboard` (i.e. just below Cut/Copy/Paste).
+struct EditorFindCommands: Commands {
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            EditorFindCommand()
+            EditorFindNextCommand()
+            EditorFindPrevCommand()
+            EditorReplaceCommand()
+        }
+    }
+}
+
+private struct EditorFindCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Find…") { router.openFind() }
+            .keyboardShortcut("f", modifiers: .command)
+            .disabled(!router.canFind)
+    }
+}
+
+private struct EditorFindNextCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Find Next") { router.findNext() }
+            .keyboardShortcut("g", modifiers: .command)
+            .disabled(!router.canFind)
+    }
+}
+
+private struct EditorFindPrevCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Find Previous") { router.findPrev() }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+            .disabled(!router.canFind)
+    }
+}
+
+private struct EditorReplaceCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Find and Replace…") { router.openReplace() }
+            .keyboardShortcut("f", modifiers: [.command, .option])
+            .disabled(!router.canFind)
     }
 }
 
