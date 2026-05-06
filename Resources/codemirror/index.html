@@ -102,6 +102,13 @@
         // only fires on the visible contenteditable surface.
         inputStyle: "contenteditable",
         spellcheck: true,
+        // Disable autocorrect (we don't want EPUB code-editing to
+        // get retroactively retyped) but do allow autocapitalization
+        // — the spellcheck attribute alone often doesn't kick in on
+        // WebKit's contenteditable surface unless the related
+        // attributes are also set.
+        autocorrect: false,
+        autocapitalize: false,
         // Search/find UI uses these key bindings out of the box once
         // search.js is loaded: ⌘F (find), ⌘G (next), ⇧⌘G (prev),
         // ⌥⌘F (replace). Menu items in the macOS Edit menu route
@@ -110,6 +117,33 @@
         // SwiftUI's default Edit > Find group otherwise eats the
         // shortcuts before they reach the WebView.
       });
+
+      // Belt-and-suspenders: explicitly set `spellcheck="true"` on
+      // both the stable wrapper and the contenteditable input
+      // surface so WebKit's text checker sees the attribute even if
+      // CodeMirror rebuilds the inner contenteditable div on
+      // structural redraws. The CM `spellcheck` option above
+      // handles the input field on init; this catches the wrapper
+      // (which is the focus context WKWebView's spell checker
+      // looks at first) and re-applies on every focus event in
+      // case the inner DOM rotated under us.
+      function applySpellcheckAttribute() {
+        try {
+          editor.getWrapperElement().setAttribute("spellcheck", "true");
+          var input = editor.getInputField();
+          if (input) input.setAttribute("spellcheck", "true");
+          // The contenteditable lines container — applies inheritance
+          // so any newly-created child .CodeMirror-line nodes pick
+          // up spellcheck without us having to track each one.
+          var lines = editor.getWrapperElement().querySelector(".CodeMirror-lines");
+          if (lines) lines.setAttribute("spellcheck", "true");
+        } catch (e) { /* no-op on platforms where these don't exist */ }
+      }
+      applySpellcheckAttribute();
+      // Re-apply on focus — covers the case where CodeMirror rebuilt
+      // its inner DOM during the user's last edit. Cheap (just
+      // attribute reads / writes) so running on every focus is fine.
+      editor.on("focus", applySpellcheckAttribute);
 
       var suppressEditEvent = false;
       var ready = false;
