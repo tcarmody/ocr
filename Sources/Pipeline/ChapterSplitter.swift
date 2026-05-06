@@ -32,11 +32,23 @@ public enum ChapterSplitter {
     /// preferred — the heuristic lives entirely in this file.
     public static let frontMatterTitle = "Front Matter"
 
-    /// Split `blocks` into chapters at H1 boundaries.
+    /// Split `blocks` into chapters at the document's *dominant
+    /// heading level*. Splitting strictly at H1 was the original
+    /// behavior, but Surya's layout model emits H1 only for the
+    /// book's title region (`.title`) — chapter headings come back
+    /// as `.sectionHeader` → H2. Books with one title page + 20
+    /// chapter starts ended up as one giant chapter under that
+    /// rule. The dominant-level detection picks the smallest
+    /// (highest-priority) heading level with ≥ 2 occurrences:
     ///
-    /// `bookFallbackTitle` is used as the chapter title when there
-    /// are no H1s at all (the single-chapter degenerate case), so
-    /// the rendered book still has a navigable name.
+    ///   * Book with 12 H1 chapter starts (rare) → split at H1.
+    ///   * Book with 1 H1 (title) + 12 H2 chapters → split at H2.
+    ///   * Pamphlet with 0 / 1 headings total → degenerate single
+    ///     chapter (current fallback).
+    ///
+    /// `bookFallbackTitle` is used as the chapter title when no
+    /// heading level qualifies, so the rendered book still has a
+    /// navigable name.
     public static func split(
         blocks: [Block],
         footnotes: [Footnote],
@@ -44,13 +56,15 @@ public enum ChapterSplitter {
         figureAssets: [FigureAsset] = [],
         bookFallbackTitle: String
     ) -> [Chapter] {
-        let h1Indices = blocks.indices.filter { isH1(blocks[$0]) }
+        let chapterLevel = detectChapterLevel(in: blocks)
+        let breakIndices = blocks.indices.filter {
+            isHeading(blocks[$0], level: chapterLevel)
+        }
 
-        // Degenerate case: no H1 found. One chapter, everything in it.
-        // Matches the pre-Phase-1 behavior so EPUBs without heading
-        // structure (short pieces, single chapters, OCR that didn't
-        // detect any heading) still produce valid output.
-        guard !h1Indices.isEmpty else {
+        // Degenerate case: no qualifying heading found. One chapter,
+        // everything in it — matches the pre-Phase-1 behavior so
+        // EPUBs without heading structure still produce valid output.
+        guard !breakIndices.isEmpty else {
             return [Chapter(
                 title: bookFallbackTitle,
                 blocks: blocks,
@@ -62,8 +76,10 @@ public enum ChapterSplitter {
 
         var chapters: [Chapter] = []
 
-        // Front matter: anything before the first H1.
-        let frontMatterBlocks = Array(blocks[0..<h1Indices[0]])
+        // Front matter: anything before the first chapter-level heading.
+        // When the chapter level is 2, "front matter" includes any H1
+        // (typically the book's title page) — that lands here naturally.
+        let frontMatterBlocks = Array(blocks[0..<breakIndices[0]])
         if hasSubstantiveContent(frontMatterBlocks) {
             chapters.append(buildChapter(
                 title: frontMatterTitle,
@@ -74,11 +90,13 @@ public enum ChapterSplitter {
             ))
         }
 
-        // Each H1 starts a chapter; segment runs from that H1
-        // (inclusive) up to the next H1 (exclusive), or end-of-blocks.
-        for (i, h1Idx) in h1Indices.enumerated() {
-            let endIdx = (i + 1 < h1Indices.count) ? h1Indices[i + 1] : blocks.count
-            let segment = Array(blocks[h1Idx..<endIdx])
+        // Each chapter-level heading starts a chapter; segment runs
+        // from that heading (inclusive) up to the next one (exclusive),
+        // or end-of-blocks.
+        for (i, idx) in breakIndices.enumerated() {
+            let endIdx = (i + 1 < breakIndices.count)
+                ? breakIndices[i + 1] : blocks.count
+            let segment = Array(blocks[idx..<endIdx])
             let title = headingText(segment.first) ?? "Chapter \(chapters.count + 1)"
             chapters.append(buildChapter(
                 title: title,
@@ -92,10 +110,37 @@ public enum ChapterSplitter {
         return chapters
     }
 
+    /// Pick the heading level to split chapters at. Prefers the
+    /// smallest (most prominent) level with at least
+    /// `minHeadingCountForSplit` occurrences. Returns 1 (H1) as the
+    /// fallback when no level qualifies — same as the pre-detection
+    /// behavior, so the degenerate single-chapter case still kicks in
+    /// via the empty-`breakIndices` branch.
+    static func detectChapterLevel(in blocks: [Block]) -> Int {
+        var counts: [Int: Int] = [:]
+        for block in blocks {
+            if case .heading(let level, _) = block {
+                counts[level, default: 0] += 1
+            }
+        }
+        for level in 1...6 {
+            if (counts[level] ?? 0) >= minHeadingCountForSplit {
+                return level
+            }
+        }
+        return 1
+    }
+
+    /// Below this many same-level headings, splitting at that level
+    /// is too aggressive — a single section heading inside a long
+    /// flat document shouldn't carve it up. 2 is the lowest sensible
+    /// floor (a book with 2 chapters has 2 chapter-level headings).
+    public static let minHeadingCountForSplit = 2
+
     // MARK: - block predicates
 
-    private static func isH1(_ block: Block) -> Bool {
-        if case .heading(level: 1, _) = block { return true }
+    private static func isHeading(_ block: Block, level target: Int) -> Bool {
+        if case .heading(let level, _) = block, level == target { return true }
         return false
     }
 

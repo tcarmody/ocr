@@ -247,4 +247,90 @@ final class ChapterSplitterTests: XCTestCase {
         XCTAssertEqual(chapters[1].footnotes.map { $0.id }, ["fn-p1-1"])
         XCTAssertEqual(chapters[2].footnotes.map { $0.id }, ["fn-p3-1"])
     }
+
+    // MARK: - dominant heading level detection
+
+    /// One H1 (book title) + many H2s (chapter starts) → split at H2.
+    /// This is the typical Surya output: `.title` → H1 only on the
+    /// title page, `.sectionHeader` → H2 for chapter headings.
+    func test_one_h1_plus_many_h2s_splits_at_h2() {
+        let blocks: [Block] = [
+            .heading(level: 1, runs: [InlineRun("The Book")]),
+            .paragraph(runs: [InlineRun("by author")]),
+            .heading(level: 2, runs: [InlineRun("Chapter 1")]),
+            .paragraph(runs: [InlineRun("body of chapter 1")]),
+            .heading(level: 2, runs: [InlineRun("Chapter 2")]),
+            .paragraph(runs: [InlineRun("body of chapter 2")]),
+            .heading(level: 2, runs: [InlineRun("Chapter 3")]),
+            .paragraph(runs: [InlineRun("body of chapter 3")]),
+        ]
+        let chapters = ChapterSplitter.split(
+            blocks: blocks, footnotes: [], pageAnchors: [],
+            bookFallbackTitle: "Book"
+        )
+        // Front matter (title page) + 3 chapters.
+        XCTAssertEqual(chapters.count, 4)
+        XCTAssertEqual(chapters[0].title, ChapterSplitter.frontMatterTitle)
+        XCTAssertEqual(chapters[1].title, "Chapter 1")
+        XCTAssertEqual(chapters[2].title, "Chapter 2")
+        XCTAssertEqual(chapters[3].title, "Chapter 3")
+    }
+
+    /// Many H1s (each chapter starts with its own H1) → split at H1
+    /// even when H2 also has occurrences. H1 wins on "smallest level
+    /// with ≥ 2 occurrences."
+    func test_many_h1s_splits_at_h1_even_with_h2_present() {
+        let blocks: [Block] = [
+            .heading(level: 1, runs: [InlineRun("Chapter 1")]),
+            .heading(level: 2, runs: [InlineRun("Section 1.1")]),
+            .paragraph(runs: [InlineRun("body")]),
+            .heading(level: 1, runs: [InlineRun("Chapter 2")]),
+            .heading(level: 2, runs: [InlineRun("Section 2.1")]),
+            .paragraph(runs: [InlineRun("body")]),
+        ]
+        let chapters = ChapterSplitter.split(
+            blocks: blocks, footnotes: [], pageAnchors: [],
+            bookFallbackTitle: "Book"
+        )
+        XCTAssertEqual(chapters.count, 2)
+        XCTAssertEqual(chapters[0].title, "Chapter 1")
+        XCTAssertEqual(chapters[1].title, "Chapter 2")
+    }
+
+    /// Single H2 doesn't qualify (need ≥ 2 occurrences). Falls back
+    /// to single chapter with the book's fallback title.
+    func test_lone_h2_falls_back_to_single_chapter() {
+        let blocks: [Block] = [
+            .heading(level: 2, runs: [InlineRun("The Only Section")]),
+            .paragraph(runs: [InlineRun("body")]),
+        ]
+        let chapters = ChapterSplitter.split(
+            blocks: blocks, footnotes: [], pageAnchors: [],
+            bookFallbackTitle: "Pamphlet"
+        )
+        XCTAssertEqual(chapters.count, 1)
+        XCTAssertEqual(chapters[0].title, "Pamphlet")
+    }
+
+    /// Detection helper isolated.
+    func test_detectChapterLevel_picks_smallest_level_with_two_occurrences() {
+        // 1 H1 + 5 H2 → level 2.
+        let h1WithH2s: [Block] = [
+            .heading(level: 1, runs: [InlineRun("title")]),
+        ] + (1...5).map {
+            Block.heading(level: 2, runs: [InlineRun("§\($0)")])
+        }
+        XCTAssertEqual(ChapterSplitter.detectChapterLevel(in: h1WithH2s), 2)
+
+        // 3 H1 + 5 H2 → level 1.
+        let h1Heavy: [Block] = (1...3).map {
+            Block.heading(level: 1, runs: [InlineRun("ch\($0)")])
+        } + (1...5).map {
+            Block.heading(level: 2, runs: [InlineRun("§\($0)")])
+        }
+        XCTAssertEqual(ChapterSplitter.detectChapterLevel(in: h1Heavy), 1)
+
+        // No headings at all → fallback to 1.
+        XCTAssertEqual(ChapterSplitter.detectChapterLevel(in: []), 1)
+    }
 }
