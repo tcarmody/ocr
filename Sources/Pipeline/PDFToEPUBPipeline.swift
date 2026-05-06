@@ -27,6 +27,17 @@ import Layout
 public actor PDFToEPUBPipeline {
     public struct Options: Sendable {
         public var dpi: CGFloat
+        /// DPI used when `documentProfile.isLikelyScan == true`.
+        /// Higher than the default `dpi` because scanned pages
+        /// benefit from sharper raster input — Vision picks up
+        /// thin diacritics and small footnote type that 400 DPI
+        /// renders too aliased for.
+        public var dpiForScans: CGFloat
+        /// Pre-flight document profile, when one's available.
+        /// Drives the adaptive DPI choice and whether the
+        /// `PageImagePreprocessor` runs on rendered pages. Nil →
+        /// defaults are used (no preprocessing, default DPI).
+        public var documentProfile: DocumentProfile?
         public var languages: [BCP47]
         public var ocrQuality: OCRHints.Quality
         /// When true, keep all per-page PNG renders + the debug log
@@ -94,6 +105,8 @@ public actor PDFToEPUBPipeline {
 
         public init(
             dpi: CGFloat = 400,
+            dpiForScans: CGFloat = 600,
+            documentProfile: DocumentProfile? = nil,
             languages: [BCP47] = [.en],
             ocrQuality: OCRHints.Quality = .accurate,
             emitDebugLog: Bool = false,
@@ -107,6 +120,8 @@ public actor PDFToEPUBPipeline {
             disableLocalCascadeEscalation: Bool = false
         ) {
             self.dpi = dpi
+            self.dpiForScans = dpiForScans
+            self.documentProfile = documentProfile
             self.languages = languages
             self.ocrQuality = ocrQuality
             self.emitDebugLog = emitDebugLog
@@ -724,7 +739,19 @@ public actor PDFToEPUBPipeline {
         // across long books, large enough that the re-parse cost
         // (~50ms per reload on a 600-page book) is amortized.
         let pdfReloadInterval = 25
-        let renderer = PDFRenderer(dpi: options.dpi)
+        // Adaptive DPI: scans get a higher render resolution because
+        // Vision picks up thin diacritics and small footnote glyphs
+        // that 400 DPI flattens. Born-digital pages use the default
+        // since their internal vector data renders crisp at any DPI
+        // and 600 just inflates the image without helping OCR.
+        let useScansDPI = options.documentProfile?.isLikelyScan == true
+        let effectiveDPI = useScansDPI ? options.dpiForScans : options.dpi
+        let renderer = PDFRenderer(dpi: effectiveDPI)
+        // Image preprocessing pipeline — only invoked on scan-likely
+        // documents (born-digital text gets harmed by contrast /
+        // sharpening; only scans benefit). Filter stack: levels
+        // stretch, mild denoise, gentle unsharp mask.
+        let pagePreprocessor = useScansDPI ? PageImagePreprocessor() : nil
         let hints = OCRHints(languages: options.languages, quality: options.ocrQuality)
 
         let title = pdf.title ?? pdfURL.deletingPathExtension().lastPathComponent
@@ -909,16 +936,19 @@ public actor PDFToEPUBPipeline {
                 confidenceForProgress = 1.0
 
             case .reocr:
-                // Render + savePNG: largest sync allocation in the
-                // loop. CGContext + CFData buffers are CFType so ARC
-                // handles release, but the dispatch infra around
-                // CGImageDestination autoreleases NSURL/NSData
-                // bridging objects.
+                // Render + (preprocess if scan) + savePNG. Largest sync
+                // allocation in the loop; CGContext + CFData buffers
+                // are CFType so ARC handles release, but the dispatch
+                // infra around CGImageDestination autoreleases
+                // NSURL/NSData bridging objects.
                 let pngURL = stagingDir.appendingPathComponent("page-\(i).png")
                 let image: CGImage = try autoreleasepool {
-                    let img = try renderer.renderPage(at: i, of: pdf)
-                    Self.savePNG(img, to: pngURL)
-                    return img
+                    let raw = try renderer.renderPage(at: i, of: pdf)
+                    // Preprocessor is non-nil only on scan-likely docs;
+                    // for everything else the render passes through.
+                    let cleaned = pagePreprocessor?.process(raw) ?? raw
+                    Self.savePNG(cleaned, to: pngURL)
+                    return cleaned
                 }
                 let pageEngine = selectEngine(
                     for: hints.languages,
