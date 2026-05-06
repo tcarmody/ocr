@@ -26,7 +26,7 @@ public struct FigureExtractor {
     /// One extracted figure, keyed by the index of its source region
     /// within the page's region array. The caller assigns final asset
     /// ids — this type stays decoupled from the book-wide id space.
-    public struct ExtractedFigure: Sendable {
+    public struct ExtractedFigure: Sendable, Codable {
         public let pageIndex: Int
         public let regionIndex: Int
         public let data: Data

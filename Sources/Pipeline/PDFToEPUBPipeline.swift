@@ -818,35 +818,59 @@ public actor PDFToEPUBPipeline {
         let title = pdf.title ?? pdfURL.deletingPathExtension().lastPathComponent
         let language = options.languages.first ?? .en
 
-        // Where per-page PNG renders go. Two modes:
-        //   * Debug on  → `<basename>.humanist-debug/` next to the
-        //                 EPUB. PNGs + log accumulate there so the
-        //                 user can inspect after a bad conversion;
-        //                 one folder per book is easy to delete.
-        //   * Debug off → a fresh temp directory. Cleaned up at the
-        //                 end of conversion (and reaped by macOS if
-        //                 we crash). The source folder gets just the
-        //                 .epub — important at bulk scale.
-        let stagingDir: URL
-        let stagingIsTemp: Bool
-        if options.emitDebugLog {
-            stagingDir = outputURL.deletingPathExtension()
+        // Per-page artifacts (PNGs, JSON checkpoints, debug log)
+        // live alongside the source PDF in
+        // `<basename>.humanist-staging/`. The directory persists
+        // across crashes / cancels — that's load-bearing for
+        // resume: the next conversion of the same source PDF
+        // checks the staging dir for per-page checkpoints and
+        // skips pages that already finished. Cleaned up on
+        // **successful** completion only.
+        //
+        // When debug logging is on, the directory's name shifts to
+        // `<basename>.humanist-debug/` so the user can locate the
+        // logs more easily; both shapes work identically as
+        // resume-staging dirs.
+        let stagingDir: URL = options.emitDebugLog
+            ? outputURL.deletingPathExtension()
                 .appendingPathExtension("humanist-debug")
-            stagingIsTemp = false
-        } else {
-            stagingDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Humanist-staging-\(UUID().uuidString)", isDirectory: true)
-            stagingIsTemp = true
-        }
+            : pdfURL.deletingPathExtension()
+                .appendingPathExtension("humanist-staging")
         try? FileManager.default.createDirectory(
             at: stagingDir, withIntermediateDirectories: true
         )
-        // Always clean up temp on the way out, success or failure.
-        defer {
-            if stagingIsTemp {
+
+        // Resume manager: validate the staging dir's manifest
+        // matches the source PDF; if it doesn't (different file),
+        // wipe the dir and start fresh. Otherwise the per-page
+        // loop below skips pages with existing checkpoints.
+        let resumeManager = ResumeManager(stagingDir: stagingDir)
+        let sourceFingerprint = ResumeManager.fingerprint(of: pdfURL) ?? ""
+        let existingManifest = resumeManager.readManifest()
+        let resumeAvailable: Bool
+        if let m = existingManifest,
+           m.sourceFingerprint == sourceFingerprint,
+           m.totalPages == pdf.pageCount,
+           m.schemaVersion == 1 {
+            resumeAvailable = true
+        } else {
+            // Mismatch (or no prior manifest) → start fresh.
+            // Rebuild the staging dir from scratch so stale
+            // checkpoints don't leak in.
+            if existingManifest != nil {
                 try? FileManager.default.removeItem(at: stagingDir)
+                try? FileManager.default.createDirectory(
+                    at: stagingDir, withIntermediateDirectories: true
+                )
             }
+            try? resumeManager.writeManifest(StagingManifest(
+                sourceFingerprint: sourceFingerprint,
+                totalPages: pdf.pageCount
+            ))
+            resumeAvailable = false
         }
+        let alreadyDonePages = resumeAvailable
+            ? resumeManager.completedPages() : Set<Int>()
 
         // Pass 1 — for each page:
         //   a. Extract the embedded text layer (cheap; PDFKit access).
@@ -932,6 +956,50 @@ public actor PDFToEPUBPipeline {
 
         for i in 0..<totalPages {
             try Task.checkCancellation()
+
+            // Resume fast path: this page has a checkpoint on disk
+            // from a prior (interrupted) run. Load it, restore the
+            // accumulators, skip all the expensive per-page work.
+            if alreadyDonePages.contains(i),
+               let checkpoint = resumeManager.readCheckpoint(forPage: i) {
+                let bounds = CGSize(
+                    width: checkpoint.pageBoundsWidth,
+                    height: checkpoint.pageBoundsHeight
+                )
+                pageResults.append(PageObservations(
+                    pageIndex: i,
+                    pageBounds: bounds,
+                    observations: checkpoint.observations,
+                    layoutRegions: checkpoint.layoutRegions
+                ))
+                // `regionsByPage` is derived from pageResults *after*
+                // this loop completes — appending the PageObservations
+                // above with `layoutRegions` set is enough; no
+                // explicit per-page write needed here.
+                if !checkpoint.figures.isEmpty {
+                    figureExtractionsByPage[i] = checkpoint.figures
+                }
+                for (regionIdx, rows) in checkpoint.tableExtractionsByRegionIndex {
+                    let key = CaptionAssociator.PageRegionKey(
+                        pageIndex: i, regionIndex: regionIdx
+                    )
+                    tableExtractionsByKey[key] = rows
+                }
+                if let v = checkpoint.verdict.flatMap({
+                    EmbeddedTextQualityScorer.Verdict(rawValue: $0)
+                }) {
+                    verdictsByPage[i] = v
+                }
+                correctionTrailEntries.append(
+                    contentsOf: checkpoint.correctionTrailEntries
+                )
+                progress?(Progress(
+                    totalPages: totalPages,
+                    completedPages: i + 1,
+                    currentPageMeanConfidence: 1.0
+                ))
+                continue
+            }
 
             // Periodic reload to drain PDFKit's per-page cache. The
             // old document deallocates here, taking its accumulated
@@ -1251,6 +1319,32 @@ public actor PDFToEPUBPipeline {
                 observations: observations,
                 layoutRegions: layoutForPage
             ))
+
+            // Persist a per-page checkpoint so a crash / cancel /
+            // hang past this point lets the next conversion of the
+            // same source PDF skip page i. Trail entries written by
+            // post-OCR cleanup *for this page* are sliced off the
+            // accumulated list (cheap — entries carry pageIndex).
+            let pageTrail = correctionTrailEntries.filter {
+                $0.pageIndex == i
+            }
+            let pageFigures = figureExtractionsByPage[i] ?? []
+            let pageTables: [Int: [[TableCell]]] = tableExtractionsByKey
+                .filter { $0.key.pageIndex == i }
+                .reduce(into: [:]) { $0[$1.key.regionIndex] = $1.value }
+            let checkpoint = PageCheckpoint(
+                pageIndex: i,
+                pageBoundsWidth: pageBounds.width,
+                pageBoundsHeight: pageBounds.height,
+                observations: observations,
+                layoutRegions: layoutForPage,
+                figures: pageFigures,
+                tableExtractionsByRegionIndex: pageTables,
+                verdict: verdictsByPage[i]?.rawValue,
+                correctionTrailEntries: pageTrail
+            )
+            try? resumeManager.writeCheckpoint(checkpoint)
+
             progress?(Progress(
                 totalPages: totalPages,
                 completedPages: i + 1,
@@ -1385,6 +1479,13 @@ public actor PDFToEPUBPipeline {
             parsedTOC: appliedTOC,
             to: outputURL
         )
+
+        // Conversion succeeded — staging dir's purpose is served.
+        // Skip cleanup when debug logging is on so the user can
+        // still inspect the artifacts; otherwise reclaim the disk.
+        if !options.emitDebugLog {
+            resumeManager.deleteAll()
+        }
 
         // Tally observations by source across every page. This walks
         // the post-cascade pageResults (i.e. the observations the

@@ -5,7 +5,7 @@ import Foundation
 /// inline content. The heuristic path leaves `isHeader=false` and
 /// spans at 1; a future Surya table-model integration (Path A in the
 /// Phase 6 plan) is the place to set those richer values.
-public struct TableCell: Sendable, Equatable {
+public struct TableCell: Sendable, Equatable, Codable {
     /// Renders as `<th>` when true, `<td>` when false.
     public var isHeader: Bool
     /// HTML `rowspan` attribute. 1 ⇒ omitted from output (the default).

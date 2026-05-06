@@ -6,7 +6,7 @@ import Foundation
 /// arbitrary strings. We don't validate the tag here — that would either
 /// require a full BCP-47 parser or a brittle allowlist; instead we trust
 /// callers to use the constants below or pass valid tags from outside.
-public struct BCP47: Sendable, Hashable, RawRepresentable, ExpressibleByStringLiteral {
+public struct BCP47: Sendable, Hashable, RawRepresentable, ExpressibleByStringLiteral, Codable {
     public let rawValue: String
 
     public init(_ rawValue: String) {

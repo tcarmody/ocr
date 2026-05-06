@@ -6,8 +6,8 @@ import CoreGraphics
 /// Coordinates use Vision's normalized convention (origin bottom-left,
 /// both axes in [0,1]) so the rest of the pipeline can mix layout
 /// regions with OCR observations without coordinate translation.
-public struct LayoutRegion: Sendable, Equatable {
-    public enum Kind: String, Sendable, Equatable {
+public struct LayoutRegion: Sendable, Equatable, Codable {
+    public enum Kind: String, Sendable, Equatable, Codable {
         // Body / structure
         case text          // body paragraph
         case sectionHeader // chapter / section title (→ <h2>)

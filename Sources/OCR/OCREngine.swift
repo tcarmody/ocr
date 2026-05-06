@@ -26,7 +26,7 @@ public struct OCRHints: Sendable, Equatable {
 /// "high accuracy" engine for book pages where Vision misses lines;
 /// Claude is the optional Cloud-mode final tier for regions nothing
 /// else got right (polytonic Greek, Hebrew, mixed scripts).
-public enum ObservationSource: Sendable, Equatable {
+public enum ObservationSource: String, Sendable, Equatable, Codable {
     case vision
     case embedded
     case tesseract
@@ -37,7 +37,7 @@ public enum ObservationSource: Sendable, Equatable {
 /// One recognized text region, with location and confidence. Bounding
 /// box uses Vision's normalized [0,1] coordinate system, origin at the
 /// lower-left corner of the input image.
-public struct TextObservation: Sendable, Equatable {
+public struct TextObservation: Sendable, Equatable, Codable {
     public var text: String
     public var confidence: Double  // 0...1
     public var box: CGRect
