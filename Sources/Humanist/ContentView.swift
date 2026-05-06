@@ -151,15 +151,17 @@ struct ContentView: View {
                 Toggle("Claude OCR ($$$)", isOn: $queue.useCloudEnhancedOCR)
                     .toggleStyle(.checkbox)
                     .help("""
-                        Vision → Sonnet shortcut. Vision tries first; \
-                        regions whose quality is poor go straight to \
-                        Sonnet, skipping Surya OCR and Tesseract. \
-                        Requires Cloud mode + API key (configure in \
-                        Settings); inert otherwise. Surya layout still \
-                        runs for figures, tables, and footnotes. \
-                        Costs ≈ $5–10 per book at current Sonnet \
-                        pricing — typically the highest-quality OCR \
-                        path for hard scripts, scans, and small fonts.
+                        Sonnet OCRs each page end-to-end. Replaces the \
+                        Vision/Surya/Tesseract cascade with one call \
+                        per page; produces structured paragraphs, \
+                        headings, footnotes, and language spans \
+                        directly. Best quality for hard scripts, \
+                        complex multi-column layouts, and dense \
+                        academic prose. Requires Cloud mode + API key \
+                        (configure in Settings); inert otherwise. \
+                        Costs ≈ $15–25 per book at current Sonnet \
+                        pricing. Note: figures are not yet preserved \
+                        in this path (text-only output) — coming soon.
                         """)
                 Toggle("Surya OCR", isOn: $queue.useSuryaOCR)
                     .toggleStyle(.checkbox)

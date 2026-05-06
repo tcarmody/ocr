@@ -139,19 +139,27 @@ final class JobRunner: ObservableObject {
         let privateOn = job.options.privateMode
         let cloudFeatures: AISettings.CloudFeatures =
             privateOn ? AISettings.CloudFeatures() : aiSettings.cloudFeatures
-        let cloudEnhancedOCR = privateOn ? false : job.options.useCloudEnhancedOCR
+        // Phase 3: the user-visible "Claude OCR ($$$)" toggle now
+        // drives the end-to-end page-OCR path (one Sonnet call per
+        // page, structured XHTML in, [Block] out). The legacy
+        // cascade-Sonnet shortcut path (Vision → Sonnet escalation
+        // for low-quality regions only) is no longer reachable from
+        // the UI — pass `useCloudEnhancedOCR: false` to the pipeline
+        // so the cascade doesn't fire even when cloud features are
+        // enabled. The cascade implementation stays available for
+        // SpikeRunner / dev measurement; users get the simpler,
+        // higher-quality page-OCR experience.
+        let claudePageOCR = !privateOn && (
+            job.options.useCloudEnhancedOCR
+            || UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
+        )
+        let cloudEnhancedOCR = false
         let keyProvider: @Sendable () -> String?
         if privateOn {
             keyProvider = { nil }
         } else {
             keyProvider = { keyStore.read() }
         }
-        // Phase 2 hidden flag: end-to-end Claude page OCR. Toggled
-        // via UserDefaults so we can flip it without rebuilding:
-        //   defaults write Humanist humanist.useClaudePageOCR -bool YES
-        // Forced off in Private Mode (would require API calls).
-        let claudePageOCR = !privateOn
-            && UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
         let options = PDFToEPUBPipeline.Options(
             documentProfile: job.profile,
             languages: languages,
