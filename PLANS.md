@@ -1259,6 +1259,43 @@ can't.
 
 ~half day.
 
+## R-Launcher-FullQueue — Dedicated full-queue window
+
+**Status**: not started. The launcher's queue list scrolls but
+its visible area is bounded by whatever window size the user has
+on the launcher. After a bulk drop of 50 PDFs, the user wants to
+see the whole queue at once — status, progress, language, cost
+estimate per row, all together — without the launcher's drop
+zone, options, and bottom bar competing for vertical space.
+
+### Approach
+
+- New `WindowGroup` (or `Window`) scene with id `"queue"`. Single
+  instance — opening it twice reuses the existing window. Title
+  "Humanist Queue".
+- Density-optimized table rendered with `Table` (SwiftUI) or
+  `List`. Columns: status icon · filename · status text /
+  progress · detected language · cost estimate · actions
+  (Cancel / Retry / Reveal). Sortable by column, optionally
+  filterable.
+- Scrolls independently of the launcher window — designed to
+  hold hundreds of rows without compromising the launcher's
+  drop / options surface.
+- Window > Show Full Queue command (⇧⌘Q) opens it; also a
+  toolbar / menu link from the launcher's bottom bar.
+
+### Effort
+
+~1 day. The job-row presentation logic is mostly reusable from
+the existing `JobRow` (just rendered in a denser layout). Most
+of the time goes into the Table column setup + the new scene.
+
+### Dependencies
+
+None hard. Plays well with R-Launcher-Pause / -History /
+-Reorder; doing those first means the full-queue window inherits
+their controls cleanly.
+
 ## R-Conversion-Summary — Post-conversion stats panel
 
 **Status**: not started. The pipeline runs Cloud-mode features
