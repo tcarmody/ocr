@@ -157,7 +157,18 @@ struct EditorFindCommands: Commands {
             EditorFindNextCommand()
             EditorFindPrevCommand()
             EditorReplaceCommand()
+            Divider()
+            EditorSpellCheckCommand()
         }
+    }
+}
+
+private struct EditorSpellCheckCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Check Document Spelling…") { router.openSpellCheck() }
+            .keyboardShortcut(";", modifiers: [.command, .shift])
+            .disabled(!router.canFind)
     }
 }
 

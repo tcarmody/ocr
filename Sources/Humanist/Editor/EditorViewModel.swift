@@ -799,6 +799,38 @@ final class EditorViewModel: ObservableObject {
         searchRequest = SearchRequest(kind: kind, nonce: searchNonce)
     }
 
+    // MARK: - Document spell check (NSSpellChecker-driven)
+
+    /// Active spell-check session, or nil when the panel is
+    /// dismissed. The sheet observes this; setting non-nil
+    /// presents the panel.
+    @Published var spellCheckSession: SpellCheckSession?
+
+    /// Run a fresh `NSSpellChecker` pass over the current source
+    /// text and present the document-spelling sheet. Misspellings
+    /// inside XHTML tags (attribute values, element names) are
+    /// filtered out by the session's tag-aware walker.
+    func openSpellCheck() {
+        let session = SpellCheckSession()
+        session.scan(text: sourceText)
+        spellCheckSession = session
+    }
+
+    /// Apply a replacement at the spell-check session's current
+    /// cursor, then refresh the session against the updated source.
+    /// The whole-buffer assignment piggybacks on the standard
+    /// `sourceText` change path so dirty tracking + CodeMirror
+    /// re-push happen automatically.
+    func applySpellingReplacement(_ replacement: String) {
+        guard let session = spellCheckSession,
+              let updated = session.applyReplacement(
+                  replacement, to: sourceText
+              )
+        else { return }
+        sourceText = updated
+        session.scan(text: sourceText)
+    }
+
     /// Replace straight quotes / apostrophes with typographic curly
     /// equivalents in the loaded source text. `SmartQuoter` walks
     /// the XHTML and only transforms characters outside tags, so

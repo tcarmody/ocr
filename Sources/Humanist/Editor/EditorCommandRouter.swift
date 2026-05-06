@@ -122,6 +122,9 @@ final class EditorCommandRouter: ObservableObject {
     /// is active.
     var canFind: Bool { activeEditor() != nil }
 
+    /// Open the document-spelling check sheet on the active editor.
+    func openSpellCheck() { activeEditor()?.openSpellCheck() }
+
     // MARK: - private
 
     /// Pick the editor whose window is currently key. If none of the

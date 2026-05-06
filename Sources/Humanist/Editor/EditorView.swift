@@ -96,6 +96,25 @@ struct EditorView: View {
                             isPresented: $showingCorrectionTrail
                         )
                     }
+                    .sheet(isPresented: Binding(
+                        get: { vm.spellCheckSession != nil },
+                        set: { presented in
+                            if !presented { vm.spellCheckSession = nil }
+                        }
+                    )) {
+                        if let session = vm.spellCheckSession {
+                            SpellCheckSheet(
+                                vm: vm,
+                                session: session,
+                                isPresented: Binding(
+                                    get: { vm.spellCheckSession != nil },
+                                    set: { presented in
+                                        if !presented { vm.spellCheckSession = nil }
+                                    }
+                                )
+                            )
+                        }
+                    }
                     // Document menu's "Show Correction Trail" command
                     // posts this notification so the menu item can
                     // reach this scene's local @State `showingCorrectionTrail`
