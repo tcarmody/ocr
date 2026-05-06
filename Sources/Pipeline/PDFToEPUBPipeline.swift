@@ -365,6 +365,59 @@ public actor PDFToEPUBPipeline {
         }
     }
 
+    /// Apply `DictionaryCorrector` to the joined text of every
+    /// text-bearing region. For each region:
+    ///   * Detect the dominant language from its text via NLR (when
+    ///     long enough to be confident); fall back to the document
+    ///     primary language otherwise.
+    ///   * Run the corrector — it gates internally on script,
+    ///     length, distance, and casing.
+    ///   * Replace the region's observations with a single corrected
+    ///     observation iff the corrector actually changed anything.
+    ///
+    /// Synchronous — the per-region NSSpellChecker calls are IPC
+    /// but cheap enough that the marginal latency is acceptable
+    /// inside the per-page loop. Could be moved off-main if it ever
+    /// becomes a bottleneck.
+    static func applyDictionaryCorrections(
+        observations: [TextObservation],
+        regions: [LayoutRegion],
+        documentLanguage: String?,
+        corrector: DictionaryCorrector
+    ) -> [TextObservation] {
+        var working = observations
+        for region in regions {
+            guard Self.isCleanupCandidate(region: region) else { continue }
+            let inRegion = RegionCascade.filter(
+                observations: working, inRegion: region
+            )
+            guard !inRegion.isEmpty else { continue }
+            let joined = inRegion.map(\.text).joined(separator: "\n")
+            let corrected = corrector.correct(joined)
+            // No-change case: leave observations alone (preserves
+            // their bbox / confidence / source attribution).
+            guard corrected != joined else { continue }
+            // Replace the region with a single observation carrying
+            // the corrected text. We re-use the highest-confidence
+            // existing observation's source so downstream stats
+            // (which engine produced the OCR) stay attributable.
+            let primarySource = inRegion
+                .max(by: { $0.confidence < $1.confidence })?.source ?? .vision
+            let replacement = TextObservation(
+                text: corrected,
+                confidence: 0.95,
+                box: region.box,
+                source: primarySource
+            )
+            working = RegionCascade.replace(
+                observations: working,
+                inRegion: region,
+                with: [replacement]
+            )
+        }
+        return working
+    }
+
     /// Run the chapter classifier across `chapters`, with a small
     /// concurrency cap so a 30-chapter book doesn't issue 30
     /// simultaneous Haiku requests. Each `classify` call internally
@@ -838,6 +891,15 @@ public actor PDFToEPUBPipeline {
             options: options, budget: claudeBudget
         )
 
+        // Dictionary-match cleanup runs unconditionally — it's
+        // free, fast, and gated on language-supported tokens
+        // internally. Constructed once per conversion with the
+        // document's primary language; per-region language hints
+        // from NLR override that when available.
+        let dictionaryCorrector = DictionaryCorrector(
+            documentLanguage: options.documentProfile?.primaryLanguage
+        )
+
         // Cloud Phase 6e: parse the printed table of contents up
         // front (one Haiku call, embedded text only). The result
         // is consumed after `ChapterSplitter` to override the
@@ -1062,6 +1124,27 @@ public actor PDFToEPUBPipeline {
                 }
 
                 // Cloud Phase 6: post-OCR Haiku cleanup. After the
+                // Dictionary-match cleanup. Runs **before** the
+                // Haiku cleanup so single-typo garblings (`thc` →
+                // `the`, `Engiish` → `English`) get fixed cheaply
+                // up front, leaving Haiku to handle the harder
+                // multi-word / structural issues. Per-region
+                // language hint comes from `NLLanguageRecognizer`
+                // when the region's text is long enough; falls back
+                // to the document's primary language. Conservative —
+                // only applies single-character corrections with an
+                // unambiguous dictionary winner; non-Latin tokens
+                // are skipped entirely so we don't damage Greek /
+                // Hebrew / etc.
+                if let regions = layoutForPage, !regions.isEmpty {
+                    observations = Self.applyDictionaryCorrections(
+                        observations: observations,
+                        regions: regions,
+                        documentLanguage: options.documentProfile?.primaryLanguage,
+                        corrector: dictionaryCorrector
+                    )
+                }
+
                 // cascade has settled the per-region OCR text, walk
                 // the text-bearing regions and ask Haiku to fix
                 // character-level errors on the ones whose
