@@ -105,16 +105,31 @@ public actor SidecarBridge {
         self.stdin = inPipe.fileHandleForWriting
         self.stdout = outPipe.fileHandleForReading
 
-        let hello = try await readMessage()
+        let hello = try readMessage()
         self.helloMessage = hello
     }
 
     /// Send one request, await one reply.
+    ///
+    /// **Concurrency note.** `writeFrame` + `readMessage` must run
+    /// as one indivisible operation — the actor mutex protects
+    /// against concurrent callers, but only as long as nothing
+    /// inside this method `await`s on a non-actor-isolated thing
+    /// between the write and the read. (If we yield, a second
+    /// `send` call can squeeze in, write its own request, and start
+    /// its own read on the same stdout pipe — two readers racing
+    /// for one response → deadlock.)
+    ///
+    /// `readMessage` is therefore intentionally synchronous;
+    /// `FileHandle.read` blocks the actor's executor thread for the
+    /// duration of the Surya call (~1–4s on Apple Silicon). That's
+    /// the right trade — the actor's whole purpose is to serialize
+    /// sidecar I/O, and there's only ever one outstanding request.
     public func send(_ payload: [String: Any]) async throws -> [String: Any] {
         try await startIfNeeded()
         let body = try JSONSerialization.data(withJSONObject: payload)
         try writeFrame(body)
-        let reply = try await readMessage()
+        let reply = try readMessage()
         if let op = reply["op"] as? String, op == "error" {
             let msg = (reply["message"] as? String) ?? "<no message>"
             throw SidecarError.sidecarErrored(msg)
@@ -143,26 +158,33 @@ public actor SidecarBridge {
         try stdin.write(contentsOf: body)
     }
 
-    private func readExact(_ n: Int) async throws -> Data {
+    /// Synchronous read on the actor's executor. Was previously
+    /// async via `Task.detached(priority: .userInitiated)` which
+    /// avoided blocking the actor's thread but introduced an
+    /// `await` inside the `send` write/read pair — making the
+    /// actor reentrant between writing the request and reading
+    /// the response, allowing concurrent `send` calls to interleave
+    /// at the wire level (two writes, two competing reads, sidecar
+    /// can only respond to one → deadlock). Going back to a
+    /// blocking read is the simpler correct shape: the actor's
+    /// purpose is exactly to serialize sidecar I/O.
+    private func readExact(_ n: Int) throws -> Data {
         guard let stdout else { throw SidecarError.eof }
         var collected = Data()
         while collected.count < n {
-            // FileHandle.read is blocking; offload from the actor.
-            let chunk: Data = try await Task.detached(priority: .userInitiated) {
-                try stdout.read(upToCount: n - collected.count) ?? Data()
-            }.value
+            let chunk = try stdout.read(upToCount: n - collected.count) ?? Data()
             if chunk.isEmpty { throw SidecarError.eof }
             collected.append(chunk)
         }
         return collected
     }
 
-    private func readMessage() async throws -> [String: Any] {
-        let header = try await readExact(4)
+    private func readMessage() throws -> [String: Any] {
+        let header = try readExact(4)
         let len = header.withUnsafeBytes { ptr -> UInt32 in
             ptr.load(as: UInt32.self).bigEndian
         }
-        let body = try await readExact(Int(len))
+        let body = try readExact(Int(len))
         guard let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
             throw SidecarError.decodeFailed(String(data: body, encoding: .utf8) ?? "<binary>")
         }
