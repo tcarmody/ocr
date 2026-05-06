@@ -1,0 +1,207 @@
+import SwiftUI
+import AppKit
+
+/// Thin formatting toolbar above the source pane. Each button
+/// dispatches a `FormatRequest` through `EditorViewModel`, which
+/// the CodeMirror bridge picks up and runs against the current
+/// selection (or the cursor when nothing is selected).
+///
+/// Buttons are grouped into three sections: inline (bold / italic /
+/// code / sup / sub), block (headings / blockquote / lists / hr),
+/// and special (link / language). Section dividers are visual only
+/// — there's no state distinction.
+///
+/// Link and language tag use small popovers so the user can type
+/// the URL or BCP-47 code without leaving the editor.
+struct SourceFormattingToolbar: View {
+    @ObservedObject var vm: EditorViewModel
+    @State private var showingLinkPopover = false
+    @State private var showingLanguagePopover = false
+    @State private var linkURL = ""
+    @State private var languageCode = ""
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Inline character formatting
+            iconButton("Bold", systemImage: "bold") {
+                vm.formatWrap(opening: "<strong>", closing: "</strong>")
+            }
+            .keyboardShortcut("b", modifiers: .command)
+
+            iconButton("Italic", systemImage: "italic") {
+                vm.formatWrap(opening: "<em>", closing: "</em>")
+            }
+            .keyboardShortcut("i", modifiers: .command)
+
+            iconButton("Inline code", systemImage: "chevron.left.forwardslash.chevron.right") {
+                vm.formatWrap(opening: "<code>", closing: "</code>")
+            }
+
+            iconButton("Superscript", systemImage: "textformat.superscript") {
+                vm.formatWrap(opening: "<sup>", closing: "</sup>")
+            }
+
+            iconButton("Subscript", systemImage: "textformat.subscript") {
+                vm.formatWrap(opening: "<sub>", closing: "</sub>")
+            }
+
+            verticalDivider
+
+            // Headings
+            iconButton("Heading 1", systemImage: "1.square") {
+                vm.formatWrap(opening: "<h1>", closing: "</h1>")
+            }
+            .keyboardShortcut("1", modifiers: [.command, .option])
+
+            iconButton("Heading 2", systemImage: "2.square") {
+                vm.formatWrap(opening: "<h2>", closing: "</h2>")
+            }
+            .keyboardShortcut("2", modifiers: [.command, .option])
+
+            iconButton("Heading 3", systemImage: "3.square") {
+                vm.formatWrap(opening: "<h3>", closing: "</h3>")
+            }
+            .keyboardShortcut("3", modifiers: [.command, .option])
+
+            verticalDivider
+
+            // Block-level structure
+            iconButton("Blockquote", systemImage: "quote.opening") {
+                vm.formatWrap(
+                    opening: "<blockquote>\n  <p>",
+                    closing: "</p>\n</blockquote>"
+                )
+            }
+
+            iconButton("Bullet list", systemImage: "list.bullet") {
+                vm.formatList("ul")
+            }
+
+            iconButton("Numbered list", systemImage: "list.number") {
+                vm.formatList("ol")
+            }
+
+            iconButton("Horizontal rule", systemImage: "minus") {
+                vm.formatInsert("<hr/>")
+            }
+
+            verticalDivider
+
+            // Special — popovers for input
+            iconButton("Link…", systemImage: "link") {
+                linkURL = ""
+                showingLinkPopover = true
+            }
+            .popover(isPresented: $showingLinkPopover, arrowEdge: .bottom) {
+                linkPopover
+            }
+
+            iconButton("Language tag…", systemImage: "globe") {
+                languageCode = ""
+                showingLanguagePopover = true
+            }
+            .popover(isPresented: $showingLanguagePopover, arrowEdge: .bottom) {
+                languagePopover
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    // MARK: - Pieces
+
+    @ViewBuilder
+    private func iconButton(
+        _ label: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 22, height: 18)
+        }
+        .buttonStyle(.borderless)
+        .help(label)
+    }
+
+    @ViewBuilder
+    private var verticalDivider: some View {
+        Divider().frame(height: 16)
+    }
+
+    @ViewBuilder
+    private var linkPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Insert link").font(.headline)
+            Text("Wraps the selection with `<a href=\"…\">`. With nothing selected, the URL is inserted as the visible text too.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 280, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("https://…", text: $linkURL)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 280)
+                .onSubmit { commitLink() }
+            HStack {
+                Spacer()
+                Button("Cancel") { showingLinkPopover = false }
+                Button("Insert") { commitLink() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(linkURL.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
+    private var languagePopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Wrap with language tag").font(.headline)
+            Text("Wraps the selection with `<span xml:lang=\"…\" lang=\"…\">`. Use a BCP-47 code (`grc` for ancient Greek, `la` for Latin, `he` for Hebrew, etc.).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 320, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("BCP-47 (e.g. grc, la, fr)", text: $languageCode)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 320)
+                .onSubmit { commitLanguage() }
+            // Quick chips for the most common academic-book codes.
+            HStack(spacing: 6) {
+                ForEach(["grc", "la", "fr", "de", "it", "es", "he", "ar"], id: \.self) { code in
+                    Button(code) { languageCode = code }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showingLanguagePopover = false }
+                Button("Wrap") { commitLanguage() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(languageCode.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(14)
+    }
+
+    // MARK: - Commit handlers
+
+    private func commitLink() {
+        let url = linkURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return }
+        vm.formatLink(href: url)
+        showingLinkPopover = false
+    }
+
+    private func commitLanguage() {
+        let code = languageCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { return }
+        vm.formatLanguageSpan(lang: code)
+        showingLanguagePopover = false
+    }
+}

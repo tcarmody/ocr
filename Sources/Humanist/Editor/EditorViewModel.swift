@@ -155,6 +155,30 @@ final class EditorViewModel: ObservableObject {
     }
     private var replacePageNonce: Int = 0
 
+    /// Source-pane formatting toolbar requests (Bold / Italic /
+    /// Heading / list / link / etc.). Each click on a toolbar button
+    /// bumps the nonce so identical actions in a row still fire.
+    @Published private(set) var formatRequest: FormatRequest?
+
+    struct FormatRequest: Equatable {
+        let action: Action
+        let nonce: Int
+
+        /// Three shapes the toolbar can produce:
+        ///   * `wrap(opening, closing)` — wrap selection (or insert
+        ///     paired tags at cursor). Most buttons use this.
+        ///   * `wrapList(listType)` — wrap each non-empty selected
+        ///     line as a `<li>`, surrounded by `<ul>` or `<ol>`.
+        ///   * `insert(text)` — insert raw text at the cursor; used
+        ///     by self-closing inserts like `<hr/>`.
+        enum Action: Equatable {
+            case wrap(opening: String, closing: String)
+            case wrapList(listType: String)
+            case insert(text: String)
+        }
+    }
+    private var formatNonce: Int = 0
+
     struct ReOCRResult: Identifiable, Equatable {
         let id: UUID
         let engine: ReOCREngineKind
@@ -681,6 +705,68 @@ final class EditorViewModel: ObservableObject {
     func replaceSourceSelection(with text: String) {
         replaceNonce &+= 1
         replaceSourceRequest = ReplaceSourceRequest(text: text, nonce: replaceNonce)
+    }
+
+    // MARK: - Source-pane formatting toolbar (Phase 7+)
+
+    /// Wrap the current selection in `opening` / `closing`, or
+    /// insert paired tags at the cursor when no selection. Backbone
+    /// for Bold, Italic, Heading, Blockquote, Code, Sup/Sub.
+    func formatWrap(opening: String, closing: String) {
+        formatNonce &+= 1
+        formatRequest = FormatRequest(
+            action: .wrap(opening: opening, closing: closing),
+            nonce: formatNonce
+        )
+    }
+
+    /// Wrap the current selection (line by line) as a list of the
+    /// requested type ("ul" or "ol"). Empty lines drop out; nothing
+    /// selected → inserts an empty single-item list.
+    func formatList(_ listType: String) {
+        formatNonce &+= 1
+        formatRequest = FormatRequest(
+            action: .wrapList(listType: listType),
+            nonce: formatNonce
+        )
+    }
+
+    /// Insert raw `text` at the cursor (replacing selection if any).
+    /// Used for self-closing tag inserts — `<hr/>`, etc.
+    func formatInsert(_ text: String) {
+        formatNonce &+= 1
+        formatRequest = FormatRequest(
+            action: .insert(text: text),
+            nonce: formatNonce
+        )
+    }
+
+    /// Wrap selection with `<a href="…">…</a>`. Selection becomes
+    /// the link text; when empty, the URL is also used as the
+    /// visible text.
+    func formatLink(href: String) {
+        let trimmed = href.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let escaped = Self.xhtmlEscape(trimmed)
+        formatWrap(
+            opening: "<a href=\"\(escaped)\">",
+            closing: "</a>"
+        )
+    }
+
+    /// Wrap selection in `<span xml:lang="…" lang="…">…</span>` —
+    /// used to mark inline foreign-language text in academic books
+    /// (Greek quotation in an English paragraph, etc.). Lang code
+    /// gets the same dual-attribute treatment XHTMLWriter uses for
+    /// per-run language tagging.
+    func formatLanguageSpan(lang: String) {
+        let trimmed = lang.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let escaped = Self.xhtmlEscape(trimmed)
+        formatWrap(
+            opening: "<span xml:lang=\"\(escaped)\" lang=\"\(escaped)\">",
+            closing: "</span>"
+        )
     }
 
     // MARK: - Correction trail actions (Cloud Phase 6)

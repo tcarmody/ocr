@@ -165,6 +165,69 @@
         editor.focus();
       };
 
+      // Wrap the current selection (or insert at the cursor) with
+      // `opening` and `closing` strings. Used by the source pane's
+      // formatting toolbar — Bold, Italic, Heading, Blockquote, etc.
+      // Selected: "lorem" + ("<strong>", "</strong>") → "<strong>lorem</strong>"
+      // Empty:    cursor + ("<em>", "</em>")          → "<em>|</em>" (caret between)
+      window.humanistWrapSelection = function (opening, closing) {
+        if (typeof opening !== "string" || typeof closing !== "string") return;
+        var doc = editor.getDoc();
+        var sel = doc.getSelection();
+        if (sel.length > 0) {
+          doc.replaceSelection(opening + sel + closing, "around");
+        } else {
+          var pos = doc.getCursor();
+          doc.replaceRange(opening + closing, pos);
+          // Place caret between the tags so the user can type into
+          // the empty wrapper.
+          doc.setCursor({line: pos.line, ch: pos.ch + opening.length});
+        }
+        editor.focus();
+      };
+
+      // Wrap the current selection as a list. Each non-empty
+      // newline-separated line becomes a `<li>...</li>`; the whole
+      // run is enclosed in `<ul>` or `<ol>`. With nothing selected,
+      // inserts a one-item list with the caret inside the empty
+      // `<li>`.
+      window.humanistWrapAsList = function (listType) {
+        if (listType !== "ul" && listType !== "ol") return;
+        var doc = editor.getDoc();
+        var sel = doc.getSelection();
+        var inner;
+        if (sel.length > 0) {
+          var lines = sel.split("\n")
+            .map(function (l) { return l.trim(); })
+            .filter(function (l) { return l.length > 0; });
+          if (lines.length === 0) lines = [""];
+          inner = lines.map(function (l) {
+            return "  <li>" + l + "</li>";
+          }).join("\n");
+        } else {
+          inner = "  <li></li>";
+        }
+        var wrapped = "<" + listType + ">\n" + inner + "\n</" + listType + ">";
+        if (sel.length > 0) {
+          doc.replaceSelection(wrapped, "around");
+        } else {
+          var pos = doc.getCursor();
+          doc.replaceRange(wrapped, pos);
+          // Place caret inside the (empty) first <li>.
+          doc.setCursor({line: pos.line + 1, ch: 6});  // "  <li>"
+        }
+        editor.focus();
+      };
+
+      // Insert raw `text` at the cursor (replacing selection if any).
+      // Used for self-closing inserts — e.g. <hr/> from the toolbar —
+      // where the wrap-with-opening/closing shape doesn't apply.
+      window.humanistInsertAtCursor = function (text) {
+        if (typeof text !== "string") return;
+        editor.replaceSelection(text, "end");
+        editor.focus();
+      };
+
       // Replace the entire body of a single page — text between the
       // closing `>` of `<span id="hu-page-N" …>` and the start of
       // `<span id="hu-page-N+1" …>` (or end of body, for the last

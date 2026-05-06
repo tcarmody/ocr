@@ -227,6 +227,13 @@ struct EditorView: View {
     private var sourcePane: some View {
         VStack(spacing: 0) {
             paneHeader("Source", systemImage: "chevron.left.forwardslash.chevron.right")
+            // Formatting toolbar only when an editable text file is
+            // selected — for binary files (images, fonts) the source
+            // pane shows a placeholder instead and the toolbar
+            // would have nothing to act on.
+            if vm.selectedFile != nil, vm.canEditSelectedFile {
+                SourceFormattingToolbar(vm: vm)
+            }
             sourceContent
             validationStrip
         }
@@ -267,6 +274,7 @@ struct EditorView: View {
                 scrollRequest: vm.scrollCodeToAnchor,
                 replaceRequest: vm.replaceSourceRequest,
                 replacePageRequest: vm.replacePageRequest,
+                formatRequest: vm.formatRequest,
                 onCursorAnchorChanged: { id in vm.didMoveCursorToAnchor(id) }
             )
             .id(file.id)

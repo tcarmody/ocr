@@ -33,6 +33,10 @@ struct CodeEditorView: View {
     /// Replace-entire-page command from the Re-OCR sheet — splices
     /// XHTML between `hu-page-N` and `hu-page-N+1` anchors.
     let replacePageRequest: EditorViewModel.ReplacePageRequest?
+    /// Source-pane formatting toolbar command — wrap selection (or
+    /// insert at cursor) with the requested tag(s). Nonce-tagged
+    /// so repeated clicks of the same button still fire.
+    let formatRequest: EditorViewModel.FormatRequest?
     /// Called when CodeMirror's cursor crosses a different `hu-page-N`
     /// anchor than the one we last reported. The editor uses this to
     /// drive the PDF + preview panes (code → others sync).
@@ -64,6 +68,7 @@ struct CodeEditorView: View {
                 scrollRequest: scrollRequest,
                 replaceRequest: replaceRequest,
                 replacePageRequest: replacePageRequest,
+                formatRequest: formatRequest,
                 onCursorAnchorChanged: onCursorAnchorChanged
             )
         } else {
@@ -98,6 +103,7 @@ private struct CodeMirrorWebView: NSViewRepresentable {
     let scrollRequest: EditorViewModel.AnchorScrollRequest?
     let replaceRequest: EditorViewModel.ReplaceSourceRequest?
     let replacePageRequest: EditorViewModel.ReplacePageRequest?
+    let formatRequest: EditorViewModel.FormatRequest?
     let onCursorAnchorChanged: ((String) -> Void)?
 
     func makeCoordinator() -> Coordinator {
@@ -105,6 +111,10 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         c.onCursorAnchorChanged = onCursorAnchorChanged
         return c
     }
+
+    /// Pass formatRequest down — separate parameter from the existing
+    /// scroll/replace requests so each has its own nonce tracking.
+
 
     func makeNSView(context: Context) -> WKWebView {
         let cfg = WKWebViewConfiguration()
@@ -173,6 +183,12 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             coordinator.lastReplacePageNonce = req.nonce
             coordinator.pushReplacePage(anchorId: req.anchorId, text: req.text)
         }
+        // Source-pane formatting toolbar — wrap selection (or insert
+        // at cursor) with the requested tag(s).
+        if let req = formatRequest, coordinator.lastFormatNonce != req.nonce {
+            coordinator.lastFormatNonce = req.nonce
+            coordinator.pushFormat(req.action)
+        }
     }
 
     // MARK: - Coordinator
@@ -203,6 +219,10 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         var lastReplacePageNonce: Int = .min
         /// Replace-page payload queued while JS wasn't ready.
         var pendingReplacePage: (anchorId: String, text: String)?
+        /// Last formatting-toolbar nonce we honored.
+        var lastFormatNonce: Int = .min
+        /// Format action queued while JS wasn't ready.
+        var pendingFormatAction: EditorViewModel.FormatRequest.Action?
         /// Forwarded back to the VM when CodeMirror reports a new
         /// cursor-anchor (code → others sync).
         var onCursorAnchorChanged: ((String) -> Void)?
@@ -262,6 +282,29 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
+        /// Send a formatting action (Bold / Italic / Heading / list /
+        /// link / etc.) to the CodeMirror JS bridge. Each action
+        /// resolves to one of three JS calls — `humanistWrapSelection`,
+        /// `humanistWrapAsList`, or `humanistInsertAtCursor` — depending
+        /// on the shape of the action.
+        func pushFormat(_ action: EditorViewModel.FormatRequest.Action) {
+            guard ready, let webView else {
+                pendingFormatAction = action
+                return
+            }
+            pendingFormatAction = nil
+            let js: String
+            switch action {
+            case .wrap(let opening, let closing):
+                js = "humanistWrapSelection(\(jsString(opening)), \(jsString(closing)));"
+            case .wrapList(let listType):
+                js = "humanistWrapAsList(\(jsString(listType)));"
+            case .insert(let text):
+                js = "humanistInsertAtCursor(\(jsString(text)));"
+            }
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+
         // WKScriptMessageHandler
 
         func userContentController(_ userContentController: WKUserContentController,
@@ -291,6 +334,11 @@ private struct CodeMirrorWebView: NSViewRepresentable {
                 if let payload = pendingReplacePage {
                     DispatchQueue.main.async { [weak self] in
                         self?.pushReplacePage(anchorId: payload.anchorId, text: payload.text)
+                    }
+                }
+                if let action = pendingFormatAction {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushFormat(action)
                     }
                 }
             case "edit":
