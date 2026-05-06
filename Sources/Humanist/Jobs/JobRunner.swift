@@ -130,19 +130,35 @@ final class JobRunner: ObservableObject {
         // setting applies to every queued conversion.
         let aiSettings = AISettingsStore().load()
         let keyStore = AnthropicAPIKeyStore()
+        // Private Mode override: zero out every cloud surface for
+        // this conversion regardless of global Settings. Empty
+        // `CloudFeatures` makes every `make*ClaudeX` factory return
+        // nil; the nil-returning key provider is belt-and-suspenders
+        // (factories also gate on a non-empty key). `useCloudEnhancedOCR`
+        // is coerced off since it only fires under Cloud mode + key.
+        let privateOn = job.options.privateMode
+        let cloudFeatures: AISettings.CloudFeatures =
+            privateOn ? AISettings.CloudFeatures() : aiSettings.cloudFeatures
+        let cloudEnhancedOCR = privateOn ? false : job.options.useCloudEnhancedOCR
+        let keyProvider: @Sendable () -> String?
+        if privateOn {
+            keyProvider = { nil }
+        } else {
+            keyProvider = { keyStore.read() }
+        }
         let options = PDFToEPUBPipeline.Options(
             documentProfile: job.profile,
             languages: languages,
             useHighAccuracyOCR: job.options.useSuryaOCR,
-            useCloudEnhancedOCR: job.options.useCloudEnhancedOCR,
+            useCloudEnhancedOCR: cloudEnhancedOCR,
             forceOCR: job.options.forceOCR,
             processingMode: aiSettings.processingMode,
-            cloudFeatures: aiSettings.cloudFeatures,
+            cloudFeatures: cloudFeatures,
             perBookCallCap: aiSettings.perBookCallCap,
             // Closure (not a captured string) so a key rotation in
             // Settings UI takes effect on the next request without
             // rebuilding the pipeline.
-            anthropicAPIKeyProvider: { keyStore.read() }
+            anthropicAPIKeyProvider: keyProvider
         )
         let storeRef = store
         let jobID = job.id

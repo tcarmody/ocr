@@ -169,6 +169,15 @@ struct ContentView: View {
                 Toggle("Force OCR", isOn: $queue.forceOCR)
                     .toggleStyle(.checkbox)
                     .help("Skip the PDF's embedded text layer and run OCR on every page. Use when the embedded text is the output of a previous bad OCR pass.")
+                Toggle("Private", isOn: $queue.privateMode)
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Override Settings: disable every cloud feature \
+                        for this conversion. No Claude calls, no cost. \
+                        Forces local-only processing regardless of your \
+                        global Cloud-mode toggles. Coerces Claude OCR \
+                        off; Surya OCR / Force OCR still apply.
+                        """)
                 Spacer()
                 tesseractStatusBadge
             }

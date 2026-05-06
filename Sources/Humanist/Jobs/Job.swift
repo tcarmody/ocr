@@ -151,17 +151,27 @@ struct ConversionOptions: Codable, Equatable {
     /// `AISettings`; promoted to ConversionOptions so the launcher
     /// can offer it as a per-conversion toggle.
     var forceOCR: Bool
+    /// Override Settings to disable every cloud feature for this
+    /// conversion. Forces `cloudFeatures` to all-off and clears the
+    /// API-key provider in the runner — no Claude calls happen
+    /// regardless of the user's global processing-mode / cloud
+    /// toggles. `useCloudEnhancedOCR` is also coerced off, since it
+    /// only fires on Cloud mode + key. Useful for one-off privacy-
+    /// sensitive conversions without flipping global settings.
+    var privateMode: Bool
 
     init(
         languages: [String] = ["en"],
         useSuryaOCR: Bool = false,
         useCloudEnhancedOCR: Bool = false,
-        forceOCR: Bool = false
+        forceOCR: Bool = false,
+        privateMode: Bool = false
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
         self.useCloudEnhancedOCR = useCloudEnhancedOCR
         self.forceOCR = forceOCR
+        self.privateMode = privateMode
     }
 
     /// Codable: decodes both the new `useSuryaOCR` key and the
@@ -174,6 +184,7 @@ struct ConversionOptions: Codable, Equatable {
         case useHighAccuracyOCR  // legacy alias
         case useCloudEnhancedOCR
         case forceOCR
+        case privateMode
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -189,6 +200,9 @@ struct ConversionOptions: Codable, Equatable {
             Bool.self, forKey: .useCloudEnhancedOCR
         ) ?? false
         self.forceOCR = try c.decodeIfPresent(Bool.self, forKey: .forceOCR) ?? false
+        self.privateMode = try c.decodeIfPresent(
+            Bool.self, forKey: .privateMode
+        ) ?? false
     }
 
     /// Encode under the new keys only — the legacy alias is for
@@ -199,6 +213,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(useSuryaOCR, forKey: .useSuryaOCR)
         try c.encode(useCloudEnhancedOCR, forKey: .useCloudEnhancedOCR)
         try c.encode(forceOCR, forKey: .forceOCR)
+        try c.encode(privateMode, forKey: .privateMode)
     }
 }
 

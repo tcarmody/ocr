@@ -59,6 +59,15 @@ final class QueueViewModel: ObservableObject {
     /// Promoted from Settings to a launcher toggle since it's
     /// inherently per-conversion (some PDFs need it; most don't).
     @Published var forceOCR: Bool = false
+    /// "Private Mode" override. When true, queueing a conversion
+    /// disables every cloud feature for that job regardless of the
+    /// global Settings — `cloudFeatures` is forced to all-off and
+    /// the API-key provider returns nil in `JobRunner`. Useful for
+    /// one-off privacy-sensitive runs without flipping global
+    /// settings. Per-conversion: snapshotted into `Job.options` at
+    /// enqueue time so a mid-batch toggle doesn't retroactively
+    /// affect already-queued jobs.
+    @Published var privateMode: Bool = false
 
     let store: JobStore
     let runner: JobRunner
@@ -135,27 +144,36 @@ final class QueueViewModel: ObservableObject {
                 languages: selectedLanguages.map { $0.rawValue },
                 useSuryaOCR: useSuryaOCR,
                 useCloudEnhancedOCR: useCloudEnhancedOCR,
-                forceOCR: forceOCR
+                forceOCR: forceOCR,
+                privateMode: privateMode
             ),
             status: .profiling
         )
         store.add(job)
         let suryaOn = useSuryaOCR
+        let privateOn = privateMode
         Task.detached(priority: .userInitiated) { [store, weak runner] in
             let profile = DocumentProfiler.profile(pdfURL: url)
             // Compute the Cloud-mode cost estimate + content/config
             // warnings from the profile + the user's current AI
             // settings. Cheap (no I/O); the keychain read for
             // `hasAPIKey` runs once in this detached Task so we don't
-            // hop main-thread for it later.
+            // hop main-thread for it later. Private Mode forces
+            // `.empty` since no Claude calls will be made regardless
+            // of the global cloud-feature toggles.
             let aiSettings = AISettingsStore().load()
-            let estimate: CostEstimator.Estimate = aiSettings.processingMode == .cloud
-                ? CostEstimator.estimate(
+            let estimate: CostEstimator.Estimate
+            if privateOn {
+                estimate = .empty
+            } else if aiSettings.processingMode == .cloud {
+                estimate = CostEstimator.estimate(
                     profile: profile,
                     cloudFeatures: aiSettings.cloudFeatures,
                     perBookCallCap: aiSettings.perBookCallCap
                 )
-                : .empty
+            } else {
+                estimate = .empty
+            }
             let hasAPIKey = (AnthropicAPIKeyStore().read() ?? "").isEmpty == false
             let warnings = ProfileWarningEvaluator.evaluate(
                 ProfileWarningInputs(
