@@ -12,6 +12,23 @@ struct EditorView: View {
     @StateObject private var vm: EditorViewModel
     @State private var showingCorrectionTrail = false
     @Environment(\.openWindow) private var openWindow
+    // User preferences from the Settings pane. SwiftUI re-renders
+    // EditorView (and re-fires `updateNSView` on the embedded
+    // CodeMirror / Preview WKWebViews) on each value change, which
+    // is the trigger for pushing the new value through the JS
+    // bridge.
+    @AppStorage(EditorSettingsKeys.sourceFontSize)
+    private var sourceFontSize: Double = EditorSettingsDefaults.sourceFontSize
+    @AppStorage(EditorSettingsKeys.sourceTheme)
+    private var sourceTheme: String = EditorSettingsDefaults.sourceTheme
+    @AppStorage(EditorSettingsKeys.sourceLineNumbers)
+    private var sourceLineNumbers: Bool = EditorSettingsDefaults.sourceLineNumbers
+    @AppStorage(EditorSettingsKeys.sourceWordWrap)
+    private var sourceWordWrap: Bool = EditorSettingsDefaults.sourceWordWrap
+    @AppStorage(EditorSettingsKeys.previewFontSize)
+    private var previewFontSize: Double = EditorSettingsDefaults.previewFontSize
+    @AppStorage(EditorSettingsKeys.previewTheme)
+    private var previewTheme: String = EditorSettingsDefaults.previewTheme
 
     init(epubURL: URL) {
         self.epubURL = epubURL
@@ -295,6 +312,10 @@ struct EditorView: View {
                 replacePageRequest: vm.replacePageRequest,
                 formatRequest: vm.formatRequest,
                 searchRequest: vm.searchRequest,
+                fontSize: sourceFontSize,
+                theme: sourceTheme,
+                lineNumbers: sourceLineNumbers,
+                wordWrap: sourceWordWrap,
                 onCursorAnchorChanged: { id in vm.didMoveCursorToAnchor(id) }
             )
             .id(file.id)
@@ -322,6 +343,8 @@ struct EditorView: View {
                 workingDirectory: workingDir,
                 reloadTrigger: vm.previewVersion,
                 scrollRequest: vm.scrollPreviewToAnchor,
+                fontSize: previewFontSize,
+                theme: previewTheme,
                 onAnchorVisible: { id in vm.didReportPreviewAnchor(id) }
             )
         }

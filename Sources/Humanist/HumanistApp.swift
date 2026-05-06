@@ -92,11 +92,18 @@ struct HumanistApp: App {
             }
         }
 
-        // Standard macOS Settings (⌘,) scene. Contains AI / Cloud-mode
-        // configuration today; future tabs (e.g. typography, default
-        // languages) slot in here as `TabView` items.
+        // Standard macOS Settings (⌘,) scene. TabView so the
+        // Editor and AI panes each get their own surface; future
+        // tabs (default languages, default output location) slot
+        // in alongside.
         Settings {
-            AISettingsView()
+            TabView {
+                EditorSettingsView()
+                    .tabItem { Label("Editor", systemImage: "text.cursor") }
+                AISettingsView()
+                    .tabItem { Label("AI", systemImage: "sparkles") }
+            }
+            .frame(width: 540, height: 520)
         }
     }
 }

@@ -22,6 +22,10 @@ struct PreviewView: View {
     /// linked-navigation feature (PDF page change). Nonce-tagged so a
     /// repeat request to the same anchor still fires onChange.
     let scrollRequest: EditorViewModel.AnchorScrollRequest?
+    /// Reading preferences from the Settings pane — flow into the
+    /// loaded XHTML via injected `<style>` overrides.
+    let fontSize: Double
+    let theme: String
     /// Callback fired when the JS-injected IntersectionObserver
     /// reports a new topmost-visible page anchor (back-sync from
     /// preview scroll → PDF page).
@@ -48,6 +52,8 @@ struct PreviewView: View {
                 accessRoot: workingDirectory,
                 reloadTrigger: reloadTrigger,
                 scrollRequest: scrollRequest,
+                fontSize: fontSize,
+                theme: theme,
                 onAnchorVisible: onAnchorVisible
             )
         } else if isImage(ext) {
@@ -112,6 +118,10 @@ private final class WebPreviewModel: NSObject, ObservableObject,
     /// Anchor id we want to scroll to once loading completes. Set on
     /// scroll request before the page is ready; consumed in didFinish.
     var pendingScrollAnchor: String?
+    /// Appearance overrides set before the page was ready. Flushed
+    /// in `didFinish` once the document is loaded and queryable.
+    var pendingFontSize: Double?
+    var pendingTheme: String?
     /// Forwarded back to EditorViewModel when JS reports a new
     /// topmost-visible anchor.
     var onAnchorVisible: ((String) -> Void)?
@@ -125,7 +135,32 @@ private final class WebPreviewModel: NSObject, ObservableObject,
         Task { @MainActor in
             self.status = .loaded
             self.flushPendingScroll()
+            self.flushPendingAppearance(webView: webView)
         }
+    }
+
+    func flushPendingAppearance(webView: WKWebView) {
+        guard let size = pendingFontSize, let theme = pendingTheme
+        else { return }
+        pendingFontSize = nil
+        pendingTheme = nil
+        let css = WebPreview.overrideCSS(fontSize: size, theme: theme)
+        let escaped = (try? JSONSerialization.data(
+            withJSONObject: [css], options: []
+        )).flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        let cssLiteral = String(escaped.dropFirst().dropLast())
+        let js = """
+        (function() {
+          var existing = document.getElementById('humanist-overrides');
+          if (!existing) {
+            existing = document.createElement('style');
+            existing.id = 'humanist-overrides';
+            document.head.appendChild(existing);
+          }
+          existing.textContent = \(cssLiteral);
+        })();
+        """
+        webView.evaluateJavaScript(js, completionHandler: nil)
     }
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         let message = error.localizedDescription
@@ -175,6 +210,8 @@ private struct WebPreviewPane: View {
     let accessRoot: URL
     let reloadTrigger: Int
     let scrollRequest: EditorViewModel.AnchorScrollRequest?
+    let fontSize: Double
+    let theme: String
     let onAnchorVisible: ((String) -> Void)?
     @StateObject private var model = WebPreviewModel()
 
@@ -185,6 +222,8 @@ private struct WebPreviewPane: View {
                 accessRoot: accessRoot,
                 reloadTrigger: reloadTrigger,
                 scrollRequest: scrollRequest,
+                fontSize: fontSize,
+                theme: theme,
                 model: model
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -240,6 +279,8 @@ private struct WebPreview: NSViewRepresentable {
     let accessRoot: URL
     let reloadTrigger: Int
     let scrollRequest: EditorViewModel.AnchorScrollRequest?
+    let fontSize: Double
+    let theme: String
     let model: WebPreviewModel
 
     func makeNSView(context: Context) -> WKWebView {
@@ -265,6 +306,68 @@ private struct WebPreview: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {
         load(into: nsView)
         applyScrollRequestIfNeeded(view: nsView)
+        applyAppearanceOverrides(view: nsView)
+    }
+
+    /// Inject (or update) a `<style id="humanist-overrides">`
+    /// element in the loaded XHTML's head whose content reflects
+    /// the user's preview font size + theme. Re-running on every
+    /// `updateNSView` is cheap; the JS replaces an existing element
+    /// rather than appending a new one, so the style stays current.
+    private func applyAppearanceOverrides(view: WKWebView) {
+        guard model.status == .loaded else {
+            // Defer until didFinish — flushPendingScroll's analog.
+            model.pendingFontSize = fontSize
+            model.pendingTheme = theme
+            return
+        }
+        let css = Self.overrideCSS(fontSize: fontSize, theme: theme)
+        let escaped = (try? JSONSerialization.data(
+            withJSONObject: [css], options: []
+        )).flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        let cssLiteral = String(escaped.dropFirst().dropLast())
+        let js = """
+        (function() {
+          var existing = document.getElementById('humanist-overrides');
+          if (!existing) {
+            existing = document.createElement('style');
+            existing.id = 'humanist-overrides';
+            document.head.appendChild(existing);
+          }
+          existing.textContent = \(cssLiteral);
+        })();
+        """
+        view.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    /// Render the `<style>` element's CSS for the current settings.
+    /// Body font size cascades to descendants in points; the theme
+    /// override class flips the document's color scheme via a
+    /// `:where()` body selector that wins over the EPUB stylesheet
+    /// without needing per-element overrides.
+    static func overrideCSS(fontSize: Double, theme: String) -> String {
+        let size = max(8, min(48, Int(fontSize)))
+        var css = "html, body { font-size: \(size)px; }\n"
+        switch theme {
+        case "light":
+            css += """
+              :root { color-scheme: light; }
+              body { background: #ffffff !important; color: #1d1d1d !important; }
+
+            """
+        case "dark":
+            css += """
+              :root { color-scheme: dark; }
+              body { background: #1e1e1e !important; color: #d4d4d4 !important; }
+              a { color: #6cb4f0 !important; }
+
+            """
+        default:
+            // "system" — let CSS prefers-color-scheme handle it; we
+            // don't override either way.
+            break
+        }
+        return css
     }
 
     private func load(into view: WKWebView) {

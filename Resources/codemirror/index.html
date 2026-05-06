@@ -43,21 +43,54 @@
       }
     }
     @media (prefers-color-scheme: dark) {
-      body { background: #1e1e1e; color: #d4d4d4; }
-      .CodeMirror { background: #1e1e1e; color: #d4d4d4; }
-      .CodeMirror-gutters { background: #1e1e1e; border-right: 1px solid #333; }
-      .CodeMirror-linenumber { color: #6a6a6a; }
-      .CodeMirror-cursor { border-left-color: #d4d4d4 !important; }
-      .CodeMirror-dialog {
+      body:not(.hu-theme-light) { background: #1e1e1e; color: #d4d4d4; }
+      body:not(.hu-theme-light) .CodeMirror { background: #1e1e1e; color: #d4d4d4; }
+      body:not(.hu-theme-light) .CodeMirror-gutters { background: #1e1e1e; border-right: 1px solid #333; }
+      body:not(.hu-theme-light) .CodeMirror-linenumber { color: #6a6a6a; }
+      body:not(.hu-theme-light) .CodeMirror-cursor { border-left-color: #d4d4d4 !important; }
+      body:not(.hu-theme-light) .CodeMirror-dialog {
         background: rgba(40, 40, 40, 0.95);
         color: #d4d4d4;
         border-bottom-color: rgba(255, 255, 255, 0.15);
       }
-      .CodeMirror-dialog input {
+      body:not(.hu-theme-light) .CodeMirror-dialog input {
         background: #2c2c2c;
         color: #d4d4d4;
         border: 1px solid #555;
       }
+    }
+    /* Forced light — wins over the prefers-color-scheme dark
+       block via `body.hu-theme-light` on the document body. */
+    body.hu-theme-light { background: #ffffff; color: #1d1d1d; }
+    body.hu-theme-light .CodeMirror { background: #ffffff; color: #1d1d1d; }
+    body.hu-theme-light .CodeMirror-gutters { background: #ffffff; border-right: 1px solid #e0e0e0; }
+    body.hu-theme-light .CodeMirror-linenumber { color: #b0b0b0; }
+    body.hu-theme-light .CodeMirror-cursor { border-left-color: #1d1d1d !important; }
+    body.hu-theme-light .CodeMirror-dialog {
+      background: rgba(255, 255, 255, 0.95);
+      color: #1d1d1d;
+      border-bottom-color: rgba(0, 0, 0, 0.15);
+    }
+    body.hu-theme-light .CodeMirror-dialog input {
+      background: #f5f5f5;
+      color: #1d1d1d;
+      border: 1px solid #ccc;
+    }
+    /* Forced dark — wins regardless of system setting. */
+    body.hu-theme-dark { background: #1e1e1e; color: #d4d4d4; }
+    body.hu-theme-dark .CodeMirror { background: #1e1e1e; color: #d4d4d4; }
+    body.hu-theme-dark .CodeMirror-gutters { background: #1e1e1e; border-right: 1px solid #333; }
+    body.hu-theme-dark .CodeMirror-linenumber { color: #6a6a6a; }
+    body.hu-theme-dark .CodeMirror-cursor { border-left-color: #d4d4d4 !important; }
+    body.hu-theme-dark .CodeMirror-dialog {
+      background: rgba(40, 40, 40, 0.95);
+      color: #d4d4d4;
+      border-bottom-color: rgba(255, 255, 255, 0.15);
+    }
+    body.hu-theme-dark .CodeMirror-dialog input {
+      background: #2c2c2c;
+      color: #d4d4d4;
+      border: 1px solid #555;
     }
   </style>
   <script src="codemirror.js"></script>
@@ -145,6 +178,31 @@
       // attribute reads / writes) so running on every focus is fine.
       editor.on("focus", applySpellcheckAttribute);
 
+      // Make the find / replace dialogs appear at the bottom of the
+      // editor (default is top). The `dialog.js` addon supports a
+      // `bottom: true` option but search.js doesn't pass it through;
+      // we wrap `openDialog` / `openConfirm` to inject the option on
+      // every call. Esc-to-dismiss and ⌘F-to-reopen behavior in the
+      // dialog addon is unaffected.
+      var originalOpenDialog = editor.openDialog;
+      editor.openDialog = function (template, callback, options) {
+        options = options || {};
+        options.bottom = true;
+        return originalOpenDialog.call(this, template, callback, options);
+      };
+      var originalOpenConfirm = editor.openConfirm;
+      editor.openConfirm = function (template, callbacks, options) {
+        options = options || {};
+        options.bottom = true;
+        return originalOpenConfirm.call(this, template, callbacks, options);
+      };
+      var originalOpenNotification = editor.openNotification;
+      editor.openNotification = function (template, options) {
+        options = options || {};
+        options.bottom = true;
+        return originalOpenNotification.call(this, template, options);
+      };
+
       var suppressEditEvent = false;
       var ready = false;
 
@@ -194,6 +252,30 @@
       window.humanistFocusFind = function () {
         // CodeMirror's "find" command is registered by search.js.
         editor.execCommand("find");
+      };
+
+      // Settings — runtime configuration from the Settings pane.
+      // Each call is idempotent; the Settings sheet pushes them
+      // both on file load (resetID) and on every value change.
+      window.humanistSetFontSize = function (px) {
+        var n = parseInt(px, 10);
+        if (!n || n < 8 || n > 48) return;
+        editor.getWrapperElement().style.fontSize = n + "px";
+        editor.refresh();
+      };
+      window.humanistSetTheme = function (mode) {
+        // mode ∈ "system" | "light" | "dark"
+        var body = document.body;
+        body.classList.remove("hu-theme-light", "hu-theme-dark");
+        if (mode === "light") body.classList.add("hu-theme-light");
+        if (mode === "dark")  body.classList.add("hu-theme-dark");
+        editor.refresh();
+      };
+      window.humanistSetLineNumbers = function (on) {
+        editor.setOption("lineNumbers", !!on);
+      };
+      window.humanistSetWordWrap = function (on) {
+        editor.setOption("lineWrapping", !!on);
       };
 
       // Find next / previous match. Cycles through matches once a

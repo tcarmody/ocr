@@ -40,6 +40,14 @@ struct CodeEditorView: View {
     /// Edit-menu find / find-next / find-prev / replace command.
     /// Routes to one of CodeMirror's four search commands.
     let searchRequest: EditorViewModel.SearchRequest?
+    /// User-visible editor preferences. Each value flows into JS on
+    /// change via a dedicated `humanist…` setter — `humanistSetFontSize`,
+    /// `humanistSetTheme`, etc. Defaults come from
+    /// `EditorSettingsDefaults`.
+    let fontSize: Double
+    let theme: String
+    let lineNumbers: Bool
+    let wordWrap: Bool
     /// Called when CodeMirror's cursor crosses a different `hu-page-N`
     /// anchor than the one we last reported. The editor uses this to
     /// drive the PDF + preview panes (code → others sync).
@@ -73,6 +81,10 @@ struct CodeEditorView: View {
                 replacePageRequest: replacePageRequest,
                 formatRequest: formatRequest,
                 searchRequest: searchRequest,
+                fontSize: fontSize,
+                theme: theme,
+                lineNumbers: lineNumbers,
+                wordWrap: wordWrap,
                 onCursorAnchorChanged: onCursorAnchorChanged
             )
         } else {
@@ -109,6 +121,10 @@ private struct CodeMirrorWebView: NSViewRepresentable {
     let replacePageRequest: EditorViewModel.ReplacePageRequest?
     let formatRequest: EditorViewModel.FormatRequest?
     let searchRequest: EditorViewModel.SearchRequest?
+    let fontSize: Double
+    let theme: String
+    let lineNumbers: Bool
+    let wordWrap: Bool
     let onCursorAnchorChanged: ((String) -> Void)?
 
     func makeCoordinator() -> Coordinator {
@@ -199,6 +215,25 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             coordinator.lastSearchNonce = req.nonce
             coordinator.pushSearch(req.kind)
         }
+        // User-preference push. Each of these is a no-op on the JS
+        // side when the value already matches; cheap on each
+        // updateNSView call so we just push every time.
+        if coordinator.lastFontSize != fontSize {
+            coordinator.lastFontSize = fontSize
+            coordinator.pushFontSize(fontSize)
+        }
+        if coordinator.lastTheme != theme {
+            coordinator.lastTheme = theme
+            coordinator.pushTheme(theme)
+        }
+        if coordinator.lastLineNumbers != lineNumbers {
+            coordinator.lastLineNumbers = lineNumbers
+            coordinator.pushLineNumbers(lineNumbers)
+        }
+        if coordinator.lastWordWrap != wordWrap {
+            coordinator.lastWordWrap = wordWrap
+            coordinator.pushWordWrap(wordWrap)
+        }
     }
 
     // MARK: - Coordinator
@@ -237,6 +272,19 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         var lastSearchNonce: Int = .min
         /// Search command queued while JS wasn't ready.
         var pendingSearchKind: EditorViewModel.SearchRequest.Kind?
+        /// User-preference state — last value pushed to JS, used to
+        /// avoid redundant pushes on every `updateNSView`. `Double.nan`
+        /// / empty / nil sentinels match what would never come back
+        /// from the Settings pane so the first push always fires.
+        var lastFontSize: Double = .nan
+        var lastTheme: String = ""
+        var lastLineNumbers: Bool? = nil
+        var lastWordWrap: Bool? = nil
+        /// Pending preference values queued while JS wasn't ready.
+        var pendingFontSize: Double?
+        var pendingTheme: String?
+        var pendingLineNumbers: Bool?
+        var pendingWordWrap: Bool?
         /// Forwarded back to the VM when CodeMirror reports a new
         /// cursor-anchor (code → others sync).
         var onCursorAnchorChanged: ((String) -> Void)?
@@ -319,6 +367,39 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
 
+        /// Push user-preference values to CodeMirror. All four
+        /// dispatch through the same `evaluateJavaScript` shape; each
+        /// has its own pending-value field so a fresh value
+        /// supersedes a queued one if they arrive close together.
+        func pushFontSize(_ px: Double) {
+            guard ready, let webView else { pendingFontSize = px; return }
+            pendingFontSize = nil
+            webView.evaluateJavaScript(
+                "humanistSetFontSize(\(Int(px)));", completionHandler: nil
+            )
+        }
+        func pushTheme(_ mode: String) {
+            guard ready, let webView else { pendingTheme = mode; return }
+            pendingTheme = nil
+            webView.evaluateJavaScript(
+                "humanistSetTheme(\(jsString(mode)));", completionHandler: nil
+            )
+        }
+        func pushLineNumbers(_ on: Bool) {
+            guard ready, let webView else { pendingLineNumbers = on; return }
+            pendingLineNumbers = nil
+            webView.evaluateJavaScript(
+                "humanistSetLineNumbers(\(on));", completionHandler: nil
+            )
+        }
+        func pushWordWrap(_ on: Bool) {
+            guard ready, let webView else { pendingWordWrap = on; return }
+            pendingWordWrap = nil
+            webView.evaluateJavaScript(
+                "humanistSetWordWrap(\(on));", completionHandler: nil
+            )
+        }
+
         /// Dispatch a search command to CodeMirror's search addon.
         /// Maps directly to one of four JS functions — find / next /
         /// prev / replace.
@@ -377,6 +458,28 @@ private struct CodeMirrorWebView: NSViewRepresentable {
                 if let kind = pendingSearchKind {
                     DispatchQueue.main.async { [weak self] in
                         self?.pushSearch(kind)
+                    }
+                }
+                // User-preference flush. Push any settings that
+                // landed before JS was ready.
+                if let v = pendingFontSize {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushFontSize(v)
+                    }
+                }
+                if let v = pendingTheme {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushTheme(v)
+                    }
+                }
+                if let v = pendingLineNumbers {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushLineNumbers(v)
+                    }
+                }
+                if let v = pendingWordWrap {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pushWordWrap(v)
                     }
                 }
             case "edit":
