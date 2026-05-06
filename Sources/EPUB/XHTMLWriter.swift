@@ -79,6 +79,17 @@ struct XHTMLWriter {
             body += "</section>\n"
         }
 
+        // Cloud Phase 6d: when the chapter has been classified by
+        // ClaudeChapterClassifier, emit the EPUB Structural
+        // Semantics token on `<body>`. Readers use this to surface
+        // semantic navigation (skip front matter, jump to
+        // bibliography). Unlabeled chapters get a plain `<body>`.
+        let bodyOpen: String
+        if let epubType = chapter.epubType, !epubType.isEmpty {
+            bodyOpen = "<body epub:type=\"\(XMLEscape.attribute(epubType))\">"
+        } else {
+            bodyOpen = "<body>"
+        }
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE html>
@@ -88,7 +99,7 @@ struct XHTMLWriter {
         <title>\(XMLEscape.text(title))</title>
         <link rel="stylesheet" type="text/css" href="\(XMLEscape.attribute(cssPath))"/>
         </head>
-        <body>
+        \(bodyOpen)
         \(body)</body>
         </html>
         """

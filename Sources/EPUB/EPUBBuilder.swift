@@ -225,7 +225,8 @@ public struct EPUBBuilder {
         return chapterItems.enumerated().map { (i, item) in
             NavWriter.Entry(
                 title: chapters[i].title ?? "Chapter \(i + 1)",
-                href: item.href
+                href: item.href,
+                epubType: chapters[i].epubType
             )
         }
     }

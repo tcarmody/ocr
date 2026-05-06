@@ -201,6 +201,19 @@ public actor PDFToEPUBPipeline {
         return ClaudeTOCParser(client: client, budget: budget)
     }
 
+    /// Build the Cloud-mode chapter classifier for one conversion.
+    /// Same gating shape as the other Cloud helpers.
+    static func makeClaudeChapterClassifier(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeChapterClassifier? {
+        guard options.processingMode == .cloud else { return nil }
+        guard options.cloudFeatures.semanticClassification else { return nil }
+        guard let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        let client = AnthropicAPIClient(apiKeyProvider: { key })
+        return ClaudeChapterClassifier(client: client, budget: budget)
+    }
+
     /// Output of `applyPostOCRCleanup`: the (possibly-rewritten)
     /// observations plus a trail of every correction the pass
     /// considered (accepted *and* rejected). The trail feeds
@@ -321,6 +334,58 @@ public actor PDFToEPUBPipeline {
         switch region.kind {
         case .text, .footnote: return true
         default:               return false
+        }
+    }
+
+    /// Run the chapter classifier across `chapters`, with a small
+    /// concurrency cap so a 30-chapter book doesn't issue 30
+    /// simultaneous Haiku requests. Each `classify` call internally
+    /// gates on `ClaudeCallBudget`, so the cap is also a backstop.
+    /// Returns a chapter list in the same order with `epubType`
+    /// populated where Haiku produced a valid label.
+    static func classifyChapters(
+        chapters: [Chapter],
+        classifier: ClaudeChapterClassifier
+    ) async -> [Chapter] {
+        let concurrency = 3
+        // Indexed labels so the eventual array stays in input order
+        // regardless of the order TaskGroup yields results.
+        var labels: [Int: String?] = [:]
+        await withTaskGroup(of: (Int, String?).self) { group in
+            var nextIndex = 0
+            var inFlight = 0
+            // Seed the first batch.
+            while nextIndex < chapters.count, inFlight < concurrency {
+                let i = nextIndex
+                let chapter = chapters[i]
+                group.addTask {
+                    (i, await classifier.classify(chapter: chapter))
+                }
+                nextIndex += 1
+                inFlight += 1
+            }
+            // Drain + refill. As each classify task finishes, queue
+            // up the next chapter to keep `concurrency` in flight.
+            while let (i, label) = await group.next() {
+                labels[i] = label
+                inFlight -= 1
+                if nextIndex < chapters.count {
+                    let j = nextIndex
+                    let chapter = chapters[j]
+                    group.addTask {
+                        (j, await classifier.classify(chapter: chapter))
+                    }
+                    nextIndex += 1
+                    inFlight += 1
+                }
+            }
+        }
+        return chapters.enumerated().map { (i, chapter) in
+            var c = chapter
+            if let label = labels[i] ?? nil {
+                c.epubType = label
+            }
+            return c
         }
     }
 
@@ -1130,10 +1195,29 @@ public actor PDFToEPUBPipeline {
             chapters = rawChapters
             appliedTOC = nil
         }
+        // Cloud Phase 6d: semantic chapter classification. Per
+        // chapter, ask Haiku for one EPUB Structural Semantics
+        // Vocabulary token. Runs in parallel via TaskGroup with a
+        // small concurrency cap so we don't hammer the API on
+        // 30-chapter books. Failures (refusal, network, unknown
+        // label) leave the chapter unlabeled — `chapter` is the
+        // safe default but we'd rather emit nothing.
+        let classifier = Self.makeClaudeChapterClassifier(
+            options: options, budget: claudeBudget
+        )
+        let classifiedChapters: [Chapter]
+        if let classifier {
+            classifiedChapters = await Self.classifyChapters(
+                chapters: chapters, classifier: classifier
+            )
+        } else {
+            classifiedChapters = chapters
+        }
+
         let book = Book(
             title: title,
             language: language,
-            chapters: chapters
+            chapters: classifiedChapters
         )
 
         let trail = correctionTrailEntries.isEmpty

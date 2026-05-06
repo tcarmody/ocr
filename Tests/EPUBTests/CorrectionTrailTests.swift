@@ -102,6 +102,74 @@ final class CorrectionTrailTests: XCTestCase {
         XCTAssertEqual(nav[1].href, "text/chapter-001.xhtml#hu-page-22")
     }
 
+    /// XHTMLWriter emits `<body epub:type="...">` when the chapter
+    /// has been semantically classified.
+    func test_xhtml_writer_emits_epub_type_on_body_when_classified() {
+        let chapter = Chapter(
+            title: "Acknowledgments",
+            blocks: [.paragraph(runs: [InlineRun("Many thanks.")])],
+            epubType: "acknowledgments"
+        )
+        let writer = XHTMLWriter(cssPath: "../css/book.css")
+        let xhtml = writer.render(chapter, defaultLanguage: .en, fallbackTitle: "x")
+        XCTAssertTrue(
+            xhtml.contains("<body epub:type=\"acknowledgments\">"),
+            "Expected epub:type on body, got:\n\(xhtml)"
+        )
+    }
+
+    /// XHTMLWriter falls back to plain `<body>` when no classification.
+    func test_xhtml_writer_emits_plain_body_when_unclassified() {
+        let chapter = Chapter(
+            title: "Plain",
+            blocks: [.paragraph(runs: [InlineRun("Body.")])]
+        )
+        let writer = XHTMLWriter(cssPath: "../css/book.css")
+        let xhtml = writer.render(chapter, defaultLanguage: .en, fallbackTitle: "x")
+        XCTAssertTrue(xhtml.contains("<body>"))
+        XCTAssertFalse(xhtml.contains("epub:type=\""))
+    }
+
+    /// Nav entries with `epubType` produce `epub:type` on the anchor.
+    func test_nav_writer_emits_epub_type_on_anchor() {
+        let nav = NavWriter(
+            language: .en, title: "Test",
+            entries: [
+                NavWriter.Entry(title: "Preface", href: "text/p.xhtml",
+                                epubType: "preface"),
+                NavWriter.Entry(title: "Body", href: "text/b.xhtml"),
+            ]
+        )
+        let xml = nav.render()
+        XCTAssertTrue(xml.contains("<a epub:type=\"preface\""))
+        // Second entry has no epub:type — bare anchor.
+        XCTAssertTrue(xml.contains("<a href=\"text/b.xhtml\""))
+    }
+
+    /// EPUBBuilder threads chapter classifications into the nav.
+    func test_makeNavEntries_carries_chapter_epubType_into_nav() {
+        let chapters = [
+            Chapter(title: "Preface", epubType: "preface"),
+            Chapter(title: "Chapter 1", epubType: "chapter"),
+            Chapter(title: "Index", epubType: "index"),
+        ]
+        let chapterItems: [OPFWriter.Item] = [
+            .init(id: "c1", href: "text/c1.xhtml",
+                  mediaType: "application/xhtml+xml", properties: nil),
+            .init(id: "c2", href: "text/c2.xhtml",
+                  mediaType: "application/xhtml+xml", properties: nil),
+            .init(id: "c3", href: "text/c3.xhtml",
+                  mediaType: "application/xhtml+xml", properties: nil),
+        ]
+        let nav = EPUBBuilder.makeNavEntries(
+            chapters: chapters, chapterItems: chapterItems,
+            pageMapEntries: [], parsedTOC: nil
+        )
+        XCTAssertEqual(nav[0].epubType, "preface")
+        XCTAssertEqual(nav[1].epubType, "chapter")
+        XCTAssertEqual(nav[2].epubType, "index")
+    }
+
     /// When the parsed TOC has no inferred offset (offset learner
     /// couldn't disambiguate), nav falls back to one entry per
     /// chapter — same as the no-TOC case.

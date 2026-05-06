@@ -18,16 +18,26 @@ public struct Chapter: Sendable, Equatable {
     /// `blocks`. Bytes live here so blocks stay cheap to copy / log;
     /// the EPUB writer copies these into `OEBPS/images/`.
     public var figureAssets: [FigureAsset]
+    /// EPUB 3 Structural Semantics Vocabulary token for this chapter
+    /// — `chapter`, `preface`, `appendix`, `bibliography`, etc.
+    /// Emitted as `<body epub:type="...">` and on the corresponding
+    /// nav.xhtml entry so EPUB readers can navigate semantically
+    /// (skip front matter, jump to bibliography). Nil when no
+    /// classification was assigned (Cloud Phase 6d disabled, or
+    /// the classifier returned nothing).
+    public var epubType: String?
 
     public init(title: String? = nil,
                 blocks: [Block] = [],
                 footnotes: [Footnote] = [],
                 pageAnchors: [PageAnchor] = [],
-                figureAssets: [FigureAsset] = []) {
+                figureAssets: [FigureAsset] = [],
+                epubType: String? = nil) {
         self.title = title
         self.blocks = blocks
         self.footnotes = footnotes
         self.pageAnchors = pageAnchors
         self.figureAssets = figureAssets
+        self.epubType = epubType
     }
 }

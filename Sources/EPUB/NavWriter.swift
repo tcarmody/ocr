@@ -8,6 +8,17 @@ struct NavWriter {
     struct Entry: Sendable {
         var title: String
         var href: String
+        /// EPUB 3 Structural Semantics Vocabulary token. When set,
+        /// emitted as `epub:type="..."` on the entry's `<a>` so
+        /// readers can surface semantic navigation hints (skip
+        /// front matter, jump to bibliography).
+        var epubType: String?
+
+        init(title: String, href: String, epubType: String? = nil) {
+            self.title = title
+            self.href = href
+            self.epubType = epubType
+        }
     }
 
     let language: BCP47
@@ -17,8 +28,14 @@ struct NavWriter {
     func render() -> String {
         let lang = XMLEscape.attribute(language.rawValue)
         let docTitle = XMLEscape.text(title)
-        let listItems = entries.map { e in
-            "<li><a href=\"\(XMLEscape.attribute(e.href))\">\(XMLEscape.text(e.title))</a></li>"
+        let listItems = entries.map { e -> String in
+            let typeAttr: String
+            if let t = e.epubType, !t.isEmpty {
+                typeAttr = " epub:type=\"\(XMLEscape.attribute(t))\""
+            } else {
+                typeAttr = ""
+            }
+            return "<li><a\(typeAttr) href=\"\(XMLEscape.attribute(e.href))\">\(XMLEscape.text(e.title))</a></li>"
         }.joined(separator: "\n")
 
         return """
