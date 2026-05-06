@@ -159,19 +159,28 @@ struct ConversionOptions: Codable, Equatable {
     /// only fires on Cloud mode + key. Useful for one-off privacy-
     /// sensitive conversions without flipping global settings.
     var privateMode: Bool
+    /// Emit `<basename>.humanist-debug/<basename>.log` next to the
+    /// EPUB output and skip the staging-dir cleanup so the per-page
+    /// PNGs and checkpoint JSON survive for inspection. Surfaces the
+    /// pipeline's `emitDebugLog` flag — only useful for diagnosing
+    /// conversion issues, otherwise leaves a directory's worth of
+    /// artifacts on disk.
+    var emitDebugLog: Bool
 
     init(
         languages: [String] = ["en"],
         useSuryaOCR: Bool = false,
         useCloudEnhancedOCR: Bool = false,
         forceOCR: Bool = false,
-        privateMode: Bool = false
+        privateMode: Bool = false,
+        emitDebugLog: Bool = false
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
         self.useCloudEnhancedOCR = useCloudEnhancedOCR
         self.forceOCR = forceOCR
         self.privateMode = privateMode
+        self.emitDebugLog = emitDebugLog
     }
 
     /// Codable: decodes both the new `useSuryaOCR` key and the
@@ -185,6 +194,7 @@ struct ConversionOptions: Codable, Equatable {
         case useCloudEnhancedOCR
         case forceOCR
         case privateMode
+        case emitDebugLog
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -203,6 +213,9 @@ struct ConversionOptions: Codable, Equatable {
         self.privateMode = try c.decodeIfPresent(
             Bool.self, forKey: .privateMode
         ) ?? false
+        self.emitDebugLog = try c.decodeIfPresent(
+            Bool.self, forKey: .emitDebugLog
+        ) ?? false
     }
 
     /// Encode under the new keys only — the legacy alias is for
@@ -214,6 +227,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(useCloudEnhancedOCR, forKey: .useCloudEnhancedOCR)
         try c.encode(forceOCR, forKey: .forceOCR)
         try c.encode(privateMode, forKey: .privateMode)
+        try c.encode(emitDebugLog, forKey: .emitDebugLog)
     }
 }
 

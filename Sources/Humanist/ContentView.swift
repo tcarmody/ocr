@@ -178,6 +178,19 @@ struct ContentView: View {
                         global Cloud-mode toggles. Coerces Claude OCR \
                         off; Surya OCR / Force OCR still apply.
                         """)
+                Toggle("Save log", isOn: $queue.emitDebugLog)
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Keep the per-page staging directory after \
+                        conversion and write a diagnostic log next to \
+                        the EPUB (under <basename>.humanist-debug/). \
+                        Includes Surya region kinds + reading order, \
+                        Vision observation bboxes, header/footer / \
+                        footnote / heading-promotion decisions, and \
+                        trust verdicts. Leaves 50–100MB of artifacts \
+                        on disk per book — only enable when \
+                        diagnosing conversion issues.
+                        """)
                 Spacer()
                 tesseractStatusBadge
             }

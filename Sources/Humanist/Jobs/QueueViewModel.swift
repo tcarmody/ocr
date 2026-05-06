@@ -68,6 +68,13 @@ final class QueueViewModel: ObservableObject {
     /// enqueue time so a mid-batch toggle doesn't retroactively
     /// affect already-queued jobs.
     @Published var privateMode: Bool = false
+    /// "Save log" toggle. When on, the pipeline keeps the staging
+    /// directory after a successful conversion and writes a
+    /// per-page diagnostic log next to the EPUB (under
+    /// `<basename>.humanist-debug/`) — useful for investigating
+    /// reflow / classification issues. Off by default to avoid
+    /// leaving 50–100MB of artifacts next to every PDF.
+    @Published var emitDebugLog: Bool = false
 
     let store: JobStore
     let runner: JobRunner
@@ -145,7 +152,8 @@ final class QueueViewModel: ObservableObject {
                 useSuryaOCR: useSuryaOCR,
                 useCloudEnhancedOCR: useCloudEnhancedOCR,
                 forceOCR: forceOCR,
-                privateMode: privateMode
+                privateMode: privateMode,
+                emitDebugLog: emitDebugLog
             ),
             status: .profiling
         )
