@@ -92,7 +92,12 @@ struct SpellCheckSheet: View {
     private func suggestionsBlock(_ m: SpellCheckSession.Misspelling) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Suggestions").font(.caption).foregroundStyle(.secondary)
-            if m.suggestions.isEmpty {
+            // Lazy lookup — NSSpellChecker's `guesses` is itself an
+            // IPC round-trip, so we only call it for the misspelling
+            // the user is currently viewing. The session caches the
+            // result so repeat views don't refetch.
+            let suggestions = session.suggestions(for: m)
+            if suggestions.isEmpty {
                 Text("(no suggestions)")
                     .font(.callout)
                     .foregroundStyle(.tertiary)
@@ -101,7 +106,7 @@ struct SpellCheckSheet: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(m.suggestions, id: \.self) { suggestion in
+                        ForEach(suggestions, id: \.self) { suggestion in
                             suggestionRow(suggestion)
                         }
                     }

@@ -25,11 +25,16 @@ final class SpellCheckSession: ObservableObject {
     /// in NSString-compatible UTF-16 units (since NSSpellChecker
     /// returns `NSRange`); the caller is responsible for converting
     /// to Swift String indices when applying replacements.
+    ///
+    /// `suggestions` is fetched lazily by the session — `guesses(...)`
+    /// is itself an IPC round-trip per call, and a typical scan
+    /// produces hundreds of misspellings the user only ever views
+    /// a handful of. Keeping suggestions out of the eager scan
+    /// makes the up-front pass much faster.
     struct Misspelling: Identifiable, Equatable {
         let id = UUID()
         var word: String
         var range: NSRange
-        var suggestions: [String]
         /// ~30 chars before / after `range` for the panel's
         /// "in context" display. Substituted whitespace runs are
         /// collapsed to single spaces for readability.
@@ -52,6 +57,17 @@ final class SpellCheckSession: ObservableObject {
     /// list is opaque from Swift; we keep our own copy so the
     /// re-scan after replacements drops them.
     private var ignored: Set<String> = []
+
+    /// Source text from the last scan, kept around so the lazy
+    /// `suggestions(for:)` lookup has the buffer NSSpellChecker
+    /// needs as the `in:` argument to `guesses(forWordRange:in:…)`.
+    private var lastScannedText: String = ""
+
+    /// Per-misspelling suggestion cache, keyed by the misspelling's
+    /// UUID. UUIDs are regenerated on every `scan(text:)` so the
+    /// cache invalidates naturally when the underlying misspelling
+    /// list refreshes (different identity, no key collision).
+    private var cachedSuggestions: [UUID: [String]] = [:]
 
     init() {
         self.documentTag = NSSpellChecker.uniqueSpellDocumentTag()
@@ -85,12 +101,33 @@ final class SpellCheckSession: ObservableObject {
     /// Start a fresh session against `text`. Walks the source,
     /// filters tag content, and populates the misspellings list.
     func scan(text: String) {
+        lastScannedText = text
+        cachedSuggestions.removeAll(keepingCapacity: true)
         misspellings = Self.findMisspellings(
             in: text,
             ignoring: ignored,
             documentTag: documentTag
         )
         currentIndex = 0
+    }
+
+    /// Lazy suggestions lookup. NSSpellChecker's `guesses` is one
+    /// IPC round-trip per call; deferring it from the eager scan
+    /// to "the moment the user actually views this word" cuts the
+    /// up-front cost from hundreds of calls to zero. Cached after
+    /// the first lookup so repeated views stay fast.
+    func suggestions(for misspelling: Misspelling) -> [String] {
+        if let cached = cachedSuggestions[misspelling.id] {
+            return cached
+        }
+        let fetched = NSSpellChecker.shared.guesses(
+            forWordRange: misspelling.range,
+            in: lastScannedText,
+            language: nil,
+            inSpellDocumentWithTag: documentTag
+        ) ?? []
+        cachedSuggestions[misspelling.id] = fetched
+        return fetched
     }
 
     /// Advance the cursor without changing the text. Used by
@@ -161,56 +198,75 @@ final class SpellCheckSession: ObservableObject {
     /// to decide which character ranges count as "text" — attribute
     /// values, element names, doctype, processing instructions all
     /// stay out of the candidate set.
+    ///
+    /// **One full-document call** — NSSpellChecker treats `<` and
+    /// `>` as word-boundary characters so the checker's tokenizer
+    /// won't span tag boundaries on its own. We then post-filter
+    /// the returned ranges against the precomputed text-segment
+    /// list to drop the few tokens that fall inside tags (element
+    /// names like `em` or `code` would otherwise show up as
+    /// misspellings). This collapses what was N synchronous IPC
+    /// round-trips (one per text segment) into a single round
+    /// trip — the dominant cost of the previous implementation.
+    /// `guesses` is fetched lazily by the session, not eagerly here.
     static func findMisspellings(
         in text: String,
         ignoring: Set<String>,
         documentTag: Int
     ) -> [Misspelling] {
         let checker = NSSpellChecker.shared
-        let textRanges = textOnlyRanges(in: text)
         let nsText = text as NSString
+        guard nsText.length > 0 else { return [] }
+
+        let allResults = checker.check(
+            text,
+            range: NSRange(location: 0, length: nsText.length),
+            types: NSTextCheckingResult.CheckingType.spelling.rawValue,
+            options: nil,
+            inSpellDocumentWithTag: documentTag,
+            orthography: nil,
+            wordCount: nil
+        )
+
+        // Walking pointer through the (sorted) text-segment list —
+        // O(N + M) overall instead of O(N × M) for the naive nested
+        // contains check. Both NSSpellChecker results and our
+        // textRanges are emitted in left-to-right order so the
+        // pointer only moves forward.
+        let textRanges = textOnlyRanges(in: text)
+        var rangeIdx = 0
         var out: [Misspelling] = []
-        for range in textRanges {
-            // `check(...)` runs the multi-stage checker; we only
-            // want spelling errors here, not grammar / style
-            // detections (which the spell sheet doesn't surface).
-            let results = checker.check(
-                nsText.substring(with: range),
-                range: NSRange(location: 0, length: range.length),
-                types: NSTextCheckingResult.CheckingType.spelling.rawValue,
-                options: nil,
-                inSpellDocumentWithTag: documentTag,
-                orthography: nil,
-                wordCount: nil
-            )
-            for result in results {
-                // Translate the segment-relative range back into
-                // absolute coordinates against the full source.
-                let absoluteRange = NSRange(
-                    location: range.location + result.range.location,
-                    length: result.range.length
-                )
-                guard absoluteRange.location + absoluteRange.length <= nsText.length
-                else { continue }
-                let word = nsText.substring(with: absoluteRange)
-                if ignoring.contains(word.lowercased()) { continue }
-                let suggestions = checker.guesses(
-                    forWordRange: absoluteRange,
-                    in: text,
-                    language: nil,
-                    inSpellDocumentWithTag: documentTag
-                ) ?? []
-                let (before, after) = contextSnippets(
-                    in: nsText, around: absoluteRange
-                )
-                out.append(Misspelling(
-                    word: word,
-                    range: absoluteRange,
-                    suggestions: suggestions,
-                    contextBefore: before,
-                    contextAfter: after
-                ))
+        out.reserveCapacity(allResults.count)
+        for result in allResults {
+            // Advance past text ranges that ended before this result.
+            while rangeIdx < textRanges.count {
+                let tr = textRanges[rangeIdx]
+                if tr.location + tr.length <= result.range.location {
+                    rangeIdx += 1
+                } else {
+                    break
+                }
             }
+            guard rangeIdx < textRanges.count else { break }
+            let tr = textRanges[rangeIdx]
+            // Drop results that aren't fully inside the current
+            // text segment (i.e. they sit inside a tag).
+            guard result.range.location >= tr.location,
+                  result.range.location + result.range.length
+                    <= tr.location + tr.length
+            else { continue }
+
+            let word = nsText.substring(with: result.range)
+            if ignoring.contains(word.lowercased()) { continue }
+            let (before, after) = contextSnippets(
+                in: nsText, around: result.range
+            )
+            out.append(Misspelling(
+                word: word,
+                range: result.range,
+                contextBefore: before,
+                contextAfter: after
+            ))
         }
         return out
     }
