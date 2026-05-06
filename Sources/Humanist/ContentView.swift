@@ -148,7 +148,7 @@ struct ContentView: View {
             HStack(spacing: 14) {
                 languageMenu
                 Divider().frame(height: 18)
-                Toggle("Claude OCR", isOn: $queue.useCloudEnhancedOCR)
+                Toggle("Claude OCR ($$$)", isOn: $queue.useCloudEnhancedOCR)
                     .toggleStyle(.checkbox)
                     .help("""
                         Vision → Sonnet shortcut. Vision tries first; \
@@ -156,7 +156,10 @@ struct ContentView: View {
                         Sonnet, skipping Surya OCR and Tesseract. \
                         Requires Cloud mode + API key (configure in \
                         Settings); inert otherwise. Surya layout still \
-                        runs for figures, tables, and footnotes.
+                        runs for figures, tables, and footnotes. \
+                        Costs ≈ $5–10 per book at current Sonnet \
+                        pricing — typically the highest-quality OCR \
+                        path for hard scripts, scans, and small fonts.
                         """)
                 Toggle("Surya OCR", isOn: $queue.useSuryaOCR)
                     .toggleStyle(.checkbox)
