@@ -102,6 +102,18 @@ public actor PDFToEPUBPipeline {
         /// — the cascade is designed to gate Claude behind a quality
         /// floor for cost control.
         public var disableLocalCascadeEscalation: Bool
+        /// **Phase 2 hidden flag.** When true (and the gating below
+        /// in `makeClaudePageOCREngine` is satisfied), every page is
+        /// rendered, sent to Sonnet, and parsed back into structured
+        /// blocks via `ClaudePageOCREngine` — bypassing Vision /
+        /// Surya OCR / Tesseract / RegionAwareReflow. Surya layout +
+        /// figure extraction + downstream chapter-splitting still
+        /// run normally. Off by default; toggled by reading the
+        /// `humanist.useClaudePageOCR` UserDefault in `JobRunner` so
+        /// we can flip it via `defaults write` without rebuilding.
+        /// Phase 3 will wire it into the user-visible "Claude OCR"
+        /// toggle as the new default behavior.
+        public var useClaudePageOCR: Bool
 
         public init(
             dpi: CGFloat = 400,
@@ -117,7 +129,8 @@ public actor PDFToEPUBPipeline {
             cloudFeatures: AISettings.CloudFeatures = AISettings.CloudFeatures(),
             perBookCallCap: Int = 200,
             anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
-            disableLocalCascadeEscalation: Bool = false
+            disableLocalCascadeEscalation: Bool = false,
+            useClaudePageOCR: Bool = false
         ) {
             self.dpi = dpi
             self.dpiForScans = dpiForScans
@@ -133,6 +146,7 @@ public actor PDFToEPUBPipeline {
             self.perBookCallCap = perBookCallCap
             self.anthropicAPIKeyProvider = anthropicAPIKeyProvider
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
+            self.useClaudePageOCR = useClaudePageOCR
         }
     }
 
@@ -240,6 +254,28 @@ public actor PDFToEPUBPipeline {
               !key.isEmpty else { return nil }
         let client = AnthropicAPIClient(apiKeyProvider: { key })
         return ClaudeChapterClassifier(client: client, budget: budget)
+    }
+
+    /// Build the experimental "Claude does the page" engine. Returns
+    /// nil unless the user opted in via `useClaudePageOCR`, the
+    /// cascade's hard-region-OCR Cloud feature is enabled, the run is
+    /// in Cloud mode, and an API key is configured. When non-nil, the
+    /// per-page loop below skips Vision / cascade / region-aware
+    /// reflow and uses Sonnet to produce structured XHTML directly.
+    static func makeClaudePageOCREngine(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudePageOCREngine? {
+        guard options.useClaudePageOCR else { return nil }
+        guard options.processingMode == .cloud else { return nil }
+        // Reuse the hard-region-OCR feature gate — same billing
+        // surface, same per-book budget. We don't add a new
+        // CloudFeatures bit until Phase 3 promotes this path to the
+        // user-visible toggle.
+        guard options.cloudFeatures.hardRegionOCR else { return nil }
+        guard let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        let client = AnthropicAPIClient(apiKeyProvider: { key })
+        return ClaudePageOCREngine(client: client, budget: budget)
     }
 
     /// Output of `applyPostOCRCleanup`: the (possibly-rewritten)
@@ -922,6 +958,13 @@ public actor PDFToEPUBPipeline {
         let claudeTOCParser: ClaudeTOCParser? = Self.makeClaudeTOCParser(
             options: options, budget: claudeBudget
         )
+        // Phase 2 hidden flag: end-to-end "Claude does the page".
+        // When non-nil, the per-page loop below skips Vision / cascade
+        // / region-aware reflow and uses Sonnet to produce structured
+        // XHTML directly — see `makeClaudePageOCREngine` for gating.
+        let claudePageEngine: ClaudePageOCREngine? = Self.makeClaudePageOCREngine(
+            options: options, budget: claudeBudget
+        )
 
         // Dictionary-match cleanup runs unconditionally — it's
         // free, fast, and gated on language-supported tokens
@@ -953,6 +996,15 @@ public actor PDFToEPUBPipeline {
         // tripped the trigger gate. Written as a META-INF sidecar
         // when non-empty so the editor can surface what Haiku did.
         var correctionTrailEntries: [CorrectionTrail.Entry] = []
+
+        // Phase 2 hidden flag accumulators. Populated only when
+        // `claudePageEngine` is non-nil; consumed at the reflow step
+        // below to bypass `RegionAwareReflow`. Page anchors mirror
+        // the IDs `RegionAwareReflow` would have produced so the
+        // editor's linked-navigation feature works identically.
+        var claudePageBlocks: [Block] = []
+        var claudePageFootnotes: [Footnote] = []
+        var claudePageAnchors: [PageAnchor] = []
 
         for i in 0..<totalPages {
             try Task.checkCancellation()
@@ -1007,6 +1059,49 @@ public actor PDFToEPUBPipeline {
             // don't re-load on the first iteration.
             if i > 0 && i % pdfReloadInterval == 0 {
                 pdf = try loader.load(pdfURL)
+            }
+
+            // Phase 2 hidden flag: end-to-end Claude page OCR. When
+            // the engine is configured we skip the entire local
+            // pipeline for this page (embedded text scoring, Vision,
+            // Surya layout, cascade, post-OCR cleanup) and feed the
+            // rendered page image straight to Sonnet. The result is
+            // already a `[Block]` slice — appended to per-document
+            // accumulators that bypass `RegionAwareReflow` after the
+            // loop completes. Per-page failures are logged and the
+            // page contributes only its anchor (so chapter splits
+            // and page navigation still work).
+            if let pageEngine = claudePageEngine {
+                let renderer = PDFRenderer(dpi: options.dpi)
+                let image = try renderer.renderPage(at: i, of: pdf)
+                let anchor = RegionAwareReflow.anchorId(forPageIndex: i)
+                claudePageBlocks.append(.anchor(
+                    id: anchor, label: "Page \(i + 1)"
+                ))
+                claudePageAnchors.append(PageAnchor(
+                    pdfPage: i, anchorId: anchor
+                ))
+                do {
+                    let pageResult = try await pageEngine.recognize(
+                        pageImage: image,
+                        pageIndex: i,
+                        languages: options.languages
+                    )
+                    claudePageBlocks.append(contentsOf: pageResult.blocks)
+                    claudePageFootnotes.append(contentsOf: pageResult.footnotes)
+                } catch {
+                    // Refusal / network / parse failure on one page
+                    // shouldn't fail the whole conversion. The
+                    // anchor + missing body manifests as an empty
+                    // page in the EPUB.
+                }
+                progress?(Progress(
+                    totalPages: totalPages,
+                    completedPages: i + 1,
+                    currentPageMeanConfidence: 1.0
+                ))
+                await Task.yield()
+                continue
             }
 
             // Sync prep: embedded extraction + quality scoring. Wrap
@@ -1372,7 +1467,18 @@ public actor PDFToEPUBPipeline {
 
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).
         let reflowed: ReflowOutput
-        if options.emitDebugLog {
+        if claudePageEngine != nil {
+            // Phase 2 hidden flag: blocks already came from Sonnet
+            // per page; skip the local reflow entirely. Figure assets
+            // are empty for now — Phase 3 wires Surya figure
+            // extraction back into this path so images survive.
+            reflowed = ReflowOutput(
+                blocks: claudePageBlocks,
+                footnotes: claudePageFootnotes,
+                pageAnchors: claudePageAnchors,
+                figureAssets: []
+            )
+        } else if options.emitDebugLog {
             // Log lives in the same `humanist-debug/` folder as the
             // PNGs so all artifacts for one book stay together.
             let logURL = stagingDir.appendingPathComponent("log.txt")

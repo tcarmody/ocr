@@ -146,6 +146,12 @@ final class JobRunner: ObservableObject {
         } else {
             keyProvider = { keyStore.read() }
         }
+        // Phase 2 hidden flag: end-to-end Claude page OCR. Toggled
+        // via UserDefaults so we can flip it without rebuilding:
+        //   defaults write Humanist humanist.useClaudePageOCR -bool YES
+        // Forced off in Private Mode (would require API calls).
+        let claudePageOCR = !privateOn
+            && UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
         let options = PDFToEPUBPipeline.Options(
             documentProfile: job.profile,
             languages: languages,
@@ -159,7 +165,8 @@ final class JobRunner: ObservableObject {
             // Closure (not a captured string) so a key rotation in
             // Settings UI takes effect on the next request without
             // rebuilding the pipeline.
-            anthropicAPIKeyProvider: keyProvider
+            anthropicAPIKeyProvider: keyProvider,
+            useClaudePageOCR: claudePageOCR
         )
         let storeRef = store
         let jobID = job.id
