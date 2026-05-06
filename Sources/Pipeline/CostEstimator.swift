@@ -107,6 +107,14 @@ public enum CostEstimator {
             return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 2500, outputTokens: 800
             ))
+        case .pageOCR:
+            // Sonnet 4.6: ~4000 input (full-page image at 600 DPI,
+            // base64) + ~2000 output (XHTML for typical academic
+            // page; dense pages can run higher). The output cost
+            // dominates; a 400-page book runs ~$16-20.
+            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+                inputTokens: 4000, outputTokens: 2000
+            ))
         }
     }
 
@@ -115,13 +123,20 @@ public enum CostEstimator {
         case postOCRCleanupPassages
         case postOCRCleanupVision
         case tableExtraction
+        case pageOCR
     }
 
-    /// Compute a coarse pre-flight cost estimate.
+    /// Compute a coarse pre-flight cost estimate. When
+    /// `useClaudePageOCR` is set, the cascade-based per-region
+    /// estimate is replaced with a single per-page Sonnet line item
+    /// — the Phase 2 path makes one call per page instead of
+    /// selectively escalating regions, so per-region rates don't
+    /// apply.
     public static func estimate(
         profile: DocumentProfile,
         cloudFeatures: AISettings.CloudFeatures,
-        perBookCallCap: Int
+        perBookCallCap: Int,
+        useClaudePageOCR: Bool = false
     ) -> Estimate {
         guard profile.pageCount > 0 else { return .empty }
         let regions = Double(profile.pageCount) * regionsPerPageEstimate
@@ -129,6 +144,46 @@ public enum CostEstimator {
         var lines: [Estimate.Line] = []
         var totalCalls = 0
         var totalCost: Double = 0
+
+        // Page-OCR mode: one Sonnet call per page; replaces the
+        // hard-region-OCR + post-OCR-cleanup line items entirely.
+        // Table extraction can still run as a separate feature.
+        if useClaudePageOCR {
+            let calls = profile.pageCount
+            let cost = Double(calls) * costPerCall(.pageOCR)
+            lines.append(.init(
+                label: "Page OCR (whole-page Sonnet)",
+                model: AnthropicModel.sonnet4_6.rawValue,
+                calls: calls, costUSD: cost
+            ))
+            totalCalls += calls
+            totalCost += cost
+
+            // Table extraction is independent of OCR mode — it
+            // operates on Surya-detected `.table` regions, runs
+            // even when the page-OCR path supplies the body text.
+            if cloudFeatures.tableExtraction {
+                let tableCalls = Int(tablesPerBookEstimate.rounded())
+                if tableCalls > 0 {
+                    let tableCost = Double(tableCalls)
+                        * costPerCall(.tableExtraction)
+                    lines.append(.init(
+                        label: "Table extraction",
+                        model: AnthropicModel.sonnet4_6.rawValue,
+                        calls: tableCalls, costUSD: tableCost
+                    ))
+                    totalCalls += tableCalls
+                    totalCost += tableCost
+                }
+            }
+
+            return clamp(
+                lines: lines,
+                totalCalls: totalCalls,
+                totalCost: totalCost,
+                perBookCallCap: perBookCallCap
+            )
+        }
 
         // Hard-region OCR (Sonnet, on `.cloud` mode + feature toggle).
         if cloudFeatures.hardRegionOCR {
@@ -187,35 +242,48 @@ public enum CostEstimator {
             }
         }
 
-        // Cap. The runtime budget enforces this hard ceiling, so any
-        // estimate above it is unrealistic — clamp and flag for the
-        // UI so the user can either raise the cap or understand
-        // why their job will throttle.
-        let clamped = totalCalls > perBookCallCap
-        if clamped, totalCalls > 0 {
-            // Scale every line's calls + cost proportionally so the
-            // breakdown still reflects the cap. Approximate, not
-            // exact — prevents one big feature from monopolizing
-            // the cap in the display when in reality the cascade
-            // serves features in arrival order.
-            let scale = Double(perBookCallCap) / Double(totalCalls)
-            lines = lines.map { line in
-                Estimate.Line(
-                    label: line.label,
-                    model: line.model,
-                    calls: Int((Double(line.calls) * scale).rounded()),
-                    costUSD: line.costUSD * scale
-                )
-            }
-            totalCalls = perBookCallCap
-            totalCost *= scale
-        }
+        return clamp(
+            lines: lines,
+            totalCalls: totalCalls,
+            totalCost: totalCost,
+            perBookCallCap: perBookCallCap
+        )
+    }
 
+    /// Clamp totals + line items against `perBookCallCap`. The
+    /// runtime budget enforces this hard ceiling, so any estimate
+    /// above it is unrealistic — scale every line proportionally and
+    /// flag the clamp for the UI so the user can either raise the
+    /// cap or understand why their job will throttle.
+    private static func clamp(
+        lines: [Estimate.Line],
+        totalCalls: Int,
+        totalCost: Double,
+        perBookCallCap: Int
+    ) -> Estimate {
+        let clamped = totalCalls > perBookCallCap
+        guard clamped, totalCalls > 0 else {
+            return Estimate(
+                estimatedCalls: totalCalls,
+                estimatedCostUSD: totalCost,
+                perFeature: lines,
+                clampedByCap: false
+            )
+        }
+        let scale = Double(perBookCallCap) / Double(totalCalls)
+        let scaledLines = lines.map { line in
+            Estimate.Line(
+                label: line.label,
+                model: line.model,
+                calls: Int((Double(line.calls) * scale).rounded()),
+                costUSD: line.costUSD * scale
+            )
+        }
         return Estimate(
-            estimatedCalls: totalCalls,
-            estimatedCostUSD: totalCost,
-            perFeature: lines,
-            clampedByCap: clamped
+            estimatedCalls: perBookCallCap,
+            estimatedCostUSD: totalCost * scale,
+            perFeature: scaledLines,
+            clampedByCap: true
         )
     }
 }

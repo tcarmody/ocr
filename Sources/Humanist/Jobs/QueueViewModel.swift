@@ -160,6 +160,13 @@ final class QueueViewModel: ObservableObject {
         store.add(job)
         let suryaOn = useSuryaOCR
         let privateOn = privateMode
+        // Phase 4c: surface the page-OCR pricing in the pre-flight
+        // estimate. Same gates the runner applies — the user toggle
+        // OR the hidden UserDefault dev knob.
+        let pageOCROn = !privateOn && (
+            useCloudEnhancedOCR
+            || UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
+        )
         Task.detached(priority: .userInitiated) { [store, weak runner] in
             let profile = DocumentProfiler.profile(pdfURL: url)
             // Compute the Cloud-mode cost estimate + content/config
@@ -177,7 +184,8 @@ final class QueueViewModel: ObservableObject {
                 estimate = CostEstimator.estimate(
                     profile: profile,
                     cloudFeatures: aiSettings.cloudFeatures,
-                    perBookCallCap: aiSettings.perBookCallCap
+                    perBookCallCap: aiSettings.perBookCallCap,
+                    useClaudePageOCR: pageOCROn
                 )
             } else {
                 estimate = .empty

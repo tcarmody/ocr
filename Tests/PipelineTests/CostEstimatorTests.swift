@@ -134,6 +134,77 @@ final class CostEstimatorTests: XCTestCase {
         XCTAssertFalse(est.clampedByCap)
     }
 
+    // MARK: - Page-OCR mode (Phase 4c)
+
+    /// When `useClaudePageOCR: true`, the per-region hard-region-OCR
+    /// estimate is replaced with a single per-page Sonnet line item,
+    /// and post-OCR cleanup line items are suppressed (the page-OCR
+    /// path produces clean output without a separate cleanup pass).
+    func test_pageOCR_mode_emits_per_page_line_only() {
+        let profile = DocumentProfile(isLikelyScan: true, pageCount: 400)
+        let features = AISettings.CloudFeatures(
+            hardRegionOCR: true,
+            tableExtraction: false,
+            postOCRCleanup: true
+        )
+        let est = CostEstimator.estimate(
+            profile: profile,
+            cloudFeatures: features,
+            perBookCallCap: 1_000_000,
+            useClaudePageOCR: true
+        )
+        XCTAssertEqual(est.estimatedCalls, 400, "one call per page")
+        let labels = est.perFeature.map(\.label)
+        XCTAssertTrue(labels.contains(where: { $0.contains("Page OCR") }))
+        XCTAssertFalse(
+            labels.contains(where: { $0.contains("Hard-region OCR") }),
+            "page OCR replaces hard-region OCR"
+        )
+        XCTAssertFalse(
+            labels.contains(where: { $0.contains("Post-OCR cleanup") }),
+            "page OCR replaces post-OCR cleanup"
+        )
+    }
+
+    /// Page-OCR mode keeps the table-extraction line item — table
+    /// extraction is a separate cloud feature that operates on
+    /// Surya-detected `.table` regions and runs even when the body
+    /// text comes from the page-OCR path.
+    func test_pageOCR_mode_keeps_table_extraction_line() {
+        let profile = DocumentProfile(isLikelyScan: true, pageCount: 200)
+        let features = AISettings.CloudFeatures(
+            hardRegionOCR: true,
+            tableExtraction: true,
+            postOCRCleanup: true
+        )
+        let est = CostEstimator.estimate(
+            profile: profile,
+            cloudFeatures: features,
+            perBookCallCap: 1_000_000,
+            useClaudePageOCR: true
+        )
+        let labels = est.perFeature.map(\.label)
+        XCTAssertTrue(labels.contains(where: { $0.contains("Page OCR") }))
+        XCTAssertTrue(labels.contains(where: { $0.contains("Table extraction") }))
+    }
+
+    /// 400-page book in page-OCR mode should land in the
+    /// $15-25/book ballpark we documented in the toggle help text.
+    func test_pageOCR_400_page_book_in_expected_cost_range() {
+        let profile = DocumentProfile(isLikelyScan: true, pageCount: 400)
+        let features = AISettings.CloudFeatures(hardRegionOCR: true)
+        let est = CostEstimator.estimate(
+            profile: profile,
+            cloudFeatures: features,
+            perBookCallCap: 1_000_000,
+            useClaudePageOCR: true
+        )
+        XCTAssertGreaterThan(est.estimatedCostUSD, 5,
+            "400 pages at ~$0.04/page should be > $5")
+        XCTAssertLessThan(est.estimatedCostUSD, 30,
+            "400 pages at ~$0.04/page should be < $30")
+    }
+
     // MARK: - Codable
 
     func test_estimate_round_trips_through_json() throws {

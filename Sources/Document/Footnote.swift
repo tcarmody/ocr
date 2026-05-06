@@ -4,7 +4,7 @@ import Foundation
 /// `<aside epub:type="footnote" id="...">` at the end of the chapter
 /// XHTML; readers (Apple Books, Thorium, Kobo) hoist these into popovers
 /// when the matching `<a epub:type="noteref" href="#id">` is tapped.
-public struct Footnote: Sendable, Equatable, Identifiable {
+public struct Footnote: Sendable, Equatable, Identifiable, Codable {
     /// Stable identifier used as the XHTML `id` and noteref href target.
     /// Format used by the linker: `fn-p{pageIndex}-{marker}` so two
     /// footnotes both labelled "1" on different pages don't collide.

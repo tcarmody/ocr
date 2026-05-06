@@ -30,6 +30,16 @@ public struct PageCheckpoint: Sendable, Codable {
     /// produced for this page. Empty when the cleanup feature is
     /// off or no regions tripped the trigger gate.
     public let correctionTrailEntries: [CorrectionTrail.Entry]
+    /// Page-OCR path output: structured blocks Sonnet produced for
+    /// this page, parsed via `ClaudePageXHTMLParser`. Nil for pages
+    /// processed by the cascade path. Decoded as nil for old
+    /// checkpoints written before this field existed (Codable
+    /// optionality is back-compat by default).
+    public let pageBlocks: [Block]?
+    /// Page-OCR path output: footnotes Sonnet identified on this
+    /// page. Nil for cascade-path checkpoints. Same back-compat
+    /// notes as `pageBlocks`.
+    public let pageFootnotes: [Footnote]?
 
     public init(
         pageIndex: Int,
@@ -40,7 +50,9 @@ public struct PageCheckpoint: Sendable, Codable {
         figures: [FigureExtractor.ExtractedFigure],
         tableExtractionsByRegionIndex: [Int: [[TableCell]]],
         verdict: String?,
-        correctionTrailEntries: [CorrectionTrail.Entry]
+        correctionTrailEntries: [CorrectionTrail.Entry],
+        pageBlocks: [Block]? = nil,
+        pageFootnotes: [Footnote]? = nil
     ) {
         self.pageIndex = pageIndex
         self.pageBoundsWidth = pageBoundsWidth
@@ -51,6 +63,8 @@ public struct PageCheckpoint: Sendable, Codable {
         self.tableExtractionsByRegionIndex = tableExtractionsByRegionIndex
         self.verdict = verdict
         self.correctionTrailEntries = correctionTrailEntries
+        self.pageBlocks = pageBlocks
+        self.pageFootnotes = pageFootnotes
     }
 }
 
@@ -69,15 +83,39 @@ public struct StagingManifest: Sendable, Codable {
     /// against the current PDF's page count to catch "user replaced
     /// the PDF with a different one."
     public let totalPages: Int
+    /// Which pipeline mode produced this staging dir. Two values
+    /// today: `"cascade"` (Vision/Surya/Tesseract → optional Sonnet)
+    /// and `"page-ocr"` (Sonnet does the entire page). Mismatch
+    /// against the current run's mode invalidates the staging dir
+    /// (we'd otherwise mix observations-shaped checkpoints with
+    /// blocks-shaped ones). Nil for old manifests written before
+    /// this field existed — those default to `"cascade"` semantics
+    /// since no page-OCR checkpoints existed pre-Phase-4a.
+    public let mode: String?
 
     public init(
         schemaVersion: Int = 1,
         sourceFingerprint: String,
-        totalPages: Int
+        totalPages: Int,
+        mode: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.sourceFingerprint = sourceFingerprint
         self.totalPages = totalPages
+        self.mode = mode
+    }
+
+    /// Stable identifiers for the `mode` field. Keep in sync with
+    /// the values written by the pipeline at run start.
+    public enum Mode {
+        public static let cascade = "cascade"
+        public static let pageOCR = "page-ocr"
+    }
+
+    /// Effective mode, defaulting to `cascade` for old manifests
+    /// written before the `mode` field existed.
+    public var effectiveMode: String {
+        mode ?? Mode.cascade
     }
 }
 

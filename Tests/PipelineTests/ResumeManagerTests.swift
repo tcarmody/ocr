@@ -174,4 +174,112 @@ final class ResumeManagerTests: XCTestCase {
         manager.deleteAll()
         XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
     }
+
+    // MARK: - Phase 4a: page-OCR checkpoint shape
+
+    /// A checkpoint with `pageBlocks` / `pageFootnotes` populated
+    /// round-trips losslessly. Cascade-shape fields are zeroed.
+    func test_pageOCR_checkpoint_roundtrips() throws {
+        let staging = makeStagingDir()
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let manager = ResumeManager(stagingDir: staging)
+        let checkpoint = PageCheckpoint(
+            pageIndex: 9,
+            pageBoundsWidth: 612,
+            pageBoundsHeight: 792,
+            observations: [],
+            layoutRegions: nil,
+            figures: [],
+            tableExtractionsByRegionIndex: [:],
+            verdict: nil,
+            correctionTrailEntries: [],
+            pageBlocks: [
+                .heading(level: 2, runs: [InlineRun("Chapter Three")]),
+                .paragraph(runs: [
+                    InlineRun("First paragraph "),
+                    InlineRun("with em", language: nil, noterefId: "fn-p9-1"),
+                ]),
+            ],
+            pageFootnotes: [
+                Footnote(id: "fn-p9-1", marker: "1",
+                    runs: [InlineRun("footnote body")])
+            ]
+        )
+        try manager.writeCheckpoint(checkpoint)
+        let read = manager.readCheckpoint(forPage: 9)
+        XCTAssertNotNil(read)
+        XCTAssertEqual(read?.pageBlocks?.count, 2)
+        if case let .heading(level, runs) = read?.pageBlocks?[0] {
+            XCTAssertEqual(level, 2)
+            XCTAssertEqual(runs.first?.text, "Chapter Three")
+        } else {
+            XCTFail("Expected heading block")
+        }
+        XCTAssertEqual(read?.pageFootnotes?.count, 1)
+        XCTAssertEqual(read?.pageFootnotes?.first?.id, "fn-p9-1")
+    }
+
+    /// Old checkpoints written before page-OCR existed (no
+    /// pageBlocks / pageFootnotes keys in the JSON) decode with
+    /// those fields nil — Codable's optional handling.
+    func test_legacy_checkpoint_decodes_with_nil_pageBlocks() throws {
+        let staging = makeStagingDir()
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let manager = ResumeManager(stagingDir: staging)
+        // Synthesize a JSON without the new fields.
+        let url = manager.checkpointURL(forPage: 0)
+        let json = """
+        {
+          "pageIndex": 0,
+          "pageBoundsWidth": 100,
+          "pageBoundsHeight": 200,
+          "observations": [],
+          "figures": [],
+          "tableExtractionsByRegionIndex": {},
+          "correctionTrailEntries": []
+        }
+        """
+        try FileManager.default.createDirectory(
+            at: staging, withIntermediateDirectories: true
+        )
+        try json.data(using: .utf8)!.write(to: url)
+        let read = manager.readCheckpoint(forPage: 0)
+        XCTAssertNotNil(read)
+        XCTAssertNil(read?.pageBlocks)
+        XCTAssertNil(read?.pageFootnotes)
+    }
+
+    // MARK: - Phase 4a: manifest mode
+
+    /// Manifest mode round-trips and `effectiveMode` defaults to
+    /// `cascade` for old manifests without the field.
+    func test_manifest_mode_roundtrips_and_defaults() throws {
+        let staging = makeStagingDir()
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let manager = ResumeManager(stagingDir: staging)
+        // New manifest with explicit mode.
+        try manager.writeManifest(StagingManifest(
+            sourceFingerprint: "abc",
+            totalPages: 100,
+            mode: StagingManifest.Mode.pageOCR
+        ))
+        let read = manager.readManifest()
+        XCTAssertEqual(read?.mode, "page-ocr")
+        XCTAssertEqual(read?.effectiveMode, "page-ocr")
+
+        // Old manifest with no mode key decodes with mode == nil but
+        // effectiveMode defaults to cascade.
+        let url = manager.manifestURL
+        let oldJson = """
+        {
+          "schemaVersion": 1,
+          "sourceFingerprint": "old",
+          "totalPages": 50
+        }
+        """
+        try oldJson.data(using: .utf8)!.write(to: url)
+        let legacy = manager.readManifest()
+        XCTAssertNil(legacy?.mode)
+        XCTAssertEqual(legacy?.effectiveMode, "cascade")
+    }
 }

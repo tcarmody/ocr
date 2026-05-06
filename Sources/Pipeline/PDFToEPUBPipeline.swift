@@ -883,11 +883,19 @@ public actor PDFToEPUBPipeline {
         let resumeManager = ResumeManager(stagingDir: stagingDir)
         let sourceFingerprint = ResumeManager.fingerprint(of: pdfURL) ?? ""
         let existingManifest = resumeManager.readManifest()
+        // Compute the *current* run's mode so we can compare against
+        // the manifest. Mode mismatch invalidates the staging dir —
+        // mixing cascade-shaped checkpoints (observations) with
+        // page-ocr-shaped ones (blocks) would produce a chimera EPUB.
+        let currentMode: String = options.useClaudePageOCR
+            ? StagingManifest.Mode.pageOCR
+            : StagingManifest.Mode.cascade
         let resumeAvailable: Bool
         if let m = existingManifest,
            m.sourceFingerprint == sourceFingerprint,
            m.totalPages == pdf.pageCount,
-           m.schemaVersion == 1 {
+           m.schemaVersion == 1,
+           m.effectiveMode == currentMode {
             resumeAvailable = true
         } else {
             // Mismatch (or no prior manifest) → start fresh.
@@ -901,7 +909,8 @@ public actor PDFToEPUBPipeline {
             }
             try? resumeManager.writeManifest(StagingManifest(
                 sourceFingerprint: sourceFingerprint,
-                totalPages: pdf.pageCount
+                totalPages: pdf.pageCount,
+                mode: currentMode
             ))
             resumeAvailable = false
         }
@@ -1005,6 +1014,17 @@ public actor PDFToEPUBPipeline {
         var claudePageBlocks: [Block] = []
         var claudePageFootnotes: [Footnote] = []
         var claudePageAnchors: [PageAnchor] = []
+        // Phase 4b figure assets for the page-OCR path. Each
+        // `.picture` / `.formula` region Surya finds is cropped from
+        // the page image, registered with a sequential global asset
+        // id, and a `Block.figure` is appended at the end of the
+        // page's blocks. End-of-page placement is a known wart —
+        // figures lose their reading-order context inside text. A
+        // future pass could ask Sonnet to emit `<figure>` placeholders
+        // and substitute by Y position. For now, "figures present
+        // but at the end of the page" is the achievable improvement.
+        var claudePageFigureAssets: [FigureAsset] = []
+        var claudePageNextAssetIndex = 0
 
         for i in 0..<totalPages {
             try Task.checkCancellation()
@@ -1014,6 +1034,43 @@ public actor PDFToEPUBPipeline {
             // accumulators, skip all the expensive per-page work.
             if alreadyDonePages.contains(i),
                let checkpoint = resumeManager.readCheckpoint(forPage: i) {
+                // Page-OCR resume path: checkpoint stores the parsed
+                // [Block] / [Footnote] slice from a prior Sonnet
+                // call. Restore directly into the page-OCR
+                // accumulators and skip the cascade-shaped
+                // PageObservations append below. Figure assets get
+                // fresh IDs (asset IDs aren't checkpointed because
+                // they depend on document-order accumulation).
+                if let blocks = checkpoint.pageBlocks {
+                    let anchor = RegionAwareReflow.anchorId(forPageIndex: i)
+                    claudePageBlocks.append(.anchor(
+                        id: anchor, label: "Page \(i + 1)"
+                    ))
+                    claudePageAnchors.append(PageAnchor(
+                        pdfPage: i, anchorId: anchor
+                    ))
+                    claudePageBlocks.append(contentsOf: blocks)
+                    for fig in checkpoint.figures {
+                        let (assetId, asset, figureBlock) =
+                            buildPageOCRFigureAsset(
+                                fig: fig,
+                                index: claudePageNextAssetIndex
+                            )
+                        claudePageNextAssetIndex += 1
+                        claudePageFigureAssets.append(asset)
+                        claudePageBlocks.append(figureBlock)
+                        _ = assetId
+                    }
+                    claudePageFootnotes.append(
+                        contentsOf: checkpoint.pageFootnotes ?? []
+                    )
+                    progress?(Progress(
+                        totalPages: totalPages,
+                        completedPages: i + 1,
+                        currentPageMeanConfidence: 1.0
+                    ))
+                    continue
+                }
                 let bounds = CGSize(
                     width: checkpoint.pageBoundsWidth,
                     height: checkpoint.pageBoundsHeight
@@ -1074,6 +1131,33 @@ public actor PDFToEPUBPipeline {
             if let pageEngine = claudePageEngine {
                 let renderer = PDFRenderer(dpi: options.dpi)
                 let image = try renderer.renderPage(at: i, of: pdf)
+                let pageBoundsCG = CGSize(
+                    width: image.width, height: image.height
+                )
+                // Save PNG for the layout analyzer (Surya needs an
+                // imageURL). Lives under the staging dir so it gets
+                // cleaned up when the run completes successfully.
+                let pngURL = stagingDir.appendingPathComponent(
+                    String(format: "page-%05d.png", i)
+                )
+                Self.savePNG(image, to: pngURL)
+
+                // Run Surya layout in parallel with the Sonnet call
+                // so figure extraction doesn't add round-trip
+                // latency. Surya is cheap (~1-2s/page); the Sonnet
+                // call is the long pole, so we want them concurrent.
+                let layoutTask = Task<[LayoutRegion]?, Never> {
+                    let outcome = await self.analyzeLayoutWithRetry(
+                        pdf: pdf,
+                        pageIndex: i,
+                        initialDPI: options.dpi,
+                        initialPNGURL: pngURL,
+                        initialPageBounds: pageBoundsCG,
+                        stagingDir: stagingDir
+                    )
+                    return outcome.layout
+                }
+
                 let anchor = RegionAwareReflow.anchorId(forPageIndex: i)
                 claudePageBlocks.append(.anchor(
                     id: anchor, label: "Page \(i + 1)"
@@ -1081,19 +1165,75 @@ public actor PDFToEPUBPipeline {
                 claudePageAnchors.append(PageAnchor(
                     pdfPage: i, anchorId: anchor
                 ))
+                var pageBlocks: [Block] = []
+                var pageFootnotes: [Footnote] = []
                 do {
                     let pageResult = try await pageEngine.recognize(
                         pageImage: image,
                         pageIndex: i,
                         languages: options.languages
                     )
+                    pageBlocks = pageResult.blocks
+                    pageFootnotes = pageResult.footnotes
                     claudePageBlocks.append(contentsOf: pageResult.blocks)
                     claudePageFootnotes.append(contentsOf: pageResult.footnotes)
                 } catch {
                     // Refusal / network / parse failure on one page
                     // shouldn't fail the whole conversion. The
                     // anchor + missing body manifests as an empty
-                    // page in the EPUB.
+                    // page in the EPUB. We *don't* write a
+                    // checkpoint for failed pages so a re-run
+                    // retries them.
+                }
+
+                // Layout completes in parallel; consume its result
+                // for figure extraction. If Surya failed (no
+                // layoutAnalyzer or all retries errored), no figures
+                // are extracted for this page — text-only output.
+                let layoutRegions = await layoutTask.value
+                var pageFigureExtractions: [FigureExtractor.ExtractedFigure] = []
+                if let regions = layoutRegions, !regions.isEmpty {
+                    pageFigureExtractions = figureExtractor.extract(
+                        pageIndex: i,
+                        regions: regions,
+                        pageImage: image
+                    )
+                    for fig in pageFigureExtractions {
+                        let (_, asset, figureBlock) =
+                            buildPageOCRFigureAsset(
+                                fig: fig,
+                                index: claudePageNextAssetIndex
+                            )
+                        claudePageNextAssetIndex += 1
+                        claudePageFigureAssets.append(asset)
+                        claudePageBlocks.append(figureBlock)
+                    }
+                }
+
+                // Persist a per-page checkpoint so a hang / crash /
+                // cancel past this point lets the next conversion of
+                // the same source PDF skip page i. Cascade-shape
+                // fields are zeroed out (observations: [],
+                // layoutRegions: nil); the `pageBlocks` /
+                // `pageFootnotes` / `figures` fields carry the
+                // actual content. Skip writing if Sonnet failed —
+                // the empty page would otherwise mark this index as
+                // "done" on resume.
+                if !pageBlocks.isEmpty || !pageFootnotes.isEmpty {
+                    let checkpoint = PageCheckpoint(
+                        pageIndex: i,
+                        pageBoundsWidth: pageBoundsCG.width,
+                        pageBoundsHeight: pageBoundsCG.height,
+                        observations: [],
+                        layoutRegions: nil,
+                        figures: pageFigureExtractions,
+                        tableExtractionsByRegionIndex: [:],
+                        verdict: nil,
+                        correctionTrailEntries: [],
+                        pageBlocks: pageBlocks,
+                        pageFootnotes: pageFootnotes
+                    )
+                    try? resumeManager.writeCheckpoint(checkpoint)
                 }
                 progress?(Progress(
                     totalPages: totalPages,
@@ -1468,15 +1608,16 @@ public actor PDFToEPUBPipeline {
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).
         let reflowed: ReflowOutput
         if claudePageEngine != nil {
-            // Phase 2 hidden flag: blocks already came from Sonnet
-            // per page; skip the local reflow entirely. Figure assets
-            // are empty for now — Phase 3 wires Surya figure
-            // extraction back into this path so images survive.
+            // Phase 2/4: blocks came from Sonnet per page; figures
+            // were extracted via Surya layout + FigureExtractor and
+            // appended at the end of each page (Phase 4b end-of-page
+            // placement; in-text placement is future work). Skip
+            // RegionAwareReflow entirely.
             reflowed = ReflowOutput(
                 blocks: claudePageBlocks,
                 footnotes: claudePageFootnotes,
                 pageAnchors: claudePageAnchors,
-                figureAssets: []
+                figureAssets: claudePageFigureAssets
             )
         } else if options.emitDebugLog {
             // Log lives in the same `humanist-debug/` folder as the
@@ -1729,6 +1870,34 @@ public actor PDFToEPUBPipeline {
             pageAnchors: pageAnchors,
             figureAssets: figureAssets
         )
+    }
+
+    /// Phase 4b helper: build a `FigureAsset` + matching
+    /// `Block.figure` for one extracted figure, using the supplied
+    /// document-order index for the asset id. Used by both the fresh
+    /// page-OCR path (after Surya extraction) and the resume
+    /// fast-path (re-walking checkpointed `figures`).
+    ///
+    /// Cover detection is intentionally absent — the cascade path's
+    /// `RegionAwareReflow.detectCoverFigure` runs on `pageResults`,
+    /// which we don't populate here. EPUBs from the page-OCR path
+    /// currently have no cover image; future work can reapply the
+    /// "page-0 single dominant figure ≥ 50% of page area" rule here.
+    private func buildPageOCRFigureAsset(
+        fig: FigureExtractor.ExtractedFigure,
+        index: Int
+    ) -> (assetId: String, asset: FigureAsset, block: Block) {
+        let assetId = String(format: "fig-%05d", index)
+        let asset = FigureAsset(
+            id: assetId,
+            data: fig.data,
+            mediaType: fig.mediaType,
+            intrinsicSize: fig.intrinsicSize,
+            isCover: false
+        )
+        let alt = fig.regionKind == .formula ? "formula" : "figure"
+        let block = Block.figure(assetId: assetId, alt: alt, caption: [])
+        return (assetId, asset, block)
     }
 
     /// Save a CGImage as PNG to the given URL. Used by the debug-log
