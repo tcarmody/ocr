@@ -52,6 +52,10 @@ struct CodeEditorView: View {
     /// anchor than the one we last reported. The editor uses this to
     /// drive the PDF + preview panes (code → others sync).
     let onCursorAnchorChanged: ((String) -> Void)?
+    /// Called whenever CodeMirror's cursor moves, with the cursor's
+    /// UTF-16 offset from the start of the document. Used by
+    /// chapter-split to pick a safe boundary near the user's cursor.
+    let onCursorOffsetChanged: ((Int) -> Void)?
 
     enum Language: String {
         case xml, htmlmixed, css, javascript
@@ -85,7 +89,8 @@ struct CodeEditorView: View {
                 theme: theme,
                 lineNumbers: lineNumbers,
                 wordWrap: wordWrap,
-                onCursorAnchorChanged: onCursorAnchorChanged
+                onCursorAnchorChanged: onCursorAnchorChanged,
+                onCursorOffsetChanged: onCursorOffsetChanged
             )
         } else {
             // CodeMirror assets weren't bundled. Plain TextEditor so
@@ -126,10 +131,12 @@ private struct CodeMirrorWebView: NSViewRepresentable {
     let lineNumbers: Bool
     let wordWrap: Bool
     let onCursorAnchorChanged: ((String) -> Void)?
+    let onCursorOffsetChanged: ((Int) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         let c = Coordinator(text: $text)
         c.onCursorAnchorChanged = onCursorAnchorChanged
+        c.onCursorOffsetChanged = onCursorOffsetChanged
         return c
     }
 
@@ -161,6 +168,7 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         // Re-bind callback in case the parent re-rendered with a
         // fresh closure (very common for closures that capture vm).
         coordinator.onCursorAnchorChanged = onCursorAnchorChanged
+        coordinator.onCursorOffsetChanged = onCursorOffsetChanged
         // File switch: reset history + push fresh content.
         if coordinator.lastResetID != resetID {
             coordinator.lastResetID = resetID
@@ -509,10 +517,22 @@ private struct CodeMirrorWebView: NSViewRepresentable {
                 if let id = dict["id"] as? String {
                     onCursorAnchorChanged?(id)
                 }
+            case "cursor-offset":
+                if let offset = dict["offset"] as? Int {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onCursorOffsetChanged?(offset)
+                    }
+                }
             default:
                 break
             }
         }
+
+        /// Optional callback fired when CodeMirror reports the
+        /// cursor's position as a UTF-16 offset from the start of
+        /// the document. Used by chapter-split so we can pick a
+        /// safe split boundary near the user's cursor.
+        var onCursorOffsetChanged: ((Int) -> Void)?
 
         /// Encode `s` as a JavaScript string literal.
         func jsString(_ s: String) -> String {

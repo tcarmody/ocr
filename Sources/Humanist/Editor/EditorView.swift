@@ -148,6 +148,24 @@ struct EditorView: View {
                             onSubmit: { line in vm.gotoLine(line) }
                         )
                     }
+                    // Phase 5b: chapter-operation failures (split,
+                    // merge, regen TOC) surface here so the user sees
+                    // what went wrong without digging through logs.
+                    .alert(
+                        "Chapter operation failed",
+                        isPresented: Binding(
+                            get: { vm.chapterOperationError != nil },
+                            set: { presented in
+                                if !presented { vm.chapterOperationError = nil }
+                            }
+                        ),
+                        actions: { Button("OK", role: .cancel) {} },
+                        message: {
+                            if let msg = vm.chapterOperationError {
+                                Text(msg)
+                            }
+                        }
+                    )
                     // Document menu's "Show Correction Trail" command
                     // posts this notification so the menu item can
                     // reach this scene's local @State `showingCorrectionTrail`
@@ -332,7 +350,8 @@ struct EditorView: View {
                 theme: sourceTheme,
                 lineNumbers: sourceLineNumbers,
                 wordWrap: sourceWordWrap,
-                onCursorAnchorChanged: { id in vm.didMoveCursorToAnchor(id) }
+                onCursorAnchorChanged: { id in vm.didMoveCursorToAnchor(id) },
+                onCursorOffsetChanged: { offset in vm.didMoveCursor(offset: offset) }
             )
             .id(file.id)
             .onChange(of: vm.sourceText) { _, _ in

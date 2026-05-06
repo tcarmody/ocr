@@ -407,6 +407,18 @@ final class EditorViewModel: ObservableObject {
         currentSourceAnchor = anchorId
     }
 
+    /// CodeMirror-side cursor-offset reporter. Updated on every
+    /// cursor activity. Used by the Chapter Split command to pick a
+    /// safe split boundary near the user's cursor.
+    func didMoveCursor(offset: Int) {
+        currentSourceCursorOffset = offset
+    }
+
+    /// Latest UTF-16 offset from the start of the source pane's
+    /// document. Updated on every CodeMirror cursor activity. Nil
+    /// when the editor hasn't reported a position yet.
+    @Published private(set) var currentSourceCursorOffset: Int?
+
     /// Preview-IO callback. Passive — just keeps
     /// `currentPreviewAnchor` fresh. The cross-pane drive moved to
     /// `alignOthersToPreviewTop`.
@@ -1140,6 +1152,143 @@ final class EditorViewModel: ObservableObject {
         sidecar.sourcePDFPath = nil
         try? sidecar.write(workingDirectory: pkg.workingDirectory)
         isDirty = true
+    }
+
+    // MARK: - Chapter operations (Phase 5b)
+
+    /// Last error from a chapter operation. Surfaced as an alert by
+    /// the editor view.
+    @Published var chapterOperationError: String?
+
+    /// Split the current chapter file at the source pane's cursor
+    /// position. Snaps forward to the next safe element boundary so
+    /// we don't break tags. After the split, the OPF spine has a
+    /// new entry inserted right after the current chapter and
+    /// `nav.xhtml` is regenerated. The file selection stays on the
+    /// (now-shorter) original file.
+    func splitChapterAtCursor() async {
+        guard let pkg = package, let file = selectedFile else { return }
+        guard let cursorOffset = currentSourceCursorOffset else {
+            chapterOperationError = "Move the cursor to where you want to split, then try again."
+            return
+        }
+        flushSourceTextToBuffer()
+        do {
+            try writeBufferIfDirty(file.id)
+            let editor = PackageEditor(
+                workingDirectory: pkg.workingDirectory,
+                package: pkg.package
+            )
+            _ = try editor.splitChapter(at: file.id, splitOffset: cursorOffset)
+            try reloadPackageFromDisk()
+            // Drop the buffer for the changed file so the next select
+            // re-reads from disk.
+            buffers.removeValue(forKey: file.id)
+            dirtyURLs.remove(file.id)
+            select(file)
+            isDirty = true
+        } catch {
+            chapterOperationError = error.localizedDescription
+        }
+    }
+
+    /// Merge the current chapter with the next chapter in the spine.
+    /// The next chapter's file is deleted; nav.xhtml is regenerated.
+    /// File selection stays on the merged file (the original).
+    func mergeChapterWithNext() async {
+        guard let pkg = package, let file = selectedFile else { return }
+        flushSourceTextToBuffer()
+        do {
+            try writeBufferIfDirty(file.id)
+            let editor = PackageEditor(
+                workingDirectory: pkg.workingDirectory,
+                package: pkg.package
+            )
+            try editor.mergeWithNextChapter(at: file.id)
+            try reloadPackageFromDisk()
+            buffers.removeValue(forKey: file.id)
+            dirtyURLs.remove(file.id)
+            select(file)
+            isDirty = true
+        } catch {
+            chapterOperationError = error.localizedDescription
+        }
+    }
+
+    /// Regenerate `nav.xhtml` from the current spine. Each chapter's
+    /// title is extracted from its first heading; chapters with no
+    /// heading fall back to "Chapter N".
+    func regenerateTableOfContents() async {
+        guard let pkg = package else { return }
+        flushSourceTextToBuffer()
+        do {
+            // Flush every dirty buffer to disk so the title extraction
+            // sees user edits in chapter content + headings.
+            for url in dirtyURLs {
+                if let text = buffers[url] {
+                    try text.write(to: url, atomically: true, encoding: .utf8)
+                }
+            }
+            let editor = PackageEditor(
+                workingDirectory: pkg.workingDirectory,
+                package: pkg.package
+            )
+            try editor.regenerateNav()
+            try reloadPackageFromDisk()
+            isDirty = true
+        } catch {
+            chapterOperationError = error.localizedDescription
+        }
+    }
+
+    /// Whether the current selection has a chapter to merge with —
+    /// drives menu-item enable/disable state. Returns true only when
+    /// the selected file is a spine entry that isn't last.
+    var canMergeWithNextChapter: Bool {
+        guard let pkg = package, let file = selectedFile else { return false }
+        let editor = PackageEditor(
+            workingDirectory: pkg.workingDirectory,
+            package: pkg.package
+        )
+        guard let id = editor.spineItemID(for: file.id) else { return false }
+        guard let idx = pkg.package.spine.firstIndex(of: id) else { return false }
+        return idx + 1 < pkg.package.spine.count
+    }
+
+    /// Whether the selected file is a spine entry — drives the
+    /// Split menu item's enable state.
+    var canSplitCurrentChapter: Bool {
+        guard let pkg = package, let file = selectedFile else { return false }
+        let editor = PackageEditor(
+            workingDirectory: pkg.workingDirectory,
+            package: pkg.package
+        )
+        return editor.spineItemID(for: file.id) != nil
+    }
+
+    /// Re-read the OPF + file tree after a chapter operation has
+    /// changed disk state. Reuses the existing working directory and
+    /// source URL.
+    private func reloadPackageFromDisk() throws {
+        guard let oldPkg = package else { return }
+        let opf = try OPFReader().read(rootDir: oldPkg.workingDirectory)
+        let tree = FileNode.walk(oldPkg.workingDirectory)
+        package = EPUBPackage(
+            id: oldPkg.id,
+            sourceURL: oldPkg.sourceURL,
+            workingDirectory: oldPkg.workingDirectory,
+            package: opf,
+            fileTree: tree
+        )
+    }
+
+    /// Write `url`'s in-memory buffer to disk if it differs from
+    /// disk. No-op when the buffer is absent (file was never edited)
+    /// or matches disk.
+    private func writeBufferIfDirty(_ url: URL) throws {
+        guard let text = buffers[url] else { return }
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        dirtyURLs.remove(url)
     }
 
     func select(_ node: FileNode) {

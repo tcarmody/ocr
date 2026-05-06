@@ -205,8 +205,47 @@ struct EditorViewMenu: Commands {
             EditorReOCRCurrentPageMenu()
             EditorReOCRPDFSelectionMenu()
             Divider()
+            EditorSplitChapterCommand()
+            EditorMergeChapterCommand()
+            EditorRegenerateTOCCommand()
+            Divider()
             ShowCorrectionTrailCommand()
         }
+    }
+}
+
+private struct EditorSplitChapterCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Split Chapter at Cursor") {
+            guard let vm else { return }
+            Task { await vm.splitChapterAtCursor() }
+        }
+        .keyboardShortcut("k", modifiers: [.command, .shift])
+        .disabled(vm?.canSplitCurrentChapter != true)
+    }
+}
+
+private struct EditorMergeChapterCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Merge with Next Chapter") {
+            guard let vm else { return }
+            Task { await vm.mergeChapterWithNext() }
+        }
+        .keyboardShortcut("j", modifiers: [.command, .shift])
+        .disabled(vm?.canMergeWithNextChapter != true)
+    }
+}
+
+private struct EditorRegenerateTOCCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Regenerate Table of Contents") {
+            guard let vm else { return }
+            Task { await vm.regenerateTableOfContents() }
+        }
+        .disabled(vm == nil)
     }
 }
 

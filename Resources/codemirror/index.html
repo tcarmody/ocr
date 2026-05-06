@@ -612,6 +612,17 @@
         return lastId;
       }
       editor.on("cursorActivity", function () {
+        // Always post the cursor offset on every cursor activity —
+        // chapter-split needs a fresh value when the user invokes the
+        // command, even if the anchor hasn't changed.
+        try {
+          var doc = editor.getDoc();
+          var pos = doc.getCursor();
+          post({ type: "cursor-offset", offset: doc.indexFromPos(pos) });
+        } catch (e) {
+          // Defensive: if indexFromPos throws on a transient state,
+          // skip reporting rather than break cursor tracking.
+        }
         var current = anchorAtCursor();
         if (!current || current === lastReportedAnchor) return;
         lastReportedAnchor = current;
