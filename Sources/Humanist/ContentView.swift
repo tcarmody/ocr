@@ -148,7 +148,7 @@ struct ContentView: View {
             HStack(spacing: 14) {
                 languageMenu
                 Divider().frame(height: 18)
-                Toggle("Cloud-enhanced OCR", isOn: $queue.useCloudEnhancedOCR)
+                Toggle("Claude OCR", isOn: $queue.useCloudEnhancedOCR)
                     .toggleStyle(.checkbox)
                     .help("""
                         Vision → Sonnet shortcut. Vision tries first; \
@@ -158,7 +158,7 @@ struct ContentView: View {
                         Settings); inert otherwise. Surya layout still \
                         runs for figures, tables, and footnotes.
                         """)
-                Toggle("Use Surya OCR", isOn: $queue.useSuryaOCR)
+                Toggle("Surya OCR", isOn: $queue.useSuryaOCR)
                     .toggleStyle(.checkbox)
                     .help("""
                         Force Surya OCR on every region of every page. \
