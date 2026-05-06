@@ -552,20 +552,38 @@ enum RegionAwareReflow {
             }
             guard !assigned.isEmpty else { continue }
 
-            // Sort top-to-bottom then left-to-right within the region.
-            let sorted = assigned.sorted { a, b in
-                if abs(a.box.midY - b.box.midY) > 0.005 { return a.box.midY > b.box.midY }
-                return a.box.minX < b.box.minX
+            // Surya occasionally bundles both columns of a 2-column
+            // page into a single body region. When that happens the
+            // straight Y/X sort below produces row-by-row reading
+            // ("left col line 1, right col line 1, left col line 2, …")
+            // — i.e. the columns get scrambled. Run `ColumnSplitter` on
+            // wide `.text` regions so a clear gutter inside the region
+            // splits the observations into per-column groups before
+            // they're stitched into text. The width gate keeps this
+            // off legitimate single-column regions whose Surya bbox is
+            // narrower than ~60% of the page width.
+            let assignedGroups: [[TextObservation]]
+            if region.kind == .text, region.box.width > 0.6 {
+                assignedGroups = ColumnSplitter().split(assigned)
+            } else {
+                assignedGroups = [assigned]
             }
-            // Join with soft-hyphen-aware concatenation.
-            let text = joinWithDehyphenation(sorted.map(\.text))
-            guard !text.isEmpty else { continue }
+            for group in assignedGroups {
+                // Sort top-to-bottom then left-to-right within the group.
+                let sorted = group.sorted { a, b in
+                    if abs(a.box.midY - b.box.midY) > 0.005 { return a.box.midY > b.box.midY }
+                    return a.box.minX < b.box.minX
+                }
+                // Join with soft-hyphen-aware concatenation.
+                let text = joinWithDehyphenation(sorted.map(\.text))
+                guard !text.isEmpty else { continue }
 
-            blocks.append(blockForRegion(
-                kind: region.kind,
-                text: text,
-                pageFootnotes: pageFootnotes
-            ))
+                blocks.append(blockForRegion(
+                    kind: region.kind,
+                    text: text,
+                    pageFootnotes: pageFootnotes
+                ))
+            }
         }
         return blocks
     }
