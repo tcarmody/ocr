@@ -60,6 +60,13 @@ struct HumanistApp: App {
             FileOpenCommands()
             EditorSaveCommands()
             EditorViewMenu()
+            CommandGroup(after: .help) {
+                Button("Show Welcome…") {
+                    NotificationCenter.default.post(
+                        name: .humanistShowWelcome, object: nil
+                    )
+                }
+            }
         }
 
         // Editor window: one per opened EPUB. macOS reuses an existing
@@ -238,5 +245,10 @@ extension Notification.Name {
     /// launcher scene and can't reach an editor's @State directly.
     static let humanistShowCorrectionTrail = Notification.Name(
         "humanistShowCorrectionTrail"
+    )
+    /// Launcher window listens for this and re-opens the first-run
+    /// welcome sheet. Posted by the Help menu item.
+    static let humanistShowWelcome = Notification.Name(
+        "humanistShowWelcome"
     )
 }

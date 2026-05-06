@@ -13,8 +13,15 @@ struct ContentView: View {
     @EnvironmentObject private var store: JobStore
     @EnvironmentObject private var runner: JobRunner
     @State private var isTargeted = false
+    @State private var showingWelcome = false
     @StateObject private var twoUpProcessor = TwoUpProcessor()
     @Environment(\.openWindow) private var openWindow
+    /// First-run flag. When false, `onAppear` flips
+    /// `showingWelcome` true so the welcome sheet presents
+    /// automatically. The sheet flips this true on dismiss
+    /// (regardless of whether the user clicked "Got it" or "Open
+    /// Settings"), so subsequent launches skip it.
+    @AppStorage(WelcomeSheet.welcomeShownKey) private var welcomeShown: Bool = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -63,6 +70,20 @@ struct ContentView: View {
             set: { _ in }
         )) {
             TwoUpProgressSheet(processor: twoUpProcessor)
+        }
+        .sheet(isPresented: $showingWelcome) {
+            WelcomeSheet(isPresented: $showingWelcome)
+        }
+        .onAppear {
+            if !welcomeShown { showingWelcome = true }
+        }
+        // Help menu's "Show Welcome…" posts this notification so a
+        // user who dismissed the first-run sheet can re-open it
+        // without resetting the flag manually.
+        .onReceive(NotificationCenter.default.publisher(
+            for: .humanistShowWelcome
+        )) { _ in
+            showingWelcome = true
         }
     }
 
