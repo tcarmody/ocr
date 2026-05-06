@@ -189,6 +189,13 @@ final class EditorCommandRouter: ObservableObject {
         vm.showFindInFilesSheet = true
     }
 
+    /// Tools > Validate EPUB. Saves first if dirty, then invokes
+    /// epubcheck and surfaces results in the validation sheet.
+    func validateEPUB() {
+        guard let vm = activeEditor() else { return }
+        Task { await vm.validateEPUB() }
+    }
+
     // MARK: - private
 
     /// Pick the editor whose window is currently key. If none of the

@@ -179,6 +179,27 @@ private struct EditorFootnoteCommand: View {
     }
 }
 
+// MARK: - Tools menu (Phase 5b)
+
+/// `Tools` top-level menu. Currently houses Validate EPUB; future
+/// homes for Reports, Index editor, Mend Document live here.
+struct EditorToolsMenu: Commands {
+    var body: some Commands {
+        CommandMenu("Tools") {
+            EditorValidateEPUBCommand()
+        }
+    }
+}
+
+private struct EditorValidateEPUBCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Validate EPUB…") { router.validateEPUB() }
+            .keyboardShortcut("v", modifiers: [.command, .shift, .option])
+            .disabled(!router.canFind)
+    }
+}
+
 // MARK: - View menu (pane toggles + source PDF actions)
 
 /// Top-level "Document" menu — pane toggles, source-PDF actions,

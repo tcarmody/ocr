@@ -155,6 +155,13 @@ struct EditorView: View {
                             isPresented: $vm.showFindInFilesSheet
                         )
                     }
+                    // Phase 5b: Tools > Validate EPUB sheet.
+                    .sheet(isPresented: $vm.showValidationSheet) {
+                        EPUBValidationSheet(
+                            vm: vm,
+                            isPresented: $vm.showValidationSheet
+                        )
+                    }
                     // Phase 5b: chapter-operation failures (split,
                     // merge, regen TOC) surface here so the user sees
                     // what went wrong without digging through logs.

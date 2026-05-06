@@ -893,6 +893,80 @@ final class EditorViewModel: ObservableObject {
     /// `showSpecialCharacterPicker`.
     @Published var showGotoLineSheet: Bool = false
 
+    // MARK: - EPUB validation (Phase 5b)
+
+    /// Drives the Tools > Validate EPUB sheet.
+    @Published var showValidationSheet: Bool = false
+
+    /// Last validation report, or nil when validation hasn't run
+    /// yet.
+    @Published var validationReport: EPUBValidator.Report?
+
+    /// Last validation error message (e.g. "epubcheck not
+    /// installed"), or nil when the last run succeeded.
+    @Published var validationError: String?
+
+    /// True while validation is mid-flight.
+    @Published var isValidating: Bool = false
+
+    /// Save the EPUB if dirty, then run epubcheck against the
+    /// on-disk file. Mutates `validationReport` / `validationError`
+    /// as a side effect; the sheet observes those.
+    func validateEPUB() async {
+        guard let pkg = package else { return }
+        // Save first if dirty — validation always runs against the
+        // on-disk file so the user sees what readers will see.
+        if isDirty {
+            await save()
+            // If save failed, surface that error and bail.
+            if case .failed(let msg) = saveState {
+                validationError = "Couldn't save before validation: \(msg)"
+                showValidationSheet = true
+                return
+            }
+        }
+        let epubURL = pkg.sourceURL
+        isValidating = true
+        validationError = nil
+        validationReport = nil
+        showValidationSheet = true
+        let report: EPUBValidator.Report?
+        let errorMsg: String?
+        do {
+            let r = try await Task.detached(priority: .userInitiated) {
+                try EPUBValidator().validate(epubURL: epubURL)
+            }.value
+            report = r
+            errorMsg = nil
+        } catch {
+            report = nil
+            errorMsg = error.localizedDescription
+        }
+        isValidating = false
+        validationReport = report
+        validationError = errorMsg
+    }
+
+    /// Open the file referenced by a validation message and jump to
+    /// its line. epubcheck reports paths relative to the EPUB root
+    /// (e.g. `OEBPS/chapter-001.xhtml`); resolve against the working
+    /// dir and find the matching FileNode.
+    func openValidationMessage(_ message: EPUBValidator.Message) {
+        guard let pkg = package, let path = message.path, !path.isEmpty
+        else { return }
+        let absolute = pkg.workingDirectory
+            .appendingPathComponent(path)
+            .canonicalForFile
+        if let node = Self.findNode(in: pkg.fileTree, url: absolute) {
+            select(node)
+            if let line = message.line {
+                DispatchQueue.main.async { [weak self] in
+                    self?.gotoLine(line)
+                }
+            }
+        }
+    }
+
     // MARK: - Find in Files (Phase 5b)
 
     /// Drives the Search > Find in Files sheet.

@@ -62,6 +62,7 @@ struct HumanistApp: App {
             EditorFindCommands()
             EditorFormatMenu()
             EditorInsertMenu()
+            EditorToolsMenu()
             EditorViewMenu()
             CommandGroup(after: .help) {
                 Button("Show Welcome…") {
