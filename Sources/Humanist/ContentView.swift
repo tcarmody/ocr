@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import AI
 import Document
 import PDFIngest
 import Pipeline
@@ -24,33 +25,30 @@ struct ContentView: View {
     @AppStorage(WelcomeSheet.welcomeShownKey) private var welcomeShown: Bool = false
 
     var body: some View {
-        VStack(spacing: 12) {
-            Text("Humanist")
-                .font(.title2).bold()
-            Text("Drop PDFs (or a folder of PDFs) anywhere in this window.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            optionsBlock
-
-            DropZone(isTargeted: isTargeted)
-                .frame(maxWidth: .infinity, minHeight: 90)
-
-            queueList
-
-            HStack {
-                Button("Choose Files or Folder…") { queue.chooseFiles() }
-                Spacer()
-                if store.jobs.contains(where: \.isFinished) {
-                    Button("Clear Done") { store.clearFinished() }
+        VStack(spacing: 0) {
+            ModeStrip()
+            Divider()
+            VStack(spacing: 14) {
+                optionsBlock
+                if store.jobs.isEmpty {
+                    // Queue empty: hero drop zone takes the room.
+                    DropZone(isTargeted: isTargeted, compact: false)
+                        .frame(maxWidth: .infinity, minHeight: 200)
+                    Spacer()
+                } else {
+                    // Queue has jobs: thin "drop more here" strip
+                    // gives the queue its space.
+                    DropZone(isTargeted: isTargeted, compact: true)
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                    queueList
                 }
-                if store.hasPendingWork {
-                    Button("Cancel All", role: .destructive) { runner.cancelAll() }
-                }
+                bottomBar
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
         }
-        .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
         // Drop target accepts PDFs (added to queue) or EPUBs (open editor
         // directly). Folders enumerate to PDFs.
         .dropDestination(for: URL.self) { urls, _ in
@@ -138,29 +136,37 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - options
+    // MARK: - options + bottom bar
 
+    /// Per-conversion options. Single horizontal row when the
+    /// window is wide enough, plus a separator + tesseract badge.
+    /// Each toggle / picker only affects new jobs you queue —
+    /// existing queued/running jobs keep their snapshotted options.
     @ViewBuilder
     private var optionsBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            languageRow
-            Toggle(isOn: $queue.useHighAccuracyOCR) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("High-accuracy OCR (Surya)")
-                    Text("Slower but better. Per-region cascade is automatic; this forces Surya everywhere.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 14) {
+                languageMenu
+                Divider().frame(height: 18)
+                Toggle("High-accuracy", isOn: $queue.useHighAccuracyOCR)
+                    .toggleStyle(.checkbox)
+                    .help("Force Surya layout + OCR on every page. Slower but better on dense / scanned books.")
+                Toggle("Force OCR", isOn: $queue.forceOCR)
+                    .toggleStyle(.checkbox)
+                    .help("Skip the PDF's embedded text layer and run OCR on every page. Use when the embedded text is the output of a previous bad OCR pass.")
+                Spacer()
+                tesseractStatusBadge
             }
-            .toggleStyle(.checkbox)
+            .font(.callout)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private var languageRow: some View {
-        HStack(spacing: 12) {
-            Text("Languages:").bold()
+    private var languageMenu: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "globe")
+                .foregroundStyle(.secondary)
             Menu {
                 ForEach(QueueViewModel.supportedLanguages) { opt in
                     Button {
@@ -175,11 +181,32 @@ struct ContentView: View {
                 }
             } label: {
                 Text(queue.languageButtonLabel)
-                    .frame(maxWidth: 280, alignment: .leading)
+                    .frame(maxWidth: 200, alignment: .leading)
             }
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 220)
+        }
+    }
+
+    /// Bottom action bar. Choose Files always present; Clear Done /
+    /// Cancel All conditional on queue state.
+    @ViewBuilder
+    private var bottomBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                queue.chooseFiles()
+            } label: {
+                Label("Choose Files or Folder…", systemImage: "folder")
+            }
+            .buttonStyle(.borderedProminent)
             Spacer()
-            tesseractStatusBadge
+            if store.jobs.contains(where: \.isFinished) {
+                Button("Clear Done") { store.clearFinished() }
+            }
+            if store.hasPendingWork {
+                Button("Cancel All", role: .destructive) {
+                    runner.cancelAll()
+                }
+            }
         }
     }
 
@@ -204,26 +231,19 @@ struct ContentView: View {
 
     @ViewBuilder
     private var queueList: some View {
-        if store.jobs.isEmpty {
-            VStack(spacing: 4) {
-                Text("Queue is empty")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding()
-        } else {
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(store.jobs) { job in
-                        JobRow(job: job)
-                            .padding(.vertical, 6)
-                            .padding(.horizontal, 10)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color(nsColor: .controlBackgroundColor))
-                            )
-                    }
+        // Caller (`body`) only renders this when `store.jobs` is
+        // non-empty — the empty-queue case is handled by the
+        // hero drop zone above instead of an "empty queue" label.
+        ScrollView {
+            LazyVStack(spacing: 6) {
+                ForEach(store.jobs) { job in
+                    JobRow(job: job)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                        )
                 }
                 .padding(.vertical, 4)
             }
@@ -480,26 +500,159 @@ private extension Job {
     }
 }
 
+/// Status strip across the top of the launcher. Tells the user at
+/// a glance what processing mode they're in (Private vs Cloud),
+/// surfaces Cloud-mode misconfigurations (no API key, no features
+/// enabled) before they queue anything, and gives one-click access
+/// to Settings via the trailing gear button.
+///
+/// Refreshes itself off the AISettings store on appear and
+/// whenever the Settings sheet might have closed (`scenePhase`
+/// transitions). Keeps the strip honest without subscribing to
+/// every UserDefaults change.
+private struct ModeStrip: View {
+    @State private var settings: AISettings = AISettings()
+    @State private var hasAPIKey: Bool = false
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        HStack(spacing: 12) {
+            modeBadge
+            Divider().frame(height: 16)
+            detailLine
+            Spacer()
+            Button {
+                openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.callout)
+            }
+            .buttonStyle(.borderless)
+            .help("Open Settings (⌘,)")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .onAppear { refresh() }
+        .onChange(of: scenePhase) { _, _ in refresh() }
+    }
+
+    // MARK: - Pieces
+
+    @ViewBuilder
+    private var modeBadge: some View {
+        switch settings.processingMode {
+        case .privateLocal:
+            Label("Private", systemImage: "lock.shield")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+        case .cloud:
+            Label("Cloud", systemImage: "cloud")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.tint)
+        }
+    }
+
+    @ViewBuilder
+    private var detailLine: some View {
+        switch settings.processingMode {
+        case .privateLocal:
+            Text("Local-only — no data leaves this machine.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .cloud:
+            HStack(spacing: 8) {
+                if !hasAPIKey {
+                    Label("No API key", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    let active = enabledFeatureCount(settings.cloudFeatures)
+                    if active == 0 {
+                        Label("0 features enabled", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Label("\(active) feature\(active == 1 ? "" : "s")", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("·")
+                    .foregroundStyle(.tertiary)
+                Text("Cap: \(settings.perBookCallCap) calls/book")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func enabledFeatureCount(_ f: AISettings.CloudFeatures) -> Int {
+        var n = 0
+        if f.hardRegionOCR { n += 1 }
+        if f.tableExtraction { n += 1 }
+        if f.postOCRCleanup { n += 1 }
+        if f.semanticClassification { n += 1 }
+        if f.tocParsing { n += 1 }
+        return n
+    }
+
+    private func refresh() {
+        settings = AISettingsStore().load()
+        hasAPIKey = (AnthropicAPIKeyStore().read() ?? "").isEmpty == false
+    }
+}
+
 /// Visual indicator only — actual drop handling lives on the outer
 /// view so users can drop anywhere in the window. `isTargeted` is owned
 /// by the parent and driven by the outer `dropDestination` callback.
+///
+/// `compact: true` shrinks the zone to a thin "Drop more PDFs here"
+/// strip — used when the queue already has jobs and the user wants
+/// the queue to take the room. The full hero variant lands on the
+/// empty-queue first-run case.
 private struct DropZone: View {
     let isTargeted: Bool
+    let compact: Bool
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: compact ? 8 : 14, style: .continuous)
                 .strokeBorder(
-                    isTargeted ? Color.accentColor : Color.secondary.opacity(0.5),
-                    style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                    isTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
+                    style: StrokeStyle(
+                        lineWidth: isTargeted ? 2.5 : 1.5,
+                        dash: [6, 4]
+                    )
                 )
-            VStack(spacing: 6) {
-                Image(systemName: "doc.text.image")
-                    .font(.system(size: 32, weight: .light))
-                    .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
-                Text(isTargeted ? "Release to add to queue" : "Drop PDFs or a folder of PDFs")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                .background(
+                    RoundedRectangle(cornerRadius: compact ? 8 : 14, style: .continuous)
+                        .fill(isTargeted
+                              ? Color.accentColor.opacity(0.06)
+                              : Color.secondary.opacity(0.03))
+                )
+            if compact {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.rectangle.on.rectangle")
+                        .font(.callout)
+                        .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                    Text(isTargeted ? "Release to add" : "Drop more PDFs here")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "doc.text.image")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                    Text(isTargeted ? "Release to add to queue" : "Drop PDFs or a folder of PDFs")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text("Folders enumerate every PDF inside, recursively.")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .allowsHitTesting(false)

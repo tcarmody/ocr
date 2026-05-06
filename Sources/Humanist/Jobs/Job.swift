@@ -127,10 +127,34 @@ struct Job: Identifiable, Codable, Equatable {
 struct ConversionOptions: Codable, Equatable {
     var languages: [String]
     var useHighAccuracyOCR: Bool
+    /// Skip the embedded-text trust path and re-OCR every page.
+    /// Per-job because some PDFs ship with bad embedded text
+    /// layers (broken `ToUnicode`, mojibake) that the trust scorer
+    /// can mistake for legitimate prose. Previously lived on
+    /// `AISettings`; promoted to ConversionOptions so the launcher
+    /// can offer it as a per-conversion toggle.
+    var forceOCR: Bool
 
-    init(languages: [String] = ["en"], useHighAccuracyOCR: Bool = false) {
+    init(
+        languages: [String] = ["en"],
+        useHighAccuracyOCR: Bool = false,
+        forceOCR: Bool = false
+    ) {
         self.languages = languages
         self.useHighAccuracyOCR = useHighAccuracyOCR
+        self.forceOCR = forceOCR
+    }
+
+    /// Optional decode for `forceOCR` — old persisted jobs predate
+    /// the field; default to false rather than fail to load.
+    private enum CodingKeys: String, CodingKey {
+        case languages, useHighAccuracyOCR, forceOCR
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.languages = try c.decode([String].self, forKey: .languages)
+        self.useHighAccuracyOCR = try c.decode(Bool.self, forKey: .useHighAccuracyOCR)
+        self.forceOCR = try c.decodeIfPresent(Bool.self, forKey: .forceOCR) ?? false
     }
 }
 

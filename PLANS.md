@@ -1198,6 +1198,67 @@ to be done.
 
 These are smaller items that follow naturally from work we've done.
 
+## R-Launcher-Pause — Pause / Resume Queue control
+
+**Status**: not started. Today the only way to stop the runner is
+to cancel every queued job individually or hit Cancel All
+(destructive — they're gone). A pause control would suspend the
+runner while leaving jobs queued.
+
+### Approach
+
+- Add `JobRunner.pause()` / `resume()` — toggles a flag the run
+  loop checks between jobs.
+- Persist paused state across launches via `@AppStorage` so the
+  user's "I'll come back to this" intent survives a restart.
+- New "Pause Queue" button in the launcher's bottom bar (between
+  Choose Files and Cancel All), with the icon flipping to
+  "Resume Queue" when active.
+
+### Effort
+
+~2 hours. Mostly UI + state plumbing; the runner already has a
+clear "between jobs" point.
+
+## R-Launcher-History — Completed-jobs disclosure
+
+**Status**: not started. Done jobs stay in the active queue list,
+which gets cluttered after a bulk run. "Clear Done" exists but
+discards the metadata (stats, output URL) — useful for finding a
+past EPUB later.
+
+### Approach
+
+- Auto-collapse `.done` / `.cancelled` / `.failed` jobs into a
+  "History" disclosure section at the bottom of the queue.
+- History entries keep their stats / output URL — clicking opens
+  the EPUB. Right-click → Reveal in Finder, Re-run, Remove.
+- Optional: persist history beyond the current session (cap at
+  some count) so the user can find an EPUB from yesterday's
+  bulk run.
+
+### Effort
+
+~half day. Mostly view-tree restructuring.
+
+## R-Launcher-Reorder — Drag-reorder queued jobs
+
+**Status**: not started. Jobs run in arrival order. For a bulk
+drop where the user wants to prioritize one PDF, they currently
+can't.
+
+### Approach
+
+- SwiftUI's `.onMove` gesture on the queue list. Update
+  `JobStore` to support `move(from:to:)` with persistence.
+- Only `.queued` (and `.profiling`?) jobs participate — running
+  / done / cancelled stay put.
+- Drag handle visible on hover.
+
+### Effort
+
+~half day.
+
 ## R-Conversion-Summary — Post-conversion stats panel
 
 **Status**: not started. The pipeline runs Cloud-mode features

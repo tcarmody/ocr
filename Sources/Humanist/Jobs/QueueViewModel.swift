@@ -41,6 +41,10 @@ final class QueueViewModel: ObservableObject {
 
     @Published var selectedLanguageIds: Set<String> = ["en"]
     @Published var useHighAccuracyOCR: Bool = false
+    /// Force-OCR override for new conversions in this session.
+    /// Promoted from Settings to a launcher toggle since it's
+    /// inherently per-conversion (some PDFs need it; most don't).
+    @Published var forceOCR: Bool = false
 
     let store: JobStore
     let runner: JobRunner
@@ -115,7 +119,8 @@ final class QueueViewModel: ObservableObject {
             outputURL: outputURL,
             options: ConversionOptions(
                 languages: selectedLanguages.map { $0.rawValue },
-                useHighAccuracyOCR: useHighAccuracyOCR
+                useHighAccuracyOCR: useHighAccuracyOCR,
+                forceOCR: forceOCR
             ),
             status: .profiling
         )
