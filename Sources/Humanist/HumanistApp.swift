@@ -60,6 +60,8 @@ struct HumanistApp: App {
             FileOpenCommands()
             EditorSaveCommands()
             EditorFindCommands()
+            EditorFormatMenu()
+            EditorInsertMenu()
             EditorViewMenu()
             CommandGroup(after: .help) {
                 Button("Show Welcome…") {
@@ -165,8 +167,19 @@ struct EditorFindCommands: Commands {
             EditorFindPrevCommand()
             EditorReplaceCommand()
             Divider()
+            EditorGotoLineCommand()
+            Divider()
             EditorSpellCheckCommand()
         }
+    }
+}
+
+private struct EditorGotoLineCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Go to Line…") { router.showGotoLineSheet() }
+            .keyboardShortcut("l", modifiers: .command)
+            .disabled(!router.canFind)
     }
 }
 

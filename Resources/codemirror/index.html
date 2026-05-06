@@ -373,6 +373,140 @@
         editor.focus();
       };
 
+      // Apply a casing transform to the current selection. Kinds:
+      //   "upper" → UPPERCASE
+      //   "lower" → lowercase
+      //   "title" → Title Case (every word's first letter capitalized)
+      //   "sentence" → Sentence case (first letter of each sentence)
+      // No-op if nothing is selected.
+      window.humanistTransformSelection = function (kind) {
+        var doc = editor.getDoc();
+        var sel = doc.getSelection();
+        if (sel.length === 0) return;
+        var transformed;
+        switch (kind) {
+          case "upper":
+            transformed = sel.toUpperCase();
+            break;
+          case "lower":
+            transformed = sel.toLowerCase();
+            break;
+          case "title":
+            transformed = sel.replace(/\w\S*/g, function (w) {
+              return w.charAt(0).toUpperCase() + w.substr(1).toLowerCase();
+            });
+            break;
+          case "sentence":
+            transformed = sel.toLowerCase().replace(
+              /(^\s*|[.!?]\s+)(\S)/g,
+              function (m, lead, c) { return lead + c.toUpperCase(); }
+            );
+            break;
+          default:
+            return;
+        }
+        doc.replaceSelection(transformed, "around");
+        editor.focus();
+      };
+
+      // Strip every HTML/XHTML tag from the current selection,
+      // leaving the inner text. "Selected `<em>foo</em>`" → "foo".
+      // Aggressive on purpose: removes ALL tags inside the selection,
+      // not just the immediately surrounding pair, so it works even
+      // when the selection straddles uneven nesting.
+      window.humanistRemoveFormatting = function () {
+        var doc = editor.getDoc();
+        var sel = doc.getSelection();
+        if (sel.length === 0) return;
+        var stripped = sel.replace(/<[^>]+>/g, "");
+        doc.replaceSelection(stripped, "around");
+        editor.focus();
+      };
+
+      // Insert a closing tag for the most recent unclosed open tag at
+      // the cursor. Walks the source backwards, building a stack of
+      // open tags and popping on each close, then emits `</NAME>` for
+      // whatever's at the top of the stack. Self-closing tags (`<br/>`,
+      // `<hr/>`) are skipped. No-op when nothing is unclosed.
+      window.humanistInsertClosingTag = function () {
+        var doc = editor.getDoc();
+        var pos = doc.getCursor();
+        var idx = doc.indexFromPos(pos);
+        var before = doc.getValue().substring(0, idx);
+        var tagRe = /<\/?(\w+)(?:\s[^>]*)?\/?>/g;
+        var stack = [];
+        var m;
+        while ((m = tagRe.exec(before)) !== null) {
+          var tag = m[0];
+          var name = m[1];
+          if (tag.charAt(tag.length - 2) === "/") continue;  // self-closing
+          if (tag.charAt(1) === "/") {
+            if (stack.length > 0 && stack[stack.length - 1] === name) {
+              stack.pop();
+            }
+          } else {
+            stack.push(name);
+          }
+        }
+        if (stack.length === 0) return;
+        var closing = "</" + stack[stack.length - 1] + ">";
+        doc.replaceRange(closing, pos);
+        editor.focus();
+      };
+
+      // Jump cursor to a 1-based line number. Used by Edit > Go to
+      // Line. Out-of-range numbers clamp to the document's first/last
+      // line so the cursor always lands somewhere sensible.
+      window.humanistGotoLine = function (lineNumber) {
+        if (typeof lineNumber !== "number" || lineNumber < 1) return;
+        var maxLine = editor.lineCount() - 1;
+        var target = Math.max(0, Math.min(maxLine, lineNumber - 1));
+        editor.setCursor({ line: target, ch: 0 });
+        editor.scrollIntoView({ line: target, ch: 0 }, 80);
+        editor.focus();
+      };
+
+      // Insert a footnote at the cursor: a noteref `<a>` in body
+      // position, plus a matching `<aside class="footnote">` skeleton
+      // inserted before `</body>` (or appended at end if no body
+      // close). Picks the next available `fn-N` numeric id by scanning
+      // existing ids in the document. The user fills in the body
+      // text — the skeleton gets a placeholder so the user can find
+      // the new aside and edit it.
+      window.humanistInsertFootnote = function () {
+        var doc = editor.getDoc();
+        var content = doc.getValue();
+        var existing = (content.match(/id="fn-(\d+)"/g) || [])
+          .map(function (s) { return parseInt(s.match(/\d+/)[0], 10); });
+        var nextId = 1;
+        while (existing.indexOf(nextId) !== -1) nextId++;
+        var marker = String(nextId);
+        var refTag = '<a class="noteref" href="#fn-' + nextId + '">' + marker + '</a>';
+        var asideTag = '\n<aside class="footnote" id="fn-' + nextId + '">' + marker + ' </aside>';
+        // Insert ref at cursor (preserving any selection by appending
+        // ref after it — typical pattern is "select the marker
+        // position, click insert").
+        var sel = doc.getSelection();
+        if (sel.length > 0) {
+          doc.replaceSelection(sel + refTag, "around");
+        } else {
+          var pos = doc.getCursor();
+          doc.replaceRange(refTag, pos);
+        }
+        // Append aside before </body>.
+        var refreshed = doc.getValue();
+        var bodyEnd = refreshed.lastIndexOf("</body>");
+        if (bodyEnd >= 0) {
+          var prefix = refreshed.substring(0, bodyEnd);
+          var suffix = refreshed.substring(bodyEnd);
+          doc.setValue(prefix + asideTag + "\n" + suffix);
+        } else {
+          // No </body> — append at end of file.
+          doc.replaceRange(asideTag, doc.posFromIndex(refreshed.length));
+        }
+        editor.focus();
+      };
+
       // Replace the entire body of a single page — text between the
       // closing `>` of `<span id="hu-page-N" …>` and the start of
       // `<span id="hu-page-N+1" …>` (or end of body, for the last

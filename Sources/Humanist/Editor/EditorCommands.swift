@@ -38,6 +38,147 @@ struct EditorSaveAsCommand: View {
     }
 }
 
+// MARK: - Format menu (Phase 5a)
+
+/// `Format` top-level menu — Bold/Italic, headings 1-6, casing
+/// transforms, smart quotes, remove formatting. Items route through
+/// `EditorCommandRouter` because the focused-object pattern is
+/// unreliable for these (same reason as Save / Find).
+struct EditorFormatMenu: Commands {
+    var body: some Commands {
+        CommandMenu("Format") {
+            EditorWrapCommand(
+                title: "Bold", opening: "<strong>", closing: "</strong>",
+                shortcut: "b", modifiers: .command
+            )
+            EditorWrapCommand(
+                title: "Italic", opening: "<em>", closing: "</em>",
+                shortcut: "i", modifiers: .command
+            )
+            EditorWrapCommand(
+                title: "Inline Code", opening: "<code>", closing: "</code>",
+                shortcut: nil, modifiers: []
+            )
+            Divider()
+            Menu("Heading") {
+                ForEach(1...6, id: \.self) { level in
+                    EditorWrapCommand(
+                        title: "Heading \(level)",
+                        opening: "<h\(level)>", closing: "</h\(level)>",
+                        shortcut: KeyEquivalent(Character("\(level)")),
+                        modifiers: [.command, .option]
+                    )
+                }
+            }
+            Menu("Casing") {
+                EditorTransformCommand(title: "UPPER CASE",     kind: .upper)
+                EditorTransformCommand(title: "lower case",     kind: .lower)
+                EditorTransformCommand(title: "Title Case",     kind: .title)
+                EditorTransformCommand(title: "Sentence case",  kind: .sentence)
+            }
+            Divider()
+            EditorRemoveFormattingCommand()
+            EditorSmartQuotesCommand()
+        }
+    }
+}
+
+private struct EditorWrapCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    let title: String
+    let opening: String
+    let closing: String
+    let shortcut: KeyEquivalent?
+    let modifiers: EventModifiers
+
+    var body: some View {
+        let button = Button(title) {
+            router.formatWrap(opening: opening, closing: closing)
+        }
+        .disabled(!router.canFind)
+        if let shortcut {
+            button.keyboardShortcut(shortcut, modifiers: modifiers)
+        } else {
+            button
+        }
+    }
+}
+
+private struct EditorTransformCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    let title: String
+    let kind: EditorViewModel.FormatRequest.TransformKind
+
+    var body: some View {
+        Button(title) { router.formatTransform(kind) }
+            .disabled(!router.canFind)
+    }
+}
+
+private struct EditorRemoveFormattingCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Remove Formatting") { router.formatRemoveFormatting() }
+            .keyboardShortcut("\\", modifiers: [.command, .shift])
+            .disabled(!router.canFind)
+    }
+}
+
+private struct EditorSmartQuotesCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Convert Quotes to Smart Quotes") {
+            router.formatSmartQuotes()
+        }
+        .disabled(!router.canFind)
+    }
+}
+
+// MARK: - Insert menu (Phase 5a)
+
+/// `Insert` top-level menu — Special Character picker, Closing Tag,
+/// Footnote, Link, Language Tag. Lives parallel to Format so each
+/// menu has a focused purpose.
+struct EditorInsertMenu: Commands {
+    var body: some Commands {
+        CommandMenu("Insert") {
+            EditorSpecialCharacterCommand()
+            Divider()
+            EditorClosingTagCommand()
+            EditorFootnoteCommand()
+        }
+    }
+}
+
+private struct EditorSpecialCharacterCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Special Character…") {
+            router.showSpecialCharacterPicker()
+        }
+        .keyboardShortcut("t", modifiers: [.command, .option])
+        .disabled(!router.canFind)
+    }
+}
+
+private struct EditorClosingTagCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Closing Tag") { router.insertClosingTag() }
+            .keyboardShortcut(".", modifiers: [.command, .shift])
+            .disabled(!router.canFind)
+    }
+}
+
+private struct EditorFootnoteCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Footnote") { router.insertFootnote() }
+            .keyboardShortcut("f", modifiers: [.command, .shift, .option])
+            .disabled(!router.canFind)
+    }
+}
+
 // MARK: - View menu (pane toggles + source PDF actions)
 
 /// Top-level "Document" menu — pane toggles, source-PDF actions,

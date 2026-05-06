@@ -132,6 +132,22 @@ struct EditorView: View {
                             )
                         }
                     }
+                    // Phase 5a: Insert > Special Character picker
+                    // sheet. Driven by the EditorViewModel flag the
+                    // command router flips on.
+                    .sheet(isPresented: $vm.showSpecialCharacterPicker) {
+                        SpecialCharacterPicker(
+                            isPresented: $vm.showSpecialCharacterPicker,
+                            onPick: { ch in vm.formatInsert(ch) }
+                        )
+                    }
+                    // Phase 5a: Edit > Go to Line… sheet.
+                    .sheet(isPresented: $vm.showGotoLineSheet) {
+                        GotoLineSheet(
+                            isPresented: $vm.showGotoLineSheet,
+                            onSubmit: { line in vm.gotoLine(line) }
+                        )
+                    }
                     // Document menu's "Show Correction Trail" command
                     // posts this notification so the menu item can
                     // reach this scene's local @State `showingCorrectionTrail`

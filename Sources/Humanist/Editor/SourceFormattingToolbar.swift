@@ -63,6 +63,21 @@ struct SourceFormattingToolbar: View {
             }
             .keyboardShortcut("3", modifiers: [.command, .option])
 
+            iconButton("Heading 4", systemImage: "4.square") {
+                vm.formatWrap(opening: "<h4>", closing: "</h4>")
+            }
+            .keyboardShortcut("4", modifiers: [.command, .option])
+
+            iconButton("Heading 5", systemImage: "5.square") {
+                vm.formatWrap(opening: "<h5>", closing: "</h5>")
+            }
+            .keyboardShortcut("5", modifiers: [.command, .option])
+
+            iconButton("Heading 6", systemImage: "6.square") {
+                vm.formatWrap(opening: "<h6>", closing: "</h6>")
+            }
+            .keyboardShortcut("6", modifiers: [.command, .option])
+
             verticalDivider
 
             // Block-level structure

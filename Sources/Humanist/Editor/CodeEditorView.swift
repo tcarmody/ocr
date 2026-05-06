@@ -363,6 +363,16 @@ private struct CodeMirrorWebView: NSViewRepresentable {
                 js = "humanistWrapAsList(\(jsString(listType)));"
             case .insert(let text):
                 js = "humanistInsertAtCursor(\(jsString(text)));"
+            case .transform(let kind):
+                js = "humanistTransformSelection(\(jsString(kind.rawValue)));"
+            case .removeFormatting:
+                js = "humanistRemoveFormatting();"
+            case .closingTag:
+                js = "humanistInsertClosingTag();"
+            case .gotoLine(let line):
+                js = "humanistGotoLine(\(line));"
+            case .insertFootnote:
+                js = "humanistInsertFootnote();"
             }
             webView.evaluateJavaScript(js, completionHandler: nil)
         }

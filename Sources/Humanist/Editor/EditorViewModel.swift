@@ -164,17 +164,38 @@ final class EditorViewModel: ObservableObject {
         let action: Action
         let nonce: Int
 
-        /// Three shapes the toolbar can produce:
+        /// Shapes the toolbar / Format / Insert / Edit menus produce:
         ///   * `wrap(opening, closing)` — wrap selection (or insert
         ///     paired tags at cursor). Most buttons use this.
         ///   * `wrapList(listType)` — wrap each non-empty selected
         ///     line as a `<li>`, surrounded by `<ul>` or `<ol>`.
         ///   * `insert(text)` — insert raw text at the cursor; used
-        ///     by self-closing inserts like `<hr/>`.
+        ///     by self-closing inserts like `<hr/>` and Special
+        ///     Character picks.
+        ///   * `transform(kind)` — casing transform on the selection
+        ///     (UPPER / lower / Title / Sentence).
+        ///   * `removeFormatting` — strip every tag inside the
+        ///     selection, leaving the inner text.
+        ///   * `closingTag` — close the most-recently-opened
+        ///     unclosed tag at the cursor.
+        ///   * `gotoLine(line)` — jump cursor to a 1-based line.
+        ///   * `insertFootnote` — insert a noteref + matching aside
+        ///     skeleton with the next available `fn-N` id.
         enum Action: Equatable {
             case wrap(opening: String, closing: String)
             case wrapList(listType: String)
             case insert(text: String)
+            case transform(kind: TransformKind)
+            case removeFormatting
+            case closingTag
+            case gotoLine(line: Int)
+            case insertFootnote
+        }
+
+        /// Casing transforms `humanistTransformSelection` understands.
+        /// Raw value is the JS-side kind string.
+        enum TransformKind: String, Equatable {
+            case upper, lower, title, sentence
         }
     }
     private var formatNonce: Int = 0
@@ -785,6 +806,52 @@ final class EditorViewModel: ObservableObject {
         )
     }
 
+    /// Apply a casing transform to the source pane's selection. No-op
+    /// when nothing is selected (the JS bridge does the actual check).
+    func formatTransform(_ kind: FormatRequest.TransformKind) {
+        formatNonce &+= 1
+        formatRequest = FormatRequest(
+            action: .transform(kind: kind), nonce: formatNonce
+        )
+    }
+
+    /// Strip every tag from the source pane's selection.
+    func formatRemoveFormatting() {
+        formatNonce &+= 1
+        formatRequest = FormatRequest(
+            action: .removeFormatting, nonce: formatNonce
+        )
+    }
+
+    /// Insert a closing tag for the most-recently-opened unclosed tag
+    /// at the cursor. Self-closing tags (`<br/>`, `<hr/>`) are skipped
+    /// by the bridge.
+    func insertClosingTag() {
+        formatNonce &+= 1
+        formatRequest = FormatRequest(
+            action: .closingTag, nonce: formatNonce
+        )
+    }
+
+    /// Insert a noteref + matching `<aside class="footnote">` skeleton
+    /// with the next available `fn-N` id. The user fills in the body
+    /// text.
+    func insertFootnote() {
+        formatNonce &+= 1
+        formatRequest = FormatRequest(
+            action: .insertFootnote, nonce: formatNonce
+        )
+    }
+
+    /// Jump the source pane's cursor to a 1-based line number.
+    /// Out-of-range numbers clamp at the bridge level.
+    func gotoLine(_ line: Int) {
+        formatNonce &+= 1
+        formatRequest = FormatRequest(
+            action: .gotoLine(line: line), nonce: formatNonce
+        )
+    }
+
     /// Open the source pane's find dialog (⌘F-equivalent).
     func openFind() { dispatchSearch(.find) }
     /// Move to the next find match (⌘G).
@@ -805,6 +872,14 @@ final class EditorViewModel: ObservableObject {
     /// dismissed. The sheet observes this; setting non-nil
     /// presents the panel.
     @Published var spellCheckSession: SpellCheckSession?
+
+    /// Drives the Insert > Special Character sheet. View-side toggle
+    /// — `EditorView` watches this and presents the sheet when true.
+    @Published var showSpecialCharacterPicker: Bool = false
+
+    /// Drives the Edit > Goto Line sheet. Same pattern as
+    /// `showSpecialCharacterPicker`.
+    @Published var showGotoLineSheet: Bool = false
 
     /// Run a fresh `NSSpellChecker` pass over the current source
     /// text and present the document-spelling sheet. Misspellings

@@ -125,6 +125,62 @@ final class EditorCommandRouter: ObservableObject {
     /// Open the document-spelling check sheet on the active editor.
     func openSpellCheck() { activeEditor()?.openSpellCheck() }
 
+    // MARK: - Format / Insert / Edit menu dispatch (Phase 5a)
+
+    /// Wrap the source pane's selection with `opening` / `closing`.
+    /// Used by Format menu items (Bold, Italic, Headings 1-6, etc.).
+    func formatWrap(opening: String, closing: String) {
+        activeEditor()?.formatWrap(opening: opening, closing: closing)
+    }
+
+    /// Apply a casing transform to the source pane's selection.
+    func formatTransform(_ kind: EditorViewModel.FormatRequest.TransformKind) {
+        activeEditor()?.formatTransform(kind)
+    }
+
+    /// Strip every tag from the source pane's selection.
+    func formatRemoveFormatting() {
+        activeEditor()?.formatRemoveFormatting()
+    }
+
+    /// Convert straight quotes to typographic curly quotes
+    /// document-wide.
+    func formatSmartQuotes() {
+        activeEditor()?.smartQuoteSourceText()
+    }
+
+    /// Insert a closing tag at the source pane's cursor for the most
+    /// recently-opened unclosed tag.
+    func insertClosingTag() {
+        activeEditor()?.insertClosingTag()
+    }
+
+    /// Insert a noteref + matching footnote `<aside>` skeleton at
+    /// the cursor.
+    func insertFootnote() {
+        activeEditor()?.insertFootnote()
+    }
+
+    /// Insert raw text at the source pane's cursor. Used by the
+    /// Special Character picker so a chosen char goes straight into
+    /// the document.
+    func insertText(_ text: String) {
+        activeEditor()?.formatInsert(text)
+    }
+
+    /// Toggle the Special Character picker sheet on the active
+    /// editor. Reused by the menu item and any toolbar surface.
+    func showSpecialCharacterPicker() {
+        guard let vm = activeEditor() else { return }
+        vm.showSpecialCharacterPicker = true
+    }
+
+    /// Toggle the Goto Line sheet on the active editor.
+    func showGotoLineSheet() {
+        guard let vm = activeEditor() else { return }
+        vm.showGotoLineSheet = true
+    }
+
     // MARK: - private
 
     /// Pick the editor whose window is currently key. If none of the
