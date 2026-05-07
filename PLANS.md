@@ -1800,6 +1800,262 @@ with the EPUB. Niche but unique.
 
 ---
 
+# Tier 9: Conversion-quality push (next batch)
+
+15 ideas the user picked from a 2026-05-07 brainstorm on what
+else could make PDF conversion **more effective, more versatile,
+and more efficient**. Organized by axis below; the proposed
+shipping sequence (5 rounds) follows.
+
+## Effective (output quality)
+
+### Q-Coherence — Document-level coherence pass
+
+Per-page processing today is independent (with a few cross-page
+classifiers layered on top). A single Haiku call over the whole
+book after reflow could fix things only visible in aggregate:
+chapter-title typos that propagate, inconsistent character /
+place name spellings, recurring OCR errors. Cheap (one call per
+book at Haiku rates), high-impact on long books.
+
+**Effort**: ~1.5 days. Reuses `AnthropicAPIClient` + budget +
+guardrail patterns from Cloud Phase 6.
+
+### Q-Hyphenation — Cross-page hyphenation repair
+
+Words split with `-` at the end of one page that continue at the
+start of the next currently stay broken. Today's dehyphenation
+runs intra-region only. Pure logic fix — walk the assembled
+block stream looking for `<page-break>` straddling a hyphenated
+word, join, drop the leading whitespace + capital on the
+continuation when appropriate.
+
+**Effort**: ~0.5 day.
+
+### Q-Metadata — Author / title / ISBN extraction
+
+`Book.author` / `Book.title` today come from user input or the
+source filename. A Haiku pass on the first 3-5 pages
+("frontmatter-summarize → JSON") writes title, author, year,
+publisher, ISBN into the EPUB's OPF metadata. Library window
+gets real titles instead of filenames; `dc:identifier` becomes
+useful for dedup.
+
+**Effort**: ~1 day. One Haiku call per book, roughly free.
+
+### Q-Dashes — Em-dash / en-dash / hyphen disambiguation
+
+Distinguish `—` (em), `–` (en), `--` (typed em), and `-`
+(hyphen) in OCR output. Heuristic: surrounding whitespace +
+adjacent characters + language context. Small but cumulative
+win on academic prose where dashes carry semantic weight.
+
+**Effort**: ~0.5 day.
+
+### Q-Ligatures — Ligature normalization beyond fi / fl
+
+Vision/Tesseract handle the common Latin ligatures (`ﬁ`, `ﬂ`,
+`ﬀ`, `ﬃ`, `ﬄ`); long-s is already handled. Extend to: archaic
+Latin abbreviations (`Ⅷ`, `&` → `et`, `ꝓ` → `pro`, `q̄` → `que`),
+Greek typographic ligatures (`ϰ` vs `κ`, `ϐ` vs `β` — preserve
+or normalize per user choice), kerning artifacts that produce
+near-ligatures (`rn` → `m` candidates flagged for review).
+
+**Effort**: ~1 day. Some of this overlaps with Haiku post-OCR
+cleanup (vision mode already catches some); the explicit table
+makes it deterministic and free for clean cases.
+
+## Versatile (more inputs, more outputs)
+
+### V-PDF-Searchable — Searchable-PDF re-export
+
+Same OCR + layout pipeline, output is a clean OCR'd PDF with a
+searchable text layer instead of (or alongside) the EPUB. Adds
+a "make this scan searchable" workflow that doesn't engage
+EPUB chapter splitting + reflow + cover detection — useful when
+the user wants to keep the original page layout intact.
+
+**Effort**: ~3 days. PDFKit can build a PDF; the work is
+positioning OCR'd text under the rendered glyphs at the right
+coordinates. Existing `TextObservation.box` in normalized
+coords + page DPI gets us there.
+
+### V-Outputs — Plain-text + Markdown + DOCX siblings
+
+EPUB stays the canonical output; `.txt` and `.md` ship as
+sibling files alongside on conversion when the user opts in.
+DOCX is heavier (binary OOXML format) and lands in a later
+round. `XHTMLWriter` already produces structured `[Block]` —
+walking it to plain text or Markdown is a small writer per
+format.
+
+**Effort**: ~1 day for txt + md; ~3 days for DOCX (third-party
+library or hand-rolled OOXML).
+
+### V-Trust-PerPage — Per-page embedded-text trust
+
+Today the embedded-text trust path is all-or-nothing per book.
+A flag for "trust embedded text on pages 1-50, OCR pages 51+"
+helps mixed sources (born-digital front matter + scanned
+appendix). Surface as a per-page checkbox column in the
+launcher's pre-flight inspection (reuses the document
+profiler), or a "force OCR from page N" option.
+
+**Effort**: ~1 day.
+
+### V-Refresh — EPUB refresh (re-OCR)
+
+Open an existing EPUB, re-run OCR with new settings. Useful
+when the user has a poorly-converted EPUB from elsewhere or
+wants to re-process with newer engines / Cloud features. Needs
+a reverse pipeline: extract source PDF (when sidecar is
+present), re-render pages, OCR, rebuild the EPUB while
+preserving any user edits to the existing chapters.
+
+**Effort**: ~3 days. Tricky bit is the merge with user-edited
+content — could ship a v1 that just rebuilds without preserving
+edits, then add merge in v2.
+
+## Efficient (speed, cost, memory)
+
+### E-Batches — Anthropic Batches API for Cloud-mode runs
+
+The Messages Batches API gives a 50% discount on Sonnet and
+Haiku calls in exchange for asynchronous processing (results
+return within 24h, usually minutes). For long bulk runs (a
+400-page book at ~$16-20 → ~$8-10) the savings are substantial.
+The `URLSessionTransport` protocol was designed for this from
+Phase 1 — every existing request type round-trips through
+JSONEncoder unchanged. Needs: batch submission, poll/job
+tracking, persistence (so a crash mid-batch doesn't lose
+results), UI for "queued in batch" job states.
+
+**Effort**: ~3 days. Highest cost-savings lever in the codebase.
+
+### E-Parallel — Parallel page processing
+
+Single-job per-page work today is serial. Pool 2-4 Surya
+sidecars and run Cloud calls concurrently per page. A 400-page
+book on a multi-core Mac drops 3-4× in wall time. Memory
+tradeoff is bounded — Surya weights are the dominant cost; 2
+sidecars ≈ ~10 GB. Surfaces as a setting (default sidecars: 1;
+range 1-4).
+
+**Effort**: ~2 days. Builds on `P-Surya-Pool` (already drafted
+in Tier 6) plus per-page TaskGroup concurrency.
+
+### E-Warm — Surya sidecar warm-on-launch
+
+First-conversion latency drops by 5-15s if we pre-spawn the
+sidecar at app launch instead of on first PDF drop. Single
+small change — kick `SuryaConnection.shared` from
+`HumanistApp.init` (or first window appearance) so the model
+load happens during onboarding rather than after the user
+clicks Convert.
+
+**Effort**: ~2 hours.
+
+### E-Routing — Adaptive Cloud routing per page
+
+Today the user picks one engine globally (cascade vs whole-page
+Sonnet). The page profiler could pick per-page based on
+detected content: dense table → Sonnet page-OCR; clean
+born-digital → embedded text trust; scan-likely with low
+Vision quality → cascade with Claude tail; otherwise Vision
+only. Removes Sonnet calls on pages that don't need them
+without forcing the user to pick globally.
+
+**Effort**: ~2 days. Depends on `DocumentProfiler` extending
+to richer per-page features (table density, scan score,
+embedded-text quality) — that's part of the work.
+
+### E-Cache-Audit — Prompt cache reuse audit
+
+System prompts in the Claude features are designed to be
+byte-stable across requests so the prompt-cache prefix hits.
+Verify the actual cache hit rate against the Anthropic dashboard
+(or via response usage breakdown), and tune anything that's not
+hitting (e.g. accidentally per-call dynamic content in a
+`system` block).
+
+**Effort**: ~0.5 day. Pure measurement + tuning.
+
+## Observability / Iteration
+
+### O-Diff — Conversion diff tool
+
+Run two conversions of the same PDF with different settings
+(Cloud vs Private, two different cascade thresholds, two
+different prompts) and surface a side-by-side diff: per-chapter
+text diff, per-page CER if a ground truth is available, cost +
+time comparison. Catches regressions, helps tune thresholds,
+lets the user A/B Cloud vs Private before committing.
+
+**Effort**: ~3 days. Diffing structured EPUBs needs a
+tree-aware diff (per-chapter text + nav + metadata), not just
+file-level.
+
+---
+
+## Proposed shipping sequence
+
+Five rounds, smallest-leverage-first per round, with each round
+committable independently. The earlier rounds compound: warming
+the sidecar speeds every later test cycle; better metadata
+flows into the Library window; the typography pass affects every
+output format below. The user revises this sequence before
+shipping.
+
+### Round 1 — Quick wins (~2 days total)
+
+Small, isolated improvements that compound across every
+subsequent round.
+
+1. **E-Warm** (sidecar warm-on-launch) — 2 hours
+2. **E-Cache-Audit** (prompt cache hit-rate tune) — 0.5 day
+3. **Q-Hyphenation** + **Q-Dashes** + **Q-Ligatures** as one
+   "typography pass" commit — ~1 day total
+
+### Round 2 — Metadata + coherence (~2.5 days)
+
+4. **Q-Metadata** (author/title/ISBN via Haiku) — 1 day
+5. **Q-Coherence** (document-level Haiku pass) — 1.5 days
+
+### Round 3 — Output formats + ingestion options (~2 days)
+
+6. **V-Outputs (txt + md only)** — 1 day; DOCX deferred to
+   Round 5
+7. **V-Trust-PerPage** (per-page embedded-text trust) — 1 day
+
+### Round 4 — Cost + speed wins (~7 days)
+
+Heavier lifts, but each one independently valuable. Order
+within the round picks **Routing first** (removes calls before
+batching them); then **Batches** (discounts what's left); then
+**Parallel** (compounds with both).
+
+8. **E-Routing** (per-page cloud routing) — 2 days
+9. **E-Batches** (Anthropic Batches API) — 3 days
+10. **E-Parallel** (Surya pool + concurrent Cloud) — 2 days
+
+### Round 5 — Heavier features (~12 days)
+
+Substantial new flows; ship in whatever order matches actual
+demand. Conversion diff is the meta-tool — useful for
+validating Rounds 1-4 didn't regress anything.
+
+11. **V-PDF-Searchable** (searchable-PDF re-export) — 3 days
+12. **V-Outputs (DOCX)** (binary Word output) — 3 days
+13. **O-Diff** (conversion diff tool) — 3 days
+14. **V-Refresh** (EPUB refresh / re-OCR) — 3 days
+
+**Total**: ~26 days of work across 14 commits / features. Ships
+in roughly 3-4 person-weeks of focused effort if pursued
+sequentially; the Round 1-2 items can interleave with anything
+else since they're small and independent.
+
+---
+
 # Recommended ordering
 
 If picking up from here cold, this is roughly the order I'd tackle
@@ -1840,10 +2096,15 @@ use; distribution is lower priority than correctness.
 
 **Next, in roughly this order:**
 
-1. **Defer Phase 10 (distribution)** until the user actually wants
-   to share or onboard another machine. The app is signed and runs
-   locally; that's enough for personal use.
-2. **Stretch / speculative items in Tier 8** if a specific need
+1. **Tier 9 — Conversion-quality push** (15 ideas across
+   effective / versatile / efficient / observability axes,
+   organized into 5 shipping rounds; ~26 days of work). Round 1
+   (quick wins: warm sidecar, cache audit, typography pass) is
+   the lowest-effort highest-leverage starting point.
+2. **Defer Phase 10 (distribution)** until the user actually
+   wants to share or onboard another machine. The app is signed
+   and runs locally; that's enough for personal use.
+3. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish (when macOS 26+ is
    the realistic minimum), custom footnote styles, audio output
    via `AVSpeechSynthesizer`.
@@ -1852,6 +2113,4 @@ Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely
 — corpus doesn't justify the bidi-rendering and per-script
 accuracy lifts. The originally planned hybrid Cloud feature set,
 launcher quality-of-life, editor polish, and library + bulk-edit
-features are all done. What remains is distribution work (Tier 4)
-when the user wants to share the app and the speculative Tier 8
-ideas if they become load-bearing.
+features are all done.
