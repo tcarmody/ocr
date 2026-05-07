@@ -237,6 +237,7 @@ struct EditorViewMenu: Commands {
             Divider()
             EditorReOCRCurrentPageMenu()
             EditorReOCRPDFSelectionMenu()
+            EditorReOCRAllPagesMenu()
             Divider()
             EditorSplitChapterCommand()
             EditorMergeChapterCommand()
@@ -440,6 +441,40 @@ private struct EditorReOCRCurrentPageMenu: View {
             }
         }
         .disabled(vm == nil || vm?.sourcePDFURL == nil)
+    }
+
+    private func label(for kind: ReOCREngineKind) -> String {
+        kind.isAvailable ? kind.displayName : "\(kind.displayName) (not installed)"
+    }
+}
+
+/// Submenu: "Re-OCR All Pages With ▸ …". V-Refresh: opens a
+/// confirmation sheet, then walks every entry in the pagemap and
+/// replaces each page's body in the source XHTML with a fresh OCR
+/// pass through the chosen engine. Useful when the user wants to
+/// retroactively apply newer engine improvements (typography pass,
+/// Cloud features, layout fixes) to an already-converted EPUB.
+///
+/// Disabled when there's no source PDF attached or the EPUB has no
+/// page map (older books or non-Humanist EPUBs).
+private struct EditorReOCRAllPagesMenu: View {
+    @FocusedObject private var vm: EditorViewModel?
+
+    var body: some View {
+        Menu("Re-OCR All Pages With") {
+            ForEach(ReOCREngineKind.allCases) { kind in
+                Button(label(for: kind)) {
+                    vm?.confirmBulkReOCR(engine: kind)
+                }
+                .disabled(vm == nil || !kind.isAvailable)
+            }
+        }
+        .disabled(
+            vm == nil
+            || vm?.sourcePDFURL == nil
+            || vm?.pageMap == nil
+            || vm?.bulkReOCRProgress != nil
+        )
     }
 
     private func label(for kind: ReOCREngineKind) -> String {

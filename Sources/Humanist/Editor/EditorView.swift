@@ -84,6 +84,28 @@ struct EditorView: View {
                     .onAppear { EditorCommandRouter.shared.bind(vm) }
                     .onDisappear { EditorCommandRouter.shared.unbind(vm) }
                     .sheet(item: Binding(
+                        get: { vm.bulkReOCRConfirmation },
+                        set: { vm.bulkReOCRConfirmation = $0 }
+                    )) { confirmation in
+                        BulkReOCRConfirmationSheet(
+                            confirmation: confirmation,
+                            onConfirm: {
+                                vm.runBulkReOCR(engine: confirmation.engine)
+                            },
+                            onCancel: { vm.cancelBulkReOCRConfirmation() }
+                        )
+                    }
+                    .sheet(item: Binding(
+                        get: { vm.bulkReOCRProgress },
+                        set: { vm.bulkReOCRProgress = $0 }
+                    )) { progress in
+                        BulkReOCRProgressSheet(
+                            progress: progress,
+                            onCancel: { vm.cancelBulkReOCR() },
+                            onDone: { vm.dismissBulkReOCRProgress() }
+                        )
+                    }
+                    .sheet(item: Binding(
                         get: { vm.reOCRResult },
                         set: { vm.reOCRResult = $0 }
                     )) { result in

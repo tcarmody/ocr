@@ -823,6 +823,188 @@ final class EditorViewModel: ObservableObject {
     /// Push `text` into the source pane, replacing the current
     /// selection (or inserting at the caret if there's none). Used
     /// by the Re-OCR sheet's "Replace in Source" button.
+    // MARK: - Bulk Re-OCR (V-Refresh)
+
+    /// Progress + completion state for an in-flight bulk re-OCR.
+    /// Set non-nil at start, nil after completion / cancellation.
+    /// The view binds a sheet to its presence and reads
+    /// `completedPages` / `totalPages` for the progress bar.
+    @Published var bulkReOCRProgress: BulkReOCRProgress?
+
+    /// User confirmation sheet state. The bulk Re-OCR overwrites
+    /// every chapter file's page bodies — non-trivial scope, so we
+    /// confirm before starting. Set non-nil to show the sheet; the
+    /// sheet's OK action calls `runBulkReOCR(engine:)`.
+    @Published var bulkReOCRConfirmation: BulkReOCRConfirmation?
+
+    private var bulkReOCRTask: Task<Void, Never>?
+
+    struct BulkReOCRProgress: Identifiable, Equatable {
+        let id = UUID()
+        let totalPages: Int
+        var completedPages: Int = 0
+        var currentPDFPage: Int?
+        var engineDisplayName: String
+        var failures: [PageFailure] = []
+        var isFinished: Bool = false
+
+        struct PageFailure: Equatable {
+            let pdfPage: Int
+            let message: String
+        }
+    }
+
+    struct BulkReOCRConfirmation: Identifiable, Equatable {
+        let id = UUID()
+        let engine: ReOCREngineKind
+        let pageCount: Int
+    }
+
+    /// Show the confirmation sheet for a bulk re-OCR run with the
+    /// chosen engine. The sheet's OK action calls `runBulkReOCR`.
+    /// Pre-flight: verifies a source PDF is attached, the page map
+    /// exists, and the engine is installed; otherwise surfaces an
+    /// error to `chapterOperationError` instead of opening the sheet.
+    func confirmBulkReOCR(engine kind: ReOCREngineKind) {
+        guard sourcePDFURL != nil else {
+            chapterOperationError = "No source PDF is attached. Use 'Attach Source PDF…' first."
+            return
+        }
+        guard let map = pageMap, !map.entries.isEmpty else {
+            chapterOperationError = "This EPUB has no page map sidecar — bulk Re-OCR can only run on EPUBs Humanist itself produced."
+            return
+        }
+        guard kind.isAvailable else {
+            chapterOperationError = "\(kind.displayName) is not installed on this machine."
+            return
+        }
+        bulkReOCRConfirmation = BulkReOCRConfirmation(
+            engine: kind, pageCount: map.entries.count
+        )
+    }
+
+    func cancelBulkReOCRConfirmation() {
+        bulkReOCRConfirmation = nil
+    }
+
+    /// Run the bulk re-OCR on every page in the page map. Invoked
+    /// by the confirmation sheet after the user clicks "Re-OCR All
+    /// Pages". Mutates each page's body in `Resource.text` directly
+    /// (same splice rule as the per-page Re-OCR sheet's "Replace
+    /// in Source"), then saves the book.
+    ///
+    /// User cancellation aborts the loop; whatever was completed
+    /// stays in memory (the user can save manually if they want to
+    /// keep partial progress).
+    func runBulkReOCR(engine kind: ReOCREngineKind) {
+        guard bulkReOCRTask == nil else { return }
+        bulkReOCRConfirmation = nil
+        bulkReOCRTask = Task { [weak self] in
+            await self?.performBulkReOCR(engine: kind)
+        }
+    }
+
+    /// Cancel an in-flight bulk re-OCR. Pages already completed
+    /// stay mutated in memory; the user can save or close-without-
+    /// saving to revert. The `bulkReOCRProgress` sheet stays open
+    /// until the task notices the cancel and clears the state.
+    func cancelBulkReOCR() {
+        bulkReOCRTask?.cancel()
+    }
+
+    private func performBulkReOCR(engine kind: ReOCREngineKind) async {
+        guard let book = book,
+              let map = pageMap,
+              let sourcePDF = sourcePDFURL,
+              let engine = kind.makeEngine()
+        else { return }
+
+        let entries = map.entries.sorted { $0.pdfPage < $1.pdfPage }
+        bulkReOCRProgress = BulkReOCRProgress(
+            totalPages: entries.count,
+            engineDisplayName: kind.displayName
+        )
+
+        let pipeline = PDFToEPUBPipeline()
+        let langs = selectedBCP47Languages()
+        let docLanguage = book.metadata.language
+            .flatMap { BCP47(rawValue: $0) } ?? langs.first ?? .en
+
+        var successCount = 0
+        for entry in entries {
+            if Task.isCancelled { break }
+            bulkReOCRProgress?.currentPDFPage = entry.pdfPage
+
+            do {
+                let result = try await pipeline.reOCRSinglePage(
+                    pdfURL: sourcePDF,
+                    pageIndex: entry.pdfPage,
+                    engine: engine,
+                    languages: langs
+                )
+                let bodyBlocks = result.blocks.filter {
+                    if case .anchor = $0 { return false } else { return true }
+                }
+                let xhtml = XHTMLFragmentRenderer.render(
+                    blocks: bodyBlocks, language: docLanguage
+                )
+                let chapterURL = book.workingDirectory
+                    .appendingPathComponent(entry.xhtmlFile)
+                    .canonicalForFile
+                guard let resource = book.resource(at: chapterURL),
+                      let oldText = resource.text,
+                      let newText = PageContentReplacer.replaceBody(
+                          of: entry.anchorId, in: oldText, with: xhtml
+                      )
+                else {
+                    bulkReOCRProgress?.failures.append(.init(
+                        pdfPage: entry.pdfPage,
+                        message: "Anchor \(entry.anchorId) not found in \(entry.xhtmlFile)."
+                    ))
+                    bulkReOCRProgress?.completedPages += 1
+                    continue
+                }
+                resource.text = newText
+                successCount += 1
+            } catch {
+                bulkReOCRProgress?.failures.append(.init(
+                    pdfPage: entry.pdfPage,
+                    message: error.localizedDescription
+                ))
+            }
+            bulkReOCRProgress?.completedPages += 1
+        }
+
+        // Save what we did (cancelled or not — if the user cancelled
+        // partway, they'd want the partial result on disk so a
+        // re-run can pick up from there). Skip save when zero pages
+        // succeeded so we don't bump dcterms:modified for a no-op.
+        if successCount > 0 {
+            do {
+                try EPUBBookSaver().save(book)
+                refreshFileTree()
+                reloadSelectedFileFromDisk()
+                previewVersion += 1
+                isDirty = true
+            } catch {
+                bulkReOCRProgress?.failures.append(.init(
+                    pdfPage: -1,
+                    message: "Save failed: \(error.localizedDescription)"
+                ))
+            }
+        }
+
+        bulkReOCRProgress?.isFinished = true
+        bulkReOCRProgress?.currentPDFPage = nil
+        bulkReOCRTask = nil
+    }
+
+    /// Dismiss the bulk-progress sheet after the run finishes.
+    /// Called by the sheet's "Done" button.
+    func dismissBulkReOCRProgress() {
+        bulkReOCRProgress = nil
+    }
+
     func replaceSourceSelection(with text: String) {
         replaceNonce &+= 1
         replaceSourceRequest = ReplaceSourceRequest(text: text, nonce: replaceNonce)
