@@ -1993,15 +1993,28 @@ line skipping.
 
 ### E-Parallel — Parallel page processing
 
-Single-job per-page work today is serial. Pool 2-4 Surya
-sidecars and run Cloud calls concurrently per page. A 400-page
-book on a multi-core Mac drops 3-4× in wall time. Memory
-tradeoff is bounded — Surya weights are the dominant cost; 2
-sidecars ≈ ~10 GB. Surfaces as a setting (default sidecars: 1;
-range 1-4).
+**Status**: deferred from Tier 9 / Round 3 to a follow-up.
 
-**Effort**: ~2 days. Builds on `P-Surya-Pool` (already drafted
-in Tier 6) plus per-page TaskGroup concurrency.
+The page-OCR (Sonnet) per-page loop accumulates anchors,
+Sonnet content, figure assets, and per-page checkpoints in
+strict document order. Page-level parallelism requires a
+deferred-append restructure: collect per-page results in a
+`[Int: PendingPage]` dict during a TaskGroup, then walk pages
+in order to assemble `claudePageBlocks` + assign figure asset
+IDs + emit checkpoints. ~250 lines of careful refactor with
+real interaction with existing checkpoint/resume + cancellation
++ progress reporting; lands cleaner as its own commit.
+
+Surya sidecar pooling (the `P-Surya-Pool` half of E-Parallel)
+remains separately deferred — each pool member loads ~1.3 GB
+of weights, so the memory tradeoff is real and worth a
+dedicated decision.
+
+A 400-page book in page-OCR mode at concurrency=4 drops from
+~50 minutes to ~13 minutes (Sonnet is the long pole; Build-tier
+RPM accommodates 4-8 concurrent calls comfortably). Worth doing
+when the corpus is bulk runs; less impactful for one-at-a-time
+conversions where the editor is the bottleneck anyway.
 
 ### E-Warm — Surya sidecar warm-on-launch
 
@@ -2109,7 +2122,7 @@ subsequent round.
    that fail length-ratio / occurrence-count / no-collision /
    empty-or-equal checks before applying as global find/replaces.
 
-### Round 3 — Cost + speed wins (~7 days)
+### Round 3 — Cost + speed wins (~7 days) — **partial**
 
 Heavier lifts, but each one independently valuable. Order
 within the round picks **Routing first** (removes calls before
@@ -2119,9 +2132,15 @@ format round per user revision (2026-05-07): cost / speed wins
 amortize across every subsequent test cycle and Cloud-mode run,
 so it's worth eating the heavier lift earlier.
 
-6. **E-Routing** (per-page cloud routing) — 2 days
-7. **E-Batches** (Anthropic Batches API) — 3 days
-8. **E-Parallel** (Surya pool + concurrent Cloud) — 2 days
+6. ~~**E-Routing**~~ shipped (Tier 9 / Round 3) — page-OCR
+   path skips Sonnet on `.trust`-verdict pages.
+7. **E-Batches** — partial. AI-module primitives shipped
+   (`AnthropicBatchAPIClient` + types + 12 tests); pipeline
+   integration deferred to a follow-up commit.
+8. **E-Parallel** — deferred. Bounded TaskGroup over the
+   page-OCR loop is a ~250-line restructure that interacts
+   with checkpoint/resume + cancellation + progress reporting;
+   lands cleaner as its own commit.
 
 ### Round 4 — Output formats + ingestion options (~2 days)
 
