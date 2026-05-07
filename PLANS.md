@@ -238,8 +238,15 @@ conversion via the `ConversionStats` struct returned from
   by the Private Mode toggle that already ships per-job override.
 
 **Original-plan items still outstanding**:
-- Phase 9 — Language extensibility (RTL: Hebrew / Syriac / Coptic)
 - Phase 10 — Polish + distribution (Sparkle, DMG, bundled Python)
+
+**Original-plan items deferred indefinitely**:
+- Phase 9 — RTL / non-Latin classical scripts (Hebrew, Syriac,
+  Coptic). Architecture supports adding them, but the user's
+  working corpus doesn't need them often enough to justify the
+  bidi rendering edge cases and the per-script Tesseract
+  weaknesses. Revisit if a Hebrew / Syriac / Coptic project comes
+  up — design notes are still in the P9 section below.
 
 ---
 
@@ -1083,7 +1090,11 @@ Per the existing design doc:
 
 ## P9 — RTL languages: Hebrew, Syriac, Coptic
 
-**Status**: not started. Architecture supports it; no work done.
+**Status**: deferred indefinitely. Architecture supports adding
+them, but the user's working corpus doesn't need them often
+enough to justify the bidi rendering edge cases + per-script
+Tesseract weaknesses. Design notes below kept for reference if a
+Hebrew / Syriac / Coptic project ever comes up.
 
 ### Goal
 
@@ -1818,20 +1829,19 @@ use; distribution is lower priority than correctness.
 
 **Next, in roughly this order:**
 
-1. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
-   corpus. ~4 days. Phase 4 spike's findings inform this — current
-   per-region cascade thresholds may need a per-script-family
-   adjustment for Hebrew / Syriac / Coptic where Tesseract is weaker.
-   Less load-bearing now that the page-OCR path bypasses the
-   per-region cascade entirely on Cloud, but still important for
-   the Private path.
-2. **Launcher quality-of-life** — `R-Launcher-Pause`,
+1. **Launcher quality-of-life** — `R-Launcher-Pause`,
    `R-Launcher-History`, `R-Launcher-Reorder`, `R-Launcher-FullQueue`
    in whatever order the user reaches for first.
+2. **Editor / library polish** — `R-Search`, `R-Custom-Styles`,
+   `R-Library`, `R-Bulk-Editor` in whatever order matches actual
+   working friction. None are load-bearing; pick them up as the
+   need arises.
 3. **Defer Phase 10 (distribution)** until the user actually wants
    to share or onboard another machine. The app is signed and runs
    locally; that's enough for personal use.
 
-The originally planned hybrid Cloud feature set is now complete.
-After Phase 9, the app handles essentially any book a working
-researcher would feed it.
+Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely
+— corpus doesn't justify the bidi-rendering and per-script
+accuracy lifts. The originally planned hybrid Cloud feature set
+is now complete; what remains is launcher + editor polish for
+the working flow.
