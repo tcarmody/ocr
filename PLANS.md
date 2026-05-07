@@ -1993,17 +1993,28 @@ startup + imports are the bulk of the latency.
 
 ### E-Routing — Adaptive Cloud routing per page
 
-Today the user picks one engine globally (cascade vs whole-page
-Sonnet). The page profiler could pick per-page based on
-detected content: dense table → Sonnet page-OCR; clean
-born-digital → embedded text trust; scan-likely with low
-Vision quality → cascade with Claude tail; otherwise Vision
-only. Removes Sonnet calls on pages that don't need them
-without forcing the user to pick globally.
+**Status**: shipped — v1 (Tier 9 / Round 3). When
+`useClaudePageOCR` is on and `cloudFeatures.adaptivePageRouting`
+is on (default true), each page runs `EmbeddedTextExtractor` +
+`EmbeddedTextQualityScorer` first. Pages scoring `.trust` skip
+the Sonnet call entirely and emit reflowed embedded text via
+`ParagraphReflow`. Pages scoring `.reocr` fall through to the
+existing Sonnet path. `forceOCR` overrides routing (always
+Sonnet); turning the toggle off restores every-page-Sonnet
+behavior.
 
-**Effort**: ~2 days. Depends on `DocumentProfiler` extending
-to richer per-page features (table density, scan score,
-embedded-text quality) — that's part of the work.
+Saves ~$0.04 per page on born-digital pages within mixed-
+quality books. A 400-page book that's 50% born-digital + 50%
+scanned drops from ~$16 to ~$8. Per-page verdicts feed
+`ConversionStats.pagesTrustedEmbeddedText` so the queue UI's
+post-conversion summary shows what routing actually picked.
+
+Beyond v1: more granular per-page routing (Sonnet only on
+table-heavy pages, cascade with Claude tail on hard-OCR pages,
+Vision only on clean-Vision pages) requires a richer per-page
+profiler. v1 tackles the highest-payoff case (skip-Sonnet-for-
+trust); the rest can layer on later if a corpus shows the
+need.
 
 ### E-Cache-Audit — Prompt cache reuse audit
 

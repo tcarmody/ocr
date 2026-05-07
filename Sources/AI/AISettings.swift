@@ -94,6 +94,14 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// by default in Cloud mode — single Haiku call, real
         /// quality win on long books.
         public var coherencePass: Bool
+        /// Tier 9 / E-Routing. When `useClaudePageOCR` is on and
+        /// this flag is on, pages whose embedded text passes the
+        /// quality scorer's `.trust` verdict skip the Sonnet call
+        /// and emit reflowed embedded text instead. Saves
+        /// ~$0.04/page on born-digital pages within mixed-quality
+        /// books. On by default — turning off forces Sonnet on
+        /// every page (the original page-OCR behavior).
+        public var adaptivePageRouting: Bool
 
         public init(
             hardRegionOCR: Bool = true,
@@ -103,7 +111,8 @@ public struct AISettings: Sendable, Codable, Equatable {
             semanticClassification: Bool = false,
             tocParsing: Bool = false,
             metadataExtraction: Bool = true,
-            coherencePass: Bool = true
+            coherencePass: Bool = true,
+            adaptivePageRouting: Bool = true
         ) {
             self.hardRegionOCR = hardRegionOCR
             self.tableExtraction = tableExtraction
@@ -113,6 +122,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.tocParsing = tocParsing
             self.metadataExtraction = metadataExtraction
             self.coherencePass = coherencePass
+            self.adaptivePageRouting = adaptivePageRouting
         }
 
         /// Decode optionally so settings persisted before
@@ -124,6 +134,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             case semanticClassification, tocParsing
             case metadataExtraction
             case coherencePass
+            case adaptivePageRouting
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -146,6 +157,12 @@ public struct AISettings: Sendable, Codable, Equatable {
             // features.
             self.coherencePass = try c.decodeIfPresent(
                 Bool.self, forKey: .coherencePass
+            ) ?? true
+            // Default-on: existing users with page-OCR enabled
+            // get the cost saving without a re-save; opting out
+            // restores the every-page-Sonnet behavior.
+            self.adaptivePageRouting = try c.decodeIfPresent(
+                Bool.self, forKey: .adaptivePageRouting
             ) ?? true
         }
     }

@@ -1183,6 +1183,59 @@ public actor PDFToEPUBPipeline {
             // page contributes only its anchor (so chapter splits
             // and page navigation still work).
             if let pageEngine = claudePageEngine {
+                // Tier 9 / E-Routing: when the user has page-OCR
+                // on, check embedded-text quality first. Trust-
+                // verdict pages (clean born-digital with no OCR
+                // needed) skip the Sonnet call and emit reflowed
+                // embedded text instead, saving ~$0.04/page on
+                // born-digital pages within mixed-quality books.
+                // Conservative: gate on `forceOCR` off + the
+                // adaptive-routing toggle, both of which let users
+                // override.
+                if options.cloudFeatures.adaptivePageRouting && !options.forceOCR {
+                    let routingExtract = autoreleasepool {
+                        embeddedExtractor.extract(from: pdf, pageIndex: i)
+                    }
+                    let combined = routingExtract.lines
+                        .map(\.text).joined(separator: " ")
+                    let routingScore = qualityScorer.score(
+                        text: combined,
+                        expectedLanguages: options.languages.map(\.rawValue)
+                    )
+                    if routingScore.verdict == .trust {
+                        // Trust path: emit reflowed embedded text +
+                        // anchor; record the verdict so stats reflect
+                        // it. Skip Sonnet + Surya layout entirely on
+                        // this page — pure cost saving.
+                        let anchorId = RegionAwareReflow.anchorId(forPageIndex: i)
+                        claudePageBlocks.append(.anchor(
+                            id: anchorId, label: "Page \(i + 1)"
+                        ))
+                        claudePageAnchors.append(PageAnchor(
+                            pdfPage: i, anchorId: anchorId
+                        ))
+                        let observations = routingExtract.lines.map { line in
+                            TextObservation(
+                                text: line.text, confidence: 0.95,
+                                box: line.box, source: .embedded
+                            )
+                        }
+                        let trustBlocks = ParagraphReflow().reflow(observations)
+                        claudePageBlocks.append(contentsOf: trustBlocks)
+                        verdictsByPage[i] = .trust
+                        qualityScores[i] = routingScore
+                        extractorDiagnostics[i] = routingExtract.diagnostics
+                        continue
+                    }
+                    // Verdict was .reocr — fall through to the
+                    // Sonnet path below; record what we learned so
+                    // stats + debug log show that this page tried
+                    // routing first.
+                    qualityScores[i] = routingScore
+                    extractorDiagnostics[i] = routingExtract.diagnostics
+                }
+                verdictsByPage[i] = .reocr
+
                 let renderer = PDFRenderer(dpi: options.dpi)
                 let image = try renderer.renderPage(at: i, of: pdf)
                 let pageBoundsCG = CGSize(
