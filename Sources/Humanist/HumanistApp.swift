@@ -89,7 +89,6 @@ struct HumanistApp: App {
             EditorInsertMenu()
             EditorToolsMenu()
             EditorViewMenu()
-            FileSystemToolsMenu()
             ShowWindowCommands()
             HelpMenuCommands()
         }
@@ -171,6 +170,15 @@ private struct FileOpenCommands: Commands {
             ConvertCommand()
             Divider()
             SplitTwoUpCommand()
+            Divider()
+            // File-system utilities — Join / Split for PDFs and
+            // EPUBs. Sit in the File menu rather than a dedicated
+            // top-level "Tools" menu because that's where users
+            // expect "do something to a file I'm picking now."
+            Button("Join PDFs…") { ToolsPrompts.runJoinPDFs() }
+            Button("Split PDF…") { ToolsPrompts.runSplitPDF() }
+            Button("Join EPUBs…") { ToolsPrompts.runJoinEPUBs() }
+            Button("Split EPUB…") { ToolsPrompts.runSplitEPUB() }
         }
     }
 }
@@ -286,23 +294,6 @@ private struct EditorReplaceCommand: View {
 /// auto-detect at queue-add missed (or the user wants to split a PDF
 /// without queueing it for conversion). Opens a file picker → save
 /// dialog → splits → confirms with an alert.
-/// Top-level menu hosting file-system utilities — Join / Split for
-/// PDFs and EPUBs. Distinct from the editor's "Tools" menu (which
-/// holds editor-scoped actions like spellcheck) because these
-/// commands operate on files the user picks directly, no editor
-/// window required. Renders next to "View" in the menu bar.
-struct FileSystemToolsMenu: Commands {
-    var body: some Commands {
-        CommandMenu("File Tools") {
-            Button("Join PDFs…") { ToolsPrompts.runJoinPDFs() }
-            Button("Split PDF…") { ToolsPrompts.runSplitPDF() }
-            Divider()
-            Button("Join EPUBs…") { ToolsPrompts.runJoinEPUBs() }
-            Button("Split EPUB…") { ToolsPrompts.runSplitEPUB() }
-        }
-    }
-}
-
 private struct SplitTwoUpCommand: View {
     var body: some View {
         Button("Split Two-Up PDF…") {
