@@ -1955,17 +1955,41 @@ edits, then add merge in v2.
 
 ### E-Batches — Anthropic Batches API for Cloud-mode runs
 
-The Messages Batches API gives a 50% discount on Sonnet and
-Haiku calls in exchange for asynchronous processing (results
-return within 24h, usually minutes). For long bulk runs (a
-400-page book at ~$16-20 → ~$8-10) the savings are substantial.
-The `URLSessionTransport` protocol was designed for this from
-Phase 1 — every existing request type round-trips through
-JSONEncoder unchanged. Needs: batch submission, poll/job
-tracking, persistence (so a crash mid-batch doesn't lose
-results), UI for "queued in batch" job states.
+**Status**: AI-module primitives shipped (Tier 9 / Round 3);
+pipeline integration deferred to a follow-up commit.
 
-**Effort**: ~3 days. Highest cost-savings lever in the codebase.
+**Shipped**: `AnthropicBatchAPIClient` exposes `submit`,
+`status`, `awaitCompletion` (poll until ended with configurable
+interval + timeout), and `fetchResults` (decode the JSONL
+result stream). Wire-format types cover the submit body
+(`AnthropicBatchSubmitRequest` with per-entry `customId` +
+`params`), the submit / status responses (with the
+`processing_status` enum: `inProgress` / `canceling` /
+`ended`), and the result-line union (`succeeded` / `errored` /
+`refused` / `canceled` / `expired`). The decoder splits
+"succeeded with refusal stop reason" into the `.refused`
+branch so callers can pattern-match instead of inspecting
+`didRefuse` per line. Corrupt JSONL lines skip silently —
+partial-batch recovery is the point. Same `AnthropicTransport`
+abstraction the synchronous client uses, so test mocks work
+identically. New `cloudFeatures.useBatchAPI` toggle (off by
+default) is decoded but not yet consumed.
+
+**Deferred**: pipeline integration. The page-OCR loop today
+calls `pageEngine.recognize` synchronously per page; switching
+to batches means deferring the call, accumulating per-page
+requests, submitting once, polling, then dispatching results
+back into per-page block accumulators. The integration
+interleaves with per-page checkpoint/resume, anchor
+accumulation, and Surya layout, so it's a substantial refactor
+that lands cleaner as its own commit.
+
+12 new AnthropicBatchAPIClientTests cover submit shape +
+headers + custom-id serialization, missing-key error,
+4xx error mapping, status decode (in-progress + ended-with-
+results-url), `awaitCompletion` polling until ended,
+fetchResults decode for every result-line variant, and corrupt-
+line skipping.
 
 ### E-Parallel — Parallel page processing
 

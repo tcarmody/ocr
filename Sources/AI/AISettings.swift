@@ -102,6 +102,16 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// books. On by default — turning off forces Sonnet on
         /// every page (the original page-OCR behavior).
         public var adaptivePageRouting: Bool
+        /// Tier 9 / E-Batches. When `useClaudePageOCR` is on and
+        /// this flag is on, all the page-OCR Sonnet calls for one
+        /// conversion submit as a single Anthropic Batches API
+        /// request. 50% input + output token discount in exchange
+        /// for asynchronous processing (typically 1-5 minutes
+        /// total for a book of normal length, capped at 24h).
+        /// Off by default — opt-in because the wait time changes
+        /// the conversion experience from per-page progress to
+        /// "submitting batch / waiting / processing".
+        public var useBatchAPI: Bool
 
         public init(
             hardRegionOCR: Bool = true,
@@ -112,7 +122,8 @@ public struct AISettings: Sendable, Codable, Equatable {
             tocParsing: Bool = false,
             metadataExtraction: Bool = true,
             coherencePass: Bool = true,
-            adaptivePageRouting: Bool = true
+            adaptivePageRouting: Bool = true,
+            useBatchAPI: Bool = false
         ) {
             self.hardRegionOCR = hardRegionOCR
             self.tableExtraction = tableExtraction
@@ -123,6 +134,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.metadataExtraction = metadataExtraction
             self.coherencePass = coherencePass
             self.adaptivePageRouting = adaptivePageRouting
+            self.useBatchAPI = useBatchAPI
         }
 
         /// Decode optionally so settings persisted before
@@ -135,6 +147,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             case metadataExtraction
             case coherencePass
             case adaptivePageRouting
+            case useBatchAPI
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -164,6 +177,11 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.adaptivePageRouting = try c.decodeIfPresent(
                 Bool.self, forKey: .adaptivePageRouting
             ) ?? true
+            // Default-off: opt-in feature, async processing
+            // changes the conversion experience.
+            self.useBatchAPI = try c.decodeIfPresent(
+                Bool.self, forKey: .useBatchAPI
+            ) ?? false
         }
     }
 }
