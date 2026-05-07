@@ -38,6 +38,18 @@ final class EditorViewModel: ObservableObject {
     @Published private(set) var state: LoadState = .loading
     @Published private(set) var saveState: SaveState = .idle
     @Published private(set) var package: EPUBPackage?
+    /// In-memory representation of the EPUB used by chapter-level
+    /// operations (Split / Merge / Regenerate-TOC). Lives alongside
+    /// `package` for now — `package` still drives the file tree
+    /// sidebar and OPF queries elsewhere in the editor. Both share
+    /// the same working directory; `package` owns the lifecycle (the
+    /// book is `disownWorkingDirectory()`-ed after load).
+    ///
+    /// Sigil-style: edits run against `book` in memory, then a single
+    /// `EPUBBookSaver.save(_:)` call flushes everything atomically.
+    /// A failed mid-operation throw can no longer leave the on-disk
+    /// EPUB inconsistent — disk only changes when the saver runs.
+    private var book: EPUBBook?
     @Published private(set) var selectedFile: FileNode?
     /// True when at least one buffer differs from disk OR has been
     /// modified since the last successful repack.
@@ -361,6 +373,13 @@ final class EditorViewModel: ObservableObject {
                 try EPUBPackage.open(epubURL: epubURL)
             }.value
             self.package = pkg
+            // Load the in-memory book alongside the package. They share
+            // the same working directory, so we hand ownership to the
+            // package (the book bows out via disownWorkingDirectory()).
+            self.book = try Self.loadBook(
+                sourceURL: epubURL,
+                workingDirectory: pkg.workingDirectory
+            )
             self.state = .ready
             self.selectedFile = Self.preferredInitialSelection(in: pkg)
             self.loadSourceForSelectedFile()
@@ -378,6 +397,18 @@ final class EditorViewModel: ObservableObject {
         } catch {
             self.state = .failed(error.localizedDescription)
         }
+    }
+
+    private static func loadBook(
+        sourceURL: URL, workingDirectory: URL
+    ) throws -> EPUBBook {
+        let book = try EPUBBookLoader().load(
+            sourceURL: sourceURL, workingDirectory: workingDirectory
+        )
+        // The package owns the working directory. The book is a
+        // co-resident view; its deinit must NOT clean up.
+        book.disownWorkingDirectory()
+        return book
     }
 
     // MARK: - linked navigation (Phase 7.D, simplified to one-way)
@@ -1486,20 +1517,34 @@ final class EditorViewModel: ObservableObject {
     /// `nav.xhtml` is regenerated. The file selection stays on the
     /// (now-shorter) original file.
     func splitChapterAtCursor() async {
-        guard let pkg = package, let file = selectedFile else { return }
+        guard let book = book, let file = selectedFile else { return }
         guard let cursorOffset = currentSourceCursorOffset else {
             chapterOperationError = "Move the cursor to where you want to split, then try again."
             return
         }
         flushSourceTextToBuffer()
         do {
-            try writeBufferIfDirty(file.id)
-            let editor = PackageEditor(
-                workingDirectory: pkg.workingDirectory,
-                package: pkg.package
+            // Pull in-progress buffer edits into the book so the
+            // split operates on the latest text.
+            flushDirtyBuffersToBook()
+            guard let resource = book.resource(at: file.id) else {
+                throw EditError.notInManifest(file.id)
+            }
+            let editor = BookPackageEditor(book: book)
+            _ = try editor.splitChapter(
+                resourceID: resource.id, splitOffset: cursorOffset
             )
-            _ = try editor.splitChapter(at: file.id, splitOffset: cursorOffset)
+            // Atomic flush of every book mutation (split body of
+            // original, new chapter file, OPF, regenerated nav).
+            // Up to this point disk hasn't been touched — a throw
+            // here leaves the working tree exactly as it was.
+            try EPUBBookSaver().save(book)
+
             try reloadPackageFromDisk()
+            // The chapters we just flushed match disk now; clear
+            // the editor's per-buffer dirty flags so save() doesn't
+            // re-write them.
+            dirtyURLs.remove(file.id)
             // The on-disk file changed — reload its content into
             // the source pane bypassing the flush-then-load path
             // `select(_:)` uses (that would stash the pre-split
@@ -1518,32 +1563,23 @@ final class EditorViewModel: ObservableObject {
     /// The next chapter's file is deleted; nav.xhtml is regenerated.
     /// File selection stays on the merged file (the original).
     func mergeChapterWithNext() async {
-        guard let pkg = package, let file = selectedFile else { return }
+        guard let book = book, let file = selectedFile else { return }
         flushSourceTextToBuffer()
-        // Capture the next chapter's URL BEFORE the merge runs so
-        // we can scrub its in-memory buffer + dirty entry afterward.
-        // Without this scrub, save() would re-write the deleted
-        // chapter file from its stale buffer and the merge would
-        // appear to revert on next reopen.
-        let nextChapterURL = self.nextChapterURL(after: file.id, in: pkg)
         do {
-            try writeBufferIfDirty(file.id)
-            let editor = PackageEditor(
-                workingDirectory: pkg.workingDirectory,
-                package: pkg.package
-            )
-            try editor.mergeWithNextChapter(at: file.id)
-            try reloadPackageFromDisk()
-            // Drop any in-memory state for the now-deleted next
-            // chapter so save() doesn't re-create it from a stale
-            // buffer. select() also needs to forget it as the
-            // selectedFile if that's somehow what was selected
-            // (shouldn't happen since merge runs against the
-            // current file, but defend the invariant).
-            if let nextURL = nextChapterURL {
-                buffers.removeValue(forKey: nextURL)
-                dirtyURLs.remove(nextURL)
+            flushDirtyBuffersToBook()
+            guard let resource = book.resource(at: file.id) else {
+                throw EditError.notInManifest(file.id)
             }
+            let editor = BookPackageEditor(book: book)
+            try editor.mergeWithNextChapter(at: resource.id)
+            try EPUBBookSaver().save(book)
+
+            try reloadPackageFromDisk()
+            // The merged file is now identical to disk; the deleted
+            // next chapter's URL no longer corresponds to a resource.
+            // Walk buffers and drop any URLs the book doesn't recognize.
+            scrubBuffersForResourcesRemovedFromBook()
+            dirtyURLs.remove(file.id)
             // The on-disk file now contains both chapters' bodies —
             // reload its content into the source pane bypassing the
             // flush-then-load path `select(_:)` uses (that would
@@ -1559,22 +1595,19 @@ final class EditorViewModel: ObservableObject {
         }
     }
 
-    /// Resolve the next-chapter file URL for the chapter at
-    /// `chapterURL` in the current spine. Used by Merge to find
-    /// the file that's about to be deleted so its in-memory
-    /// buffer can be dropped. Returns nil when this chapter is
-    /// last in the spine.
-    private func nextChapterURL(after chapterURL: URL, in pkg: EPUBPackage) -> URL? {
-        let editor = PackageEditor(
-            workingDirectory: pkg.workingDirectory,
-            package: pkg.package
-        )
-        guard let id = editor.spineItemID(for: chapterURL) else { return nil }
-        guard let idx = pkg.package.spine.firstIndex(of: id),
-              idx + 1 < pkg.package.spine.count else { return nil }
-        let nextID = pkg.package.spine[idx + 1]
-        guard let item = pkg.package.manifestById[nextID] else { return nil }
-        return editor.absoluteURL(forManifestHref: item.href)
+    /// Errors surfaced by chapter-level operations beyond what
+    /// `BookPackageEditor` produces. These cover invariant breaks
+    /// at the editor↔book boundary (file selected for an op but
+    /// no longer in the manifest, etc.).
+    enum EditError: LocalizedError {
+        case notInManifest(URL)
+
+        var errorDescription: String? {
+            switch self {
+            case .notInManifest(let url):
+                return "\(url.lastPathComponent) isn't in the EPUB's manifest."
+            }
+        }
     }
 
     /// Reload the selected file's source from disk after an on-disk
@@ -1611,22 +1644,19 @@ final class EditorViewModel: ObservableObject {
     /// title is extracted from its first heading; chapters with no
     /// heading fall back to "Chapter N".
     func regenerateTableOfContents() async {
-        guard let pkg = package else { return }
+        guard let book = book else { return }
         flushSourceTextToBuffer()
         do {
-            // Flush every dirty buffer to disk so the title extraction
-            // sees user edits in chapter content + headings.
-            for url in dirtyURLs {
-                if let text = buffers[url] {
-                    try text.write(to: url, atomically: true, encoding: .utf8)
-                }
-            }
-            let editor = PackageEditor(
-                workingDirectory: pkg.workingDirectory,
-                package: pkg.package
-            )
-            try editor.regenerateNav()
+            // Sync user edits into the book so heading extraction
+            // sees the latest chapter content.
+            flushDirtyBuffersToBook()
+            try BookPackageEditor(book: book).regenerateNav()
+            try EPUBBookSaver().save(book)
             try reloadPackageFromDisk()
+            // If the user was viewing nav.xhtml, it just got
+            // overwritten — reload from disk so they see the result.
+            reloadSelectedFileFromDisk()
+            previewVersion += 1
             isDirty = true
         } catch {
             chapterOperationError = error.localizedDescription
@@ -1637,25 +1667,17 @@ final class EditorViewModel: ObservableObject {
     /// drives menu-item enable/disable state. Returns true only when
     /// the selected file is a spine entry that isn't last.
     var canMergeWithNextChapter: Bool {
-        guard let pkg = package, let file = selectedFile else { return false }
-        let editor = PackageEditor(
-            workingDirectory: pkg.workingDirectory,
-            package: pkg.package
-        )
-        guard let id = editor.spineItemID(for: file.id) else { return false }
-        guard let idx = pkg.package.spine.firstIndex(of: id) else { return false }
-        return idx + 1 < pkg.package.spine.count
+        guard let book = book, let file = selectedFile else { return false }
+        guard let resource = book.resource(at: file.id) else { return false }
+        return book.nextSpineResourceID(after: resource.id) != nil
     }
 
     /// Whether the selected file is a spine entry — drives the
     /// Split menu item's enable state.
     var canSplitCurrentChapter: Bool {
-        guard let pkg = package, let file = selectedFile else { return false }
-        let editor = PackageEditor(
-            workingDirectory: pkg.workingDirectory,
-            package: pkg.package
-        )
-        return editor.spineItemID(for: file.id) != nil
+        guard let book = book, let file = selectedFile else { return false }
+        guard let resource = book.resource(at: file.id) else { return false }
+        return book.spine.contains(resource.id)
     }
 
     /// Re-read the OPF + file tree after a chapter operation has
@@ -1683,13 +1705,59 @@ final class EditorViewModel: ObservableObject {
         )
     }
 
-    /// Write `url`'s in-memory buffer to disk if it differs from
-    /// disk. No-op when the buffer is absent (file was never edited)
-    /// or matches disk.
-    private func writeBufferIfDirty(_ url: URL) throws {
-        guard let text = buffers[url] else { return }
-        try text.write(to: url, atomically: true, encoding: .utf8)
-        dirtyURLs.remove(url)
+    /// Re-read the in-memory book from disk. Called after the editor's
+    /// `save()` writes user-buffer-driven edits to disk so a subsequent
+    /// Merge / Split sees the latest content. Without this, the book
+    /// would still hold load-time text after a save, and operations on
+    /// it would silently overwrite the user's last typed-and-saved
+    /// edits with the older snapshot.
+    private func reloadBookFromDisk() throws {
+        guard let pkg = package else { return }
+        let fresh = try Self.loadBook(
+            sourceURL: pkg.sourceURL,
+            workingDirectory: pkg.workingDirectory
+        )
+        self.book = fresh
+    }
+
+    /// Sync every dirty source-pane buffer into the corresponding
+    /// `Resource.text` in the book. Invoked before any chapter-level
+    /// operation so `BookPackageEditor` works against the user's
+    /// latest typing rather than load-time content. Resources whose
+    /// text already matches the buffer are left untouched (no
+    /// spurious dirty marks).
+    private func flushDirtyBuffersToBook() {
+        guard let book = book else { return }
+        for url in dirtyURLs {
+            guard let text = buffers[url] else { continue }
+            guard let resource = book.resource(at: url),
+                  resource.isText
+            else { continue }
+            if resource.text != text {
+                resource.text = text
+            }
+        }
+    }
+
+    /// Drop in-memory editor state for any URL whose corresponding
+    /// resource is no longer in the book (e.g. the next chapter after
+    /// Merge). Without this, `save()` would re-write the file from a
+    /// stale buffer and the operation would appear to revert.
+    private func scrubBuffersForResourcesRemovedFromBook() {
+        guard let book = book else { return }
+        let validPaths: Set<String> = Set(
+            book.resourcesByID.values.map { resource in
+                book.absoluteURL(for: resource)
+                    .canonicalForFile.standardizedFileURL.path
+            }
+        )
+        let staleURLs = buffers.keys.filter { url in
+            !validPaths.contains(url.canonicalForFile.standardizedFileURL.path)
+        }
+        for url in staleURLs {
+            buffers.removeValue(forKey: url)
+            dirtyURLs.remove(url)
+        }
     }
 
     func select(_ node: FileNode) {
@@ -1839,6 +1907,13 @@ final class EditorViewModel: ObservableObject {
                 try EPUBRepacker().repack(workingDirectory: workingDir, to: outURL)
             }.value
             self.dirtyURLs.removeAll()
+            // After save, the working directory matches the user's
+            // edited buffers. Reload the in-memory book so its
+            // resource texts reflect the saved disk state — without
+            // this, a subsequent Merge / Split would operate on
+            // load-time content and silently revert the just-saved
+            // edits.
+            try? self.reloadBookFromDisk()
             self.isDirty = false
             self.saveState = .idle
         } catch {
