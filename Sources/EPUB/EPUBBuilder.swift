@@ -55,6 +55,12 @@ public struct EPUBBuilder {
         let xhtmlWriter = XHTMLWriter(cssPath: "../css/book.css")
         var chapterItems: [OPFWriter.Item] = []
         var pageMapEntries: [PageMap.Entry] = []
+        // R-Hierarchy: per-chapter sub-section list (heading blocks
+        // inside the chapter at a deeper level than the chapter's
+        // own opening heading). Computed once here so both the
+        // XHTML writer (emits `<hN id="...">`) and the nav builder
+        // (emits nested `<li>` children) see the same anchors.
+        var subsectionsByChapter: [Int: [ChapterHierarchy.Subsection]] = [:]
         // Asset id → manifest item, deduped across chapters. A figure
         // can in principle be referenced from multiple chapters
         // (today: it cannot, because each chapter owns its own asset
@@ -64,10 +70,20 @@ public struct EPUBBuilder {
         for (index, chapter) in book.chapters.enumerated() {
             let id = String(format: "chapter-%03d", index + 1)
             let href = "text/\(id).xhtml"
+            let subsections = ChapterHierarchy.subsections(
+                of: chapter, chapterIdx: index
+            )
+            if !subsections.isEmpty {
+                subsectionsByChapter[index] = subsections
+            }
+            let anchorMap: [Int: String] = Dictionary(
+                uniqueKeysWithValues: subsections.map { ($0.blockIndex, $0.anchorId) }
+            )
             let xhtml = xhtmlWriter.render(
                 chapter,
                 defaultLanguage: book.language,
-                fallbackTitle: chapter.title ?? "Chapter \(index + 1)"
+                fallbackTitle: chapter.title ?? "Chapter \(index + 1)",
+                subsectionAnchors: anchorMap
             )
             entries.append(EPUBPackager.Entry(
                 path: "OEBPS/\(href)",
@@ -170,7 +186,8 @@ public struct EPUBBuilder {
             chapters: book.chapters,
             chapterItems: chapterItems,
             pageMapEntries: pageMapEntries,
-            parsedTOC: parsedTOC
+            parsedTOC: parsedTOC,
+            subsectionsByChapter: subsectionsByChapter
         )
         let navXML = NavWriter(language: book.language, title: book.title, entries: navEntries).render()
         entries.append(EPUBPackager.Entry(
@@ -214,19 +231,34 @@ public struct EPUBBuilder {
         chapters: [Chapter],
         chapterItems: [OPFWriter.Item],
         pageMapEntries: [PageMap.Entry],
-        parsedTOC: ParsedTOC?
+        parsedTOC: ParsedTOC?,
+        subsectionsByChapter: [Int: [ChapterHierarchy.Subsection]] = [:]
     ) -> [NavWriter.Entry] {
         if let nav = navEntriesFromParsedTOC(
             parsedTOC: parsedTOC,
             pageMapEntries: pageMapEntries
         ), !nav.isEmpty {
+            // The parsed-TOC path doesn't carry per-entry levels
+            // today (`ParsedTOC.Entry.level` doesn't exist), so it
+            // stays flat. Adding hierarchy here would need the TOC
+            // parser to surface levels — out of scope for R-Hierarchy.
             return nav
         }
+        // Heuristic-chapter path: each chapter is a top-level entry,
+        // with its in-chapter sub-section headings nested underneath
+        // as children. R-Hierarchy turns a flat 1-level-deep nav
+        // into a real outline that surfaces sections + subsections
+        // alongside the chapter row.
         return chapterItems.enumerated().map { (i, item) in
-            NavWriter.Entry(
+            let subs = subsectionsByChapter[i] ?? []
+            let children = ChapterHierarchy.navChildren(
+                from: subs, chapterHref: item.href
+            )
+            return NavWriter.Entry(
                 title: chapters[i].title ?? "Chapter \(i + 1)",
                 href: item.href,
-                epubType: chapters[i].epubType
+                epubType: chapters[i].epubType,
+                children: children
             )
         }
     }

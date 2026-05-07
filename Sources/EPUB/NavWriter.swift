@@ -13,11 +13,19 @@ struct NavWriter {
         /// readers can surface semantic navigation hints (skip
         /// front matter, jump to bibliography).
         var epubType: String?
+        /// Nested entries. Rendered as a child `<ol>` inside this
+        /// entry's `<li>`. Used by R-Hierarchy to surface in-chapter
+        /// section / subsection headings as navigable sub-entries
+        /// under each chapter; flat (empty) by default for the
+        /// parsed-TOC path and for chapters with no sub-headings.
+        var children: [Entry]
 
-        init(title: String, href: String, epubType: String? = nil) {
+        init(title: String, href: String, epubType: String? = nil,
+             children: [Entry] = []) {
             self.title = title
             self.href = href
             self.epubType = epubType
+            self.children = children
         }
     }
 
@@ -28,15 +36,9 @@ struct NavWriter {
     func render() -> String {
         let lang = XMLEscape.attribute(language.rawValue)
         let docTitle = XMLEscape.text(title)
-        let listItems = entries.map { e -> String in
-            let typeAttr: String
-            if let t = e.epubType, !t.isEmpty {
-                typeAttr = " epub:type=\"\(XMLEscape.attribute(t))\""
-            } else {
-                typeAttr = ""
-            }
-            return "<li><a\(typeAttr) href=\"\(XMLEscape.attribute(e.href))\">\(XMLEscape.text(e.title))</a></li>"
-        }.joined(separator: "\n")
+        let listItems = entries
+            .map { Self.renderEntry($0) }
+            .joined(separator: "\n")
 
         return """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -56,5 +58,25 @@ struct NavWriter {
         </body>
         </html>
         """
+    }
+
+    /// Render one `<li>` (with its anchor + optional nested `<ol>`).
+    /// Recursive in `children`; depth is unbounded but real books
+    /// rarely go past 3 levels. Empty children render as a leaf.
+    private static func renderEntry(_ e: Entry) -> String {
+        let typeAttr: String
+        if let t = e.epubType, !t.isEmpty {
+            typeAttr = " epub:type=\"\(XMLEscape.attribute(t))\""
+        } else {
+            typeAttr = ""
+        }
+        let anchor = "<a\(typeAttr) href=\"\(XMLEscape.attribute(e.href))\">\(XMLEscape.text(e.title))</a>"
+        if e.children.isEmpty {
+            return "<li>\(anchor)</li>"
+        }
+        let nested = e.children
+            .map { renderEntry($0) }
+            .joined(separator: "\n")
+        return "<li>\(anchor)\n<ol>\n\(nested)\n</ol>\n</li>"
     }
 }

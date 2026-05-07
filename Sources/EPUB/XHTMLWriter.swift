@@ -8,7 +8,16 @@ import Document
 struct XHTMLWriter {
     let cssPath: String  // relative path from chapter file to css, e.g. "../css/book.css"
 
-    func render(_ chapter: Chapter, defaultLanguage: BCP47, fallbackTitle: String) -> String {
+    /// `subsectionAnchors[blockIndex]` carries the stable id to emit
+    /// on `<hN>` so nav.xhtml can deep-link to that heading. Empty
+    /// (the default) renders headings without ids — same behavior
+    /// as before R-Hierarchy.
+    func render(
+        _ chapter: Chapter,
+        defaultLanguage: BCP47,
+        fallbackTitle: String,
+        subsectionAnchors: [Int: String] = [:]
+    ) -> String {
         let title = (chapter.title ?? fallbackTitle)
         let langAttr = defaultLanguage.rawValue
 
@@ -17,11 +26,17 @@ struct XHTMLWriter {
         )
 
         var body = ""
-        for block in chapter.blocks {
+        for (blockIndex, block) in chapter.blocks.enumerated() {
             switch block {
             case .heading(let level, let runs):
                 let n = max(1, min(level, 6))
-                body += "<h\(n)>\(renderRuns(runs, parentLanguage: defaultLanguage))</h\(n)>\n"
+                let idAttr: String
+                if let anchorId = subsectionAnchors[blockIndex], !anchorId.isEmpty {
+                    idAttr = " id=\"\(XMLEscape.attribute(anchorId))\""
+                } else {
+                    idAttr = ""
+                }
+                body += "<h\(n)\(idAttr)>\(renderRuns(runs, parentLanguage: defaultLanguage))</h\(n)>\n"
             case .paragraph(let runs):
                 body += "<p>\(renderRuns(runs, parentLanguage: defaultLanguage))</p>\n"
             case .anchor(let id, let label):

@@ -315,6 +315,103 @@ final class EPUBBuilderTests: XCTestCase {
                        "Empty caption ⇒ no <figcaption> element")
     }
 
+    // MARK: - R-Hierarchy (nested nav)
+
+    /// End-to-end: a chapter with H2 (chapter title) + H3 / H4
+    /// sub-section headings should produce a nav.xhtml with nested
+    /// `<ol>` entries, and the chapter XHTML's sub-section headings
+    /// should carry the matching `id` attributes so the nav links
+    /// land on the right element.
+    func test_nested_nav_for_chapter_with_subsections() throws {
+        let book = Book(
+            title: "Hierarchy Test",
+            language: .en,
+            chapters: [
+                Chapter(title: "The Will to Power", blocks: [
+                    .heading(level: 2, runs: [InlineRun("The Will to Power")]),
+                    .paragraph(runs: [InlineRun("Opening.")]),
+                    .heading(level: 3, runs: [InlineRun("§1. Antitheses")]),
+                    .paragraph(runs: [InlineRun("Body.")]),
+                    .heading(level: 4, runs: [InlineRun("Subnote a")]),
+                    .paragraph(runs: [InlineRun("Body.")]),
+                    .heading(level: 3, runs: [InlineRun("§2. Higher truth")]),
+                    .paragraph(runs: [InlineRun("Body.")]),
+                ]),
+            ]
+        )
+
+        let outputURL = makeTempURL(ext: "epub")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+        try EPUBBuilder(modificationDate: fixedDate).write(book: book, to: outputURL)
+
+        guard let archive = Archive(url: outputURL, accessMode: .read) else {
+            XCTFail("Could not open produced EPUB"); return
+        }
+
+        // Chapter XHTML should carry id="hu-sec-0-{n}" on each
+        // sub-section heading. Block indices: H2 chapter (0),
+        // p (1), H3 §1 (2), p (3), H4 (4), p (5), H3 §2 (6), p (7).
+        let xhtml = try readEntry("OEBPS/text/chapter-001.xhtml", from: archive)
+        XCTAssertTrue(xhtml.contains("<h3 id=\"hu-sec-0-2\">§1. Antitheses</h3>"))
+        XCTAssertTrue(xhtml.contains("<h4 id=\"hu-sec-0-4\">Subnote a</h4>"))
+        XCTAssertTrue(xhtml.contains("<h3 id=\"hu-sec-0-6\">§2. Higher truth</h3>"))
+        // Chapter's own opening H2 must NOT get an id — that's the
+        // chapter row in nav already.
+        XCTAssertTrue(xhtml.contains("<h2>The Will to Power</h2>"),
+            "chapter's own opening heading should not carry a sub-section id")
+
+        // Nav.xhtml should nest the H3/H4 entries underneath the
+        // chapter row. §1 has the H4 child; §2 is a leaf.
+        let nav = try readEntry("OEBPS/nav.xhtml", from: archive)
+        XCTAssertTrue(nav.contains("text/chapter-001.xhtml#hu-sec-0-2"))
+        XCTAssertTrue(nav.contains("text/chapter-001.xhtml#hu-sec-0-4"))
+        XCTAssertTrue(nav.contains("text/chapter-001.xhtml#hu-sec-0-6"))
+        // Verify nesting structurally: the chapter's <li> must contain
+        // a child <ol>, and §1's <li> must contain its own child <ol>
+        // wrapping the H4. We're not parsing XML here, just looking
+        // for the syntactic shape that has to be present.
+        XCTAssertTrue(nav.contains("<ol>"),
+            "nav.xhtml should contain at least one <ol>")
+        let h4LiPattern = "<li><a href=\"text/chapter-001.xhtml#hu-sec-0-4\">Subnote a</a></li>"
+        XCTAssertTrue(nav.contains(h4LiPattern),
+            "H4 sub-subsection should render as a leaf <li> under the H3")
+        // Count <ol> tags — we expect at least 3: the outer toc <ol>,
+        // the chapter's child <ol>, and §1's grandchild <ol> wrapping
+        // the H4. (Plus possibly a closing tag count match.)
+        let openOLCount = nav.components(separatedBy: "<ol>").count - 1
+        XCTAssertGreaterThanOrEqual(openOLCount, 3,
+            "nested hierarchy needs ≥ 3 <ol> opens (toc + chapter + sub-section)")
+    }
+
+    /// Chapters with no sub-headings still render as flat leaf
+    /// entries — no spurious empty `<ol>` children.
+    func test_flat_nav_when_chapter_has_no_subsections() throws {
+        let book = Book(
+            title: "Flat Test",
+            language: .en,
+            chapters: [
+                Chapter(title: "Chapter 1", blocks: [
+                    .heading(level: 2, runs: [InlineRun("Chapter 1")]),
+                    .paragraph(runs: [InlineRun("Body only, no sub-headings.")]),
+                ]),
+            ]
+        )
+        let outputURL = makeTempURL(ext: "epub")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+        try EPUBBuilder(modificationDate: fixedDate).write(book: book, to: outputURL)
+        guard let archive = Archive(url: outputURL, accessMode: .read) else {
+            XCTFail("Could not open produced EPUB"); return
+        }
+        let nav = try readEntry("OEBPS/nav.xhtml", from: archive)
+        // Exactly one <ol> — the toc root. No nested <ol>.
+        let openOLCount = nav.components(separatedBy: "<ol>").count - 1
+        XCTAssertEqual(openOLCount, 1,
+            "no sub-sections ⇒ no nested <ol> in nav")
+        let xhtml = try readEntry("OEBPS/text/chapter-001.xhtml", from: archive)
+        XCTAssertFalse(xhtml.contains("hu-sec-"),
+            "no sub-sections ⇒ no hu-sec-* ids on headings")
+    }
+
     // MARK: helpers
 
     private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)  // 2023-11-14

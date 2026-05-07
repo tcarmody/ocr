@@ -1522,31 +1522,27 @@ recurring "Stoicheia I.iii" or chapter-bottom labels get tagged as
 
 ## R-Hierarchy — Multi-level chapter / section / part structure
 
-**Status**: ChapterSplitter only splits at H1. H2 and H3 headings
-become inline content in the chapter rather than nested nav entries.
+**Status**: shipped. New `ChapterHierarchy` helper in the EPUB
+target walks each chapter for headings deeper than the chapter's
+own opening heading and assigns each one a stable
+`hu-sec-{chapterIdx}-{blockIdx}` id. `XHTMLWriter` emits those ids
+on the rendered `<hN>` elements; `EPUBBuilder.makeNavEntries`
+threads them as nested `NavWriter.Entry.children`. `NavWriter`
+renders the children as a child `<ol>` inside the chapter's
+`<li>`, recursively (H2 → H3 → H4 nests three deep). Heuristic-
+chapter path only — the parsed-TOC path stays flat because
+`ParsedTOC.Entry` doesn't carry per-entry levels yet (a follow-up
+to the TOC parser, not R-Hierarchy).
+
+Mis-nested branches (a deeper heading appearing before any
+shallower one in the chapter) attach to the chapter root rather
+than getting dropped — better to surface a slightly mis-leveled
+entry than lose it from navigation entirely.
 
 ### Goal
 
-Detect a hierarchy (Part → Chapter → Section → Subsection) from H1 /
-H2 / H3 boundaries and emit a nested EPUB nav.
-
-### Approach
-
-Walk the block stream. H1 starts a chapter (existing behavior). H2
-within a chapter becomes a "section" within the chapter's nav entry.
-nav.xhtml emits nested `<ol>` accordingly.
-
-Optionally: split very long chapters into separate XHTML files at H2
-boundaries (some EPUB readers struggle with 100-page chapters).
-
-### Effort
-
-~1 day.
-
-### Dependencies
-
-Naturally combines with Phase 3 (TOC parsing) — TOCs typically
-encode the same hierarchy.
+Detect a hierarchy (Part → Chapter → Section → Subsection) from
+H1 / H2 / H3 boundaries and emit a nested EPUB nav.
 
 ---
 
@@ -1829,12 +1825,10 @@ use; distribution is lower priority than correctness.
    Less load-bearing now that the page-OCR path bypasses the
    per-region cascade entirely on Cloud, but still important for
    the Private path.
-2. **R-Hierarchy** (multi-level chapters) — natural follow-on to
-   ChapterSplitter, complements the parsed-TOC tree. ~1 day.
-3. **Launcher quality-of-life** — `R-Launcher-Pause`,
+2. **Launcher quality-of-life** — `R-Launcher-Pause`,
    `R-Launcher-History`, `R-Launcher-Reorder`, `R-Launcher-FullQueue`
    in whatever order the user reaches for first.
-4. **Defer Phase 10 (distribution)** until the user actually wants
+3. **Defer Phase 10 (distribution)** until the user actually wants
    to share or onboard another machine. The app is signed and runs
    locally; that's enough for personal use.
 
