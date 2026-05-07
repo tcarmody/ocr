@@ -171,15 +171,22 @@ private struct FileOpenCommands: Commands {
             Divider()
             SplitTwoUpCommand()
             Divider()
-            // File-system utilities — Join / Split for PDFs and
-            // EPUBs. Sit in the File menu rather than a dedicated
-            // top-level "Tools" menu because that's where users
-            // expect "do something to a file I'm picking now."
-            Button("Join PDFs…") { ToolsPrompts.runJoinPDFs() }
-            Button("Split PDF…") { ToolsPrompts.runSplitPDF() }
-            Button("Join EPUBs…") { ToolsPrompts.runJoinEPUBs() }
-            Button("Split EPUB…") { ToolsPrompts.runSplitEPUB() }
+            FileToolsButtons()
         }
+    }
+}
+
+/// File-system utilities — Join / Split for PDFs and EPUBs.
+/// Wrapped in a single View so the parent `CommandGroup` body
+/// stays under SwiftUI's @CommandsBuilder 10-component cap; the
+/// flat button list inside this View body uses the same builder
+/// rule but with its own 10-item budget.
+private struct FileToolsButtons: View {
+    var body: some View {
+        Button("Join PDFs…") { ToolsPrompts.runJoinPDFs() }
+        Button("Split PDF…") { ToolsPrompts.runSplitPDF() }
+        Button("Join EPUBs…") { ToolsPrompts.runJoinEPUBs() }
+        Button("Split EPUB…") { ToolsPrompts.runSplitEPUB() }
     }
 }
 
