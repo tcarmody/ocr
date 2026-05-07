@@ -1379,40 +1379,26 @@ status reordering.
 
 ## R-Launcher-FullQueue — Dedicated full-queue window
 
-**Status**: not started. The launcher's queue list scrolls but
-its visible area is bounded by whatever window size the user has
-on the launcher. After a bulk drop of 50 PDFs, the user wants to
-see the whole queue at once — status, progress, language, cost
-estimate per row, all together — without the launcher's drop
-zone, options, and bottom bar competing for vertical space.
+**Status**: shipped. New single-instance `Window` scene with id
+`"queue"` (opening when already open just brings it to front).
+Title "Humanist Queue". Hosts a SwiftUI `Table` with sortable
+columns: status icon · filename · status text / progress ·
+detected language · cost · actions (Cancel / Retry / Open /
+Reveal / Remove). Defaults to arrival-order sort to match the
+launcher.
 
-### Approach
+`Window > Show Queue` menu command (⇧⌘Q) and a "Show Queue"
+button in the launcher's bottom bar (visible whenever the queue
+has any rows) both open the window. The launcher and the queue
+window share the same `JobStore` / `JobRunner` env objects, so
+edits in either reflect immediately in the other — pause /
+reorder / history all work identically through both surfaces.
 
-- New `WindowGroup` (or `Window`) scene with id `"queue"`. Single
-  instance — opening it twice reuses the existing window. Title
-  "Humanist Queue".
-- Density-optimized table rendered with `Table` (SwiftUI) or
-  `List`. Columns: status icon · filename · status text /
-  progress · detected language · cost estimate · actions
-  (Cancel / Retry / Reveal). Sortable by column, optionally
-  filterable.
-- Scrolls independently of the launcher window — designed to
-  hold hundreds of rows without compromising the launcher's
-  drop / options surface.
-- Window > Show Full Queue command (⇧⌘Q) opens it; also a
-  toolbar / menu link from the launcher's bottom bar.
-
-### Effort
-
-~1 day. The job-row presentation logic is mostly reusable from
-the existing `JobRow` (just rendered in a denser layout). Most
-of the time goes into the Table column setup + the new scene.
-
-### Dependencies
-
-None hard. Plays well with R-Launcher-Pause / -History /
--Reorder; doing those first means the full-queue window inherits
-their controls cleanly.
+7 new sort-key tests cover `Job.Status.sortRank` (active states
+before resolved, stable per value) and `Job.costSortKey`
+(prefers actual stats over estimate, falls back to estimate
+when no stats, zero in three "neither / empty / no Claude calls"
+permutations).
 
 ## R-Conversion-Summary — Post-conversion stats panel
 
@@ -1821,19 +1807,17 @@ use; distribution is lower priority than correctness.
 
 **Next, in roughly this order:**
 
-1. **Launcher quality-of-life** — `R-Launcher-Pause`,
-   `R-Launcher-History`, `R-Launcher-Reorder`, `R-Launcher-FullQueue`
-   in whatever order the user reaches for first.
-2. **Editor / library polish** — `R-Search`, `R-Custom-Styles`,
+1. **Editor / library polish** — `R-Search`, `R-Custom-Styles`,
    `R-Library`, `R-Bulk-Editor` in whatever order matches actual
    working friction. None are load-bearing; pick them up as the
    need arises.
-3. **Defer Phase 10 (distribution)** until the user actually wants
+2. **Defer Phase 10 (distribution)** until the user actually wants
    to share or onboard another machine. The app is signed and runs
    locally; that's enough for personal use.
 
 Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely
 — corpus doesn't justify the bidi-rendering and per-script
 accuracy lifts. The originally planned hybrid Cloud feature set
-is now complete; what remains is launcher + editor polish for
-the working flow.
+is complete, and launcher quality-of-life (pause, reorder,
+history, full-queue window) is done; what remains is editor /
+library polish for the working flow.

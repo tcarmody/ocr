@@ -64,6 +64,7 @@ struct HumanistApp: App {
             EditorInsertMenu()
             EditorToolsMenu()
             EditorViewMenu()
+            ShowFullQueueCommand()
             CommandGroup(after: .help) {
                 Button("Show Welcome…") {
                     NotificationCenter.default.post(
@@ -72,6 +73,19 @@ struct HumanistApp: App {
                 }
             }
         }
+
+        // R-Launcher-FullQueue. Single-instance window for the bulk
+        // queue — designed to hold hundreds of rows with sortable
+        // columns and one-click actions, without competing for the
+        // launcher's drop / options / bottom-bar real estate. Same
+        // store + runner as the launcher, threaded back in via
+        // environmentObject (App scenes don't auto-propagate).
+        Window("Humanist Queue", id: "queue") {
+            QueueWindowView()
+                .environmentObject(jobStore)
+                .environmentObject(jobRunner)
+        }
+        .commandsRemoved()  // no per-window menu items beyond what the launcher already attaches
 
         // Editor window: one per opened EPUB. macOS reuses an existing
         // window when the same URL value is reopened, so dragging the
@@ -333,6 +347,30 @@ private struct ConvertCommand: View {
             )
         }
         .keyboardShortcut("o", modifiers: [.command, .shift])
+    }
+}
+
+/// Window > Show Full Queue (⇧⌘Q). Opens the dedicated full-queue
+/// window (single instance — opening when already open just
+/// brings it to the front). Placed in the standard `.windowList`
+/// position so it sits alongside the OS-provided window-list
+/// items in the Window menu.
+private struct ShowFullQueueCommand: Commands {
+    var body: some Commands {
+        CommandGroup(before: .windowList) {
+            ShowFullQueueButton()
+            Divider()
+        }
+    }
+}
+
+private struct ShowFullQueueButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Show Queue") {
+            openWindow(id: "queue")
+        }
+        .keyboardShortcut("q", modifiers: [.command, .shift])
     }
 }
 

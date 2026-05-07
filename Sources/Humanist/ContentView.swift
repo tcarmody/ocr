@@ -237,7 +237,8 @@ struct ContentView: View {
     }
 
     /// Bottom action bar. Choose Files always present; Pause /
-    /// Resume + Clear Done + Cancel All conditional on queue state.
+    /// Resume + Show Queue + Clear Done + Cancel All conditional
+    /// on queue state.
     @ViewBuilder
     private var bottomBar: some View {
         HStack(spacing: 8) {
@@ -248,6 +249,19 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             Spacer()
+            // Open the dedicated full-queue window (R-Launcher-FullQueue).
+            // Visible whenever the queue has any rows — gives the user
+            // a way to see the whole list at once without the
+            // launcher's drop / options bar competing for vertical
+            // space. Window menu also has this command (⇧⌘Q).
+            if !store.jobs.isEmpty {
+                Button {
+                    openWindow(id: "queue")
+                } label: {
+                    Label("Show Queue", systemImage: "rectangle.split.3x1")
+                }
+                .help("Open the full-queue window")
+            }
             // Pause / Resume Queue. Visible when there's pending work
             // OR the queue is currently paused (so an empty paused
             // queue can still be unpaused — e.g. user paused mid-run,
