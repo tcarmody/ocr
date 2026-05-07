@@ -1362,21 +1362,22 @@ past EPUB later.
 
 ## R-Launcher-Reorder — Drag-reorder queued jobs
 
-**Status**: not started. Jobs run in arrival order. For a bulk
-drop where the user wants to prioritize one PDF, they currently
-can't.
+**Status**: shipped. New `JobStore.move(from:to:)` delegates to
+`Array.move(fromOffsets:toOffset:)` and persists. Queue list
+swapped from `LazyVStack` → `List` so SwiftUI's `.onMove` is
+available; visual cards preserved via `.listRowBackground` +
+clear separators + zeroed insets + `.scrollContentBackground(.hidden)`.
+List ships a hover-drag handle on macOS, so no custom affordance
+needed.
 
-### Approach
-
-- SwiftUI's `.onMove` gesture on the queue list. Update
-  `JobStore` to support `move(from:to:)` with persistence.
-- Only `.queued` (and `.profiling`?) jobs participate — running
-  / done / cancelled stay put.
-- Drag handle visible on hover.
-
-### Effort
-
-~half day.
+Reorder is unrestricted: dragging a non-queued job (running /
+done / cancelled) just permutes the array — the runner still
+picks first `.queued` regardless, so the user-visible effect is
+display-only. Letting users reorder freely beats imposing
+per-row drag-eligibility rules that would surprise them. 5 new
+JobStoreTests cover basic reorder, promote-to-front, empty-
+indexset no-op, persistence across store instances, and mixed-
+status reordering.
 
 ## R-Launcher-FullQueue — Dedicated full-queue window
 

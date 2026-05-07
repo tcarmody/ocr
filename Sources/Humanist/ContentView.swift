@@ -296,21 +296,33 @@ struct ContentView: View {
         // Caller (`body`) only renders this when `store.jobs` is
         // non-empty — the empty-queue case is handled by the
         // hero drop zone above instead of an "empty queue" label.
-        ScrollView {
-            LazyVStack(spacing: 6) {
-                ForEach(store.jobs) { job in
-                    JobRow(job: job)
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color(nsColor: .controlBackgroundColor))
-                        )
-                }
-                .padding(.vertical, 4)
+        //
+        // Switched from LazyVStack → List for R-Launcher-Reorder:
+        // `.onMove` is List-only on macOS, and List ships a built-in
+        // hover-drag handle. Custom card visual is preserved via
+        // `.listRowBackground` + clear separators + zeroed insets;
+        // `.listStyle(.plain)` keeps the rows flush to the window
+        // chrome the way the LazyVStack version did.
+        List {
+            ForEach(store.jobs) { job in
+                JobRow(job: job)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .listRowBackground(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                            .padding(.vertical, 3)
+                    )
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             }
-            .frame(maxHeight: 280)
+            .onMove { source, destination in
+                store.move(from: source, to: destination)
+            }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .frame(maxHeight: 280)
     }
 }
 

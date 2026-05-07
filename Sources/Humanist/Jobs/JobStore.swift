@@ -80,6 +80,23 @@ final class JobStore: ObservableObject {
         save()
     }
 
+    /// Drag-reorder support for the queue list. SwiftUI's `.onMove`
+    /// hands us the source `IndexSet` + destination offset; we just
+    /// delegate to `Array.move(fromOffsets:toOffset:)` and persist.
+    /// The runner picks `nextQueued` (first `.queued` in array order),
+    /// so reordering directly changes what runs next.
+    ///
+    /// Non-queued jobs (running / done / failed / cancelled) can be
+    /// dragged too — the reorder still permutes the array, but only
+    /// queued jobs affect the runner's next pick. Letting users
+    /// freely reorder beats imposing per-row drag-eligibility rules
+    /// that would surprise them.
+    func move(from source: IndexSet, to destination: Int) {
+        guard !source.isEmpty else { return }
+        jobs.move(fromOffsets: source, toOffset: destination)
+        save()
+    }
+
     /// Drop every job whose status has resolved (done, failed, cancelled).
     /// Keeps the queue panel uncluttered after a successful batch.
     func clearFinished() {
