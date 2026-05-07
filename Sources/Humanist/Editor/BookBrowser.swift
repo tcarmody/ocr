@@ -6,10 +6,9 @@ import EPUB
 struct BookBrowser: View {
     let root: FileNode
     @Binding var selection: FileNode?
-    /// View-model used by per-row context-menu commands (Move
-    /// Chapter Up / Down). Optional — when nil, rows render
-    /// without action menus.
-    weak var viewModel: EditorViewModel?
+    /// View-model used by the right-click context menu (Move
+    /// Chapter Up / Down). Optional — when nil, the menu is empty.
+    var viewModel: EditorViewModel?
 
     var body: some View {
         // Show the root's children, not the root itself — the working-
@@ -20,12 +19,18 @@ struct BookBrowser: View {
                     OutlineGroup(node, children: \.children) { item in
                         rowLabel(item)
                             .tag(item)
-                            .contextMenu { rowContextMenu(item) }
                     }
                 }
             }
         }
         .listStyle(.sidebar)
+        // Right-clicking a row reports it as a Set<FileNode>; this
+        // is the macOS-native context-menu API for List in macOS 13+
+        // and is more reliable than per-row `.contextMenu` modifiers
+        // inside an OutlineGroup.
+        .contextMenu(forSelectionType: FileNode.self) { items in
+            rowContextMenu(items: items)
+        }
     }
 
     @ViewBuilder
@@ -39,8 +44,8 @@ struct BookBrowser: View {
     }
 
     @ViewBuilder
-    private func rowContextMenu(_ node: FileNode) -> some View {
-        if let vm = viewModel, !node.isDirectory {
+    private func rowContextMenu(items: Set<FileNode>) -> some View {
+        if let vm = viewModel, let node = items.first, !node.isDirectory {
             Button("Move Chapter Up") {
                 vm.moveChapter(at: node.id, direction: .up)
             }
