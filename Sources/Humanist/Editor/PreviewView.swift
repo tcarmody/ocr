@@ -164,11 +164,20 @@ private final class WebPreviewModel: NSObject, ObservableObject,
     }
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         let message = error.localizedDescription
-        Task { @MainActor in self.status = .failed(message) }
+        Task { @MainActor in
+            self.status = .failed(message)
+            // Clear `loadedURL` so the next navigation request — even
+            // to the same URL — triggers a fresh `loadFileURL` rather
+            // than getting de-duplicated against the failed load.
+            self.loadedURL = nil
+        }
     }
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         let message = error.localizedDescription
-        Task { @MainActor in self.status = .failed(message) }
+        Task { @MainActor in
+            self.status = .failed(message)
+            self.loadedURL = nil
+        }
     }
 
     func flushPendingScroll() {
@@ -376,20 +385,29 @@ private struct WebPreview: NSViewRepresentable {
         // vs `/private/var/...` doesn't trip "outside the sandbox."
         let resolvedURL = url.canonicalForFile
         let resolvedAccess = accessRoot.canonicalForFile
-        if model.loadedURL != resolvedURL {
-            // URL change: full load.
-            model.loadedURL = resolvedURL
-            model.loadedTrigger = reloadTrigger
-            model.status = .loading
-            view.loadFileURL(resolvedURL, allowingReadAccessTo: resolvedAccess)
-        } else if model.loadedTrigger != reloadTrigger {
-            // Same URL, on-disk content changed (live preview write).
-            // `view.reload()` re-fetches the same URL with the updated
-            // bytes — cheaper than loadFileURL, no flicker.
-            model.loadedTrigger = reloadTrigger
-            model.status = .loading
-            view.reload()
-        }
+        let urlChanged = model.loadedURL != resolvedURL
+        let triggerChanged = model.loadedTrigger != reloadTrigger
+        guard urlChanged || triggerChanged else { return }
+
+        // Always use `loadFileURL` (never `view.reload()`) for both
+        // URL changes and same-URL refreshes. `reload()` on a `file://`
+        // URL has shaky semantics: WebKit can re-parse the path and
+        // misinterpret digit-only path segments (e.g. "chapter-010")
+        // as port-like, throwing "not allowed to use restricted
+        // network port" — and that error then poisons the WKWebView's
+        // internal state so subsequent loadFileURL calls also fail.
+        // Always-loadFileURL bypasses both quirks; the cost is one
+        // extra repaint per content-only refresh, which is invisible
+        // for our use case.
+        //
+        // `stopLoading()` cancels any in-flight nav before we kick
+        // the new one, avoiding races where two loads compete and
+        // leave the view in a half-loaded state.
+        model.loadedURL = resolvedURL
+        model.loadedTrigger = reloadTrigger
+        model.status = .loading
+        view.stopLoading()
+        view.loadFileURL(resolvedURL, allowingReadAccessTo: resolvedAccess)
     }
 
     private func applyScrollRequestIfNeeded(view: WKWebView) {
