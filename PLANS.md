@@ -2021,22 +2021,25 @@ subsequent round.
 4. **Q-Metadata** (author/title/ISBN via Haiku) — 1 day
 5. **Q-Coherence** (document-level Haiku pass) — 1.5 days
 
-### Round 3 — Output formats + ingestion options (~2 days)
-
-6. **V-Outputs (txt + md only)** — 1 day; DOCX deferred to
-   Round 5
-7. **V-Trust-PerPage** (per-page embedded-text trust) — 1 day
-
-### Round 4 — Cost + speed wins (~7 days)
+### Round 3 — Cost + speed wins (~7 days)
 
 Heavier lifts, but each one independently valuable. Order
 within the round picks **Routing first** (removes calls before
 batching them); then **Batches** (discounts what's left); then
-**Parallel** (compounds with both).
+**Parallel** (compounds with both). Pulled ahead of the output-
+format round per user revision (2026-05-07): cost / speed wins
+amortize across every subsequent test cycle and Cloud-mode run,
+so it's worth eating the heavier lift earlier.
 
-8. **E-Routing** (per-page cloud routing) — 2 days
-9. **E-Batches** (Anthropic Batches API) — 3 days
-10. **E-Parallel** (Surya pool + concurrent Cloud) — 2 days
+6. **E-Routing** (per-page cloud routing) — 2 days
+7. **E-Batches** (Anthropic Batches API) — 3 days
+8. **E-Parallel** (Surya pool + concurrent Cloud) — 2 days
+
+### Round 4 — Output formats + ingestion options (~2 days)
+
+9. **V-Outputs (txt + md only)** — 1 day; DOCX deferred to
+   Round 5
+10. **V-Trust-PerPage** (per-page embedded-text trust) — 1 day
 
 ### Round 5 — Heavier features (~12 days)
 
