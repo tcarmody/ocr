@@ -240,6 +240,8 @@ struct EditorViewMenu: Commands {
             Divider()
             EditorSplitChapterCommand()
             EditorMergeChapterCommand()
+            EditorMoveChapterUpCommand()
+            EditorMoveChapterDownCommand()
             EditorRegenerateTOCCommand()
             Divider()
             ShowCorrectionTrailCommand()
@@ -279,6 +281,28 @@ private struct EditorRegenerateTOCCommand: View {
             Task { await vm.regenerateTableOfContents() }
         }
         .disabled(vm == nil)
+    }
+}
+
+private struct EditorMoveChapterUpCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Move Chapter Up") {
+            vm?.moveCurrentChapterUp()
+        }
+        .keyboardShortcut("[", modifiers: [.command, .control])
+        .disabled(vm?.canMoveCurrentChapterUp != true)
+    }
+}
+
+private struct EditorMoveChapterDownCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Move Chapter Down") {
+            vm?.moveCurrentChapterDown()
+        }
+        .keyboardShortcut("]", modifiers: [.command, .control])
+        .disabled(vm?.canMoveCurrentChapterDown != true)
     }
 }
 

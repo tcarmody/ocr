@@ -366,6 +366,61 @@ public final class EPUBBook: @unchecked Sendable {
         }
     }
 
+    /// Direction of a one-position spine move. `up` swaps with the
+    /// previous spine entry; `down` swaps with the next.
+    public enum SpineMoveDirection {
+        case up
+        case down
+    }
+
+    /// Move a spine entry by one position. No-op when the resource
+    /// isn't in the spine, or when it's already at the boundary in
+    /// the requested direction. The manifest order (`resourceOrder`)
+    /// is also updated so any UI that walks the manifest sees the
+    /// chapter in its new spine position.
+    public func moveInSpine(id: String, direction: SpineMoveDirection) {
+        guard let idx = spine.firstIndex(of: id) else { return }
+        switch direction {
+        case .up:
+            guard idx > 0 else { return }
+            spine.swapAt(idx, idx - 1)
+        case .down:
+            guard idx + 1 < spine.count else { return }
+            spine.swapAt(idx, idx + 1)
+        }
+        // Mirror the spine reorder in the manifest's resourceOrder
+        // so the sidebar's manifest-order view matches reading
+        // order. Other (non-spine) manifest entries keep their
+        // relative position.
+        syncManifestOrderToSpine()
+    }
+
+    /// Reorder `resourceOrder` so spine entries appear in spine
+    /// order, with each non-spine entry pinned to its current
+    /// position relative to its neighboring spine entries. Used
+    /// after a spine move so the manifest order tracks reading
+    /// order without losing where the nav / cover / image entries
+    /// sit.
+    private func syncManifestOrderToSpine() {
+        var spineQueue = spine
+        var rebuilt: [String] = []
+        for id in resourceOrder {
+            if spine.contains(id) {
+                if let next = spineQueue.first {
+                    rebuilt.append(next)
+                    spineQueue.removeFirst()
+                }
+            } else {
+                rebuilt.append(id)
+            }
+        }
+        // Belt-and-suspenders: append any spine entry we somehow
+        // missed (shouldn't happen since spine ⊆ resourceOrder).
+        rebuilt.append(contentsOf: spineQueue)
+        resourceOrder = rebuilt
+        structuralIsDirty = true
+    }
+
     /// Internal accessor used by the saver.
     func consumePendingDeletions() -> [PendingDeletion] {
         defer { pendingDeletions = [] }

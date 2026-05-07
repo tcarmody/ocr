@@ -1667,6 +1667,79 @@ final class EditorViewModel: ObservableObject {
         return book.spine.contains(resource.id)
     }
 
+    /// Whether the selected chapter can move up one position in the
+    /// spine. False when the chapter isn't in the spine, or when
+    /// it's already first.
+    var canMoveCurrentChapterUp: Bool {
+        canMoveCurrentChapter(direction: .up)
+    }
+
+    /// Whether the selected chapter can move down one position in
+    /// the spine. False when the chapter isn't in the spine, or
+    /// when it's already last.
+    var canMoveCurrentChapterDown: Bool {
+        canMoveCurrentChapter(direction: .down)
+    }
+
+    /// Same predicate as `canMoveCurrentChapterUp/Down` but parametric
+    /// — used by `BookBrowser` to enable / disable context-menu
+    /// items for an arbitrary node, not just the selection.
+    func canMoveChapter(at url: URL, direction: EPUBBook.SpineMoveDirection) -> Bool {
+        guard let book = book else { return false }
+        guard let resource = book.resource(at: url) else { return false }
+        guard let idx = book.spine.firstIndex(of: resource.id) else { return false }
+        switch direction {
+        case .up:   return idx > 0
+        case .down: return idx + 1 < book.spine.count
+        }
+    }
+
+    private func canMoveCurrentChapter(direction: EPUBBook.SpineMoveDirection) -> Bool {
+        guard let file = selectedFile else { return false }
+        return canMoveChapter(at: file.id, direction: direction)
+    }
+
+    /// Move the currently selected chapter one position up in the
+    /// spine. Updates manifest order to match (so the sidebar's
+    /// alphabetical view still tracks reading order isn't perfect
+    /// — the file is on disk under its existing name — but the
+    /// in-memory manifest order, which drives the OPF, follows the
+    /// new reading order). Saves the book so disk + .epub repack
+    /// reflect the change without a separate Save.
+    func moveCurrentChapterUp() {
+        guard let file = selectedFile else { return }
+        moveChapter(at: file.id, direction: .up)
+    }
+
+    /// Mirror of `moveCurrentChapterUp` for the down direction.
+    func moveCurrentChapterDown() {
+        guard let file = selectedFile else { return }
+        moveChapter(at: file.id, direction: .down)
+    }
+
+    /// Move the chapter referenced by `url` one position in the
+    /// spine. Used by both the menu-bar and sidebar context-menu
+    /// commands.
+    func moveChapter(at url: URL, direction: EPUBBook.SpineMoveDirection) {
+        guard let book = book else { return }
+        guard let resource = book.resource(at: url) else { return }
+        guard canMoveChapter(at: url, direction: direction) else { return }
+        flushSourceTextToBuffer()
+        flushDirtyBuffersToBook()
+        book.moveInSpine(id: resource.id, direction: direction)
+        do {
+            try EPUBBookSaver().save(book)
+            // The OPF on disk now lists chapters in the new order.
+            // The file tree itself is unchanged (we don't rename
+            // files for a reorder), but bump preview so any
+            // navigation chrome that depends on spine order updates.
+            previewVersion += 1
+            isDirty = true
+        } catch {
+            chapterOperationError = error.localizedDescription
+        }
+    }
+
     /// Rebuild the file-tree sidebar after a chapter operation that
     /// changed which files exist on disk (Split / Merge add or remove
     /// chapter files; Regenerate-TOC rewrites nav.xhtml). The book

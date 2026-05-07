@@ -55,7 +55,8 @@ struct EditorView: View {
                             selection: Binding(
                                 get: { vm.selectedFile },
                                 set: { if let n = $0 { vm.select(n) } }
-                            )
+                            ),
+                            viewModel: vm
                         )
                         .frame(minWidth: 220)
                     } detail: {

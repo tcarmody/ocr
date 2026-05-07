@@ -200,6 +200,74 @@ final class EPUBBookTests: XCTestCase {
         XCTAssertEqual(ch03Idx, newIdx + 1)
     }
 
+    func test_moveInSpine_up_swaps_with_previous() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "ch02", direction: .up)
+        XCTAssertEqual(book.spine, ["ch02", "ch01", "ch03"])
+        // Manifest order tracks reading order so the OPF emits
+        // chapters in the new sequence.
+        let chapterOrder = book.resourceOrder.filter { $0.hasPrefix("ch") }
+        XCTAssertEqual(chapterOrder, ["ch02", "ch01", "ch03"])
+        XCTAssertTrue(book.structuralIsDirty)
+    }
+
+    func test_moveInSpine_down_swaps_with_next() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "ch02", direction: .down)
+        XCTAssertEqual(book.spine, ["ch01", "ch03", "ch02"])
+    }
+
+    func test_moveInSpine_at_top_is_noop_when_moving_up() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "ch01", direction: .up)
+        XCTAssertEqual(book.spine, ["ch01", "ch02", "ch03"])
+    }
+
+    func test_moveInSpine_at_bottom_is_noop_when_moving_down() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "ch03", direction: .down)
+        XCTAssertEqual(book.spine, ["ch01", "ch02", "ch03"])
+    }
+
+    func test_moveInSpine_unknown_id_is_noop() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "does-not-exist", direction: .up)
+        XCTAssertEqual(book.spine, ["ch01", "ch02", "ch03"])
+    }
+
+    func test_moveInSpine_round_trips_through_save() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "ch03", direction: .up)
+        try EPUBBookSaver().save(book)
+
+        let pkg = try OPFReader().read(rootDir: tempDir)
+        XCTAssertEqual(pkg.spine, ["ch01", "ch03", "ch02"])
+    }
+
     func test_insertResource_after_unknown_anchor_falls_back_to_append() throws {
         try buildMinimalEPUB(chapterCount: 1)
         let book = try EPUBBookLoader().load(

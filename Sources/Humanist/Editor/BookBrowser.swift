@@ -6,6 +6,10 @@ import EPUB
 struct BookBrowser: View {
     let root: FileNode
     @Binding var selection: FileNode?
+    /// View-model used by per-row context-menu commands (Move
+    /// Chapter Up / Down). Optional — when nil, rows render
+    /// without action menus.
+    weak var viewModel: EditorViewModel?
 
     var body: some View {
         // Show the root's children, not the root itself — the working-
@@ -16,6 +20,7 @@ struct BookBrowser: View {
                     OutlineGroup(node, children: \.children) { item in
                         rowLabel(item)
                             .tag(item)
+                            .contextMenu { rowContextMenu(item) }
                     }
                 }
             }
@@ -30,6 +35,20 @@ struct BookBrowser: View {
         } icon: {
             Image(systemName: iconName(for: node))
                 .foregroundStyle(iconColor(for: node))
+        }
+    }
+
+    @ViewBuilder
+    private func rowContextMenu(_ node: FileNode) -> some View {
+        if let vm = viewModel, !node.isDirectory {
+            Button("Move Chapter Up") {
+                vm.moveChapter(at: node.id, direction: .up)
+            }
+            .disabled(!vm.canMoveChapter(at: node.id, direction: .up))
+            Button("Move Chapter Down") {
+                vm.moveChapter(at: node.id, direction: .down)
+            }
+            .disabled(!vm.canMoveChapter(at: node.id, direction: .down))
         }
     }
 
