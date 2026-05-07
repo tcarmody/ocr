@@ -83,7 +83,8 @@ public struct EPUBBuilder {
                 chapter,
                 defaultLanguage: book.language,
                 fallbackTitle: chapter.title ?? "Chapter \(index + 1)",
-                subsectionAnchors: anchorMap
+                subsectionAnchors: anchorMap,
+                chapterIndex: index
             )
             entries.append(EPUBPackager.Entry(
                 path: "OEBPS/\(href)",

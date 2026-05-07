@@ -12,11 +12,20 @@ struct XHTMLWriter {
     /// on `<hN>` so nav.xhtml can deep-link to that heading. Empty
     /// (the default) renders headings without ids — same behavior
     /// as before R-Hierarchy.
+    ///
+    /// `chapterIndex` is the 0-based spine position. Used to mint
+    /// stable per-paragraph ids of the form `hu-p-{chapter}-{para}`
+    /// so the editor can snap source ↔ preview at paragraph
+    /// granularity (in addition to the page-level snap that the
+    /// `hu-page-*` anchors already drive). `paraIdx` counts only
+    /// paragraph blocks within the chapter (zero-based, in document
+    /// order); other block kinds don't increment it.
     func render(
         _ chapter: Chapter,
         defaultLanguage: BCP47,
         fallbackTitle: String,
-        subsectionAnchors: [Int: String] = [:]
+        subsectionAnchors: [Int: String] = [:],
+        chapterIndex: Int = 0
     ) -> String {
         let title = (chapter.title ?? fallbackTitle)
         let langAttr = defaultLanguage.rawValue
@@ -26,6 +35,7 @@ struct XHTMLWriter {
         )
 
         var body = ""
+        var paraIdx = 0
         for (blockIndex, block) in chapter.blocks.enumerated() {
             switch block {
             case .heading(let level, let runs):
@@ -38,7 +48,9 @@ struct XHTMLWriter {
                 }
                 body += "<h\(n)\(idAttr)>\(renderRuns(runs, parentLanguage: defaultLanguage))</h\(n)>\n"
             case .paragraph(let runs):
-                body += "<p>\(renderRuns(runs, parentLanguage: defaultLanguage))</p>\n"
+                let pid = "hu-p-\(chapterIndex)-\(paraIdx)"
+                paraIdx += 1
+                body += "<p id=\"\(XMLEscape.attribute(pid))\">\(renderRuns(runs, parentLanguage: defaultLanguage))</p>\n"
             case .anchor(let id, let label):
                 // Empty span — invisible in normal rendering. The
                 // editor's IntersectionObserver targets `[id^="hu-page-"]`

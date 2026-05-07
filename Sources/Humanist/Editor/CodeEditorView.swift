@@ -56,6 +56,11 @@ struct CodeEditorView: View {
     /// UTF-16 offset from the start of the document. Used by
     /// chapter-split to pick a safe boundary near the user's cursor.
     let onCursorOffsetChanged: ((Int) -> Void)?
+    /// Called when CodeMirror's cursor crosses a different
+    /// `<p id="hu-p-N-M">` paragraph anchor. Drives the
+    /// paragraph-level source ↔ preview snap (Pass A of
+    /// paragraph-level alignment).
+    let onCursorParagraphChanged: ((String) -> Void)?
 
     enum Language: String {
         case xml, htmlmixed, css, javascript
@@ -90,7 +95,8 @@ struct CodeEditorView: View {
                 lineNumbers: lineNumbers,
                 wordWrap: wordWrap,
                 onCursorAnchorChanged: onCursorAnchorChanged,
-                onCursorOffsetChanged: onCursorOffsetChanged
+                onCursorOffsetChanged: onCursorOffsetChanged,
+                onCursorParagraphChanged: onCursorParagraphChanged
             )
         } else {
             // CodeMirror assets weren't bundled. Plain TextEditor so
@@ -132,11 +138,13 @@ private struct CodeMirrorWebView: NSViewRepresentable {
     let wordWrap: Bool
     let onCursorAnchorChanged: ((String) -> Void)?
     let onCursorOffsetChanged: ((Int) -> Void)?
+    let onCursorParagraphChanged: ((String) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         let c = Coordinator(text: $text)
         c.onCursorAnchorChanged = onCursorAnchorChanged
         c.onCursorOffsetChanged = onCursorOffsetChanged
+        c.onCursorParagraphChanged = onCursorParagraphChanged
         return c
     }
 
@@ -169,6 +177,7 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         // fresh closure (very common for closures that capture vm).
         coordinator.onCursorAnchorChanged = onCursorAnchorChanged
         coordinator.onCursorOffsetChanged = onCursorOffsetChanged
+        coordinator.onCursorParagraphChanged = onCursorParagraphChanged
         // File switch: reset history + push fresh content.
         if coordinator.lastResetID != resetID {
             coordinator.lastResetID = resetID
@@ -296,6 +305,7 @@ private struct CodeMirrorWebView: NSViewRepresentable {
         /// Forwarded back to the VM when CodeMirror reports a new
         /// cursor-anchor (code → others sync).
         var onCursorAnchorChanged: ((String) -> Void)?
+        var onCursorParagraphChanged: ((String) -> Void)?
 
         init(text: Binding<String>) {
             _text = text
@@ -516,6 +526,12 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             case "cursor-anchor":
                 if let id = dict["id"] as? String {
                     onCursorAnchorChanged?(id)
+                }
+            case "cursor-paragraph":
+                if let id = dict["id"] as? String {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onCursorParagraphChanged?(id)
+                    }
                 }
             case "cursor-offset":
                 if let offset = dict["offset"] as? Int {

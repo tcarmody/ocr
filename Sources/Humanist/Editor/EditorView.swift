@@ -372,7 +372,8 @@ struct EditorView: View {
                 lineNumbers: sourceLineNumbers,
                 wordWrap: sourceWordWrap,
                 onCursorAnchorChanged: { id in vm.didMoveCursorToAnchor(id) },
-                onCursorOffsetChanged: { offset in vm.didMoveCursor(offset: offset) }
+                onCursorOffsetChanged: { offset in vm.didMoveCursor(offset: offset) },
+                onCursorParagraphChanged: { id in vm.didMoveCursorToParagraph(id) }
             )
             .id(file.id)
             .onChange(of: vm.sourceText) { _, _ in
@@ -401,7 +402,8 @@ struct EditorView: View {
                 scrollRequest: vm.scrollPreviewToAnchor,
                 fontSize: previewFontSize,
                 theme: previewTheme,
-                onAnchorVisible: { id in vm.didReportPreviewAnchor(id) }
+                onAnchorVisible: { id in vm.didReportPreviewAnchor(id) },
+                onParagraphVisible: { id in vm.didReportPreviewParagraph(id) }
             )
         }
     }

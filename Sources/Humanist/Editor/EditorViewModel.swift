@@ -111,6 +111,17 @@ final class EditorViewModel: ObservableObject {
     /// by the "Align Others to Preview Top" command. Nil before the
     /// preview has reported its first IO event.
     @Published private(set) var currentPreviewAnchor: String?
+    /// Topmost `hu-p-{ch}-{para}` paragraph anchor in the source
+    /// pane (where the cursor sits). Updated passively from the
+    /// CodeMirror cursor change events. Drives the paragraph-level
+    /// source ↔ preview snap when the user invokes
+    /// "Align Others to Source Cursor".
+    @Published private(set) var currentSourceParagraphAnchor: String?
+    /// Topmost paragraph anchor visible in the rendered preview.
+    /// Same shape as `currentPreviewAnchor` but at finer
+    /// granularity; reported by the JS IntersectionObserver
+    /// alongside the page-level anchor.
+    @Published private(set) var currentPreviewParagraphAnchor: String?
     /// Last PDF page the embedded PDFView reported. Updated passively
     /// from `PDFViewPageChanged`; consumed by "Align Others to PDF
     /// Page". Nil before the user has navigated the PDF.
@@ -410,6 +421,12 @@ final class EditorViewModel: ObservableObject {
         currentSourceAnchor = anchorId
     }
 
+    /// Same shape, but for paragraph anchors (`hu-p-*`). Drives
+    /// the paragraph-level source ↔ preview snap.
+    func didMoveCursorToParagraph(_ paragraphId: String) {
+        currentSourceParagraphAnchor = paragraphId
+    }
+
     /// CodeMirror-side cursor-offset reporter. Updated on every
     /// cursor activity. Used by the Chapter Split command to pick a
     /// safe split boundary near the user's cursor.
@@ -427,6 +444,12 @@ final class EditorViewModel: ObservableObject {
     /// `alignOthersToPreviewTop`.
     func didReportPreviewAnchor(_ anchorId: String) {
         currentPreviewAnchor = anchorId
+    }
+
+    /// Same shape, but for paragraph anchors (`hu-p-*`). Drives
+    /// the paragraph-level source ↔ preview snap.
+    func didReportPreviewParagraph(_ paragraphId: String) {
+        currentPreviewParagraphAnchor = paragraphId
     }
 
     /// Scroll source + preview to the anchor that owns the cursor's
@@ -491,8 +514,26 @@ final class EditorViewModel: ObservableObject {
             select(node)
         }
         scrollNonce &+= 1
+        // Pass A of paragraph-level alignment: when source ↔ preview
+        // are both within the same chapter as the page anchor we're
+        // aligning to, prefer the finer-grained paragraph anchor
+        // for the source / preview scroll request — lands on the
+        // exact paragraph the user is editing rather than the top
+        // of the page. Driver pane reports its own paragraph
+        // anchor; the other panes scroll to that. PDF stays page-
+        // granularity since paragraph bbox isn't available yet
+        // (Pass B).
+        let preferredAnchorId: String
+        switch drivingPane {
+        case .source:
+            preferredAnchorId = currentSourceParagraphAnchor ?? entry.anchorId
+        case .preview:
+            preferredAnchorId = currentPreviewParagraphAnchor ?? entry.anchorId
+        case .pdf, .none:
+            preferredAnchorId = entry.anchorId
+        }
         let req = AnchorScrollRequest(
-            anchorId: entry.anchorId,
+            anchorId: preferredAnchorId,
             xhtmlFile: entry.xhtmlFile,
             nonce: scrollNonce
         )

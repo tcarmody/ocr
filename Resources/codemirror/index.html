@@ -595,6 +595,13 @@
       // the change is the result of an external scroll (the
       // `lastReportedAnchor` guard).
       var anchorRegex = /id=["']hu-page-(\d+)["']/g;
+      // Per-paragraph anchors: `<p id="hu-p-{chapter}-{para}">`.
+      // Tracked alongside the page-level anchor so source ↔ preview
+      // can snap at paragraph granularity (Pass A of paragraph-
+      // level alignment). Capturing group 1 is the full id suffix
+      // (e.g. "0-3") so we don't have to recombine.
+      var paragraphRegex = /id=["']hu-p-(\d+-\d+)["']/g;
+      var lastReportedParagraph = null;
       function anchorAtCursor() {
         var doc = editor.getDoc();
         var idx = doc.indexFromPos(doc.getCursor());
@@ -611,6 +618,19 @@
         }
         return lastId;
       }
+      function paragraphAtCursor() {
+        var doc = editor.getDoc();
+        var idx = doc.indexFromPos(doc.getCursor());
+        var content = doc.getValue();
+        paragraphRegex.lastIndex = 0;
+        var lastId = null;
+        var m;
+        while ((m = paragraphRegex.exec(content)) !== null) {
+          if (m.index > idx) break;
+          lastId = "hu-p-" + m[1];
+        }
+        return lastId;
+      }
       editor.on("cursorActivity", function () {
         // Always post the cursor offset on every cursor activity —
         // chapter-split needs a fresh value when the user invokes the
@@ -624,9 +644,15 @@
           // skip reporting rather than break cursor tracking.
         }
         var current = anchorAtCursor();
-        if (!current || current === lastReportedAnchor) return;
-        lastReportedAnchor = current;
-        post({ type: "cursor-anchor", id: current });
+        if (current && current !== lastReportedAnchor) {
+          lastReportedAnchor = current;
+          post({ type: "cursor-anchor", id: current });
+        }
+        var currentPara = paragraphAtCursor();
+        if (currentPara && currentPara !== lastReportedParagraph) {
+          lastReportedParagraph = currentPara;
+          post({ type: "cursor-paragraph", id: currentPara });
+        }
       });
 
       ready = true;

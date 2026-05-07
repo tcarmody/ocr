@@ -45,7 +45,12 @@ final class PDFToEPUBPipelineTests: XCTestCase {
         // Demand that at least one of the lines appears in the body and
         // that the body is rendered as paragraphs (post-Phase-1.5: no
         // more "Page N" debug headings).
-        XCTAssertTrue(xhtml.contains("<p>"), "Body should be wrapped in paragraphs")
+        // Paragraphs render with the per-paragraph anchor id
+        // `<p id="hu-p-...">` since Pass A of paragraph-level
+        // alignment (source ↔ preview snap). Match the prefix so
+        // both id-bearing and unid forms pass.
+        XCTAssertTrue(xhtml.contains("<p id=\"hu-p-") || xhtml.contains("<p>"),
+            "Body should be wrapped in paragraphs (with or without per-paragraph anchor id)")
         XCTAssertFalse(xhtml.contains("Page 1"),
                        "Phase 1.5 removes the per-page debug headings")
         let matches = lines.filter { xhtml.contains($0) }

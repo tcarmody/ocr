@@ -30,6 +30,9 @@ struct PreviewView: View {
     /// reports a new topmost-visible page anchor (back-sync from
     /// preview scroll → PDF page).
     let onAnchorVisible: ((String) -> Void)?
+    /// Same shape, but for paragraph anchors (`hu-p-*`). Drives
+    /// the paragraph-level source ↔ preview snap.
+    let onParagraphVisible: ((String) -> Void)?
 
     var body: some View {
         Group {
@@ -54,7 +57,8 @@ struct PreviewView: View {
                 scrollRequest: scrollRequest,
                 fontSize: fontSize,
                 theme: theme,
-                onAnchorVisible: onAnchorVisible
+                onAnchorVisible: onAnchorVisible,
+                onParagraphVisible: onParagraphVisible
             )
         } else if isImage(ext) {
             ImagePreview(url: file.id)
@@ -123,8 +127,12 @@ private final class WebPreviewModel: NSObject, ObservableObject,
     var pendingFontSize: Double?
     var pendingTheme: String?
     /// Forwarded back to EditorViewModel when JS reports a new
-    /// topmost-visible anchor.
+    /// topmost-visible page anchor (`hu-page-*`).
     var onAnchorVisible: ((String) -> Void)?
+    /// Forwarded when JS reports a new topmost-visible paragraph
+    /// anchor (`hu-p-*`). Drives the source ↔ preview snap at
+    /// paragraph granularity (Pass A of paragraph-level alignment).
+    var onParagraphVisible: ((String) -> Void)?
     /// Reference back to the WKWebView so didFinish can run JS.
     weak var webView: WKWebView?
 
@@ -197,10 +205,13 @@ private final class WebPreviewModel: NSObject, ObservableObject,
                                didReceive message: WKScriptMessage) {
         guard let dict = message.body as? [String: Any],
               let type = dict["type"] as? String,
-              type == "anchor",
               let id = dict["id"] as? String
         else { return }
-        onAnchorVisible?(id)
+        switch type {
+        case "anchor":    onAnchorVisible?(id)
+        case "paragraph": onParagraphVisible?(id)
+        default:          break
+        }
     }
 
     private func jsString(_ s: String) -> String {
@@ -222,6 +233,7 @@ private struct WebPreviewPane: View {
     let fontSize: Double
     let theme: String
     let onAnchorVisible: ((String) -> Void)?
+    let onParagraphVisible: ((String) -> Void)?
     @StateObject private var model = WebPreviewModel()
 
     var body: some View {
@@ -240,11 +252,15 @@ private struct WebPreviewPane: View {
             statusBadge
                 .padding(.top, 8)
         }
-        .onAppear { model.onAnchorVisible = onAnchorVisible }
+        .onAppear {
+            model.onAnchorVisible = onAnchorVisible
+            model.onParagraphVisible = onParagraphVisible
+        }
         .onChange(of: ObjectIdentifier(model)) { _, _ in
-            // Belt-and-suspenders: re-bind closure if model identity
+            // Belt-and-suspenders: re-bind closures if model identity
             // changes (shouldn't with @StateObject, but cheap).
             model.onAnchorVisible = onAnchorVisible
+            model.onParagraphVisible = onParagraphVisible
         }
     }
 
@@ -432,28 +448,64 @@ private struct WebPreview: NSViewRepresentable {
           || !window.webkit.messageHandlers.humanistPreview) return;
 
       function setup() {
-        var anchors = document.querySelectorAll('[id^="hu-page-"]');
-        if (!anchors.length) return;
+        // Track BOTH page anchors (`hu-page-*`) and paragraph
+        // anchors (`hu-p-*`). Page-level drives PDF / source
+        // alignment at page granularity (existing behavior);
+        // paragraph-level lands a finer-grained source ↔ preview
+        // snap. We report each independently — the Swift side
+        // dispatches by anchor type.
+        var pageAnchors = document.querySelectorAll('[id^="hu-page-"]');
+        var paraAnchors = document.querySelectorAll('[id^="hu-p-"]');
+        if (!pageAnchors.length && !paraAnchors.length) return;
 
-        var lastActive = null;
-        var io = new IntersectionObserver(function (entries) {
+        var lastPageActive = null;
+        var lastParaActive = null;
+
+        function topmostVisible(entries) {
           var visible = entries.filter(function (e) { return e.isIntersecting; });
-          if (!visible.length) return;
+          if (!visible.length) return null;
           visible.sort(function (a, b) {
             return a.boundingClientRect.top - b.boundingClientRect.top;
           });
-          var topId = visible[0].target.id;
-          if (topId !== lastActive) {
-            lastActive = topId;
-            try {
-              window.webkit.messageHandlers.humanistPreview.postMessage({
-                type: 'anchor', id: topId
-              });
-            } catch (e) {}
-          }
-        }, { rootMargin: '0px 0px -80% 0px', threshold: 0 });
+          return visible[0].target.id;
+        }
 
-        for (var i = 0; i < anchors.length; i++) io.observe(anchors[i]);
+        function post(typeKey, id) {
+          try {
+            window.webkit.messageHandlers.humanistPreview.postMessage({
+              type: typeKey, id: id
+            });
+          } catch (e) {}
+        }
+
+        if (pageAnchors.length) {
+          var pageIO = new IntersectionObserver(function (entries) {
+            var topId = topmostVisible(entries);
+            if (topId && topId !== lastPageActive) {
+              lastPageActive = topId;
+              // Existing 'anchor' message kind preserved for
+              // backward compatibility — Swift's existing handler
+              // expects this for page anchors.
+              post('anchor', topId);
+            }
+          }, { rootMargin: '0px 0px -80% 0px', threshold: 0 });
+          for (var i = 0; i < pageAnchors.length; i++) {
+            pageIO.observe(pageAnchors[i]);
+          }
+        }
+
+        if (paraAnchors.length) {
+          var paraIO = new IntersectionObserver(function (entries) {
+            var topId = topmostVisible(entries);
+            if (topId && topId !== lastParaActive) {
+              lastParaActive = topId;
+              post('paragraph', topId);
+            }
+          }, { rootMargin: '0px 0px -80% 0px', threshold: 0 });
+          for (var j = 0; j < paraAnchors.length; j++) {
+            paraIO.observe(paraAnchors[j]);
+          }
+        }
       }
 
       if (document.readyState === 'complete'
