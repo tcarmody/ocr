@@ -48,10 +48,10 @@ struct EditorView: View {
             case .failed(let message):
                 failureView(message)
             case .ready:
-                if let pkg = vm.package {
+                if let book = vm.book, let tree = vm.fileTree {
                     NavigationSplitView {
                         BookBrowser(
-                            root: pkg.fileTree,
+                            root: tree,
                             selection: Binding(
                                 get: { vm.selectedFile },
                                 set: { if let n = $0 { vm.select(n) } }
@@ -59,11 +59,11 @@ struct EditorView: View {
                         )
                         .frame(minWidth: 220)
                     } detail: {
-                        editorPanes(workingDir: pkg.workingDirectory)
+                        editorPanes(workingDir: book.workingDirectory)
                             .onAppear { reconcilePaneDefaults() }
                             .onChange(of: vm.sourcePDFURL) { _, _ in reconcilePaneDefaults() }
                     }
-                    .navigationTitle(pkg.displayTitle)
+                    .navigationTitle(book.displayTitle)
                     .navigationSubtitle(saveStatusSubtitle)
                     .toolbar { toolbarContent }
                     .background(WindowDirtyBridge(isDirty: vm.isDirty))

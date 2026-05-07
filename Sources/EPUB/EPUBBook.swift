@@ -130,6 +130,29 @@ public final class EPUBBook: @unchecked Sendable {
         ownsWorkingDirectory = false
     }
 
+    // MARK: - Open from .epub
+
+    /// Open `epubURL`, unpack into a temp directory, parse OPF + load
+    /// every text resource into memory. The returned book owns the
+    /// working directory's lifecycle (cleaned up on deinit unless
+    /// `disownWorkingDirectory()` is called).
+    ///
+    /// Mirrors `EPUBPackage.open(epubURL:)` so callers can swap the
+    /// disk-only model for the in-memory one without touching the
+    /// surrounding open + cleanup flow.
+    public static func open(epubURL: URL) throws -> EPUBBook {
+        let unpacker = EPUBUnpacker()
+        let rawWorkingDir = try unpacker.unpack(
+            epubURL: epubURL,
+            into: FileManager.default.temporaryDirectory
+        )
+        let workingDir = rawWorkingDir.canonicalForFile
+        return try EPUBBookLoader().load(
+            sourceURL: epubURL.canonicalForFile,
+            workingDirectory: workingDir
+        )
+    }
+
     // MARK: - Derived
 
     /// Combined dirty flag — true if anything has been mutated since
@@ -138,6 +161,17 @@ public final class EPUBBook: @unchecked Sendable {
         if structuralIsDirty || metadataIsDirty { return true }
         if !pendingDeletions.isEmpty { return true }
         return resourcesByID.values.contains(where: { $0.isDirty })
+    }
+
+    /// What to show in the window title bar. Falls back to the source
+    /// file's basename when no `<dc:title>` is set. Matches the
+    /// EPUBPackage.displayTitle semantics.
+    public var displayTitle: String {
+        if let raw = metadata.title {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return sourceURL.deletingPathExtension().lastPathComponent
     }
 
     /// Absolute URL of the OPF file on disk.

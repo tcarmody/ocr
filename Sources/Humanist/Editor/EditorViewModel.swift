@@ -37,19 +37,21 @@ final class EditorViewModel: ObservableObject {
 
     @Published private(set) var state: LoadState = .loading
     @Published private(set) var saveState: SaveState = .idle
-    @Published private(set) var package: EPUBPackage?
-    /// In-memory representation of the EPUB used by chapter-level
-    /// operations (Split / Merge / Regenerate-TOC). Lives alongside
-    /// `package` for now — `package` still drives the file tree
-    /// sidebar and OPF queries elsewhere in the editor. Both share
-    /// the same working directory; `package` owns the lifecycle (the
-    /// book is `disownWorkingDirectory()`-ed after load).
-    ///
-    /// Sigil-style: edits run against `book` in memory, then a single
-    /// `EPUBBookSaver.save(_:)` call flushes everything atomically.
-    /// A failed mid-operation throw can no longer leave the on-disk
-    /// EPUB inconsistent — disk only changes when the saver runs.
-    private var book: EPUBBook?
+    /// In-memory representation of the open EPUB. Single source of
+    /// truth for OPF metadata, manifest, spine, and per-resource
+    /// (chapter / nav / CSS) text content. Edits run against the book
+    /// in memory; `EPUBBookSaver.save(_:)` flushes them atomically.
+    /// The book also owns the unpacked working directory's lifecycle
+    /// (cleaned up on deinit unless ownership is handed off via
+    /// `disownWorkingDirectory()`).
+    @Published private(set) var book: EPUBBook?
+    /// File-tree rooted at the book's working directory. Drives the
+    /// sidebar. Rebuilt on open and after every chapter operation
+    /// that adds / removes / renames files; the book itself doesn't
+    /// hold the tree because the tree includes content outside the
+    /// EPUB manifest (META-INF, sidecar files, mimetype) that the
+    /// book model doesn't represent.
+    @Published private(set) var fileTree: FileNode?
     @Published private(set) var selectedFile: FileNode?
     /// True when at least one buffer differs from disk OR has been
     /// modified since the last successful repack.
@@ -369,27 +371,23 @@ final class EditorViewModel: ObservableObject {
     func load(epubURL: URL) async {
         self.state = .loading
         do {
-            let pkg = try await Task.detached(priority: .userInitiated) {
-                try EPUBPackage.open(epubURL: epubURL)
+            let book = try await Task.detached(priority: .userInitiated) {
+                try EPUBBook.open(epubURL: epubURL)
             }.value
-            self.package = pkg
-            // Load the in-memory book alongside the package. They share
-            // the same working directory, so we hand ownership to the
-            // package (the book bows out via disownWorkingDirectory()).
-            self.book = try Self.loadBook(
-                sourceURL: epubURL,
-                workingDirectory: pkg.workingDirectory
-            )
+            self.book = book
+            self.fileTree = FileNode.walk(book.workingDirectory)
             self.state = .ready
-            self.selectedFile = Self.preferredInitialSelection(in: pkg)
+            self.selectedFile = Self.preferredInitialSelection(
+                in: book, fileTree: self.fileTree
+            )
             self.loadSourceForSelectedFile()
-            self.attachInitialSourcePDF(epubURL: epubURL, package: pkg)
-            self.pageMap = PageMap.read(workingDirectory: pkg.workingDirectory)
+            self.attachInitialSourcePDF(epubURL: epubURL, book: book)
+            self.pageMap = PageMap.read(workingDirectory: book.workingDirectory)
             self.paragraphMap = ParagraphMap.read(
-                workingDirectory: pkg.workingDirectory
+                workingDirectory: book.workingDirectory
             )
             self.correctionTrail = CorrectionTrail.read(
-                workingDirectory: pkg.workingDirectory
+                workingDirectory: book.workingDirectory
             )
             // R-Custom-Styles: pick up the user's previously applied
             // styling (if any) from the book.css sentinel.
@@ -397,18 +395,6 @@ final class EditorViewModel: ObservableObject {
         } catch {
             self.state = .failed(error.localizedDescription)
         }
-    }
-
-    private static func loadBook(
-        sourceURL: URL, workingDirectory: URL
-    ) throws -> EPUBBook {
-        let book = try EPUBBookLoader().load(
-            sourceURL: sourceURL, workingDirectory: workingDirectory
-        )
-        // The package owns the working directory. The book is a
-        // co-resident view; its deinit must NOT clean up.
-        book.disownWorkingDirectory()
-        return book
     }
 
     // MARK: - linked navigation (Phase 7.D, simplified to one-way)
@@ -525,9 +511,9 @@ final class EditorViewModel: ObservableObject {
     /// sidebar so the user lands in the right place across all
     /// three panes.
     func alignAllToCurrentFile() {
-        guard let pkg = package, let file = selectedFile else { return }
+        guard let book = book, let file = selectedFile else { return }
         guard let map = pageMap else { return }
-        let prefix = pkg.workingDirectory.canonicalForFile.path
+        let prefix = book.workingDirectory.canonicalForFile.path
         let fileRel = file.id.canonicalForFile.path
             .replacingOccurrences(of: prefix + "/", with: "")
         guard let entry = map.entries.first(where: { $0.xhtmlFile == fileRel })
@@ -541,18 +527,18 @@ final class EditorViewModel: ObservableObject {
     /// `.none` updates all three (used for file-switch initial
     /// alignment).
     private func alignOthers(to anchorId: String, drivingPane: AlignmentDriver) {
-        guard let map = pageMap, let pkg = package else { return }
+        guard let map = pageMap, let book = book, let tree = fileTree else { return }
         guard let entry = map.entries.first(where: { $0.anchorId == anchorId })
         else { return }
         // File switch when the anchor lives in a different chapter
         // than the current selection. Always allowed — switching
         // file isn't really "driving the source pane", it's
         // selecting which file the source pane shows.
-        let fileURL = pkg.workingDirectory
+        let fileURL = book.workingDirectory
             .appendingPathComponent(entry.xhtmlFile)
             .canonicalForFile
         if selectedFile?.id.canonicalForFile != fileURL,
-           let node = Self.findLeaf(in: pkg.fileTree, matching: fileURL) {
+           let node = Self.findLeaf(in: tree, matching: fileURL) {
             select(node)
         }
         scrollNonce &+= 1
@@ -713,7 +699,7 @@ final class EditorViewModel: ObservableObject {
 
         let langs = selectedBCP47Languages()
         let pipeline = PDFToEPUBPipeline()
-        let docLanguage = package?.package.metadata.language
+        let docLanguage = book?.metadata.language
             .flatMap { BCP47(rawValue: $0) } ?? langs.first ?? .en
 
         do {
@@ -782,10 +768,10 @@ final class EditorViewModel: ObservableObject {
     /// currently selected file. Used as a fallback when the source
     /// cursor hasn't fired a cursor-anchor message yet.
     private func firstAnchorIdInSelectedFile() -> String? {
-        guard let pkg = package, let map = pageMap, let file = selectedFile else {
+        guard let book = book, let map = pageMap, let file = selectedFile else {
             return nil
         }
-        let prefix = pkg.workingDirectory.canonicalForFile.path
+        let prefix = book.workingDirectory.canonicalForFile.path
         let fileRel = file.id.canonicalForFile.path
             .replacingOccurrences(of: prefix + "/", with: "")
         return map.entries.first(where: { $0.xhtmlFile == fileRel })?.anchorId
@@ -804,7 +790,7 @@ final class EditorViewModel: ObservableObject {
     /// engine. Vision and Surya read these as recognition hints;
     /// Tesseract uses them to load tessdata.
     private func selectedBCP47Languages() -> [BCP47] {
-        if let raw = package?.package.metadata.language,
+        if let raw = book?.metadata.language,
            let bcp = BCP47(rawValue: raw) {
             return [bcp]
         }
@@ -1005,8 +991,8 @@ final class EditorViewModel: ObservableObject {
     /// surfaces a "stylesheet missing" error in that case.
     @discardableResult
     func applyBookStyle(_ style: BookStyle) -> Bool {
-        guard let pkg = package else { return false }
-        let cssURL = pkg.workingDirectory
+        guard let book = book else { return false }
+        let cssURL = book.workingDirectory
             .appendingPathComponent("OEBPS/css/book.css")
             .canonicalForFile
         let existing: String?
@@ -1032,8 +1018,8 @@ final class EditorViewModel: ObservableObject {
     /// correction trail). Defaults to `.default` when the CSS has
     /// no sentinel — the user just hasn't customized this book yet.
     func loadBookStyle() {
-        guard let pkg = package else { return }
-        let cssURL = pkg.workingDirectory
+        guard let book = book else { return }
+        let cssURL = book.workingDirectory
             .appendingPathComponent("OEBPS/css/book.css")
             .canonicalForFile
         guard let css = try? String(contentsOf: cssURL) else {
@@ -1063,7 +1049,7 @@ final class EditorViewModel: ObservableObject {
     /// on-disk file. Mutates `validationReport` / `validationError`
     /// as a side effect; the sheet observes those.
     func validateEPUB() async {
-        guard let pkg = package else { return }
+        guard let book = book else { return }
         // Save first if dirty — validation always runs against the
         // on-disk file so the user sees what readers will see.
         if isDirty {
@@ -1075,7 +1061,7 @@ final class EditorViewModel: ObservableObject {
                 return
             }
         }
-        let epubURL = pkg.sourceURL
+        let epubURL = book.sourceURL
         isValidating = true
         validationError = nil
         validationReport = nil
@@ -1102,12 +1088,13 @@ final class EditorViewModel: ObservableObject {
     /// (e.g. `OEBPS/chapter-001.xhtml`); resolve against the working
     /// dir and find the matching FileNode.
     func openValidationMessage(_ message: EPUBValidator.Message) {
-        guard let pkg = package, let path = message.path, !path.isEmpty
+        guard let book = book, let tree = fileTree,
+              let path = message.path, !path.isEmpty
         else { return }
-        let absolute = pkg.workingDirectory
+        let absolute = book.workingDirectory
             .appendingPathComponent(path)
             .canonicalForFile
-        if let node = Self.findNode(in: pkg.fileTree, url: absolute) {
+        if let node = Self.findNode(in: tree, url: absolute) {
             select(node)
             if let line = message.line {
                 DispatchQueue.main.async { [weak self] in
@@ -1139,12 +1126,12 @@ final class EditorViewModel: ObservableObject {
     /// the working directory. Reads dirty buffers when present so
     /// in-flight edits are part of the search.
     func runFindInFiles() {
-        guard let pkg = package else {
+        guard let book = book else {
             findInFilesResults = []
             return
         }
         flushSourceTextToBuffer()
-        let urls = PackageSearch.textFileURLs(in: pkg.workingDirectory)
+        let urls = PackageSearch.textFileURLs(in: book.workingDirectory)
         let buffersCopy = buffers
         let provider: (URL) -> String? = { url in
             if let buf = buffersCopy[url] { return buf }
@@ -1172,9 +1159,9 @@ final class EditorViewModel: ObservableObject {
     /// results list reflects the new state (typically empty when
     /// query and replacement don't overlap).
     func replaceAllInFiles() {
-        guard let pkg = package else { return }
+        guard let book = book else { return }
         flushSourceTextToBuffer()
-        let urls = PackageSearch.textFileURLs(in: pkg.workingDirectory)
+        let urls = PackageSearch.textFileURLs(in: book.workingDirectory)
         let buffersCopy = buffers
         let provider: (URL) -> String? = { url in
             if let buf = buffersCopy[url] { return buf }
@@ -1220,8 +1207,8 @@ final class EditorViewModel: ObservableObject {
     /// the user typically clicks several results in a row.
     func openFindHit(_ hit: PackageSearch.Hit) {
         // Find the FileNode in the tree matching the hit's URL.
-        guard let pkg = package else { return }
-        if let node = Self.findNode(in: pkg.fileTree, url: hit.fileURL) {
+        guard let tree = fileTree else { return }
+        if let node = Self.findNode(in: tree, url: hit.fileURL) {
             select(node)
         }
         // Defer the goto-line dispatch by one runloop so the file
@@ -1295,15 +1282,15 @@ final class EditorViewModel: ObservableObject {
     /// pagemap got out of sync, shouldn't happen in practice).
     @discardableResult
     func revealInSource(entry: CorrectionTrail.Entry) -> Bool {
-        guard let pkg = package, let map = pageMap else { return false }
+        guard let book = book, let tree = fileTree, let map = pageMap else { return false }
         guard let mapEntry = map.entries.first(
             where: { $0.anchorId == entry.anchorId }
         ) else { return false }
-        let fileURL = pkg.workingDirectory
+        let fileURL = book.workingDirectory
             .appendingPathComponent(mapEntry.xhtmlFile)
             .canonicalForFile
         if selectedFile?.id.canonicalForFile != fileURL,
-           let node = Self.findLeaf(in: pkg.fileTree, matching: fileURL) {
+           let node = Self.findLeaf(in: tree, matching: fileURL) {
             select(node)
         }
         scrollNonce &+= 1
@@ -1412,10 +1399,10 @@ final class EditorViewModel: ObservableObject {
     /// repacks; doesn't switch the editor's `sourceURL`, so further
     /// Save calls still target the original.
     func saveAs(to outputURL: URL) async {
-        guard let pkg = package else { return }
+        guard let book = book else { return }
         flushSourceTextToBuffer()
         let buffersCopy = buffers
-        let workingDir = pkg.workingDirectory
+        let workingDir = book.workingDirectory
         saveState = .saving
         do {
             try await Task.detached(priority: .userInitiated) {
@@ -1451,8 +1438,8 @@ final class EditorViewModel: ObservableObject {
     ///   3. Nothing — user can attach later.
     /// Auto-detect from a sibling does NOT mark the package dirty;
     /// only an explicit attach writes to the sidecar.
-    private func attachInitialSourcePDF(epubURL: URL, package: EPUBPackage) {
-        sidecar = HumanistSidecar.read(workingDirectory: package.workingDirectory)
+    private func attachInitialSourcePDF(epubURL: URL, book: EPUBBook) {
+        sidecar = HumanistSidecar.read(workingDirectory: book.workingDirectory)
         if let resolved = sidecar.resolveSourcePDF(epubURL: epubURL) {
             setSourcePDF(resolved)
             return
@@ -1477,14 +1464,14 @@ final class EditorViewModel: ObservableObject {
     /// Explicit user attach (toolbar action). Persists into the
     /// sidecar and marks the package dirty so Save flushes it.
     func attachSourcePDF(_ url: URL) {
-        guard let pkg = package else { return }
+        guard let book = book else { return }
         RecentsStore.add(url)
         setSourcePDF(url)
         // Prefer a relative path when the PDF lives next to the EPUB.
         // Compare canonically — `/var/...` vs `/private/var/...` and
         // similar symlink quirks would otherwise misclassify an
         // adjacent file as remote and store an absolute path.
-        let epubDir = pkg.sourceURL.deletingLastPathComponent().canonicalForFile
+        let epubDir = book.sourceURL.deletingLastPathComponent().canonicalForFile
         let stored: String
         if url.deletingLastPathComponent().canonicalForFile == epubDir {
             stored = url.lastPathComponent
@@ -1492,15 +1479,15 @@ final class EditorViewModel: ObservableObject {
             stored = url.path
         }
         sidecar.sourcePDFPath = stored
-        try? sidecar.write(workingDirectory: pkg.workingDirectory)
+        try? sidecar.write(workingDirectory: book.workingDirectory)
         isDirty = true
     }
 
     func detachSourcePDF() {
-        guard let pkg = package else { return }
+        guard let book = book else { return }
         setSourcePDF(nil)
         sidecar.sourcePDFPath = nil
-        try? sidecar.write(workingDirectory: pkg.workingDirectory)
+        try? sidecar.write(workingDirectory: book.workingDirectory)
         isDirty = true
     }
 
@@ -1540,7 +1527,7 @@ final class EditorViewModel: ObservableObject {
             // here leaves the working tree exactly as it was.
             try EPUBBookSaver().save(book)
 
-            try reloadPackageFromDisk()
+            refreshFileTree()
             // The chapters we just flushed match disk now; clear
             // the editor's per-buffer dirty flags so save() doesn't
             // re-write them.
@@ -1574,7 +1561,7 @@ final class EditorViewModel: ObservableObject {
             try editor.mergeWithNextChapter(at: resource.id)
             try EPUBBookSaver().save(book)
 
-            try reloadPackageFromDisk()
+            refreshFileTree()
             // The merged file is now identical to disk; the deleted
             // next chapter's URL no longer corresponds to a resource.
             // Walk buffers and drop any URLs the book doesn't recognize.
@@ -1652,7 +1639,7 @@ final class EditorViewModel: ObservableObject {
             flushDirtyBuffersToBook()
             try BookPackageEditor(book: book).regenerateNav()
             try EPUBBookSaver().save(book)
-            try reloadPackageFromDisk()
+            refreshFileTree()
             // If the user was viewing nav.xhtml, it just got
             // overwritten — reload from disk so they see the result.
             reloadSelectedFileFromDisk()
@@ -1680,29 +1667,14 @@ final class EditorViewModel: ObservableObject {
         return book.spine.contains(resource.id)
     }
 
-    /// Re-read the OPF + file tree after a chapter operation has
-    /// changed disk state. Reuses the existing working directory and
-    /// source URL.
-    private func reloadPackageFromDisk() throws {
-        guard let oldPkg = package else { return }
-        let opf = try OPFReader().read(rootDir: oldPkg.workingDirectory)
-        let tree = FileNode.walk(oldPkg.workingDirectory)
-        // The new package shares the same working directory as the
-        // old one — disown on the old instance so its deinit
-        // doesn't delete the directory out from under the new one.
-        // Without this, every chapter file's URL becomes a "no
-        // such file" reference moments after the next autorelease
-        // pool drain, and Save (which repacks from the working
-        // directory) reverts to whatever the .epub had before the
-        // edit.
-        oldPkg.disownWorkingDirectory()
-        package = EPUBPackage(
-            id: oldPkg.id,
-            sourceURL: oldPkg.sourceURL,
-            workingDirectory: oldPkg.workingDirectory,
-            package: opf,
-            fileTree: tree
-        )
+    /// Rebuild the file-tree sidebar after a chapter operation that
+    /// changed which files exist on disk (Split / Merge add or remove
+    /// chapter files; Regenerate-TOC rewrites nav.xhtml). The book
+    /// itself is already up to date in memory — only the tree view
+    /// needs to be refreshed.
+    private func refreshFileTree() {
+        guard let book = book else { return }
+        fileTree = FileNode.walk(book.workingDirectory)
     }
 
     /// Re-read the in-memory book from disk. Called after the editor's
@@ -1712,12 +1684,17 @@ final class EditorViewModel: ObservableObject {
     /// it would silently overwrite the user's last typed-and-saved
     /// edits with the older snapshot.
     private func reloadBookFromDisk() throws {
-        guard let pkg = package else { return }
-        let fresh = try Self.loadBook(
-            sourceURL: pkg.sourceURL,
-            workingDirectory: pkg.workingDirectory
+        guard let oldBook = book else { return }
+        let fresh = try EPUBBookLoader().load(
+            sourceURL: oldBook.sourceURL,
+            workingDirectory: oldBook.workingDirectory
         )
+        // The fresh book is taking over ownership of the same working
+        // directory. Disown the old instance first so its deinit
+        // doesn't delete the directory out from under the new one.
+        oldBook.disownWorkingDirectory()
         self.book = fresh
+        self.fileTree = FileNode.walk(fresh.workingDirectory)
     }
 
     /// Sync every dirty source-pane buffer into the corresponding
@@ -1817,8 +1794,8 @@ final class EditorViewModel: ObservableObject {
     }
 
     func revealInFinder() {
-        guard let pkg = package else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([pkg.sourceURL])
+        guard let book = book else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([book.sourceURL])
     }
 
     // MARK: - source buffers
@@ -1879,7 +1856,7 @@ final class EditorViewModel: ObservableObject {
     /// Atomic at the .epub level: a successful return means readers
     /// will see the new contents on next open.
     func save() async {
-        guard let pkg = package else { return }
+        guard let book = book else { return }
         // Pull the current TextEditor's contents into the buffer so a
         // file the user is actively editing isn't missed.
         flushSourceTextToBuffer()
@@ -1892,8 +1869,8 @@ final class EditorViewModel: ObservableObject {
         saveState = .saving
         let buffersCopy = buffers
         let dirtyCopy = dirtyURLs
-        let workingDir = pkg.workingDirectory
-        let outURL = pkg.sourceURL
+        let workingDir = book.workingDirectory
+        let outURL = book.sourceURL
 
         do {
             try await Task.detached(priority: .userInitiated) {
@@ -1984,27 +1961,27 @@ final class EditorViewModel: ObservableObject {
 
     // MARK: - initial selection heuristic
 
-    private static func preferredInitialSelection(in pkg: EPUBPackage) -> FileNode? {
-        let opfDir = pkg.workingDirectory
-            .appendingPathComponent(pkg.package.opfPathRelativeToRoot)
-            .deletingLastPathComponent()
-        if let firstSpineId = pkg.package.spine.first,
-           let item = pkg.package.manifestById[firstSpineId] {
-            let target = opfDir.appendingPathComponent(item.href).canonicalForFile
-            if let node = findLeaf(in: pkg.fileTree, matching: target) {
+    private static func preferredInitialSelection(
+        in book: EPUBBook, fileTree: FileNode?
+    ) -> FileNode? {
+        guard let tree = fileTree else { return nil }
+        if let firstSpineId = book.spine.first,
+           let resource = book.resourcesByID[firstSpineId] {
+            let target = book.absoluteURL(for: resource).canonicalForFile
+            if let node = findLeaf(in: tree, matching: target) {
                 return node
             }
         }
-        return firstLeaf(in: pkg.fileTree, where: { node in
+        return firstLeaf(in: tree, where: { node in
             let ext = node.id.pathExtension.lowercased()
             return ext == "xhtml" || ext == "html"
-        }) ?? firstLeaf(in: pkg.fileTree, where: { _ in true })
+        }) ?? firstLeaf(in: tree, where: { _ in true })
     }
 
     private static func findLeaf(in node: FileNode, matching url: URL) -> FileNode? {
         // Both sides canonicalized so /var ↔ /private/var doesn't
         // sink the comparison. (FileNode.walk already yields canonical
-        // URLs because EPUBPackage canonicalizes its working dir, but
+        // URLs because the book canonicalizes its working dir, but
         // belt-and-suspenders here costs nothing.)
         if !node.isDirectory && node.id.canonicalForFile == url { return node }
         guard let children = node.children else { return nil }

@@ -93,13 +93,13 @@ final class EditorCommandRouter: ObservableObject {
     /// Show the Save As panel and route the picked URL to the active
     /// editor. Mirrors the inline NSSavePanel logic from before.
     func saveAs() {
-        guard let vm = activeEditor(), let pkg = vm.package else { return }
+        guard let vm = activeEditor(), let book = vm.book else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.epub]
-        panel.nameFieldStringValue = pkg.sourceURL
+        panel.nameFieldStringValue = book.sourceURL
             .deletingPathExtension()
             .lastPathComponent + " copy.epub"
-        panel.directoryURL = pkg.sourceURL.deletingLastPathComponent()
+        panel.directoryURL = book.sourceURL.deletingLastPathComponent()
         if panel.runModal() == .OK, let url = panel.url {
             Task { await vm.saveAs(to: url) }
         }
@@ -217,7 +217,7 @@ final class EditorCommandRouter: ObservableObject {
         if live.count == 1 { return live.first }
         // Multiple editors → resolve via key window's title match.
         if let keyTitle = NSApp.keyWindow?.title {
-            if let match = live.first(where: { $0.package?.displayTitle == keyTitle }) {
+            if let match = live.first(where: { $0.book?.displayTitle == keyTitle }) {
                 return match
             }
         }
@@ -232,7 +232,7 @@ final class EditorCommandRouter: ObservableObject {
             return
         }
         let newSave = vm.isDirty && vm.saveState != .saving
-        let newSaveAs = vm.package != nil && vm.saveState != .saving
+        let newSaveAs = vm.book != nil && vm.saveState != .saving
         if canSave != newSave { canSave = newSave }
         if canSaveAs != newSaveAs { canSaveAs = newSaveAs }
     }
