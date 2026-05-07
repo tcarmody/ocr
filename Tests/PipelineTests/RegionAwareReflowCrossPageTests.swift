@@ -172,6 +172,114 @@ final class RegionAwareReflowCrossPageTests: XCTestCase {
             "unique top text in 3-page doc should emit as a heading")
     }
 
+    // MARK: - bottom-zone (R-Footers)
+
+    /// Three pages, same normalized running-footer text appears in
+    /// the bottom zone of every page → all should be reclassified
+    /// as `.pageFooter`. Symmetric to the top-zone running-head case.
+    func test_recurring_bottom_text_across_pages_becomes_pageFooter() {
+        let pages = (0..<3).map { pageIdx in
+            makeBottomEdgePage(
+                pageIndex: pageIdx,
+                bottomText: "Stoicheia I.iii \(pageIdx + 12)"
+            )
+        }
+        let result = RegionAwareReflow.classifyEdgeRegionsByRecurrence(
+            pageResults: pages, zone: .bottom
+        )
+        XCTAssertEqual(result.overridesByPage.count, 3)
+        for pageIdx in 0..<3 {
+            XCTAssertEqual(result.overridesByPage[pageIdx]?[0], .pageFooter,
+                "page \(pageIdx) bottom region should become pageFooter")
+        }
+    }
+
+    /// A short unique string at the bottom of one page in a 3-page
+    /// document is NOT promoted to a heading — bottom-zone unique
+    /// candidates stay as `.text` (the recurring case is the only
+    /// one we act on for footers; unique short bottom text is far
+    /// more likely a footnote stub or decorative marker than a
+    /// section break).
+    func test_unique_bottom_text_is_not_promoted_to_heading() {
+        let withFooter = makeBottomEdgePage(
+            pageIndex: 0, bottomText: "End of Part One"
+        )
+        let plain1 = makeBodyOnlyPage(pageIndex: 1)
+        let plain2 = makeBodyOnlyPage(pageIndex: 2)
+        let result = RegionAwareReflow.classifyEdgeRegionsByRecurrence(
+            pageResults: [withFooter, plain1, plain2], zone: .bottom
+        )
+        XCTAssertTrue(result.overridesByPage.isEmpty,
+            "unique bottom-zone text must not get demoted or promoted")
+    }
+
+    /// Top-zone text must NOT be picked up by the bottom-zone scan,
+    /// even when it's recurring — each pass operates on its own
+    /// y-band only.
+    func test_bottom_zone_scan_ignores_top_zone_text() {
+        let pages = (0..<3).map { pageIdx in
+            makePage(
+                pageIndex: pageIdx,
+                topText: "Chapter 3 — Foo \(pageIdx + 47)"
+            )
+        }
+        let result = RegionAwareReflow.classifyEdgeRegionsByRecurrence(
+            pageResults: pages, zone: .bottom
+        )
+        XCTAssertTrue(result.overridesByPage.isEmpty,
+            "bottom-zone pass must ignore top-zone text")
+    }
+
+    /// End-to-end via `reflow`: a recurring bottom-zone running
+    /// footer across a 3-page document should be dropped from the
+    /// emitted block stream — same way running heads are.
+    func test_reflow_drops_recurring_bottom_footer_from_blocks() {
+        let pages = (0..<3).map { pageIdx in
+            makeBottomEdgePage(
+                pageIndex: pageIdx,
+                bottomText: "Stoicheia I.iii \(pageIdx + 12)"
+            )
+        }
+        let result = RegionAwareReflow.reflow(pageResults: pages)
+
+        var sawFooterText = false
+        for block in result.blocks {
+            switch block {
+            case .paragraph(let runs), .heading(_, let runs):
+                if runs.first?.text.contains("Stoicheia I.iii") == true {
+                    sawFooterText = true
+                }
+            default:
+                break
+            }
+        }
+        XCTAssertFalse(sawFooterText,
+            "recurring bottom-zone footer text should not appear in the emitted block stream")
+    }
+
+    /// The merged `CrossPageOverrides` carries decisions from both
+    /// zones — one page with both a recurring top header and a
+    /// recurring bottom footer should produce two trail entries.
+    func test_top_and_bottom_decisions_both_logged() {
+        let pages = (0..<3).map { pageIdx in
+            makeTopAndBottomEdgePage(
+                pageIndex: pageIdx,
+                topText: "Chapter 3 — Foo \(pageIdx + 47)",
+                bottomText: "Stoicheia I.iii \(pageIdx + 12)"
+            )
+        }
+        _ = RegionAwareReflow.reflow(pageResults: pages)
+        // Each page should have two cross-page decisions: one for
+        // the top region, one for the bottom region.
+        for pageIdx in 0..<3 {
+            let decisions = RegionAwareReflow.lastCrossPageDecisionsPerPage[pageIdx] ?? []
+            XCTAssertEqual(decisions.count, 2,
+                "page \(pageIdx) should have a top + bottom cross-page decision")
+            XCTAssertTrue(decisions.contains { $0.newKind == "pageHeader" })
+            XCTAssertTrue(decisions.contains { $0.newKind == "pageFooter" })
+        }
+    }
+
     // MARK: - fixture helpers
 
     /// Build a page with a single top-zone short text region whose
@@ -203,6 +311,82 @@ final class RegionAwareReflowCrossPageTests: XCTestCase {
             pageBounds: .init(width: 600, height: 800),
             observations: [topObs, bodyObs],
             layoutRegions: [topRegion, body]
+        )
+    }
+
+    /// Build a page with a single bottom-zone short text region whose
+    /// observation carries `bottomText`, plus a generic body
+    /// paragraph above. Symmetric to `makePage`.
+    private func makeBottomEdgePage(pageIndex: Int, bottomText: String) -> PageObservations {
+        let bottomRegion = LayoutRegion(
+            kind: .text,
+            box: CGRect(x: 0.10, y: 0.05, width: 0.80, height: 0.03),
+            readingOrder: 0, confidence: 1.0
+        )
+        let body = LayoutRegion(
+            kind: .text,
+            box: CGRect(x: 0.10, y: 0.20, width: 0.80, height: 0.70),
+            readingOrder: 1, confidence: 1.0
+        )
+        let bottomObs = TextObservation(
+            text: bottomText, confidence: 1.0,
+            box: CGRect(x: 0.10, y: 0.06, width: 0.80, height: 0.02),
+            source: .vision
+        )
+        let bodyObs = TextObservation(
+            text: "Body content for page \(pageIndex).", confidence: 1.0,
+            box: CGRect(x: 0.10, y: 0.50, width: 0.80, height: 0.02),
+            source: .vision
+        )
+        return PageObservations(
+            pageIndex: pageIndex,
+            pageBounds: .init(width: 600, height: 800),
+            observations: [bottomObs, bodyObs],
+            layoutRegions: [bottomRegion, body]
+        )
+    }
+
+    /// Page with both a top-zone and a bottom-zone short text region
+    /// plus a body region between them. Used to test the merged
+    /// top + bottom override / decision flow.
+    private func makeTopAndBottomEdgePage(
+        pageIndex: Int, topText: String, bottomText: String
+    ) -> PageObservations {
+        let topRegion = LayoutRegion(
+            kind: .text,
+            box: CGRect(x: 0.10, y: 0.92, width: 0.80, height: 0.03),
+            readingOrder: 0, confidence: 1.0
+        )
+        let body = LayoutRegion(
+            kind: .text,
+            box: CGRect(x: 0.10, y: 0.20, width: 0.80, height: 0.65),
+            readingOrder: 1, confidence: 1.0
+        )
+        let bottomRegion = LayoutRegion(
+            kind: .text,
+            box: CGRect(x: 0.10, y: 0.05, width: 0.80, height: 0.03),
+            readingOrder: 2, confidence: 1.0
+        )
+        let topObs = TextObservation(
+            text: topText, confidence: 1.0,
+            box: CGRect(x: 0.10, y: 0.93, width: 0.80, height: 0.02),
+            source: .vision
+        )
+        let bodyObs = TextObservation(
+            text: "Body content for page \(pageIndex).", confidence: 1.0,
+            box: CGRect(x: 0.10, y: 0.50, width: 0.80, height: 0.02),
+            source: .vision
+        )
+        let bottomObs = TextObservation(
+            text: bottomText, confidence: 1.0,
+            box: CGRect(x: 0.10, y: 0.06, width: 0.80, height: 0.02),
+            source: .vision
+        )
+        return PageObservations(
+            pageIndex: pageIndex,
+            pageBounds: .init(width: 600, height: 800),
+            observations: [topObs, bodyObs, bottomObs],
+            layoutRegions: [topRegion, body, bottomRegion]
         )
     }
 

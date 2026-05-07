@@ -197,13 +197,22 @@ enum RegionAwareReflow {
             }
         }
 
-        // Document-level pass: classify top-of-page short `.text`
-        // regions as either `.pageHeader` (recurring across many
-        // pages — running heads) or `.sectionHeader` (unique to one
-        // page — chapter titles Surya missed). Returns a per-page
-        // override map applied below before the per-page passes run.
-        let crossPageOverrides = classifyTopRegionsByRecurrence(
-            pageResults: pageResults
+        // Document-level pass: classify edge-of-page short `.text`
+        // regions using cross-page recurrence. Top zone:
+        // recurring → `.pageHeader` (running head, drop from body);
+        // unique → `.sectionHeader` (chapter title Surya missed).
+        // Bottom zone (symmetric, recurring-only): recurring →
+        // `.pageFooter`; unique stays untouched (a unique short
+        // bottom-of-page string is more likely a footnote stub or
+        // decorative line than a heading).
+        let topOverrides = classifyEdgeRegionsByRecurrence(
+            pageResults: pageResults, zone: .top
+        )
+        let bottomOverrides = classifyEdgeRegionsByRecurrence(
+            pageResults: pageResults, zone: .bottom
+        )
+        let crossPageOverrides = mergeCrossPageOverrides(
+            topOverrides, bottomOverrides
         )
         for (pageIdx, decisions) in crossPageOverrides.decisionsByPage {
             lastCrossPageDecisionsPerPage[pageIdx] = decisions
@@ -1166,30 +1175,48 @@ enum RegionAwareReflow {
 
     // MARK: - cross-page recurrence classification
 
+    /// Edge zone the cross-page recurrence pass operates on. Top-zone
+    /// runs first (existing behavior — recurring → `.pageHeader`,
+    /// unique → `.sectionHeader`); bottom-zone is symmetric on the
+    /// recurring side (recurring → `.pageFooter`) but does NOT promote
+    /// unique bottom-zone text to a heading — short unique strings at
+    /// the bottom of a page are typically page-furniture stubs, not
+    /// section breaks.
+    enum CrossPageZone: Sendable, Equatable {
+        case top
+        case bottom
+    }
+
     /// A `.text` region's vertical center must be at least this high
-    /// to be considered as a section-header / running-head candidate.
-    /// Top 15% — slightly looser than the H/F gate's 10% so we catch
-    /// section headers that sit a touch lower on the page (with a
-    /// small visual gap above).
+    /// to be considered a top-zone candidate. Top 15% — slightly
+    /// looser than the H/F gate's 10% so we catch section headers
+    /// that sit a touch lower on the page (with a small visual gap
+    /// above).
     private static let crossPageTopZoneMinY: CGFloat = 0.85
+    /// Symmetric bottom-zone gate: `midY <= 0.15`. Catches recurring
+    /// running footers like "Stoicheia I.iii" or chapter-bottom
+    /// labels Surya labeled as `.text`.
+    private static let crossPageBottomZoneMaxY: CGFloat = 0.15
     /// Region must be at most this tall to be a candidate. Real
-    /// running heads + chapter section titles fit in a couple of
-    /// lines; body paragraphs that graze the top zone exceed this.
+    /// running heads / footers + chapter section titles fit in a
+    /// couple of lines; body paragraphs that graze either edge zone
+    /// exceed this.
     private static let crossPageMaxRegionHeight: CGFloat = 0.06
-    /// Combined text length cap. Section headers and running heads
-    /// are short; body content is long.
+    /// Combined text length cap. Section headers and running
+    /// heads / footers are short; body content is long.
     private static let crossPageMaxChars: Int = 100
     /// Cluster size (distinct pages with matching normalized text)
-    /// at which we consider a candidate a running head and demote
-    /// it to `.pageHeader`. Anything below threshold is treated as
-    /// section-header content.
+    /// at which we consider a candidate a running head/footer and
+    /// demote it. Anything below threshold in the top zone is treated
+    /// as section-header content; below threshold in the bottom zone
+    /// is left alone.
     private static let crossPageRunningHeadMinPages: Int = 3
     /// Document must have at least this many pages with regions for
     /// the cross-page pass to do anything. Below this we don't have
     /// enough signal to distinguish recurring from unique.
     private static let crossPageMinDocumentPages: Int = 3
 
-    /// Output of `classifyTopRegionsByRecurrence` — keyed by page,
+    /// Output of `classifyEdgeRegionsByRecurrence` — keyed by page,
     /// `overridesByPage[pageIdx]` maps regionIndex → newKind.
     /// `decisionsByPage` carries the audit trail for the debug log.
     struct CrossPageOverrides {
@@ -1197,33 +1224,74 @@ enum RegionAwareReflow {
         var decisionsByPage: [Int: [CrossPageDecision]]
     }
 
+    /// Combine two `CrossPageOverrides` (one per zone). Top + bottom
+    /// operate on disjoint y-bands so region-index collisions
+    /// shouldn't happen in practice; on a collision the second
+    /// argument wins for the override and both decisions are
+    /// preserved in the audit trail.
+    static func mergeCrossPageOverrides(
+        _ a: CrossPageOverrides, _ b: CrossPageOverrides
+    ) -> CrossPageOverrides {
+        var overridesByPage = a.overridesByPage
+        for (pageIdx, perPage) in b.overridesByPage {
+            for (regionIdx, kind) in perPage {
+                overridesByPage[pageIdx, default: [:]][regionIdx] = kind
+            }
+        }
+        var decisionsByPage = a.decisionsByPage
+        for (pageIdx, decisions) in b.decisionsByPage {
+            decisionsByPage[pageIdx, default: []].append(contentsOf: decisions)
+        }
+        return CrossPageOverrides(
+            overridesByPage: overridesByPage,
+            decisionsByPage: decisionsByPage
+        )
+    }
+
+    /// Convenience: top-zone-only invocation, kept so callers that
+    /// only want the heading/running-head split don't have to specify
+    /// a zone. Equivalent to `classifyEdgeRegionsByRecurrence(
+    /// pageResults:zone: .top)`.
+    static func classifyTopRegionsByRecurrence(
+        pageResults: [PageObservations]
+    ) -> CrossPageOverrides {
+        classifyEdgeRegionsByRecurrence(pageResults: pageResults, zone: .top)
+    }
+
     /// Document-level scan: identify `.text` regions that look like
-    /// section-headers OR running-heads (top of page, short, brief
-    /// text), and decide which is which using cross-page recurrence.
+    /// running-heads / running-footers / section-headers (in the
+    /// requested edge zone, short, brief text), and decide which is
+    /// which using cross-page recurrence.
     ///
-    /// Why this exists: Surya often labels both running heads and
-    /// section headers as `.text`. Local heuristics can't tell them
-    /// apart — both look similar on a single page. The discriminator
-    /// is recurrence: running heads repeat (in the same y-band) on
-    /// many pages of a section; chapter titles appear on exactly one.
+    /// Why this exists: Surya often labels both running heads/footers
+    /// and section headers as `.text`. Local heuristics can't tell
+    /// them apart — both look similar on a single page. The
+    /// discriminator is recurrence: running heads/footers repeat (in
+    /// the same y-band) on many pages of a section; chapter titles
+    /// appear on exactly one.
     ///
     /// Algorithm:
-    ///   1. Collect all candidate regions across all pages.
+    ///   1. Collect all candidate regions in the requested edge zone
+    ///      across all pages.
     ///   2. Normalize each candidate's text via the same digit-
     ///      collapsing rule HeaderFooterClassifier uses (so
     ///      "Chapter 3 Foo 47" and "Chapter 3 Foo 48" cluster).
     ///   3. Cluster candidates by normalized text.
     ///   4. For each cluster:
-    ///        - Appears on ≥ 3 distinct pages → all members become
-    ///          `.pageHeader` (running head, drop from body stream).
-    ///        - Appears on < 3 distinct pages → all members become
-    ///          `.sectionHeader` (chapter/section title, promote).
+    ///        - Top zone, ≥ 3 pages → `.pageHeader`. < 3 pages →
+    ///          `.sectionHeader` (promote unique top text to heading).
+    ///        - Bottom zone, ≥ 3 pages → `.pageFooter`. < 3 pages →
+    ///          no override (we don't promote unique bottom-zone text
+    ///          to a heading; it's usually a footnote stub or
+    ///          decorative line).
     ///
     /// Conservative defaults: short documents (< 3 pages) skip the
     /// pass entirely — too little data to discriminate. Cluster
-    /// threshold tuneable if running-head false positives surface.
-    static func classifyTopRegionsByRecurrence(
-        pageResults: [PageObservations]
+    /// threshold tuneable if running-head/footer false positives
+    /// surface.
+    static func classifyEdgeRegionsByRecurrence(
+        pageResults: [PageObservations],
+        zone: CrossPageZone
     ) -> CrossPageOverrides {
         let pagesWithRegions = pageResults.filter { ($0.layoutRegions?.isEmpty == false) }
         guard pagesWithRegions.count >= crossPageMinDocumentPages else {
@@ -1245,7 +1313,12 @@ enum RegionAwareReflow {
             guard let regions = page.layoutRegions else { continue }
             for (idx, region) in regions.enumerated() {
                 guard region.kind == .text else { continue }
-                guard region.box.midY >= crossPageTopZoneMinY else { continue }
+                switch zone {
+                case .top:
+                    guard region.box.midY >= crossPageTopZoneMinY else { continue }
+                case .bottom:
+                    guard region.box.midY <= crossPageBottomZoneMaxY else { continue }
+                }
                 guard region.box.height <= crossPageMaxRegionHeight else { continue }
 
                 let inflated = region.box.insetBy(
@@ -1285,9 +1358,22 @@ enum RegionAwareReflow {
         for (normalized, candidates) in byNormalized {
             // Distinct pages this normalized text appears on.
             let distinctPageCount = Set(candidates.map(\.pageIndex)).count
-            let newKind: LayoutRegion.Kind = distinctPageCount >= crossPageRunningHeadMinPages
-                ? .pageHeader
-                : .sectionHeader
+            let isRecurring = distinctPageCount >= crossPageRunningHeadMinPages
+
+            // Per-zone routing for the recurring vs unique branches.
+            // Bottom zone leaves unique candidates untouched —
+            // promoting a unique bottom-of-page short string to a
+            // heading would be wrong (footnote stubs, decorative
+            // lines, page-bottom labels are all common false
+            // positives).
+            let newKind: LayoutRegion.Kind?
+            switch zone {
+            case .top:
+                newKind = isRecurring ? .pageHeader : .sectionHeader
+            case .bottom:
+                newKind = isRecurring ? .pageFooter : nil
+            }
+            guard let newKind else { continue }
 
             for c in candidates {
                 overridesByPage[c.pageIndex, default: [:]][c.regionIndex] = newKind

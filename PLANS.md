@@ -1500,25 +1500,23 @@ real friction point, not hypothetical.
 
 ## R-Footers — Cross-page running-footer recurrence
 
-**Status**: cross-page recurrence is implemented for top-zone running
-heads. Symmetrically applies to bottom-zone running footers but the
-code today only operates on the top zone.
+**Status**: shipped. `classifyTopRegionsByRecurrence` is now a thin
+wrapper over `classifyEdgeRegionsByRecurrence(zone:)`, which runs
+once for each edge zone. Top zone preserves the existing two-way
+behavior (recurring → `.pageHeader`, unique → `.sectionHeader`).
+Bottom zone is symmetric on the recurring side only — recurring
+text in the bottom 15% becomes `.pageFooter`; unique short
+bottom-of-page strings stay as `.text` (a unique string at the
+bottom is more likely a footnote stub or decorative line than a
+section break, so we don't promote there). Top + bottom override
+maps merge before the per-page passes; both zones contribute to
+the cross-page audit trail surfaced in the debug log.
 
 ### Goal
 
 Apply the same cross-page recurrence logic to the bottom zone so
 recurring "Stoicheia I.iii" or chapter-bottom labels get tagged as
 `.pageFooter` instead of `.text`.
-
-### Approach
-
-`RegionAwareReflow.classifyTopRegionsByRecurrence` becomes
-`classifyEdgeRegionsByRecurrence` and runs once for each edge zone.
-Symmetric thresholds.
-
-### Effort
-
-~0.5 day. Pure refactor + tests.
 
 ---
 
@@ -1833,12 +1831,10 @@ use; distribution is lower priority than correctness.
    the Private path.
 2. **R-Hierarchy** (multi-level chapters) — natural follow-on to
    ChapterSplitter, complements the parsed-TOC tree. ~1 day.
-3. **R-Footers** (cross-page running footers) — symmetric refactor.
-   ~0.5 day.
-4. **Launcher quality-of-life** — `R-Launcher-Pause`,
+3. **Launcher quality-of-life** — `R-Launcher-Pause`,
    `R-Launcher-History`, `R-Launcher-Reorder`, `R-Launcher-FullQueue`
    in whatever order the user reaches for first.
-5. **Defer Phase 10 (distribution)** until the user actually wants
+4. **Defer Phase 10 (distribution)** until the user actually wants
    to share or onboard another machine. The app is signed and runs
    locally; that's enough for personal use.
 
