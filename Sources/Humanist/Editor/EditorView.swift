@@ -188,6 +188,40 @@ struct EditorView: View {
                             }
                         }
                     )
+                    // Rename Chapter prompt. The view-model owns the
+                    // pending rename's state (URL + original name +
+                    // typed buffer); SwiftUI's `.alert(item:)` opens
+                    // when non-nil and binds the TextField via the
+                    // unwrapped pending value.
+                    .alert(
+                        "Rename Chapter",
+                        isPresented: Binding(
+                            get: { vm.pendingRename != nil },
+                            set: { presented in
+                                if !presented { vm.cancelRenameChapter() }
+                            }
+                        ),
+                        actions: {
+                            if vm.pendingRename != nil {
+                                TextField(
+                                    "New name",
+                                    text: Binding(
+                                        get: { vm.pendingRename?.newBaseName ?? "" },
+                                        set: { vm.pendingRename?.newBaseName = $0 }
+                                    )
+                                )
+                                Button("Rename") { vm.commitRenameChapter() }
+                                Button("Cancel", role: .cancel) {
+                                    vm.cancelRenameChapter()
+                                }
+                            }
+                        },
+                        message: {
+                            if let pending = vm.pendingRename {
+                                Text("Rename “\(pending.originalStem).\(pending.extensionOnly)” to a new filename. Internal links will be updated automatically.")
+                            }
+                        }
+                    )
                     // Document menu's "Show Correction Trail" command
                     // posts this notification so the menu item can
                     // reach this scene's local @State `showingCorrectionTrail`

@@ -255,6 +255,173 @@ final class EPUBBookTests: XCTestCase {
         XCTAssertEqual(book.spine, ["ch01", "ch02", "ch03"])
     }
 
+    // MARK: - Rename
+
+    func test_renameResource_updates_href_and_marks_dirty() throws {
+        try buildMinimalEPUB(chapterCount: 2)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        let changes = try book.renameResource(
+            id: "ch01", newHrefRelativeToOPF: "introduction.xhtml"
+        )
+        XCTAssertEqual(book.resourcesByID["ch01"]?.hrefRelativeToOPF, "introduction.xhtml")
+        XCTAssertTrue(book.resourcesByID["ch01"]?.isDirty == true)
+        XCTAssertTrue(book.structuralIsDirty)
+        // No internal links to rewrite in the bare fixture.
+        XCTAssertEqual(changes, 0)
+    }
+
+    func test_renameResource_throws_on_duplicate_href() throws {
+        try buildMinimalEPUB(chapterCount: 2)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        XCTAssertThrowsError(
+            try book.renameResource(id: "ch01", newHrefRelativeToOPF: "ch02.xhtml")
+        ) { error in
+            guard case EPUBBook.BookError.duplicateHref = error else {
+                XCTFail("expected duplicateHref, got \(error)")
+                return
+            }
+        }
+    }
+
+    func test_renameResource_throws_on_unknown_id() throws {
+        try buildMinimalEPUB(chapterCount: 1)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        XCTAssertThrowsError(
+            try book.renameResource(id: "no-such-id", newHrefRelativeToOPF: "x.xhtml")
+        )
+    }
+
+    func test_renameResource_rewrites_internal_link_in_sibling_chapter() throws {
+        // Hand-crafted EPUB where ch01 links to ch02. After
+        // renaming ch02, ch01's href should be updated.
+        try buildLinkedEPUB()
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        let changes = try book.renameResource(
+            id: "ch02", newHrefRelativeToOPF: "renamed.xhtml"
+        )
+        XCTAssertGreaterThanOrEqual(changes, 1)
+
+        let ch01Text = try XCTUnwrap(book.resourcesByID["ch01"]?.text)
+        XCTAssertTrue(ch01Text.contains("href=\"renamed.xhtml\""))
+        XCTAssertFalse(ch01Text.contains("href=\"ch02.xhtml\""))
+    }
+
+    func test_renameResource_round_trips_through_save() throws {
+        try buildLinkedEPUB()
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        let oldFile = tempDir.appendingPathComponent("OEBPS/ch02.xhtml")
+        let newFile = tempDir.appendingPathComponent("OEBPS/renamed.xhtml")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldFile.path))
+
+        try book.renameResource(id: "ch02", newHrefRelativeToOPF: "renamed.xhtml")
+        try EPUBBookSaver().save(book)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newFile.path))
+
+        // OPF reflects new href.
+        let pkg = try OPFReader().read(rootDir: tempDir)
+        XCTAssertEqual(pkg.manifestById["ch02"]?.href, "renamed.xhtml")
+
+        // Internal link in ch01 was rewritten on disk too.
+        let ch01OnDisk = try String(
+            contentsOf: tempDir.appendingPathComponent("OEBPS/ch01.xhtml"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(ch01OnDisk.contains("href=\"renamed.xhtml\""))
+    }
+
+    /// Build a 2-chapter EPUB where ch01 contains an internal link
+    /// to ch02. Used to exercise the rename + link-rewrite flow.
+    private func buildLinkedEPUB() throws {
+        let metaInf = tempDir.appendingPathComponent("META-INF")
+        try FileManager.default.createDirectory(
+            at: metaInf, withIntermediateDirectories: true
+        )
+        try """
+        <?xml version="1.0"?>
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+          <rootfiles>
+            <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """.write(
+            to: metaInf.appendingPathComponent("container.xml"),
+            atomically: true, encoding: .utf8
+        )
+        let oebps = tempDir.appendingPathComponent("OEBPS")
+        try FileManager.default.createDirectory(
+            at: oebps, withIntermediateDirectories: true
+        )
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head><title>Chapter 1</title></head>
+        <body><p>See <a href="ch02.xhtml">chapter two</a>.</p></body>
+        </html>
+        """.write(
+            to: oebps.appendingPathComponent("ch01.xhtml"),
+            atomically: true, encoding: .utf8
+        )
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head><title>Chapter 2</title></head>
+        <body><p>Two.</p></body>
+        </html>
+        """.write(
+            to: oebps.appendingPathComponent("ch02.xhtml"),
+            atomically: true, encoding: .utf8
+        )
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+        <head><title>Contents</title></head>
+        <body><nav epub:type="toc"><ol></ol></nav></body>
+        </html>
+        """.write(
+            to: oebps.appendingPathComponent("nav.xhtml"),
+            atomically: true, encoding: .utf8
+        )
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+        <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+        <dc:identifier id="bookid">test-id</dc:identifier>
+        <dc:title>Linked Book</dc:title>
+        <dc:language>en</dc:language>
+        </metadata>
+        <manifest>
+        <item id="ch01" href="ch01.xhtml" media-type="application/xhtml+xml"/>
+        <item id="ch02" href="ch02.xhtml" media-type="application/xhtml+xml"/>
+        <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+        </manifest>
+        <spine>
+        <itemref idref="ch01"/>
+        <itemref idref="ch02"/>
+        </spine>
+        </package>
+        """.write(
+            to: oebps.appendingPathComponent("content.opf"),
+            atomically: true, encoding: .utf8
+        )
+    }
+
     func test_moveInSpine_round_trips_through_save() throws {
         try buildMinimalEPUB(chapterCount: 3)
         let book = try EPUBBookLoader().load(

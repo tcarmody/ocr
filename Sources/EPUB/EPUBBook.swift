@@ -81,6 +81,14 @@ public final class EPUBBook: @unchecked Sendable {
     /// Reset to empty after save.
     private var pendingDeletions: [PendingDeletion] = []
 
+    /// Pending file renames staged by `renameResource` and applied
+    /// at save time. Each entry maps a resource id to the absolute
+    /// disk URL where the file currently lives — the saver renames
+    /// it to the resource's *current* `hrefRelativeToOPF` location,
+    /// which the rename op already updated in memory. Reset to empty
+    /// after save.
+    private var pendingRenames: [PendingRename] = []
+
     /// True if the manifest, spine, or metadata changed since the
     /// last save. Tracked separately from per-resource text
     /// dirtiness because a structural mutation (insert / remove /
@@ -421,10 +429,82 @@ public final class EPUBBook: @unchecked Sendable {
         structuralIsDirty = true
     }
 
+    /// Rename a resource — updates its `hrefRelativeToOPF`, rewrites
+    /// every internal `href` / `src` link in the book that points
+    /// to the old href so they continue to resolve, and stages a
+    /// disk-side file rename for the next save.
+    ///
+    /// `newHrefRelativeToOPF` must be unique within the manifest.
+    /// Same-href no-ops cleanly. Throws `BookError.duplicateHref`
+    /// when the new href collides with another resource.
+    ///
+    /// Returns the number of internal links rewritten across the
+    /// book — useful for surfacing "rewrote N links" feedback in
+    /// the UI.
+    @discardableResult
+    public func renameResource(
+        id: String, newHrefRelativeToOPF: String
+    ) throws -> Int {
+        guard let resource = resourcesByID[id] else {
+            throw BookError.unknownResourceID(id)
+        }
+        let oldHref = resource.hrefRelativeToOPF
+        if oldHref == newHrefRelativeToOPF { return 0 }
+
+        // Collision check — exclude the resource being renamed.
+        for other in resourcesByID.values where other.id != id {
+            if other.hrefRelativeToOPF == newHrefRelativeToOPF {
+                throw BookError.duplicateHref(newHrefRelativeToOPF)
+            }
+        }
+
+        let oldDiskURL = absoluteURL(for: resource)
+
+        // Update the resource itself. After this, hrefRelativeToOPF
+        // is the new path; any later call that constructs an
+        // absolute URL from this resource will use the new path.
+        resource.hrefRelativeToOPF = newHrefRelativeToOPF
+        resource.isDirty = true
+
+        // Rewrite internal links across every other text resource.
+        // The resource being renamed isn't included — same-doc
+        // hrefs (if any) are out of scope; intra-doc fragments are
+        // not affected by the file rename.
+        var totalChanges = 0
+        for other in resourcesByID.values where other.id != id {
+            guard let oldText = other.text else { continue }
+            let result = LinkRewriter.rewrite(
+                text: oldText,
+                baseHref: other.hrefRelativeToOPF,
+                oldTargetHref: oldHref,
+                newTargetHref: newHrefRelativeToOPF
+            )
+            if result.changes > 0 {
+                other.text = result.text  // sets dirty
+                totalChanges += result.changes
+            }
+        }
+
+        // Coalesce successive renames: if this id was already
+        // pending a rename, keep the original `oldDiskURL` (the
+        // file on disk hasn't moved yet) and drop the intermediate.
+        if pendingRenames.contains(where: { $0.id == id }) == false {
+            pendingRenames.append(.init(id: id, oldDiskURL: oldDiskURL))
+        }
+        structuralIsDirty = true
+        return totalChanges
+    }
+
     /// Internal accessor used by the saver.
     func consumePendingDeletions() -> [PendingDeletion] {
         defer { pendingDeletions = [] }
         return pendingDeletions
+    }
+
+    /// Internal accessor used by the saver.
+    func consumePendingRenames() -> [PendingRename] {
+        defer { pendingRenames = [] }
+        return pendingRenames
     }
 
     /// Internal: clear all dirty flags. Called by the saver after a
@@ -440,12 +520,18 @@ public final class EPUBBook: @unchecked Sendable {
 
     public enum BookError: Error, LocalizedError {
         case duplicateResourceID(String)
+        case duplicateHref(String)
+        case unknownResourceID(String)
         case missingNav
 
         public var errorDescription: String? {
             switch self {
             case .duplicateResourceID(let id):
                 return "Duplicate manifest id: \(id)"
+            case .duplicateHref(let href):
+                return "Another manifest item already uses the path \"\(href)\"."
+            case .unknownResourceID(let id):
+                return "No manifest item with id=\(id)."
             case .missingNav:
                 return "EPUB has no manifest item with properties=\"nav\""
             }
@@ -456,6 +542,15 @@ public final class EPUBBook: @unchecked Sendable {
     struct PendingDeletion {
         let id: String
         let diskURL: URL
+    }
+
+    /// Pending file rename to apply at save time. `oldDiskURL` is
+    /// where the file lived when the rename was staged; the saver
+    /// renames it to wherever the resource's current
+    /// `hrefRelativeToOPF` resolves to.
+    struct PendingRename {
+        let id: String
+        let oldDiskURL: URL
     }
 }
 

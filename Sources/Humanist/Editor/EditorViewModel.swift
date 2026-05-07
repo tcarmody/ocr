@@ -1597,6 +1597,30 @@ final class EditorViewModel: ObservableObject {
         }
     }
 
+    /// In-flight Rename Chapter prompt state. Held on the
+    /// view-model so the alert UI in `EditorView` can bind a
+    /// TextField directly to `newBaseName`. The ID lets SwiftUI's
+    /// `.alert(item:)` reset the field when the user opens a
+    /// rename for a different chapter mid-flow.
+    struct PendingRename: Identifiable {
+        let id = UUID()
+        /// File URL the user right-clicked. Captured up-front so
+        /// the rename targets the same chapter even if selection
+        /// changes during the prompt.
+        let url: URL
+        /// Manifest @id of the resource being renamed.
+        let resourceID: String
+        /// Filename stem at the time the prompt opened (no
+        /// directory, no extension).
+        let originalStem: String
+        /// Extension (e.g. `xhtml`) — preserved verbatim across
+        /// the rename. The user types the stem only.
+        let extensionOnly: String
+        /// Bound to the alert's TextField. Defaults to the
+        /// original stem.
+        var newBaseName: String
+    }
+
     /// Reload the selected file's source from disk after an on-disk
     /// edit (Split / Merge / Regenerate-TOC). Bypasses the flush
     /// `select(_:)` performs for ordinary file switches — that
@@ -1715,6 +1739,141 @@ final class EditorViewModel: ObservableObject {
     func moveCurrentChapterDown() {
         guard let file = selectedFile else { return }
         moveChapter(at: file.id, direction: .down)
+    }
+
+    /// Pending Rename Chapter alert state. Set by
+    /// `beginRenameChapter(at:)`; cleared by commit / cancel. The
+    /// view binds an alert + TextField to the optional and reads
+    /// `originalBaseName` to seed the input.
+    @Published var pendingRename: PendingRename?
+
+    /// Whether the resource at `url` can be renamed. True for any
+    /// text resource in the manifest. Binary resources (images,
+    /// fonts) could in principle be renamed too but the rename UI
+    /// targets chapter files; we'll lift this restriction if the
+    /// user asks.
+    func canRenameChapter(at url: URL) -> Bool {
+        guard let book = book else { return false }
+        guard let resource = book.resource(at: url) else { return false }
+        return resource.isText
+    }
+
+    /// Open the Rename Chapter prompt for the resource at `url`.
+    /// Seeds the alert's text field with the current basename
+    /// (stem only — no path, no extension). The view is responsible
+    /// for binding to and updating `pendingRename.newBaseName`.
+    func beginRenameChapter(at url: URL) {
+        guard let book = book, let resource = book.resource(at: url) else { return }
+        let href = resource.hrefRelativeToOPF
+        let basename: String
+        if let lastSlash = href.lastIndex(of: "/") {
+            basename = String(href[href.index(after: lastSlash)...])
+        } else {
+            basename = href
+        }
+        let stem: String
+        let ext: String
+        if let lastDot = basename.lastIndex(of: "."),
+           lastDot != basename.startIndex {
+            stem = String(basename[..<lastDot])
+            ext = String(basename[basename.index(after: lastDot)...])
+        } else {
+            stem = basename
+            ext = "xhtml"
+        }
+        pendingRename = PendingRename(
+            url: url,
+            resourceID: resource.id,
+            originalStem: stem,
+            extensionOnly: ext,
+            newBaseName: stem
+        )
+    }
+
+    /// Cancel the pending rename without changes.
+    func cancelRenameChapter() {
+        pendingRename = nil
+    }
+
+    /// Commit the pending rename. Validates the new basename, runs
+    /// the rename through the book (with internal-link rewriting),
+    /// saves, and refreshes the file tree. No-op when the pending
+    /// rename is nil or the new basename equals the old.
+    func commitRenameChapter() {
+        guard let pending = pendingRename, let book = book else { return }
+        defer { pendingRename = nil }
+
+        let trimmed = pending.newBaseName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        if trimmed == pending.originalStem { return }
+        guard Self.isValidBasename(trimmed) else {
+            chapterOperationError = "Filename must not contain slashes, colons, or other path characters."
+            return
+        }
+
+        // Construct the new href. Keep the same directory + extension
+        // as the original; the user only typed the stem.
+        let oldHref: String
+        if let resource = book.resourcesByID[pending.resourceID] {
+            oldHref = resource.hrefRelativeToOPF
+        } else {
+            return
+        }
+        let dir: String
+        if let lastSlash = oldHref.lastIndex(of: "/") {
+            dir = String(oldHref[..<lastSlash])
+        } else {
+            dir = ""
+        }
+        let newBasename = "\(trimmed).\(pending.extensionOnly)"
+        let newHref = dir.isEmpty ? newBasename : "\(dir)/\(newBasename)"
+
+        flushSourceTextToBuffer()
+        flushDirtyBuffersToBook()
+        do {
+            _ = try book.renameResource(
+                id: pending.resourceID,
+                newHrefRelativeToOPF: newHref
+            )
+            try EPUBBookSaver().save(book)
+
+            // The selected file's URL just changed on disk. Update
+            // editor-side state to track the new path.
+            if let resource = book.resourcesByID[pending.resourceID] {
+                let newAbsoluteURL = book.absoluteURL(for: resource)
+                if let oldBuffer = buffers.removeValue(forKey: pending.url) {
+                    buffers[newAbsoluteURL] = oldBuffer
+                }
+                dirtyURLs.remove(pending.url)
+            }
+            refreshFileTree()
+            // Re-select the renamed node so the source pane and
+            // sidebar both follow the rename.
+            if let book = self.book,
+               let resource = book.resourcesByID[pending.resourceID],
+               let tree = self.fileTree {
+                let newURL = book.absoluteURL(for: resource)
+                if let node = Self.findLeaf(in: tree, matching: newURL) {
+                    selectedFile = node
+                    loadSourceForSelectedFile()
+                }
+            }
+            previewVersion += 1
+            isDirty = true
+        } catch {
+            chapterOperationError = error.localizedDescription
+        }
+    }
+
+    /// Filename input must be plain — no slashes (would change the
+    /// directory), no colons or NUL characters (illegal on macOS),
+    /// no leading dot (hidden file). Tightening to alphanumerics +
+    /// `_-.` keeps EPUB-friendly basenames.
+    private static func isValidBasename(_ s: String) -> Bool {
+        guard !s.isEmpty, !s.hasPrefix(".") else { return false }
+        let allowed = CharacterSet.alphanumerics
+            .union(CharacterSet(charactersIn: "_-. "))
+        return s.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
     /// Move the chapter referenced by `url` one position in the

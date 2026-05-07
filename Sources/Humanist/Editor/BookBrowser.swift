@@ -46,6 +46,11 @@ struct BookBrowser: View {
     @ViewBuilder
     private func rowContextMenu(items: Set<FileNode>) -> some View {
         if let vm = viewModel, let node = items.first, !node.isDirectory {
+            Button("Rename Chapter…") {
+                vm.beginRenameChapter(at: node.id)
+            }
+            .disabled(!vm.canRenameChapter(at: node.id))
+            Divider()
             Button("Move Chapter Up") {
                 vm.moveChapter(at: node.id, direction: .up)
             }

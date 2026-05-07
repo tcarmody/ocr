@@ -44,6 +44,13 @@ public struct EPUBBookSaver {
     public func save(_ book: EPUBBook) throws {
         guard book.isDirty else { return }
 
+        // Move/rename happens before dirty-resource writes so that
+        // the subsequent write lands at the new (current) path
+        // rather than the old one. Otherwise the dirty flush would
+        // create a fresh file at the new path AND we'd still need
+        // to delete the old one — wasted I/O at best, an orphaned
+        // copy at worst.
+        try processPendingRenames(book)
         try writeDirtyResources(book)
         try rewriteOPF(book)
         try processPendingDeletions(book)
@@ -123,6 +130,48 @@ public struct EPUBBookSaver {
             // any other error gets ignored at this layer because
             // the OPF is already updated to no longer reference it.
             try? FileManager.default.removeItem(at: deletion.diskURL)
+        }
+    }
+
+    /// Move each renamed file from its old location on disk to its
+    /// new location. The resource's `hrefRelativeToOPF` already
+    /// holds the new path; combined with `book.opfDirectory` that
+    /// gives us the destination URL.
+    private func processPendingRenames(_ book: EPUBBook) throws {
+        let renames = book.consumePendingRenames()
+        for rename in renames {
+            guard let resource = book.resourcesByID[rename.id] else { continue }
+            let newURL = book.absoluteURL(for: resource)
+            if rename.oldDiskURL == newURL { continue }
+
+            // Make sure the destination directory exists — rename
+            // into a sibling directory should still work.
+            let destDir = newURL.deletingLastPathComponent()
+            if !FileManager.default.fileExists(atPath: destDir.path) {
+                try FileManager.default.createDirectory(
+                    at: destDir, withIntermediateDirectories: true
+                )
+            }
+
+            if FileManager.default.fileExists(atPath: rename.oldDiskURL.path) {
+                // Drop a stale destination if it somehow exists —
+                // shouldn't happen because renameResource() rejects
+                // duplicate hrefs in the manifest, but defensive.
+                try? FileManager.default.removeItem(at: newURL)
+                do {
+                    try FileManager.default.moveItem(
+                        at: rename.oldDiskURL, to: newURL
+                    )
+                } catch {
+                    throw SaveError.writeFailed(
+                        href: resource.hrefRelativeToOPF, underlying: error
+                    )
+                }
+            }
+            // If the old file didn't exist on disk yet (resource
+            // was added in-memory and never saved), the dirty-
+            // resource flush below writes the new content directly
+            // to the new path; nothing to move.
         }
     }
 
