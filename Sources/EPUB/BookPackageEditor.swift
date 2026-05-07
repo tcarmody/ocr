@@ -117,7 +117,10 @@ public struct BookPackageEditor {
         )
 
         original.text = firstFile  // marks dirty
-        try book.appendResource(newResource)
+        // Insert adjacent to the source in BOTH manifest order and
+        // spine order so the new chapter shows up immediately after
+        // the source in any UI that walks either.
+        try book.insertResource(newResource, after: resourceID)
         book.insertInSpine(id: newID, after: resourceID)
 
         try regenerateNav()

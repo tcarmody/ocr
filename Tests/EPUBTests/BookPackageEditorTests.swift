@@ -142,6 +142,54 @@ final class BookPackageEditorTests: XCTestCase {
         XCTAssertTrue(new.hrefRelativeToOPF.hasSuffix(".xhtml"))
     }
 
+    /// Headline behavior: the new chapter's filename derives from
+    /// the source's basename so alphabetical (sidebar) order puts
+    /// the new file immediately after the source. Without this, the
+    /// new chapter shows up at the end of the directory regardless
+    /// of which chapter it was split from.
+    func test_split_filename_sorts_immediately_after_source() throws {
+        let book = try loadBook(chapterCount: 3)
+        let editor = BookPackageEditor(book: book)
+        let ch02Text = try XCTUnwrap(book.resourcesByID["ch02"]?.text)
+        let bodyStart = try ch02Text.distance(
+            from: ch02Text.startIndex,
+            to: XCTUnwrap(PackageEditor.bodyRange(in: ch02Text)).lowerBound
+        )
+        let new = try editor.splitChapter(
+            resourceID: "ch02", splitOffset: bodyStart + 30
+        )
+        // Sort all the chapter hrefs alphabetically and confirm the
+        // new one slots between ch02 and ch03.
+        let chapterHrefs = book.resourcesByID.values
+            .filter { !$0.isNav }
+            .map(\.hrefRelativeToOPF)
+            .sorted()
+        let ch02Idx = try XCTUnwrap(chapterHrefs.firstIndex(of: "ch02.xhtml"))
+        let ch03Idx = try XCTUnwrap(chapterHrefs.firstIndex(of: "ch03.xhtml"))
+        let newIdx = try XCTUnwrap(chapterHrefs.firstIndex(of: new.hrefRelativeToOPF))
+        XCTAssertEqual(newIdx, ch02Idx + 1)
+        XCTAssertEqual(ch03Idx, newIdx + 1)
+    }
+
+    /// Manifest order also follows the smart default — new chapter
+    /// is inserted right after the source in `resourceOrder`, not at
+    /// the end. UIs that walk manifest order see it adjacent.
+    func test_split_inserts_new_resource_after_source_in_manifest() throws {
+        let book = try loadBook(chapterCount: 3)
+        let editor = BookPackageEditor(book: book)
+        let ch02Text = try XCTUnwrap(book.resourcesByID["ch02"]?.text)
+        let bodyStart = try ch02Text.distance(
+            from: ch02Text.startIndex,
+            to: XCTUnwrap(PackageEditor.bodyRange(in: ch02Text)).lowerBound
+        )
+        let new = try editor.splitChapter(
+            resourceID: "ch02", splitOffset: bodyStart + 30
+        )
+        let ch02Idx = try XCTUnwrap(book.resourceOrder.firstIndex(of: "ch02"))
+        let newIdx = try XCTUnwrap(book.resourceOrder.firstIndex(of: new.id))
+        XCTAssertEqual(newIdx, ch02Idx + 1)
+    }
+
     func test_split_throws_when_offset_has_no_safe_boundary_ahead() throws {
         let book = try loadBook(chapterCount: 1)
         let editor = BookPackageEditor(book: book)

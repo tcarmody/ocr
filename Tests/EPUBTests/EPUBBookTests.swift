@@ -179,6 +179,44 @@ final class EPUBBookTests: XCTestCase {
         XCTAssertTrue(onDisk.contains("new"))
     }
 
+    func test_insertResource_after_places_in_manifest_order() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        let new = Resource(
+            id: "ch02_split",
+            hrefRelativeToOPF: "ch02_split.xhtml",
+            mediaType: "application/xhtml+xml",
+            content: .text(""),
+            isDirty: true
+        )
+        try book.insertResource(new, after: "ch02")
+        let ch02Idx = try XCTUnwrap(book.resourceOrder.firstIndex(of: "ch02"))
+        let ch03Idx = try XCTUnwrap(book.resourceOrder.firstIndex(of: "ch03"))
+        let newIdx = try XCTUnwrap(book.resourceOrder.firstIndex(of: "ch02_split"))
+        XCTAssertEqual(newIdx, ch02Idx + 1)
+        XCTAssertEqual(ch03Idx, newIdx + 1)
+    }
+
+    func test_insertResource_after_unknown_anchor_falls_back_to_append() throws {
+        try buildMinimalEPUB(chapterCount: 1)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        let new = Resource(
+            id: "stray",
+            hrefRelativeToOPF: "stray.xhtml",
+            mediaType: "application/xhtml+xml",
+            content: .text(""),
+            isDirty: true
+        )
+        try book.insertResource(new, after: "does-not-exist")
+        XCTAssertEqual(book.resourceOrder.last, "stray")
+    }
+
     func test_appendResource_throws_on_duplicate_id() throws {
         try buildMinimalEPUB(chapterCount: 1)
         let book = try EPUBBookLoader().load(

@@ -240,23 +240,34 @@ public final class EPUBBook: @unchecked Sendable {
     }
 
     /// Href (relative to the OPF) not currently in use, derived from
-    /// `nearHref`'s directory + extension. Format: `{dir}/chapter-
-    /// split-NNNNN.{ext}`. Used by Split to name a new chapter
-    /// in the same directory as the chapter being split. The check
-    /// covers both manifest hrefs and any pre-existing on-disk files
-    /// in the working directory — we don't want to clobber a sibling
-    /// file the manifest forgot to declare.
+    /// `nearHref`'s basename so the new file sorts immediately after
+    /// the source file in alphabetical (sidebar) order. Format:
+    /// `{dir}/{stem}_split_NNN.{ext}`.
+    ///
+    /// The `_` separator (0x5F) sorts after `.` (0x2E), which means
+    /// `ch05_split_001.xhtml` falls between `ch05.xhtml` and
+    /// `ch06.xhtml` in lexicographic order. Without this, the
+    /// pre-PR scheme (`chapter-split-NNNNN.xhtml`) clustered every
+    /// split's output at the end of the directory regardless of
+    /// which source it came from, and the user lost the visual
+    /// "this new chapter belongs right next to its source" cue.
+    ///
+    /// Collision check covers both manifest hrefs and any
+    /// pre-existing on-disk files — we don't want to clobber a
+    /// sibling the manifest forgot to declare.
     public func nextAvailableHref(near nearHref: String) -> String {
-        let nearURL = URL(fileURLWithPath: nearHref)
-        let dir = nearURL.deletingLastPathComponent().path
-        let ext = nearURL.pathExtension.isEmpty ? "xhtml" : nearURL.pathExtension
+        // Parse the href as a string. `URL(fileURLWithPath:)` would
+        // resolve relative paths against the current working
+        // directory, which is wrong for OPF-relative hrefs — we'd
+        // end up minting names like `/Users/tim/Workspace/ocr/ch02_
+        // split_001.xhtml` and the sidebar sort would put the new
+        // file in the wrong place.
+        let (dir, stem, ext) = Self.parseHrefParts(nearHref)
         let usedHrefs = Set(resourcesByID.values.map(\.hrefRelativeToOPF))
         var i = 1
         while true {
-            let basename = String(format: "chapter-split-%05d.\(ext)", i)
-            let href: String = dir.isEmpty || dir == "."
-                ? basename
-                : "\(dir)/\(basename)"
+            let basename = "\(stem)_split_\(String(format: "%03d", i)).\(ext)"
+            let href: String = dir.isEmpty ? basename : "\(dir)/\(basename)"
             let absoluteOnDisk = opfDirectory.appendingPathComponent(href)
             let collidesOnDisk = FileManager.default
                 .fileExists(atPath: absoluteOnDisk.path)
@@ -265,6 +276,33 @@ public final class EPUBBook: @unchecked Sendable {
             }
             i += 1
         }
+    }
+
+    /// Split a relative href like `text/chapter-005.xhtml` into
+    /// `(dir: "text", stem: "chapter-005", ext: "xhtml")`. Empty
+    /// `dir` for top-level hrefs. Falls back to `xhtml` extension
+    /// when none is present.
+    private static func parseHrefParts(
+        _ href: String
+    ) -> (dir: String, stem: String, ext: String) {
+        let dir: String
+        let filename: String
+        if let lastSlash = href.lastIndex(of: "/") {
+            dir = String(href[..<lastSlash])
+            filename = String(href[href.index(after: lastSlash)...])
+        } else {
+            dir = ""
+            filename = href
+        }
+        if let lastDot = filename.lastIndex(of: "."),
+           lastDot != filename.startIndex {
+            return (
+                dir: dir,
+                stem: String(filename[..<lastDot]),
+                ext: String(filename[filename.index(after: lastDot)...])
+            )
+        }
+        return (dir: dir, stem: filename, ext: "xhtml")
     }
 
     // MARK: - Mutations (used by future BookPackageEditor)
@@ -279,6 +317,27 @@ public final class EPUBBook: @unchecked Sendable {
         }
         resourcesByID[resource.id] = resource
         resourceOrder.append(resource.id)
+        structuralIsDirty = true
+    }
+
+    /// Insert a new resource into the manifest immediately after
+    /// `anchorID` in `resourceOrder`. Throws if `resource.id` already
+    /// exists. Falls back to `appendResource` semantics when
+    /// `anchorID` isn't found. Doesn't touch the spine.
+    ///
+    /// Used by Split so the new chapter shows up adjacent to the
+    /// source in the OPF manifest (and therefore in any UI that
+    /// walks manifest order).
+    public func insertResource(_ resource: Resource, after anchorID: String) throws {
+        if resourcesByID[resource.id] != nil {
+            throw BookError.duplicateResourceID(resource.id)
+        }
+        resourcesByID[resource.id] = resource
+        if let idx = resourceOrder.firstIndex(of: anchorID) {
+            resourceOrder.insert(resource.id, at: idx + 1)
+        } else {
+            resourceOrder.append(resource.id)
+        }
         structuralIsDirty = true
     }
 
