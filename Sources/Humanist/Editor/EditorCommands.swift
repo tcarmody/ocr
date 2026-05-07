@@ -290,7 +290,13 @@ private struct EditorMoveChapterUpCommand: View {
         Button("Move Chapter Up") {
             vm?.moveCurrentChapterUp()
         }
-        .keyboardShortcut("[", modifiers: [.command, .control])
+        // ⌥⌘↑ — same gesture pattern as the source-pane "move line
+        // up" idiom, applied at the chapter granularity. Earlier
+        // attempt used ⌃⌘[ but that gesture is reserved by macOS as
+        // the system "Back" shortcut and SwiftUI's CommandMenu
+        // silently swallows the entire menu item rather than
+        // letting the binding land on top of it.
+        .keyboardShortcut(.upArrow, modifiers: [.command, .option])
         .disabled(vm?.canMoveCurrentChapterUp != true)
     }
 }
@@ -301,7 +307,7 @@ private struct EditorMoveChapterDownCommand: View {
         Button("Move Chapter Down") {
             vm?.moveCurrentChapterDown()
         }
-        .keyboardShortcut("]", modifiers: [.command, .control])
+        .keyboardShortcut(.downArrow, modifiers: [.command, .option])
         .disabled(vm?.canMoveCurrentChapterDown != true)
     }
 }
