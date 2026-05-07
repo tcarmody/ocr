@@ -1079,6 +1079,12 @@ public actor PDFToEPUBPipeline {
         // but at the end of the page" is the achievable improvement.
         var claudePageFigureAssets: [FigureAsset] = []
         var claudePageNextAssetIndex = 0
+        // Tier 9 / E-Parallel deferred-append: page-OCR pages get
+        // collected during the for-loop and dispatched concurrently
+        // after, then assembled in document order. Empty when not
+        // in page-OCR mode.
+        var pageOCRPageIndices: [Int] = []
+        var pageOCRPendingByIndex: [Int: PendingPageOCR] = [:]
 
         for i in 0..<totalPages {
             try Task.checkCancellation()
@@ -1090,34 +1096,38 @@ public actor PDFToEPUBPipeline {
                let checkpoint = resumeManager.readCheckpoint(forPage: i) {
                 // Page-OCR resume path: checkpoint stores the parsed
                 // [Block] / [Footnote] slice from a prior Sonnet
-                // call. Restore directly into the page-OCR
-                // accumulators and skip the cascade-shaped
-                // PageObservations append below. Figure assets get
-                // fresh IDs (asset IDs aren't checkpointed because
-                // they depend on document-order accumulation).
+                // call. Build a `PendingPageOCR` from the
+                // checkpoint and route through the same
+                // post-loop assembly the dispatch path uses, so
+                // sparse checkpoints (pages 0, 2, 4 done; 1, 3
+                // need fresh processing) still emit in document
+                // order. Asset IDs are assigned during assembly
+                // — they're not checkpointed because they depend
+                // on document-order accumulation.
                 if let blocks = checkpoint.pageBlocks {
-                    let anchor = RegionAwareReflow.anchorId(forPageIndex: i)
-                    claudePageBlocks.append(.anchor(
-                        id: anchor, label: "Page \(i + 1)"
-                    ))
-                    claudePageAnchors.append(PageAnchor(
-                        pdfPage: i, anchorId: anchor
-                    ))
-                    claudePageBlocks.append(contentsOf: blocks)
-                    for fig in checkpoint.figures {
-                        let (assetId, asset, figureBlock) =
-                            buildPageOCRFigureAsset(
-                                fig: fig,
-                                index: claudePageNextAssetIndex
-                            )
-                        claudePageNextAssetIndex += 1
-                        claudePageFigureAssets.append(asset)
-                        claudePageBlocks.append(figureBlock)
-                        _ = assetId
-                    }
-                    claudePageFootnotes.append(
-                        contentsOf: checkpoint.pageFootnotes ?? []
+                    let anchorId = RegionAwareReflow.anchorId(forPageIndex: i)
+                    let bounds = CGSize(
+                        width: checkpoint.pageBoundsWidth,
+                        height: checkpoint.pageBoundsHeight
                     )
+                    let pending = PendingPageOCR(
+                        pageIndex: i,
+                        anchorId: anchorId,
+                        pageBoundsCG: bounds,
+                        blocks: blocks,
+                        footnotes: checkpoint.pageFootnotes ?? [],
+                        figures: checkpoint.figures,
+                        verdict: checkpoint.verdict.flatMap {
+                            EmbeddedTextQualityScorer.Verdict(rawValue: $0)
+                        } ?? .reocr,
+                        qualityScore: nil,
+                        extractorDiagnostics: nil,
+                        // Skip checkpoint re-write during assembly
+                        // (already on disk).
+                        sonnetSucceeded: false
+                    )
+                    pageOCRPendingByIndex[i] = pending
+                    pageOCRPageIndices.append(i)
                     progress?(Progress(
                         totalPages: totalPages,
                         completedPages: i + 1,
@@ -1172,182 +1182,14 @@ public actor PDFToEPUBPipeline {
                 pdf = try loader.load(pdfURL)
             }
 
-            // Phase 2 hidden flag: end-to-end Claude page OCR. When
-            // the engine is configured we skip the entire local
-            // pipeline for this page (embedded text scoring, Vision,
-            // Surya layout, cascade, post-OCR cleanup) and feed the
-            // rendered page image straight to Sonnet. The result is
-            // already a `[Block]` slice — appended to per-document
-            // accumulators that bypass `RegionAwareReflow` after the
-            // loop completes. Per-page failures are logged and the
-            // page contributes only its anchor (so chapter splits
-            // and page navigation still work).
-            if let pageEngine = claudePageEngine {
-                // Tier 9 / E-Routing: when the user has page-OCR
-                // on, check embedded-text quality first. Trust-
-                // verdict pages (clean born-digital with no OCR
-                // needed) skip the Sonnet call and emit reflowed
-                // embedded text instead, saving ~$0.04/page on
-                // born-digital pages within mixed-quality books.
-                // Conservative: gate on `forceOCR` off + the
-                // adaptive-routing toggle, both of which let users
-                // override.
-                if options.cloudFeatures.adaptivePageRouting && !options.forceOCR {
-                    let routingExtract = autoreleasepool {
-                        embeddedExtractor.extract(from: pdf, pageIndex: i)
-                    }
-                    let combined = routingExtract.lines
-                        .map(\.text).joined(separator: " ")
-                    let routingScore = qualityScorer.score(
-                        text: combined,
-                        expectedLanguages: options.languages.map(\.rawValue)
-                    )
-                    if routingScore.verdict == .trust {
-                        // Trust path: emit reflowed embedded text +
-                        // anchor; record the verdict so stats reflect
-                        // it. Skip Sonnet + Surya layout entirely on
-                        // this page — pure cost saving.
-                        let anchorId = RegionAwareReflow.anchorId(forPageIndex: i)
-                        claudePageBlocks.append(.anchor(
-                            id: anchorId, label: "Page \(i + 1)"
-                        ))
-                        claudePageAnchors.append(PageAnchor(
-                            pdfPage: i, anchorId: anchorId
-                        ))
-                        let observations = routingExtract.lines.map { line in
-                            TextObservation(
-                                text: line.text, confidence: 0.95,
-                                box: line.box, source: .embedded
-                            )
-                        }
-                        let trustBlocks = ParagraphReflow().reflow(observations)
-                        claudePageBlocks.append(contentsOf: trustBlocks)
-                        verdictsByPage[i] = .trust
-                        qualityScores[i] = routingScore
-                        extractorDiagnostics[i] = routingExtract.diagnostics
-                        continue
-                    }
-                    // Verdict was .reocr — fall through to the
-                    // Sonnet path below; record what we learned so
-                    // stats + debug log show that this page tried
-                    // routing first.
-                    qualityScores[i] = routingScore
-                    extractorDiagnostics[i] = routingExtract.diagnostics
-                }
-                verdictsByPage[i] = .reocr
-
-                let renderer = PDFRenderer(dpi: options.dpi)
-                let image = try renderer.renderPage(at: i, of: pdf)
-                let pageBoundsCG = CGSize(
-                    width: image.width, height: image.height
-                )
-                // Save PNG for the layout analyzer (Surya needs an
-                // imageURL). Lives under the staging dir so it gets
-                // cleaned up when the run completes successfully.
-                let pngURL = stagingDir.appendingPathComponent(
-                    String(format: "page-%05d.png", i)
-                )
-                Self.savePNG(image, to: pngURL)
-
-                // Run Surya layout in parallel with the Sonnet call
-                // so figure extraction doesn't add round-trip
-                // latency. Surya is cheap (~1-2s/page); the Sonnet
-                // call is the long pole, so we want them concurrent.
-                let layoutTask = Task<[LayoutRegion]?, Never> {
-                    let outcome = await self.analyzeLayoutWithRetry(
-                        pdf: pdf,
-                        pageIndex: i,
-                        initialDPI: options.dpi,
-                        initialPNGURL: pngURL,
-                        initialPageBounds: pageBoundsCG,
-                        stagingDir: stagingDir
-                    )
-                    return outcome.layout
-                }
-
-                let anchor = RegionAwareReflow.anchorId(forPageIndex: i)
-                claudePageBlocks.append(.anchor(
-                    id: anchor, label: "Page \(i + 1)"
-                ))
-                claudePageAnchors.append(PageAnchor(
-                    pdfPage: i, anchorId: anchor
-                ))
-                var pageBlocks: [Block] = []
-                var pageFootnotes: [Footnote] = []
-                do {
-                    let pageResult = try await pageEngine.recognize(
-                        pageImage: image,
-                        pageIndex: i,
-                        languages: options.languages
-                    )
-                    pageBlocks = pageResult.blocks
-                    pageFootnotes = pageResult.footnotes
-                    claudePageBlocks.append(contentsOf: pageResult.blocks)
-                    claudePageFootnotes.append(contentsOf: pageResult.footnotes)
-                } catch {
-                    // Refusal / network / parse failure on one page
-                    // shouldn't fail the whole conversion. The
-                    // anchor + missing body manifests as an empty
-                    // page in the EPUB. We *don't* write a
-                    // checkpoint for failed pages so a re-run
-                    // retries them.
-                }
-
-                // Layout completes in parallel; consume its result
-                // for figure extraction. If Surya failed (no
-                // layoutAnalyzer or all retries errored), no figures
-                // are extracted for this page — text-only output.
-                let layoutRegions = await layoutTask.value
-                var pageFigureExtractions: [FigureExtractor.ExtractedFigure] = []
-                if let regions = layoutRegions, !regions.isEmpty {
-                    pageFigureExtractions = figureExtractor.extract(
-                        pageIndex: i,
-                        regions: regions,
-                        pageImage: image
-                    )
-                    for fig in pageFigureExtractions {
-                        let (_, asset, figureBlock) =
-                            buildPageOCRFigureAsset(
-                                fig: fig,
-                                index: claudePageNextAssetIndex
-                            )
-                        claudePageNextAssetIndex += 1
-                        claudePageFigureAssets.append(asset)
-                        claudePageBlocks.append(figureBlock)
-                    }
-                }
-
-                // Persist a per-page checkpoint so a hang / crash /
-                // cancel past this point lets the next conversion of
-                // the same source PDF skip page i. Cascade-shape
-                // fields are zeroed out (observations: [],
-                // layoutRegions: nil); the `pageBlocks` /
-                // `pageFootnotes` / `figures` fields carry the
-                // actual content. Skip writing if Sonnet failed —
-                // the empty page would otherwise mark this index as
-                // "done" on resume.
-                if !pageBlocks.isEmpty || !pageFootnotes.isEmpty {
-                    let checkpoint = PageCheckpoint(
-                        pageIndex: i,
-                        pageBoundsWidth: pageBoundsCG.width,
-                        pageBoundsHeight: pageBoundsCG.height,
-                        observations: [],
-                        layoutRegions: nil,
-                        figures: pageFigureExtractions,
-                        tableExtractionsByRegionIndex: [:],
-                        verdict: nil,
-                        correctionTrailEntries: [],
-                        pageBlocks: pageBlocks,
-                        pageFootnotes: pageFootnotes
-                    )
-                    try? resumeManager.writeCheckpoint(checkpoint)
-                }
-                progress?(Progress(
-                    totalPages: totalPages,
-                    completedPages: i + 1,
-                    currentPageMeanConfidence: 1.0
-                ))
-                await Task.yield()
+            // Phase 2 hidden flag: end-to-end Claude page OCR.
+            // Defers per-page work to the post-loop dispatch so
+            // pages can run via a bounded TaskGroup with the
+            // `parallelPageOCRConcurrency` setting (Tier 9 /
+            // E-Parallel). Concurrency=1 preserves the original
+            // serial rhythm.
+            if claudePageEngine != nil {
+                pageOCRPageIndices.append(i)
                 continue
             }
 
@@ -1696,6 +1538,112 @@ public actor PDFToEPUBPipeline {
             await Task.yield()
         }
 
+        // Tier 9 / E-Parallel: dispatch page-OCR pages collected
+        // during the for-loop. Bounded TaskGroup driven by the
+        // `parallelPageOCRConcurrency` setting; concurrency=1 keeps
+        // the original serial rhythm. Each task returns a
+        // `PendingPageOCR` we slot into the dict by index.
+        if let pageEngine = claudePageEngine, !pageOCRPageIndices.isEmpty {
+            let concurrency = max(
+                1, options.cloudFeatures.parallelPageOCRConcurrency
+            )
+            // Pages already populated from a checkpoint restore
+            // (during the for-loop above) skip dispatch — their
+            // PendingPageOCR is already in the dict. Fresh pages
+            // get dispatched concurrently.
+            let freshIndices = pageOCRPageIndices.filter {
+                pageOCRPendingByIndex[$0] == nil
+            }
+            try await withThrowingTaskGroup(of: PendingPageOCR.self) { group in
+                var nextSubmit = 0
+                var inflight = 0
+                while nextSubmit < freshIndices.count || inflight > 0 {
+                    while inflight < concurrency
+                        && nextSubmit < freshIndices.count {
+                        let pageIndex = freshIndices[nextSubmit]
+                        nextSubmit += 1
+                        group.addTask { [self] in
+                            try await self.runPageOCRPage(
+                                pageIndex: pageIndex,
+                                pdf: pdf,
+                                options: options,
+                                stagingDir: stagingDir,
+                                pageEngine: pageEngine,
+                                figureExtractor: figureExtractor
+                            )
+                        }
+                        inflight += 1
+                    }
+                    if let p = try await group.next() {
+                        inflight -= 1
+                        pageOCRPendingByIndex[p.pageIndex] = p
+                        // Progress: report how many of the page-OCR
+                        // pages have completed. Mixed with cascade
+                        // progress in the main loop above this would
+                        // double-count, so this is a separate phase.
+                        progress?(Progress(
+                            totalPages: totalPages,
+                            completedPages: pageOCRPendingByIndex.count,
+                            currentPageMeanConfidence: 1.0
+                        ))
+                    }
+                }
+            }
+            // Document-ordered assembly: walk page-OCR indices in
+            // ascending order (the for-loop above appended them in
+            // order, but sort defensively in case future code adds
+            // skips), append anchor + blocks + footnotes + figures
+            // (assigning sequential asset IDs), update verdict /
+            // quality / diagnostics dicts, write checkpoint.
+            for i in pageOCRPageIndices.sorted() {
+                guard let pending = pageOCRPendingByIndex[i] else { continue }
+                claudePageBlocks.append(.anchor(
+                    id: pending.anchorId, label: "Page \(i + 1)"
+                ))
+                claudePageAnchors.append(PageAnchor(
+                    pdfPage: i, anchorId: pending.anchorId
+                ))
+                claudePageBlocks.append(contentsOf: pending.blocks)
+                claudePageFootnotes.append(contentsOf: pending.footnotes)
+                for fig in pending.figures {
+                    let (_, asset, figureBlock) =
+                        buildPageOCRFigureAsset(
+                            fig: fig,
+                            index: claudePageNextAssetIndex
+                        )
+                    claudePageNextAssetIndex += 1
+                    claudePageFigureAssets.append(asset)
+                    claudePageBlocks.append(figureBlock)
+                }
+                verdictsByPage[i] = pending.verdict
+                if let q = pending.qualityScore { qualityScores[i] = q }
+                if let d = pending.extractorDiagnostics {
+                    extractorDiagnostics[i] = d
+                }
+                // Skip checkpoint for failed Sonnet pages — re-runs
+                // should retry them. Trust-routed pages always
+                // checkpoint (they have content even though Sonnet
+                // didn't run).
+                if pending.sonnetSucceeded
+                    && (!pending.blocks.isEmpty || !pending.footnotes.isEmpty) {
+                    let checkpoint = PageCheckpoint(
+                        pageIndex: i,
+                        pageBoundsWidth: pending.pageBoundsCG.width,
+                        pageBoundsHeight: pending.pageBoundsCG.height,
+                        observations: [],
+                        layoutRegions: nil,
+                        figures: pending.figures,
+                        tableExtractionsByRegionIndex: [:],
+                        verdict: pending.verdict.rawValue,
+                        correctionTrailEntries: [],
+                        pageBlocks: pending.blocks,
+                        pageFootnotes: pending.footnotes
+                    )
+                    try? resumeManager.writeCheckpoint(checkpoint)
+                }
+            }
+        }
+
         // Build caption associations once across the whole book — the
         // orientation (caption-above vs caption-below) is decided
         // book-wide and locked, so we have to see all pages first.
@@ -2027,6 +1975,170 @@ public actor PDFToEPUBPipeline {
     /// Phase 4b helper: build a `FigureAsset` + matching
     /// `Block.figure` for one extracted figure, using the supplied
     /// document-order index for the asset id. Used by both the fresh
+    /// Tier 9 / E-Parallel: per-page outcome from one trip through
+    /// the page-OCR (Sonnet) path. Captures everything the
+    /// post-loop assembly pass needs to populate `claudePage*`
+    /// accumulators in document order, regardless of whether the
+    /// pages were processed serially or via a concurrent TaskGroup.
+    ///
+    /// `sonnetSucceeded` tracks whether the Sonnet call returned
+    /// usable content. Trust-routed pages (`verdict == .trust`)
+    /// always set this to true since they emit reflowed embedded
+    /// text. Sonnet failures (refusal / network / parse) set it to
+    /// false and leave `blocks` / `footnotes` empty; the assembly
+    /// pass uses this flag to decide whether to write a checkpoint
+    /// (we don't checkpoint failed pages — re-runs should retry
+    /// them).
+    struct PendingPageOCR: Sendable {
+        let pageIndex: Int
+        let anchorId: String
+        let pageBoundsCG: CGSize
+        let blocks: [Block]
+        let footnotes: [Footnote]
+        let figures: [FigureExtractor.ExtractedFigure]
+        let verdict: EmbeddedTextQualityScorer.Verdict
+        let qualityScore: EmbeddedTextQualityScorer.Score?
+        let extractorDiagnostics: EmbeddedTextExtractor.Diagnostics?
+        let sonnetSucceeded: Bool
+    }
+
+    /// Process one page through the page-OCR (Sonnet) path. Handles
+    /// E-Routing trust-check, render, parallel Surya layout, the
+    /// Sonnet call, and figure extraction. Returns a `PendingPageOCR`
+    /// the caller appends to a per-conversion dict; the document-
+    /// ordered assembly happens after all pages complete.
+    ///
+    /// Throws only on cancellation; Sonnet failures (refusal,
+    /// network, parse) are absorbed and surface via
+    /// `sonnetSucceeded == false` on the returned value.
+    private func runPageOCRPage(
+        pageIndex i: Int,
+        pdf: LoadedPDF,
+        options: Options,
+        stagingDir: URL,
+        pageEngine: ClaudePageOCREngine,
+        figureExtractor: FigureExtractor
+    ) async throws -> PendingPageOCR {
+        try Task.checkCancellation()
+        let anchorId = RegionAwareReflow.anchorId(forPageIndex: i)
+
+        // E-Routing: trust-verdict pages skip Sonnet.
+        var routingScore: EmbeddedTextQualityScorer.Score?
+        var routingDiagnostics: EmbeddedTextExtractor.Diagnostics?
+        if options.cloudFeatures.adaptivePageRouting && !options.forceOCR {
+            let extracted = autoreleasepool {
+                embeddedExtractor.extract(from: pdf, pageIndex: i)
+            }
+            let combined = extracted.lines
+                .map(\.text).joined(separator: " ")
+            let score = qualityScorer.score(
+                text: combined,
+                expectedLanguages: options.languages.map(\.rawValue)
+            )
+            routingScore = score
+            routingDiagnostics = extracted.diagnostics
+
+            if score.verdict == .trust {
+                let observations = extracted.lines.map { line in
+                    TextObservation(
+                        text: line.text, confidence: 0.95,
+                        box: line.box, source: .embedded
+                    )
+                }
+                let trustBlocks = ParagraphReflow().reflow(observations)
+                let bounds: CGSize = autoreleasepool {
+                    if let pdfPage = pdf.document.page(at: i) {
+                        let r = pdfPage.bounds(for: .mediaBox)
+                        return CGSize(width: r.width, height: r.height)
+                    }
+                    return .zero
+                }
+                return PendingPageOCR(
+                    pageIndex: i,
+                    anchorId: anchorId,
+                    pageBoundsCG: bounds,
+                    blocks: trustBlocks,
+                    footnotes: [],
+                    figures: [],
+                    verdict: .trust,
+                    qualityScore: score,
+                    extractorDiagnostics: extracted.diagnostics,
+                    sonnetSucceeded: true
+                )
+            }
+            // Verdict was .reocr; fall through to Sonnet but
+            // remember the score + diagnostics so the assembly
+            // pass logs them.
+        }
+
+        // Sonnet path.
+        let renderer = PDFRenderer(dpi: options.dpi)
+        let image = try renderer.renderPage(at: i, of: pdf)
+        let pageBoundsCG = CGSize(
+            width: image.width, height: image.height
+        )
+        let pngURL = stagingDir.appendingPathComponent(
+            String(format: "page-%05d.png", i)
+        )
+        Self.savePNG(image, to: pngURL)
+
+        // Surya layout in parallel with the Sonnet call.
+        let layoutTask = Task<[LayoutRegion]?, Never> {
+            let outcome = await self.analyzeLayoutWithRetry(
+                pdf: pdf,
+                pageIndex: i,
+                initialDPI: options.dpi,
+                initialPNGURL: pngURL,
+                initialPageBounds: pageBoundsCG,
+                stagingDir: stagingDir
+            )
+            return outcome.layout
+        }
+
+        var sonnetBlocks: [Block] = []
+        var sonnetFootnotes: [Footnote] = []
+        var sonnetSucceeded = false
+        do {
+            let result = try await pageEngine.recognize(
+                pageImage: image, pageIndex: i,
+                languages: options.languages
+            )
+            sonnetBlocks = result.blocks
+            sonnetFootnotes = result.footnotes
+            sonnetSucceeded = true
+        } catch is CancellationError {
+            // Cancel the layout task too before propagating.
+            layoutTask.cancel()
+            throw CancellationError()
+        } catch {
+            // Refusal / network / parse failure on one page
+            // shouldn't fail the whole conversion — the assembly
+            // pass logs the empty-blocks page and figures still
+            // attach.
+        }
+
+        let layoutRegions = await layoutTask.value
+        var figures: [FigureExtractor.ExtractedFigure] = []
+        if let regions = layoutRegions, !regions.isEmpty {
+            figures = figureExtractor.extract(
+                pageIndex: i, regions: regions, pageImage: image
+            )
+        }
+
+        return PendingPageOCR(
+            pageIndex: i,
+            anchorId: anchorId,
+            pageBoundsCG: pageBoundsCG,
+            blocks: sonnetBlocks,
+            footnotes: sonnetFootnotes,
+            figures: figures,
+            verdict: .reocr,
+            qualityScore: routingScore,
+            extractorDiagnostics: routingDiagnostics,
+            sonnetSucceeded: sonnetSucceeded
+        )
+    }
+
     /// page-OCR path (after Surya extraction) and the resume
     /// fast-path (re-walking checkpointed `figures`).
     ///
