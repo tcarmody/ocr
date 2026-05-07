@@ -1554,6 +1554,32 @@ public actor PDFToEPUBPipeline {
             let freshIndices = pageOCRPageIndices.filter {
                 pageOCRPendingByIndex[$0] == nil
             }
+            // Tier 9 / E-Batches step 2: when the toggle is on,
+            // dispatch all fresh Sonnet calls as a single
+            // Anthropic Messages Batches API request — 50%
+            // input/output token discount in exchange for async
+            // wall time. Trust-routed pages still skip Sonnet,
+            // and figure extraction still runs per page (parallel
+            // with the batch wait via the same TaskGroup shape).
+            // Falls back to the synchronous TaskGroup dispatch
+            // when batches are off OR when the run produces no
+            // batch requests (every page hit the trust path).
+            if options.cloudFeatures.useBatchAPI && !freshIndices.isEmpty,
+               let key = options.anthropicAPIKeyProvider(),
+               !key.isEmpty {
+                try await dispatchPageOCRViaBatch(
+                    freshIndices: freshIndices,
+                    pdf: pdf,
+                    options: options,
+                    stagingDir: stagingDir,
+                    pageEngine: pageEngine,
+                    figureExtractor: figureExtractor,
+                    apiKey: key,
+                    progress: progress,
+                    totalPages: totalPages,
+                    pendingByIndex: &pageOCRPendingByIndex
+                )
+            } else {
             try await withThrowingTaskGroup(of: PendingPageOCR.self) { group in
                 var nextSubmit = 0
                 var inflight = 0
@@ -1588,6 +1614,7 @@ public actor PDFToEPUBPipeline {
                         ))
                     }
                 }
+            }
             }
             // Document-ordered assembly: walk page-OCR indices in
             // ascending order (the for-loop above appended them in
@@ -2137,6 +2164,362 @@ public actor PDFToEPUBPipeline {
             extractorDiagnostics: routingDiagnostics,
             sonnetSucceeded: sonnetSucceeded
         )
+    }
+
+    /// Tier 9 / E-Batches step 2 internal: per-page prep result
+    /// from `preparePageForBatch`. `request == nil` means the page
+    /// was trust-routed and `partial` is fully populated; otherwise
+    /// `partial` has empty blocks/footnotes that the batch result
+    /// fills in.
+    struct BatchPrepared: Sendable {
+        let pageIndex: Int
+        let partial: PendingPageOCR
+        let request: AnthropicMessageRequest?
+    }
+
+    /// Tier 9 / E-Batches step 2. Dispatch the page-OCR Sonnet
+    /// calls as a single Anthropic Batches API request. Each
+    /// fresh page goes through:
+    ///   * **Phase A** (parallel TaskGroup) — render, save PNG,
+    ///     run Surya layout + figure extraction, build the
+    ///     Sonnet request. Trust-routed pages emit reflowed
+    ///     embedded text directly here, skipping the batch.
+    ///   * **Phase B** (single batch round-trip) — submit all
+    ///     non-trust pages' requests as one batch, wait for
+    ///     completion, fetch the JSONL result stream.
+    ///   * **Phase C** (sequential) — walk results by custom_id
+    ///     ("page-NNN"), parse each into blocks + footnotes,
+    ///     fill in the corresponding `PendingPageOCR` slot.
+    ///
+    /// Trades wall time (~1-5 minutes typical, capped at 24h)
+    /// for a 50% input + output token discount on the Sonnet
+    /// calls. Figure extraction happens in Phase A so the page
+    /// images don't need to stay alive across the batch wait.
+    ///
+    /// Falls back silently to the synchronous TaskGroup path on
+    /// batch submission / poll / fetch failure — the caller
+    /// observes empty `pendingByIndex` entries for affected
+    /// pages and the assembly emits empty pages, same as
+    /// per-page Sonnet failures.
+    private func dispatchPageOCRViaBatch(
+        freshIndices: [Int],
+        pdf: LoadedPDF,
+        options: Options,
+        stagingDir: URL,
+        pageEngine: ClaudePageOCREngine,
+        figureExtractor: FigureExtractor,
+        apiKey: String,
+        progress: ProgressHandler?,
+        totalPages: Int,
+        pendingByIndex: inout [Int: PendingPageOCR]
+    ) async throws {
+        // Phase A: per-page prep. Trust-routed pages emit final
+        // PendingPageOCR; Sonnet pages emit a partial pending +
+        // a request-builder. Run in parallel since prep is I/O-
+        // and-CPU bound (render + Surya + base64 encode).
+        let concurrency = max(
+            1, options.cloudFeatures.parallelPageOCRConcurrency
+        )
+        var prepared: [Int: BatchPrepared] = [:]
+        try await withThrowingTaskGroup(of: BatchPrepared.self) { group in
+            var nextSubmit = 0
+            var inflight = 0
+            while nextSubmit < freshIndices.count || inflight > 0 {
+                while inflight < concurrency
+                    && nextSubmit < freshIndices.count {
+                    let i = freshIndices[nextSubmit]
+                    nextSubmit += 1
+                    group.addTask { [self] in
+                        let tuple = try await self.preparePageForBatch(
+                            pageIndex: i,
+                            pdf: pdf, options: options,
+                            stagingDir: stagingDir,
+                            pageEngine: pageEngine,
+                            figureExtractor: figureExtractor
+                        )
+                        return BatchPrepared(
+                            pageIndex: tuple.pageIndex,
+                            partial: tuple.partial,
+                            request: tuple.request
+                        )
+                    }
+                    inflight += 1
+                }
+                if let p = try await group.next() {
+                    inflight -= 1
+                    prepared[p.pageIndex] = p
+                }
+            }
+        }
+
+        // Trust-routed pages are already fully populated;
+        // settle them now so the assembly walk doesn't see them
+        // as fresh-but-missing.
+        for (i, p) in prepared where p.request == nil {
+            pendingByIndex[i] = p.partial
+        }
+
+        // Phase B: build + submit batch from Sonnet pages.
+        let sonnetEntries = freshIndices.compactMap { i -> (Int, AnthropicMessageRequest)? in
+            guard let p = prepared[i], let req = p.request else { return nil }
+            return (i, req)
+        }
+        guard !sonnetEntries.isEmpty else { return }
+
+        // Reserve budget upfront — one call per page in the batch.
+        // If the cap can't accommodate the full batch, fall back
+        // and let the caller's per-page synchronous path handle
+        // it (we'll just leave those pages with empty pending
+        // entries; the existing `sonnetSucceeded == false`
+        // posture covers downstream).
+        let budget = pageEngine.budget
+        for _ in sonnetEntries {
+            guard await budget.tryConsume() else {
+                // Budget exhausted mid-reservation. Treat all
+                // remaining as "couldn't dispatch"; their
+                // partials become final (empty blocks). We could
+                // alternatively shrink the batch to whatever fit;
+                // simpler is to bail and let the user know via
+                // the cap-clamping cost estimate.
+                for (i, _) in sonnetEntries {
+                    if pendingByIndex[i] == nil,
+                       let p = prepared[i] {
+                        pendingByIndex[i] = p.partial
+                    }
+                }
+                return
+            }
+        }
+
+        let batchRequests = sonnetEntries.map { (i, req) in
+            AnthropicBatchSubmitRequest.Request(
+                customId: String(format: "page-%05d", i),
+                params: req
+            )
+        }
+        let batchClient = AnthropicBatchAPIClient(
+            apiKeyProvider: { apiKey }
+        )
+        let submitted: AnthropicBatchSubmitResponse
+        do {
+            submitted = try await batchClient.submit(
+                AnthropicBatchSubmitRequest(requests: batchRequests)
+            )
+        } catch {
+            // Batch submission failed entirely. Settle every
+            // Sonnet page's partial as the final pending so the
+            // assembly emits empty pages (anchor + figures only).
+            for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            return
+        }
+
+        // Phase B continued: poll until done.
+        let final: AnthropicBatchStatusResponse
+        do {
+            final = try await batchClient.awaitCompletion(
+                batchId: submitted.id
+            )
+        } catch {
+            for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            return
+        }
+        guard let resultsURL = final.resultsUrl else {
+            for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            return
+        }
+        let results: [AnthropicBatchResultLine]
+        do {
+            results = try await batchClient.fetchResults(from: resultsURL)
+        } catch {
+            for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            return
+        }
+
+        // Phase C: walk results, parse each, fill in the
+        // matching pending slot. Result order is unspecified;
+        // we look up by custom_id.
+        for line in results {
+            guard let pageIndex = Self.pageIndexFromCustomId(line.customId)
+            else { continue }
+            guard let prep = prepared[pageIndex] else { continue }
+            let parsedBlocks: [Block]
+            let parsedFootnotes: [Footnote]
+            let success: Bool
+            switch line.result {
+            case .succeeded(let msg):
+                await pageEngine.recordBatchUsage(msg.usage)
+                if let parsed = pageEngine.parseBatchMessage(
+                    msg, pageIndex: pageIndex
+                ) {
+                    parsedBlocks = parsed.blocks
+                    parsedFootnotes = parsed.footnotes
+                    success = true
+                } else {
+                    parsedBlocks = []
+                    parsedFootnotes = []
+                    success = false
+                }
+            case .refused(let msg):
+                await pageEngine.recordBatchUsage(msg.usage)
+                parsedBlocks = []
+                parsedFootnotes = []
+                success = false
+            case .errored, .canceled, .expired:
+                parsedBlocks = []
+                parsedFootnotes = []
+                success = false
+            }
+            // Re-emit a final PendingPageOCR with Sonnet content
+            // merged in. Preserves the partial's anchor / bounds /
+            // figures / verdict / quality / diagnostics.
+            let final = PendingPageOCR(
+                pageIndex: prep.partial.pageIndex,
+                anchorId: prep.partial.anchorId,
+                pageBoundsCG: prep.partial.pageBoundsCG,
+                blocks: parsedBlocks,
+                footnotes: parsedFootnotes,
+                figures: prep.partial.figures,
+                verdict: prep.partial.verdict,
+                qualityScore: prep.partial.qualityScore,
+                extractorDiagnostics: prep.partial.extractorDiagnostics,
+                sonnetSucceeded: success
+            )
+            pendingByIndex[pageIndex] = final
+            progress?(Progress(
+                totalPages: totalPages,
+                completedPages: pendingByIndex.count,
+                currentPageMeanConfidence: 1.0
+            ))
+        }
+
+        // Any Sonnet pages whose result didn't show up in the
+        // JSONL (corrupt line, unknown custom_id) get their
+        // partial as final so the page emits empty.
+        for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
+            if let p = prepared[i] { pendingByIndex[i] = p.partial }
+        }
+    }
+
+    /// Helper for `dispatchPageOCRViaBatch`. Does Phase A for
+    /// one page: trust check (returns final pending if trust),
+    /// else render + Surya layout + figure extraction + build
+    /// Sonnet request (returns partial pending + request).
+    private func preparePageForBatch(
+        pageIndex i: Int,
+        pdf: LoadedPDF,
+        options: Options,
+        stagingDir: URL,
+        pageEngine: ClaudePageOCREngine,
+        figureExtractor: FigureExtractor
+    ) async throws -> (pageIndex: Int, partial: PendingPageOCR, request: AnthropicMessageRequest?) {
+        try Task.checkCancellation()
+        let anchorId = RegionAwareReflow.anchorId(forPageIndex: i)
+
+        var routingScore: EmbeddedTextQualityScorer.Score?
+        var routingDiagnostics: EmbeddedTextExtractor.Diagnostics?
+        if options.cloudFeatures.adaptivePageRouting && !options.forceOCR {
+            let extracted = autoreleasepool {
+                embeddedExtractor.extract(from: pdf, pageIndex: i)
+            }
+            let combined = extracted.lines
+                .map(\.text).joined(separator: " ")
+            let score = qualityScorer.score(
+                text: combined,
+                expectedLanguages: options.languages.map(\.rawValue)
+            )
+            routingScore = score
+            routingDiagnostics = extracted.diagnostics
+            if score.verdict == .trust {
+                let observations = extracted.lines.map { line in
+                    TextObservation(
+                        text: line.text, confidence: 0.95,
+                        box: line.box, source: .embedded
+                    )
+                }
+                let trustBlocks = ParagraphReflow().reflow(observations)
+                let bounds: CGSize = autoreleasepool {
+                    if let pdfPage = pdf.document.page(at: i) {
+                        let r = pdfPage.bounds(for: .mediaBox)
+                        return CGSize(width: r.width, height: r.height)
+                    }
+                    return .zero
+                }
+                let pending = PendingPageOCR(
+                    pageIndex: i,
+                    anchorId: anchorId,
+                    pageBoundsCG: bounds,
+                    blocks: trustBlocks,
+                    footnotes: [],
+                    figures: [],
+                    verdict: .trust,
+                    qualityScore: score,
+                    extractorDiagnostics: extracted.diagnostics,
+                    sonnetSucceeded: true
+                )
+                return (i, pending, nil)
+            }
+        }
+
+        // Sonnet path: render, save PNG, kick layout, do figure
+        // extraction NOW (before batch wait so we don't hold the
+        // page image alive across the batch wait), build request.
+        let renderer = PDFRenderer(dpi: options.dpi)
+        let image = try renderer.renderPage(at: i, of: pdf)
+        let pageBoundsCG = CGSize(
+            width: image.width, height: image.height
+        )
+        let pngURL = stagingDir.appendingPathComponent(
+            String(format: "page-%05d.png", i)
+        )
+        Self.savePNG(image, to: pngURL)
+
+        let layoutOutcome = await analyzeLayoutWithRetry(
+            pdf: pdf, pageIndex: i,
+            initialDPI: options.dpi,
+            initialPNGURL: pngURL,
+            initialPageBounds: pageBoundsCG,
+            stagingDir: stagingDir
+        )
+        var figures: [FigureExtractor.ExtractedFigure] = []
+        if let regions = layoutOutcome.layout, !regions.isEmpty {
+            figures = figureExtractor.extract(
+                pageIndex: i, regions: regions, pageImage: image
+            )
+        }
+
+        let request = pageEngine.buildBatchRequest(
+            pageImage: image, languages: options.languages
+        )
+
+        let partial = PendingPageOCR(
+            pageIndex: i,
+            anchorId: anchorId,
+            pageBoundsCG: pageBoundsCG,
+            blocks: [],
+            footnotes: [],
+            figures: figures,
+            verdict: .reocr,
+            qualityScore: routingScore,
+            extractorDiagnostics: routingDiagnostics,
+            sonnetSucceeded: false
+        )
+        return (i, partial, request)
+    }
+
+    /// `"page-00042"` → `42`. Returns nil if the custom_id
+    /// isn't in our format (defensive — we always produce
+    /// matching ids on submit).
+    private static func pageIndexFromCustomId(_ customId: String) -> Int? {
+        guard customId.hasPrefix("page-") else { return nil }
+        return Int(customId.dropFirst("page-".count))
     }
 
     /// page-OCR path (after Surya extraction) and the resume

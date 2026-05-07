@@ -80,13 +80,84 @@ public struct ClaudePageOCREngine: Sendable {
             throw PageOCRError.budgetExhausted
         }
         try Task.checkCancellation()
-
-        guard let png = Self.encodePNG(pageImage) else {
+        guard let request = Self.buildRequest(
+            pageImage: pageImage, languages: languages,
+            model: model, maxOutputTokens: maxOutputTokens
+        ) else {
             throw PageOCRError.pngEncodeFailed
         }
-        let base64 = png.base64EncodedString()
 
-        let request = AnthropicMessageRequest(
+        let response: AnthropicMessageResponse
+        do {
+            response = try await client.send(request)
+        } catch let apiError as AnthropicAPIError {
+            throw PageOCRError.underlying(apiError)
+        }
+
+        await budget.recordUsage(response.usage, for: model)
+        if response.didRefuse {
+            throw PageOCRError.emptyResponse
+        }
+        guard let xhtml = response.primaryText, !xhtml.isEmpty else {
+            throw PageOCRError.emptyResponse
+        }
+
+        let parser = ClaudePageXHTMLParser()
+        return parser.parse(xhtml, pageIndex: pageIndex)
+    }
+
+    /// Tier 9 / E-Batches step 2. Build the request shape without
+    /// sending it — used by the batch dispatch path to assemble a
+    /// single `AnthropicBatchSubmitRequest` carrying all the
+    /// per-page Sonnet calls. Returns nil only on PNG encode
+    /// failure. Caller is responsible for reserving a budget call
+    /// (the synchronous `recognize` does that itself) and for
+    /// recording usage post-result via `recordBatchUsage`.
+    public func buildBatchRequest(
+        pageImage: CGImage, languages: [BCP47]
+    ) -> AnthropicMessageRequest? {
+        Self.buildRequest(
+            pageImage: pageImage, languages: languages,
+            model: model, maxOutputTokens: maxOutputTokens
+        )
+    }
+
+    /// Parse a successful batch result message into a
+    /// `ClaudePageResult`. Returns nil on refusal or empty primary
+    /// text — caller treats nil as "this page yielded nothing
+    /// usable, leave its blocks empty in the document."
+    public func parseBatchMessage(
+        _ response: AnthropicMessageResponse, pageIndex: Int
+    ) -> ClaudePageResult? {
+        if response.didRefuse { return nil }
+        guard let xhtml = response.primaryText, !xhtml.isEmpty else {
+            return nil
+        }
+        let parser = ClaudePageXHTMLParser()
+        return parser.parse(xhtml, pageIndex: pageIndex)
+    }
+
+    /// Record token usage from a batch result. Mirrors
+    /// `budget.recordUsage` in the synchronous path; batch dispatch
+    /// calls this once per result line so the per-book stats
+    /// match what was actually spent.
+    public func recordBatchUsage(_ usage: Usage) async {
+        await budget.recordUsage(usage, for: model)
+    }
+
+    /// Internal request-builder shared by `recognize` and
+    /// `buildBatchRequest`. Encodes the page image as base64 PNG
+    /// and assembles the Messages API request body. Returns nil
+    /// on PNG encode failure (no recovery — fall back to cascade).
+    private static func buildRequest(
+        pageImage: CGImage,
+        languages: [BCP47],
+        model: AnthropicModel,
+        maxOutputTokens: Int
+    ) -> AnthropicMessageRequest? {
+        guard let png = Self.encodePNG(pageImage) else { return nil }
+        let base64 = png.base64EncodedString()
+        return AnthropicMessageRequest(
             model: model,
             maxTokens: maxOutputTokens,
             // Cache the system prompt — same instruction repeated
@@ -106,24 +177,6 @@ public struct ClaudePageOCREngine: Sendable {
             // cost.
             thinking: .disabled
         )
-
-        let response: AnthropicMessageResponse
-        do {
-            response = try await client.send(request)
-        } catch let apiError as AnthropicAPIError {
-            throw PageOCRError.underlying(apiError)
-        }
-
-        await budget.recordUsage(response.usage, for: model)
-        if response.didRefuse {
-            throw PageOCRError.emptyResponse
-        }
-        guard let xhtml = response.primaryText, !xhtml.isEmpty else {
-            throw PageOCRError.emptyResponse
-        }
-
-        let parser = ClaudePageXHTMLParser()
-        return parser.parse(xhtml, pageIndex: pageIndex)
     }
 
     // MARK: - Prompts

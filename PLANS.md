@@ -1955,41 +1955,60 @@ edits, then add merge in v2.
 
 ### E-Batches — Anthropic Batches API for Cloud-mode runs
 
-**Status**: AI-module primitives shipped (Tier 9 / Round 3);
-pipeline integration deferred to a follow-up commit.
+**Status**: shipped (Tier 9 / Round 3, both steps).
 
-**Shipped**: `AnthropicBatchAPIClient` exposes `submit`,
-`status`, `awaitCompletion` (poll until ended with configurable
-interval + timeout), and `fetchResults` (decode the JSONL
-result stream). Wire-format types cover the submit body
-(`AnthropicBatchSubmitRequest` with per-entry `customId` +
-`params`), the submit / status responses (with the
-`processing_status` enum: `inProgress` / `canceling` /
+**Step 1** — AI-module primitives. `AnthropicBatchAPIClient`
+exposes `submit`, `status`, `awaitCompletion` (poll until ended
+with configurable interval + timeout), and `fetchResults`
+(decode the JSONL result stream). Wire-format types cover the
+submit body (`AnthropicBatchSubmitRequest` with per-entry
+`customId` + `params`), the submit / status responses
+(`processing_status` enum: `inProgress` / `canceling` /
 `ended`), and the result-line union (`succeeded` / `errored` /
 `refused` / `canceled` / `expired`). The decoder splits
-"succeeded with refusal stop reason" into the `.refused`
-branch so callers can pattern-match instead of inspecting
-`didRefuse` per line. Corrupt JSONL lines skip silently —
-partial-batch recovery is the point. Same `AnthropicTransport`
-abstraction the synchronous client uses, so test mocks work
-identically. New `cloudFeatures.useBatchAPI` toggle (off by
-default) is decoded but not yet consumed.
+"succeeded with refusal stop reason" into `.refused` so callers
+pattern-match cleanly. Corrupt JSONL lines skip silently —
+partial-batch recovery is the point. 12 dedicated tests.
 
-**Deferred**: pipeline integration. The page-OCR loop today
-calls `pageEngine.recognize` synchronously per page; switching
-to batches means deferring the call, accumulating per-page
-requests, submitting once, polling, then dispatching results
-back into per-page block accumulators. The integration
-interleaves with per-page checkpoint/resume, anchor
-accumulation, and Surya layout, so it's a substantial refactor
-that lands cleaner as its own commit.
+**Step 2** — pipeline integration. New
+`dispatchPageOCRViaBatch(...)` plugs into the deferred-append
+slot the parallel TaskGroup uses. Three phases:
 
-12 new AnthropicBatchAPIClientTests cover submit shape +
-headers + custom-id serialization, missing-key error,
-4xx error mapping, status decode (in-progress + ended-with-
-results-url), `awaitCompletion` polling until ended,
-fetchResults decode for every result-line variant, and corrupt-
-line skipping.
+  * **Phase A** (parallel TaskGroup): `preparePageForBatch`
+    per page — trust check (returns final pending if `.trust`),
+    else render + Surya layout + figure extraction + build
+    Sonnet request via the new `pageEngine.buildBatchRequest`.
+    Figure extraction runs here so page images don't need to
+    stay alive across the batch wait.
+  * **Phase B** (single round-trip): reserve N budget calls
+    upfront, build `AnthropicBatchSubmitRequest` with
+    `custom_id = "page-NNNNN"` per page, submit, await
+    completion, fetch results. Submission / poll / fetch
+    failures fall through to "settle each page's partial as
+    final" — empty pages emit instead of aborting the
+    conversion.
+  * **Phase C**: walk results by `customId`, parse each via
+    `pageEngine.parseBatchMessage`, record usage on the
+    budget, fill in the blocks/footnotes on the matching
+    partial. Refused / errored / canceled / expired results
+    leave the page empty (same posture as a synchronous
+    Sonnet failure). Result lines whose customId doesn't
+    match any submitted page (corrupt or unknown) get
+    silently skipped; the page's partial becomes its final.
+
+`ClaudePageOCREngine` gained `buildBatchRequest`,
+`parseBatchMessage`, and `recordBatchUsage` to share the
+request shape + parser between sync and batch paths. The
+existing `recognize` is now a thin wrapper around the same
+internals.
+
+Activated via `cloudFeatures.useBatchAPI` (default off — opt-in
+because async wall time changes the conversion experience).
+When the toggle's on AND `useClaudePageOCR` is on AND a fresh
+Sonnet page exists, the dispatch routes through batches; the
+synchronous TaskGroup path remains as the fallback (used when
+batches off, when there are no fresh Sonnet pages, or when
+the API key is missing).
 
 ### E-Parallel — Parallel page processing
 
@@ -2145,7 +2164,7 @@ subsequent round.
    that fail length-ratio / occurrence-count / no-collision /
    empty-or-equal checks before applying as global find/replaces.
 
-### Round 3 — Cost + speed wins (~7 days) — **mostly shipped** (E-Batches step 2 deferred)
+### Round 3 — Cost + speed wins (~7 days) — **shipped**
 
 Heavier lifts, but each one independently valuable. Order
 within the round picks **Routing first** (removes calls before
@@ -2157,9 +2176,12 @@ so it's worth eating the heavier lift earlier.
 
 6. ~~**E-Routing**~~ shipped (Tier 9 / Round 3) — page-OCR
    path skips Sonnet on `.trust`-verdict pages.
-7. **E-Batches** — partial. AI-module primitives shipped
-   (`AnthropicBatchAPIClient` + types + 12 tests); pipeline
-   integration deferred to a follow-up commit.
+7. ~~**E-Batches**~~ shipped — AI primitives (step 1) +
+   pipeline integration (step 2). 50% Sonnet token discount on
+   page-OCR runs in exchange for async wall time (~1-5 min
+   typical, capped at 24h). Routes through
+   `dispatchPageOCRViaBatch` when `cloudFeatures.useBatchAPI`
+   is on.
 8. ~~**E-Parallel**~~ shipped (Tier 9 / Round 3) —
    `cloudFeatures.parallelPageOCRConcurrency` drives a bounded
    TaskGroup over the page-OCR loop via deferred-append
