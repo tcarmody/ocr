@@ -1603,18 +1603,33 @@ remove-without-deleting-file.
 
 ## R-Bulk-Editor — Bulk editor operations
 
-**Status**: editor operates on one EPUB at a time. No way to apply
-the same change across many converted books.
+**Status**: shipped (v1: cross-book find/replace).
+`BulkEditor.replace(in:query:replacement:caseSensitive:regex:progress:)`
+opens each EPUB into a temp working tree, runs
+`PackageSearch.replaceAll` over every text file, writes changes
+back to disk, and repacks the .epub in place via `EPUBRepacker`.
+Per-book results carry replacement counts plus an optional error
+field — failures on one book don't abort the batch. Books with
+zero matches skip the repack entirely so unchanged EPUBs aren't
+touched (mtime preserved, backups preserved).
 
-### Goal
+UI: multi-select rows in the Library window's Table, then
+"Bulk Edit Selected…" in the filter bar opens a sheet with
+Find / Replace / case-sensitive / regex controls + per-book
+progress + a results list (✓ / no-matches / error). Apply runs
+on a detached Task so the unpack/repack cycle doesn't block
+the main thread.
 
-Operations like "re-OCR every page in language X" or "replace this
-phrase across these N books" — useful when a corpus update is
-needed without redoing every book individually.
+Re-OCR-by-language across books is intentionally deferred —
+that re-engages the conversion pipeline and is a separate
+feature. v1 covers the higher-utility cross-book find/replace
+piece.
 
-### Effort
-
-~3 days.
+6 new BulkEditorTests against real EPUB fixtures built via
+`EPUBBuilder`: full open → search → replace → repack
+round-trip, no-match repack skipping (mtime-preserved),
+per-book error isolation when one URL is bogus, empty-query
+no-op, case-sensitivity flag, and per-book progress callback.
 
 ---
 
@@ -1815,21 +1830,28 @@ use; distribution is lower priority than correctness.
 - **Editor**: format/insert/edit menus, Special Character, Goto
   Line, Split / Merge / Regenerate TOC, Find in All Files,
   Validate EPUB (epubcheck), spellcheck, smart quotes,
-  formatting toolbar.
+  formatting toolbar, **Customize Style** (per-book font/size/theme).
+- **Launcher quality-of-life**: pause/resume queue, drag-reorder
+  queued jobs, finished-jobs History disclosure, dedicated full-
+  queue window (⇧⌘Q).
+- **Library**: dedicated browser window (⇧⌘L) listing every
+  converted EPUB with sortable columns + language filter +
+  cross-book bulk find/replace.
 
 **Next, in roughly this order:**
 
-1. **Editor / library polish** — `R-Search`, `R-Custom-Styles`,
-   `R-Library`, `R-Bulk-Editor` in whatever order matches actual
-   working friction. None are load-bearing; pick them up as the
-   need arises.
-2. **Defer Phase 10 (distribution)** until the user actually wants
+1. **Defer Phase 10 (distribution)** until the user actually wants
    to share or onboard another machine. The app is signed and runs
    locally; that's enough for personal use.
+2. **Stretch / speculative items in Tier 8** if a specific need
+   surfaces — Apple Foundation Models polish (when macOS 26+ is
+   the realistic minimum), custom footnote styles, audio output
+   via `AVSpeechSynthesizer`.
 
 Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely
 — corpus doesn't justify the bidi-rendering and per-script
-accuracy lifts. The originally planned hybrid Cloud feature set
-is complete, and launcher quality-of-life (pause, reorder,
-history, full-queue window) is done; what remains is editor /
-library polish for the working flow.
+accuracy lifts. The originally planned hybrid Cloud feature set,
+launcher quality-of-life, editor polish, and library + bulk-edit
+features are all done. What remains is distribution work (Tier 4)
+when the user wants to share the app and the speculative Tier 8
+ideas if they become load-bearing.

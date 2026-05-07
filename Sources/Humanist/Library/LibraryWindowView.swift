@@ -26,6 +26,13 @@ struct LibraryWindowView: View {
     /// "All" default is fine on every launch.
     @State private var languageFilter: String? = nil
 
+    /// Multi-selection in the table. Drives R-Bulk-Editor: the
+    /// "Bulk Edit Selected…" button enables when this is non-empty
+    /// and opens a sheet that runs find/replace across the
+    /// selected EPUBs.
+    @State private var selection: Set<LibraryEntry.ID> = []
+    @State private var showBulkEdit: Bool = false
+
     var body: some View {
         VStack(spacing: 0) {
             filterBar
@@ -41,6 +48,19 @@ struct LibraryWindowView: View {
         }
         .navigationTitle("Humanist Library")
         .frame(minWidth: 620, minHeight: 380)
+        .sheet(isPresented: $showBulkEdit) {
+            BulkEditSheet(
+                targets: selectedEntries,
+                isPresented: $showBulkEdit
+            )
+        }
+    }
+
+    /// The library entries currently in `selection`, in the order
+    /// they appear in `displayedEntries` so the sheet shows results
+    /// in a predictable order.
+    private var selectedEntries: [LibraryEntry] {
+        displayedEntries.filter { selection.contains($0.id) }
     }
 
     // MARK: - filter bar
@@ -51,7 +71,23 @@ struct LibraryWindowView: View {
             Text("\(displayedEntries.count) of \(library.entries.count)")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if !selection.isEmpty {
+                Text("· \(selection.count) selected")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
+            // R-Bulk-Editor: cross-book find/replace driven from
+            // the current multi-selection. Visible only when at
+            // least one row is selected; sheet opens on click.
+            if !selection.isEmpty {
+                Button {
+                    showBulkEdit = true
+                } label: {
+                    Label("Bulk Edit Selected…", systemImage: "pencil.and.list.clipboard")
+                }
+                .help("Run find/replace across the selected books")
+            }
             if !availableLanguages.isEmpty {
                 Picker("Language", selection: $languageFilter) {
                     Text("All Languages").tag(String?.none)
@@ -87,7 +123,9 @@ struct LibraryWindowView: View {
 
     @ViewBuilder
     private var table: some View {
-        Table(of: LibraryEntry.self, sortOrder: $sortOrder) {
+        Table(of: LibraryEntry.self,
+              selection: $selection,
+              sortOrder: $sortOrder) {
             TableColumn("Title", value: \.title) { entry in
                 Text(entry.title)
                     .lineLimit(1)
