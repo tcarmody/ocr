@@ -187,6 +187,7 @@ struct EditorToolsMenu: Commands {
     var body: some Commands {
         CommandMenu("Tools") {
             EditorValidateEPUBCommand()
+            EditorCustomizeStyleCommand()
         }
     }
 }
@@ -196,6 +197,17 @@ private struct EditorValidateEPUBCommand: View {
     var body: some View {
         Button("Validate EPUB…") { router.validateEPUB() }
             .keyboardShortcut("v", modifiers: [.command, .shift, .option])
+            .disabled(!router.canFind)
+    }
+}
+
+/// R-Custom-Styles. Opens the per-book style sheet on the active
+/// editor. Disabled when no editor is focused — same predicate as
+/// every other Tools-menu item.
+private struct EditorCustomizeStyleCommand: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    var body: some View {
+        Button("Customize Style…") { router.showStyleSheet() }
             .disabled(!router.canFind)
     }
 }

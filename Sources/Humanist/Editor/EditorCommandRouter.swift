@@ -196,6 +196,14 @@ final class EditorCommandRouter: ObservableObject {
         Task { await vm.validateEPUB() }
     }
 
+    /// Tools > Customize Style. Opens the style sheet for the
+    /// active editor; the sheet's Apply button writes the new
+    /// `book.css` through the dirty-buffer pipeline.
+    func showStyleSheet() {
+        guard let vm = activeEditor() else { return }
+        vm.showStyleSheet = true
+    }
+
     // MARK: - private
 
     /// Pick the editor whose window is currently key. If none of the

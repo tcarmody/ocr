@@ -350,6 +350,9 @@ final class EditorViewModel: ObservableObject {
             self.correctionTrail = CorrectionTrail.read(
                 workingDirectory: pkg.workingDirectory
             )
+            // R-Custom-Styles: pick up the user's previously applied
+            // styling (if any) from the book.css sentinel.
+            self.loadBookStyle()
         } catch {
             self.state = .failed(error.localizedDescription)
         }
@@ -892,6 +895,70 @@ final class EditorViewModel: ObservableObject {
     /// Drives the Edit > Goto Line sheet. Same pattern as
     /// `showSpecialCharacterPicker`.
     @Published var showGotoLineSheet: Bool = false
+
+    // MARK: - Custom styles (R-Custom-Styles)
+
+    /// Drives the Tools > Customize Style sheet. Same view-flag
+    /// pattern as `showValidationSheet`.
+    @Published var showStyleSheet: Bool = false
+
+    /// User's per-book style choices. Loaded from the EPUB's
+    /// `book.css` on open via the `humanist-style:` sentinel
+    /// comment; nil when the EPUB predates this feature or carries
+    /// no custom style. Editing the sheet's controls updates this
+    /// in place; the user must hit "Apply" to flush a regenerated
+    /// `book.css` into the working directory.
+    @Published var bookStyle: BookStyle = .default
+
+    /// Apply `bookStyle` to the EPUB's `book.css`: read the current
+    /// CSS (if any), regenerate the override block + sentinel, and
+    /// write the result through the dirty-buffer pipeline so
+    /// Save flushes it into the EPUB. Bumps `previewVersion` so
+    /// the WKWebView reloads with the new styling.
+    ///
+    /// Returns true on success; false when the EPUB has no
+    /// `OEBPS/css/book.css` (atypical — books built by Humanist
+    /// always have it, but a third-party EPUB might not). Caller
+    /// surfaces a "stylesheet missing" error in that case.
+    @discardableResult
+    func applyBookStyle(_ style: BookStyle) -> Bool {
+        guard let pkg = package else { return false }
+        let cssURL = pkg.workingDirectory
+            .appendingPathComponent("OEBPS/css/book.css")
+            .canonicalForFile
+        let existing: String?
+        if let buffered = buffers[cssURL] {
+            existing = buffered
+        } else if let onDisk = try? String(contentsOf: cssURL) {
+            existing = onDisk
+        } else {
+            return false
+        }
+        let updated = BookCSSBuilder.apply(style: style, to: existing)
+        buffers[cssURL] = updated
+        dirtyURLs.insert(cssURL)
+        bookStyle = style
+        isDirty = true
+        // Bump preview so the WKWebView reloads with the new CSS.
+        previewVersion += 1
+        return true
+    }
+
+    /// Read the persisted style from `book.css` on open. Mirrors
+    /// the load path for other sidecar-shaped data (page map,
+    /// correction trail). Defaults to `.default` when the CSS has
+    /// no sentinel — the user just hasn't customized this book yet.
+    func loadBookStyle() {
+        guard let pkg = package else { return }
+        let cssURL = pkg.workingDirectory
+            .appendingPathComponent("OEBPS/css/book.css")
+            .canonicalForFile
+        guard let css = try? String(contentsOf: cssURL) else {
+            bookStyle = .default
+            return
+        }
+        bookStyle = BookCSSBuilder.parse(css) ?? .default
+    }
 
     // MARK: - EPUB validation (Phase 5b)
 

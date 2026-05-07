@@ -162,6 +162,13 @@ struct EditorView: View {
                             isPresented: $vm.showValidationSheet
                         )
                     }
+                    // R-Custom-Styles: Tools > Customize Style sheet.
+                    .sheet(isPresented: $vm.showStyleSheet) {
+                        BookStyleSheet(
+                            vm: vm,
+                            isPresented: $vm.showStyleSheet
+                        )
+                    }
                     // Phase 5b: chapter-operation failures (split,
                     // merge, regen TOC) surface here so the user sees
                     // what went wrong without digging through logs.

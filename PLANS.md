@@ -1537,34 +1537,35 @@ H1 / H2 / H3 boundaries and emit a nested EPUB nav.
 
 ## R-Custom-Styles — Per-book CSS / fonts
 
-**Status**: every EPUB ships with the same minimal `book.css`. No
-per-book customization.
+**Status**: shipped. New `Tools > Customize Style…` sheet lets
+the user pick font (serif / sans / monospace), size (0.75–1.5em
+slider), and theme (light / sepia / dark). Apply regenerates the
+EPUB's `OEBPS/css/book.css` through the existing dirty-buffer
+pipeline so Save flushes the change into the .epub; the preview
+pane reloads on the same `previewVersion` bump that other edits
+use. The user's choices round-trip across save / reopen via a
+sentinel JSON comment (`/* humanist-style: {...} */`) embedded
+in the CSS — no separate META-INF sidecar needed.
 
-### Goal
+User-authored CSS rules above the sentinel block are preserved;
+the `humanist-style:start … end` markers carve out exactly the
+override block so consecutive applies replace it cleanly without
+stacking. Out-of-range font sizes clamp to 0.5–2.0em so a
+corrupted value can't produce unreadable output.
 
-Editor pane that lets the user choose a font + size + color theme,
-preview it live in the WKWebView, save into the book's CSS.
-
-### Effort
-
-~1 day for a basic font picker + serif/sans toggle. More for a
-real theming system.
+9 new BookStyleTests cover sentinel emission, user-CSS preservation,
+single-block round-trip across re-applies, parse-recovery for every
+font × theme × size combination, malformed-sentinel rejection, and
+the size-format / theme-palette helpers.
 
 ---
 
 ## R-Search — Full-text search in the editor
 
-**Status**: editor has CodeMirror's built-in find but it's limited
-to the current pane.
-
-### Goal
-
-Cross-chapter search that returns hits with context, jumps to the
-matching XHTML location.
-
-### Effort
-
-~1.5 days.
+**Status**: shipped as Find in All Files (commit `baea472`).
+Cross-chapter search + replace + go-to-source via a dedicated
+sheet (⇧⌘F). Hits show file + line + context, click jumps to
+the source pane and scrolls / flashes the match.
 
 ---
 
