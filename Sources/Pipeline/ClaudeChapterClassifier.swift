@@ -71,7 +71,11 @@ public struct ClaudeChapterClassifier: Sendable {
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: maxOutputTokens,
-            system: .plain(Self.systemPrompt),
+            // Cache the system prompt — fired once per chapter, so
+            // a 15-chapter book hits the cache 14 times. 1h TTL
+            // fits the typical few-minute conversion run plus
+            // cross-book reuse in a session.
+            system: .cached(Self.systemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .plain(context)),
             ],

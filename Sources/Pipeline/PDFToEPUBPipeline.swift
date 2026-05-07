@@ -1678,13 +1678,22 @@ public actor PDFToEPUBPipeline {
             corrector: dictionaryCorrector
         )
 
+        // Tier 9 typography pass: decompose Latin ligatures
+        // (ﬁ → fi, etc.), strip soft hyphens, collapse `--` to
+        // em-dashes, and convert `\d+-\d+` numeric ranges to
+        // en-dashes. Pure deterministic text rewrites — runs
+        // after dictionary cleanup so the dictionary sees the
+        // pre-normalized form (some dictionary entries match
+        // ligature characters as-is).
+        let typographicallyCleanBlocks = TypographyNormalizer.normalize(dehyphenatedBlocks)
+
         // Phase 1 of structured-document detection: split the flat
         // block stream into chapters at every level-1 heading.
         // Footnotes, page anchors, and figure assets are distributed
         // to the chapter they belong to so EPUB readers see a real
         // multi-chapter navigation tree.
         let rawChapters = ChapterSplitter.split(
-            blocks: dehyphenatedBlocks,
+            blocks: typographicallyCleanBlocks,
             footnotes: reflowed.footnotes,
             pageAnchors: reflowed.pageAnchors,
             figureAssets: reflowed.figureAssets,

@@ -223,12 +223,20 @@ final class ClaudePostProcessorTests: XCTestCase {
         let body = try JSONSerialization.jsonObject(
             with: sent[0].httpBody!
         ) as! [String: Any]
-        let system = body["system"] as! String
+        // The system field is now `[{type: "text", text: ..., cache_control: ...}]`
+        // — `.cached(...)` was added in the E-Cache-Audit pass so the
+        // prompt is auto-cached for prefix reuse across calls.
+        let blocks = body["system"] as! [[String: Any]]
+        XCTAssertEqual(blocks.count, 1)
+        let system = blocks[0]["text"] as! String
         XCTAssertTrue(system.contains("OCR"))
         XCTAssertTrue(system.contains("ligature"),
                       "System prompt should describe the kinds of edits we want")
         XCTAssertTrue(system.contains("Do NOT"),
                       "System prompt must explicitly prohibit rewrites/translations")
+        // Cache-control breakpoint must be present and ephemeral.
+        let cc = blocks[0]["cache_control"] as! [String: Any]
+        XCTAssertEqual(cc["type"] as? String, "ephemeral")
     }
 
     // MARK: - Guardrail integration

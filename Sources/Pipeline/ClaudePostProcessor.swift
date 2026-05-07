@@ -151,7 +151,11 @@ public struct ClaudePostProcessor: Sendable {
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: maxOutputTokens,
-            system: .plain(Self.systemPrompt),
+            // Cache the system prompt — fires once per low-quality
+            // region (~5-15% of regions on a scanned book), so a
+            // 200-page scanned book might hit the cache 80+ times.
+            // 1h TTL covers long conversions and bulk runs.
+            system: .cached(Self.systemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: messageContent),
             ],

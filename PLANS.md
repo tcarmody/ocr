@@ -1823,14 +1823,15 @@ guardrail patterns from Cloud Phase 6.
 
 ### Q-Hyphenation — Cross-page hyphenation repair
 
-Words split with `-` at the end of one page that continue at the
-start of the next currently stay broken. Today's dehyphenation
-runs intra-region only. Pure logic fix — walk the assembled
-block stream looking for `<page-break>` straddling a hyphenated
-word, join, drop the leading whitespace + capital on the
-continuation when appropriate.
-
-**Effort**: ~0.5 day.
+**Status**: already shipped via `PDFToEPUBPipeline.bridgeBoundaries`
+(pre-Tier 9). The post-reflow pass walks adjacent paragraphs in
+`[Block]` (across columns and pages), and where the previous
+paragraph's tail satisfies `Dehyphenation.shouldDehyphenate`,
+joins them dropping the soft hyphen. Same heuristic as
+intra-region dehyphenation. Edge cases not covered (heading-to-
+paragraph bridging where the next page starts with a heading,
+proper-noun continuations the lowercase rule refuses) are
+deferred — uncommon and conservative-by-design.
 
 ### Q-Metadata — Author / title / ISBN extraction
 
@@ -1845,25 +1846,27 @@ useful for dedup.
 
 ### Q-Dashes — Em-dash / en-dash / hyphen disambiguation
 
-Distinguish `—` (em), `–` (en), `--` (typed em), and `-`
-(hyphen) in OCR output. Heuristic: surrounding whitespace +
-adjacent characters + language context. Small but cumulative
-win on academic prose where dashes carry semantic weight.
+**Status**: shipped as part of the Round 1 typography pass
+(`TypographyNormalizer`). ASCII `--` collapses to `—` (em-dash);
+numeric ranges `\d+-\d+` collapse to en-dash via lookaround
+regex; isolated single hyphens are intentionally left alone.
+Conservative — every rewrite must be uniquely a typography
+artifact. Documented limitation: bare-digit phone numbers
+(`555-1212`) get caught by the digit-range rule; acceptable
+since academic prose rarely contains them and the false-positive
+rate on real ranges (years, page numbers, intervals) is far
+higher in the no-rule baseline.
 
-**Effort**: ~0.5 day.
+### Q-Ligatures — Ligature normalization
 
-### Q-Ligatures — Ligature normalization beyond fi / fl
-
-Vision/Tesseract handle the common Latin ligatures (`ﬁ`, `ﬂ`,
-`ﬀ`, `ﬃ`, `ﬄ`); long-s is already handled. Extend to: archaic
-Latin abbreviations (`Ⅷ`, `&` → `et`, `ꝓ` → `pro`, `q̄` → `que`),
-Greek typographic ligatures (`ϰ` vs `κ`, `ϐ` vs `β` — preserve
-or normalize per user choice), kerning artifacts that produce
-near-ligatures (`rn` → `m` candidates flagged for review).
-
-**Effort**: ~1 day. Some of this overlaps with Haiku post-OCR
-cleanup (vision mode already catches some); the explicit table
-makes it deterministic and free for clean cases.
+**Status**: shipped as part of the Round 1 typography pass
+(`TypographyNormalizer`). Decomposes the Latin presentation-
+form ligatures (`ﬀ`, `ﬁ`, `ﬂ`, `ﬃ`, `ﬄ`, `ﬅ`, `ﬆ`) to their
+letter-pair / triplet forms; strips invisible soft hyphens
+(`U+00AD`) that PDF line-break hints leak through. Greek
+typographic ligatures and archaic Latin abbreviations remain
+deferred — the Latin set is what shows up in actual academic
+PDFs; the rest can layer in per-script if a corpus demands it.
 
 ## Versatile (more inputs, more outputs)
 
@@ -1946,14 +1949,15 @@ in Tier 6) plus per-page TaskGroup concurrency.
 
 ### E-Warm — Surya sidecar warm-on-launch
 
-First-conversion latency drops by 5-15s if we pre-spawn the
-sidecar at app launch instead of on first PDF drop. Single
-small change — kick `SuryaConnection.shared` from
-`HumanistApp.init` (or first window appearance) so the model
-load happens during onboarding rather than after the user
-clicks Convert.
-
-**Effort**: ~2 hours.
+**Status**: shipped (Tier 9 / Round 1). `HumanistApp.init`
+fires a detached background task that calls
+`await SuryaConnection.shared?.bridge.startIfNeeded()`. Spawns
+the Python sidecar + waits for Surya's hello message during
+onboarding so the first PDF conversion doesn't pay the ~5-15s
+spawn cost. Fire-and-forget — failure (Surya not installed)
+silently falls back to the existing Vision / Tesseract path.
+Model weights still load lazily on first inference, but Python
+startup + imports are the bulk of the latency.
 
 ### E-Routing — Adaptive Cloud routing per page
 
@@ -1971,14 +1975,18 @@ embedded-text quality) — that's part of the work.
 
 ### E-Cache-Audit — Prompt cache reuse audit
 
-System prompts in the Claude features are designed to be
-byte-stable across requests so the prompt-cache prefix hits.
-Verify the actual cache hit rate against the Anthropic dashboard
-(or via response usage breakdown), and tune anything that's not
-hitting (e.g. accidentally per-call dynamic content in a
-`system` block).
-
-**Effort**: ~0.5 day. Pure measurement + tuning.
+**Status**: shipped (Tier 9 / Round 1). Audit finding: every
+Claude feature was passing `system: .plain(...)`, which sends
+the system prompt as a bare string with no `cache_control`
+breakpoint — the prompt-cache prefix never hit. Switched all
+six (`ClaudeOCREngine`, `ClaudePageOCREngine`,
+`ClaudePostProcessor`, `ClaudeTableExtractor`,
+`ClaudeChapterClassifier`, `ClaudeTOCParser`) to
+`system: .cached(Self.systemPrompt, ttl: .oneHour)`. First
+call writes the cache; subsequent calls in the 1h window read
+it for a 90% input-cost discount. 1h TTL covers long bulk
+runs that span multiple cache windows, plus cross-book reuse
+in a session.
 
 ## Observability / Iteration
 
@@ -2006,15 +2014,21 @@ flows into the Library window; the typography pass affects every
 output format below. The user revises this sequence before
 shipping.
 
-### Round 1 — Quick wins (~2 days total)
+### Round 1 — Quick wins (~2 days total) — **shipped**
 
 Small, isolated improvements that compound across every
 subsequent round.
 
-1. **E-Warm** (sidecar warm-on-launch) — 2 hours
-2. **E-Cache-Audit** (prompt cache hit-rate tune) — 0.5 day
-3. **Q-Hyphenation** + **Q-Dashes** + **Q-Ligatures** as one
-   "typography pass" commit — ~1 day total
+1. ~~**E-Warm**~~ shipped — sidecar warm-on-launch via
+   detached `startIfNeeded()` task in `HumanistApp.init`.
+2. ~~**E-Cache-Audit**~~ shipped — every Claude feature now
+   uses `.cached(...)` instead of `.plain(...)` for the system
+   prompt; 1h ephemeral TTL.
+3. ~~**Q-Hyphenation**~~ already shipped pre-Tier 9 via
+   `bridgeBoundaries`; ~~**Q-Dashes**~~ + ~~**Q-Ligatures**~~
+   shipped as `TypographyNormalizer` (post-reflow, before
+   chapter splitting): Latin ligature decomposition + soft-
+   hyphen strip + `--`→`—` + `\d+-\d+`→`\d+–\d+`.
 
 ### Round 2 — Metadata + coherence (~2.5 days)
 

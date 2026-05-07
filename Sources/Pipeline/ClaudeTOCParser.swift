@@ -60,7 +60,10 @@ public struct ClaudeTOCParser: Sendable {
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: maxOutputTokens,
-            system: .plain(Self.systemPrompt),
+            // Cache the system prompt. Single call per book — the
+            // win here is cross-book in a bulk run. 1h TTL covers
+            // a session-long batch.
+            system: .cached(Self.systemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .plain(trimmed)),
             ],

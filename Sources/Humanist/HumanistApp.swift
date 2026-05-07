@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import Layout  // SuryaConnection.shared for E-Warm
 
 @main
 struct HumanistApp: App {
@@ -40,6 +41,19 @@ struct HumanistApp: App {
         // singleton if needed.
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+
+        // Tier 9 / E-Warm: kick the Surya sidecar's Python
+        // interpreter + Surya imports off the launch path so the
+        // first conversion doesn't pay the ~5-15s spawn cost. Fire-
+        // and-forget — failure (Surya not installed, sidecar script
+        // missing) silently falls back to the existing Vision /
+        // Tesseract path on first conversion. Model weights still
+        // load lazily on first inference, but Python startup +
+        // imports are the bulk of the latency.
+        Task.detached(priority: .background) {
+            guard let conn = SuryaConnection.shared else { return }
+            try? await conn.bridge.startIfNeeded()
+        }
     }
 
     var body: some Scene {

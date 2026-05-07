@@ -68,7 +68,13 @@ public struct ClaudeTableExtractor: TableExtractor {
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: maxOutputTokens,
-            system: .plain(Self.systemPrompt),
+            // Cache the system prompt. Tables are rare per book
+            // (~0.5/book in the cost-estimator model), so within a
+            // single book the cache rarely helps. The win is
+            // cross-book: when the user converts several table-
+            // heavy books in a session, the second book's first
+            // table hits the cache. 1h TTL covers that window.
+            system: .cached(Self.systemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .blocks([
                     .image(mediaType: .png, base64Data: base64),

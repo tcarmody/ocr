@@ -82,7 +82,12 @@ public struct ClaudeOCREngine: OCREngine {
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: maxOutputTokens,
-            system: .plain(Self.systemPrompt),
+            // Cache the system prompt — byte-stable across every
+            // hard-region OCR call in a book, so the first call
+            // writes the cache and the rest hit it for a 90% input-
+            // cost discount. 1h TTL handles long bulk runs that
+            // span > 5 min between same-feature calls.
+            system: .cached(Self.systemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .blocks([
                     .image(mediaType: .png, base64Data: base64),

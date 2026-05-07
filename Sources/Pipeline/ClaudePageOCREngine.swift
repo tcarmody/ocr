@@ -89,7 +89,12 @@ public struct ClaudePageOCREngine: Sendable {
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: maxOutputTokens,
-            system: .plain(Self.systemPrompt),
+            // Cache the system prompt — same instruction repeated
+            // for every page in the book, so the first page writes
+            // the cache and pages 2..N hit it. 1h TTL fits a 400-
+            // page book that runs across multiple cache-window
+            // boundaries.
+            system: .cached(Self.systemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .blocks([
                     .image(mediaType: .png, base64Data: base64),
