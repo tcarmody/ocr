@@ -1520,6 +1520,12 @@ final class EditorViewModel: ObservableObject {
     func mergeChapterWithNext() async {
         guard let pkg = package, let file = selectedFile else { return }
         flushSourceTextToBuffer()
+        // Capture the next chapter's URL BEFORE the merge runs so
+        // we can scrub its in-memory buffer + dirty entry afterward.
+        // Without this scrub, save() would re-write the deleted
+        // chapter file from its stale buffer and the merge would
+        // appear to revert on next reopen.
+        let nextChapterURL = self.nextChapterURL(after: file.id, in: pkg)
         do {
             try writeBufferIfDirty(file.id)
             let editor = PackageEditor(
@@ -1528,6 +1534,16 @@ final class EditorViewModel: ObservableObject {
             )
             try editor.mergeWithNextChapter(at: file.id)
             try reloadPackageFromDisk()
+            // Drop any in-memory state for the now-deleted next
+            // chapter so save() doesn't re-create it from a stale
+            // buffer. select() also needs to forget it as the
+            // selectedFile if that's somehow what was selected
+            // (shouldn't happen since merge runs against the
+            // current file, but defend the invariant).
+            if let nextURL = nextChapterURL {
+                buffers.removeValue(forKey: nextURL)
+                dirtyURLs.remove(nextURL)
+            }
             // The on-disk file now contains both chapters' bodies —
             // reload its content into the source pane bypassing the
             // flush-then-load path `select(_:)` uses (that would
@@ -1541,6 +1557,24 @@ final class EditorViewModel: ObservableObject {
         } catch {
             chapterOperationError = error.localizedDescription
         }
+    }
+
+    /// Resolve the next-chapter file URL for the chapter at
+    /// `chapterURL` in the current spine. Used by Merge to find
+    /// the file that's about to be deleted so its in-memory
+    /// buffer can be dropped. Returns nil when this chapter is
+    /// last in the spine.
+    private func nextChapterURL(after chapterURL: URL, in pkg: EPUBPackage) -> URL? {
+        let editor = PackageEditor(
+            workingDirectory: pkg.workingDirectory,
+            package: pkg.package
+        )
+        guard let id = editor.spineItemID(for: chapterURL) else { return nil }
+        guard let idx = pkg.package.spine.firstIndex(of: id),
+              idx + 1 < pkg.package.spine.count else { return nil }
+        let nextID = pkg.package.spine[idx + 1]
+        guard let item = pkg.package.manifestById[nextID] else { return nil }
+        return editor.absoluteURL(forManifestHref: item.href)
     }
 
     /// Reload the selected file's source from disk after an on-disk
@@ -1631,6 +1665,15 @@ final class EditorViewModel: ObservableObject {
         guard let oldPkg = package else { return }
         let opf = try OPFReader().read(rootDir: oldPkg.workingDirectory)
         let tree = FileNode.walk(oldPkg.workingDirectory)
+        // The new package shares the same working directory as the
+        // old one — disown on the old instance so its deinit
+        // doesn't delete the directory out from under the new one.
+        // Without this, every chapter file's URL becomes a "no
+        // such file" reference moments after the next autorelease
+        // pool drain, and Save (which repacks from the working
+        // directory) reverts to whatever the .epub had before the
+        // edit.
+        oldPkg.disownWorkingDirectory()
         package = EPUBPackage(
             id: oldPkg.id,
             sourceURL: oldPkg.sourceURL,

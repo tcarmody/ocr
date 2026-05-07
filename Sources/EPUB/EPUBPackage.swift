@@ -15,6 +15,14 @@ public final class EPUBPackage: Identifiable, @unchecked Sendable {
     /// editing operations that change the tree (Phase 6.B+) will
     /// invalidate this.
     public let fileTree: FileNode
+    /// Whether this instance owns the working directory's lifecycle
+    /// (i.e. should clean it up on deinit). True for newly-opened
+    /// packages; the editor flips it to false on the OLD instance
+    /// before reassigning to a fresh package that shares the same
+    /// directory — otherwise the old deinit deletes the directory
+    /// out from under the new instance, leaving every chapter URL
+    /// pointing at a removed file. See `disownWorkingDirectory()`.
+    private var ownsWorkingDirectory: Bool = true
 
     public init(
         id: UUID = UUID(),
@@ -30,10 +38,24 @@ public final class EPUBPackage: Identifiable, @unchecked Sendable {
         self.fileTree = fileTree
     }
 
+    /// Mark this instance as no longer owning the working directory.
+    /// Used by the editor when replacing a stale `EPUBPackage`
+    /// instance (after Split / Merge / Regenerate-TOC) with a freshly-
+    /// parsed one that shares the same on-disk directory: the new
+    /// instance takes over ownership, the old one bows out without
+    /// running cleanup. Idempotent.
+    public func disownWorkingDirectory() {
+        ownsWorkingDirectory = false
+    }
+
     deinit {
-        // Best-effort cleanup. If the user crashed before deinit fired
-        // the temp dir lives until the OS sweeps temp on reboot, which
-        // is acceptable.
+        // Best-effort cleanup, only when this instance still owns
+        // the directory. If `disownWorkingDirectory` was called, a
+        // sibling instance is still using the directory and will
+        // handle its own cleanup later. If the user crashed before
+        // deinit fired the temp dir lives until the OS sweeps temp
+        // on reboot, which is acceptable.
+        guard ownsWorkingDirectory else { return }
         try? FileManager.default.removeItem(at: workingDirectory)
     }
 

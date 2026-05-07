@@ -233,13 +233,32 @@ public struct PackageEditor {
     /// Rebuild `nav.xhtml` from the current spine. Each chapter's
     /// title is extracted from its first `<h1>` or `<h2>` element;
     /// chapters with no heading fall back to "Chapter N".
+    ///
+    /// Re-reads the OPF from disk so we reflect any spine /
+    /// manifest mutations made by sibling operations on this
+    /// editor (Split / Merge ran `insertManifestItem` /
+    /// `removeManifestItem` before getting here; the in-memory
+    /// `self.package` is now stale). Without this re-read, the
+    /// regenerated nav would still link to the freshly-deleted
+    /// chapter, and the new spine entry from a Split would be
+    /// missing from the nav.
     public func regenerateNav() throws {
-        guard let nav = navItem() else { throw EditError.missingNav }
-        let navURL = absoluteURL(forManifestHref: nav.href)
+        let freshPackage: OPFReader.Package
+        do {
+            freshPackage = try OPFReader().read(rootDir: workingDirectory)
+        } catch {
+            throw EditError.malformedXML(
+                "Couldn't re-read OPF before regenerating nav: \(error)"
+            )
+        }
+        guard let nav = freshPackage.manifestById.values.first(where: {
+            ($0.properties ?? "").contains("nav")
+        }) else { throw EditError.missingNav }
+        let navURL = opfDirectory.appendingPathComponent(nav.href)
         var entries: [String] = []
-        for (i, itemID) in package.spine.enumerated() {
-            guard let item = package.manifestById[itemID] else { continue }
-            let chapterURL = absoluteURL(forManifestHref: item.href)
+        for (i, itemID) in freshPackage.spine.enumerated() {
+            guard let item = freshPackage.manifestById[itemID] else { continue }
+            let chapterURL = opfDirectory.appendingPathComponent(item.href)
             let title = (try? Self.firstHeadingTitle(in: chapterURL))
                 ?? "Chapter \(i + 1)"
             // Nav links use the chapter href relative to the nav file
@@ -251,8 +270,8 @@ public struct PackageEditor {
             )
         }
 
-        let language = XMLEscape.attribute(package.metadata.language ?? "en")
-        let docTitle = XMLEscape.text(package.metadata.title ?? "Contents")
+        let language = XMLEscape.attribute(freshPackage.metadata.language ?? "en")
+        let docTitle = XMLEscape.text(freshPackage.metadata.title ?? "Contents")
         let xhtml = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE html>
