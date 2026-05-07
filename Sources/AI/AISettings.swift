@@ -112,6 +112,14 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// the conversion experience from per-page progress to
         /// "submitting batch / waiting / processing".
         public var useBatchAPI: Bool
+        /// Tier 9 / E-Parallel. When `useClaudePageOCR` is on, the
+        /// per-page Sonnet calls run with this much concurrency
+        /// (clamped to ≥ 1). Default 1 keeps the existing
+        /// per-page rhythm; bumping to 4-8 cuts wall time
+        /// roughly proportionally on bulk runs. Anthropic's
+        /// Build-tier RPM accommodates 4-8 concurrent calls
+        /// comfortably; higher tiers can push further.
+        public var parallelPageOCRConcurrency: Int
 
         public init(
             hardRegionOCR: Bool = true,
@@ -123,7 +131,8 @@ public struct AISettings: Sendable, Codable, Equatable {
             metadataExtraction: Bool = true,
             coherencePass: Bool = true,
             adaptivePageRouting: Bool = true,
-            useBatchAPI: Bool = false
+            useBatchAPI: Bool = false,
+            parallelPageOCRConcurrency: Int = 1
         ) {
             self.hardRegionOCR = hardRegionOCR
             self.tableExtraction = tableExtraction
@@ -135,6 +144,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.coherencePass = coherencePass
             self.adaptivePageRouting = adaptivePageRouting
             self.useBatchAPI = useBatchAPI
+            self.parallelPageOCRConcurrency = max(1, parallelPageOCRConcurrency)
         }
 
         /// Decode optionally so settings persisted before
@@ -148,6 +158,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             case coherencePass
             case adaptivePageRouting
             case useBatchAPI
+            case parallelPageOCRConcurrency
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -182,6 +193,14 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.useBatchAPI = try c.decodeIfPresent(
                 Bool.self, forKey: .useBatchAPI
             ) ?? false
+            // Default 1: existing serial per-page rhythm. Users
+            // bump explicitly when they want bulk-run speedup.
+            // Clamp at decode time so a corrupt persisted value
+            // (e.g. 0 or negative) can't break the run.
+            let raw = try c.decodeIfPresent(
+                Int.self, forKey: .parallelPageOCRConcurrency
+            ) ?? 1
+            self.parallelPageOCRConcurrency = max(1, raw)
         }
     }
 }

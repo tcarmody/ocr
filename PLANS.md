@@ -1993,22 +1993,38 @@ line skipping.
 
 ### E-Parallel — Parallel page processing
 
-**Status**: deferred from Tier 9 / Round 3 to a follow-up.
+**Status**: setting plumbed; runtime refactor deferred to a
+follow-up.
 
-The page-OCR (Sonnet) per-page loop accumulates anchors,
-Sonnet content, figure assets, and per-page checkpoints in
-strict document order. Page-level parallelism requires a
-deferred-append restructure: collect per-page results in a
-`[Int: PendingPage]` dict during a TaskGroup, then walk pages
-in order to assemble `claudePageBlocks` + assign figure asset
-IDs + emit checkpoints. ~250 lines of careful refactor with
-real interaction with existing checkpoint/resume + cancellation
-+ progress reporting; lands cleaner as its own commit.
+`cloudFeatures.parallelPageOCRConcurrency` is wired through
+`AISettings` (default 1, decode-clamped to ≥ 1). The runtime
+per-page loop still serial — bumping the value above 1 has no
+effect today.
+
+To activate: the page-OCR (Sonnet) per-page loop in
+`PDFToEPUBPipeline.convert` accumulates anchors, Sonnet
+content, figure assets, and per-page checkpoints in strict
+document order. Page-level parallelism requires a
+deferred-append restructure:
+  1. Extract per-page work into a private async helper that
+     returns a `PendingPageOCR` struct (anchor + blocks +
+     footnotes + figures + verdict + bounds).
+  2. Replace the inline page-OCR branch with a
+     `withThrowingTaskGroup` of bounded width using the
+     `parallelPageOCRConcurrency` setting.
+  3. After the group, walk pages 0..N in order to populate
+     `claudePageBlocks` / `claudePageAnchors` /
+     `claudePageFootnotes` / `claudePageFigureAssets` /
+     `claudePageNextAssetIndex` + write checkpoints + emit
+     progress.
+  4. The same `[Int: PendingPageOCR]` shape is also what the
+     E-Batches pipeline integration needs — the two refactors
+     should land as one commit.
 
 Surya sidecar pooling (the `P-Surya-Pool` half of E-Parallel)
 remains separately deferred — each pool member loads ~1.3 GB
-of weights, so the memory tradeoff is real and worth a
-dedicated decision.
+of weights, so the memory tradeoff is worth a dedicated
+decision.
 
 A 400-page book in page-OCR mode at concurrency=4 drops from
 ~50 minutes to ~13 minutes (Sonnet is the long pole; Build-tier
@@ -2137,10 +2153,12 @@ so it's worth eating the heavier lift earlier.
 7. **E-Batches** — partial. AI-module primitives shipped
    (`AnthropicBatchAPIClient` + types + 12 tests); pipeline
    integration deferred to a follow-up commit.
-8. **E-Parallel** — deferred. Bounded TaskGroup over the
-   page-OCR loop is a ~250-line restructure that interacts
-   with checkpoint/resume + cancellation + progress reporting;
-   lands cleaner as its own commit.
+8. **E-Parallel** — setting plumbed
+   (`cloudFeatures.parallelPageOCRConcurrency`, default 1, no
+   runtime effect yet). Runtime refactor deferred — needs the
+   same deferred-append restructure of the page-OCR loop that
+   E-Batches step 2 needs; landing them in one commit is
+   cleaner than splitting.
 
 ### Round 4 — Output formats + ingestion options (~2 days)
 
