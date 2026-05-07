@@ -843,6 +843,12 @@ final class EditorViewModel: ObservableObject {
         let id = UUID()
         let totalPages: Int
         var completedPages: Int = 0
+        /// Pages skipped because the user had manually edited them
+        /// since the last automated pass (V-Refresh v2 protection).
+        /// Counted toward `completedPages` so the progress bar fills
+        /// to 100%, but reported separately so the user knows what
+        /// was preserved.
+        var preservedPages: Int = 0
         var currentPDFPage: Int?
         var engineDisplayName: String
         var failures: [PageFailure] = []
@@ -930,10 +936,48 @@ final class EditorViewModel: ObservableObject {
         let docLanguage = book.metadata.language
             .flatMap { BCP47(rawValue: $0) } ?? langs.first ?? .en
 
+        // V-Refresh v2: load existing snapshots. When a page's
+        // current body fingerprint differs from the snapshot, the
+        // user has edited it since the last automated pass — we
+        // preserve their edits and skip the page. Books without a
+        // snapshot sidecar (legacy / pre-v2) get treated as "no
+        // edits to protect"; the first run writes fresh snapshots
+        // so subsequent runs preserve any edits made in between.
+        var snapshots = PageSnapshots.read(workingDirectory: book.workingDirectory)
+            ?? PageSnapshots()
+
         var successCount = 0
         for entry in entries {
             if Task.isCancelled { break }
             bulkReOCRProgress?.currentPDFPage = entry.pdfPage
+
+            // Pull the chapter resource + current body up-front so
+            // we can fingerprint before deciding to run OCR.
+            let chapterURL = book.workingDirectory
+                .appendingPathComponent(entry.xhtmlFile)
+                .canonicalForFile
+            guard let resource = book.resource(at: chapterURL),
+                  let chapterText = resource.text,
+                  let currentBody = PageContentReplacer.body(
+                      of: entry.anchorId, in: chapterText
+                  )
+            else {
+                bulkReOCRProgress?.failures.append(.init(
+                    pdfPage: entry.pdfPage,
+                    message: "Anchor \(entry.anchorId) not found in \(entry.xhtmlFile)."
+                ))
+                bulkReOCRProgress?.completedPages += 1
+                continue
+            }
+
+            let currentFingerprint = PageSnapshots.fingerprint(of: currentBody)
+            if let recorded = snapshots.fingerprintByAnchor[entry.anchorId],
+               recorded != currentFingerprint {
+                // User has edited this page since the snapshot — skip.
+                bulkReOCRProgress?.preservedPages += 1
+                bulkReOCRProgress?.completedPages += 1
+                continue
+            }
 
             do {
                 let result = try await pipeline.reOCRSinglePage(
@@ -948,23 +992,27 @@ final class EditorViewModel: ObservableObject {
                 let xhtml = XHTMLFragmentRenderer.render(
                     blocks: bodyBlocks, language: docLanguage
                 )
-                let chapterURL = book.workingDirectory
-                    .appendingPathComponent(entry.xhtmlFile)
-                    .canonicalForFile
-                guard let resource = book.resource(at: chapterURL),
-                      let oldText = resource.text,
-                      let newText = PageContentReplacer.replaceBody(
-                          of: entry.anchorId, in: oldText, with: xhtml
-                      )
-                else {
+                guard let newText = PageContentReplacer.replaceBody(
+                    of: entry.anchorId, in: chapterText, with: xhtml
+                ) else {
                     bulkReOCRProgress?.failures.append(.init(
                         pdfPage: entry.pdfPage,
-                        message: "Anchor \(entry.anchorId) not found in \(entry.xhtmlFile)."
+                        message: "Failed to splice page \(entry.anchorId) into \(entry.xhtmlFile)."
                     ))
                     bulkReOCRProgress?.completedPages += 1
                     continue
                 }
                 resource.text = newText
+                // Re-extract the new body to fingerprint. Reuses
+                // the same range logic the splice used so the
+                // recorded fingerprint exactly matches what a
+                // subsequent untouched-page check will compute.
+                if let newBody = PageContentReplacer.body(
+                    of: entry.anchorId, in: newText
+                ) {
+                    snapshots.fingerprintByAnchor[entry.anchorId] =
+                        PageSnapshots.fingerprint(of: newBody)
+                }
                 successCount += 1
             } catch {
                 bulkReOCRProgress?.failures.append(.init(
@@ -982,6 +1030,12 @@ final class EditorViewModel: ObservableObject {
         if successCount > 0 {
             do {
                 try EPUBBookSaver().save(book)
+                // Persist the updated snapshots alongside the save.
+                // The fingerprints reflect post-Re-OCR bodies for
+                // pages we just rewrote; preserved-edit pages keep
+                // their pre-existing fingerprint (or none, for
+                // legacy books that hadn't run the v2 path yet).
+                try? snapshots.write(workingDirectory: book.workingDirectory)
                 refreshFileTree()
                 reloadSelectedFileFromDisk()
                 previewVersion += 1

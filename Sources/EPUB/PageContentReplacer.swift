@@ -31,10 +31,38 @@ public enum PageContentReplacer {
         in chapterText: String,
         with newXHTML: String
     ) -> String? {
-        // Locate the anchor's opening `<span ... id="anchorId" ...>`
-        // tag. We accept either quoting style — the converter emits
-        // double quotes, but user edits or external tools might
-        // use single quotes.
+        guard let range = bodyRange(of: anchorId, in: chapterText) else {
+            return nil
+        }
+        let trimmed = newXHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+        let spliced = "\n\(trimmed)\n"
+        var result = chapterText
+        result.replaceSubrange(range, with: spliced)
+        return result
+    }
+
+    /// Extract the body of the page identified by `anchorId` from
+    /// `chapterText`. Used by V-Refresh v2 to fingerprint each page
+    /// before re-OCR — the comparison decides whether the page was
+    /// edited since the last automated pass.
+    ///
+    /// Returns nil when the anchor isn't found.
+    public static func body(
+        of anchorId: String,
+        in chapterText: String
+    ) -> String? {
+        guard let range = bodyRange(of: anchorId, in: chapterText) else {
+            return nil
+        }
+        return String(chapterText[range])
+    }
+
+    /// Locate the page-body range in `chapterText`. Shared by
+    /// `replaceBody` and `body`.
+    private static func bodyRange(
+        of anchorId: String,
+        in chapterText: String
+    ) -> Range<String.Index>? {
         let needles = ["id=\"\(anchorId)\"", "id='\(anchorId)'"]
         var anchorOpenIdx: String.Index?
         for needle in needles {
@@ -45,15 +73,11 @@ public enum PageContentReplacer {
         }
         guard let anchorOpenIdx else { return nil }
 
-        // Find the closing `>` of the anchor's opening tag — that's
-        // where the page body begins.
         guard let openTagClose = chapterText.range(
             of: ">", range: anchorOpenIdx..<chapterText.endIndex
         ) else { return nil }
         let bodyStart = openTagClose.upperBound
 
-        // Find the next page anchor (any id matching `hu-page-N`)
-        // after bodyStart. That's where this page's body ends.
         let bodyEnd: String.Index
         if let nextAnchor = nextHuPageAnchor(after: bodyStart, in: chapterText) {
             bodyEnd = nextAnchor
@@ -64,14 +88,7 @@ public enum PageContentReplacer {
         } else {
             bodyEnd = chapterText.endIndex
         }
-
-        // Pad with newlines so the splice sits cleanly between the
-        // anchor span and whatever came after.
-        let trimmed = newXHTML.trimmingCharacters(in: .whitespacesAndNewlines)
-        let spliced = "\n\(trimmed)\n"
-        var result = chapterText
-        result.replaceSubrange(bodyStart..<bodyEnd, with: spliced)
-        return result
+        return bodyStart..<bodyEnd
     }
 
     /// Find the start index of the next `<span … id="hu-page-N">`

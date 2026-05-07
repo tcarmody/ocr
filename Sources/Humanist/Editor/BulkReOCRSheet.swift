@@ -21,7 +21,7 @@ struct BulkReOCRConfirmationSheet: View {
             }
             .font(.callout)
 
-            Text("This will re-render every page from the source PDF and replace each page's body in the chapters with fresh OCR output. **Manual edits to the chapter bodies will be lost.** Other content (the OPF metadata, nav, custom CSS, page anchors themselves) is preserved.")
+            Text("This will re-render every page from the source PDF and replace each page's body with fresh OCR output. Pages you've manually edited since the last automated pass are preserved automatically — you'll see them counted as “preserved” in the progress sheet. Pages without a recorded snapshot (legacy books) get rewritten on this first run; subsequent runs will then preserve any further edits.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -67,6 +67,15 @@ struct BulkReOCRProgressSheet: View {
                 Text("Processing page \(pdfPage + 1) with \(progress.engineDisplayName)…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            }
+
+            if progress.preservedPages > 0 {
+                Label(
+                    "\(progress.preservedPages) page\(progress.preservedPages == 1 ? "" : "s") preserved (manual edits)",
+                    systemImage: "shield"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
 
             if !progress.failures.isEmpty {

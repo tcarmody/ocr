@@ -55,6 +55,11 @@ public struct EPUBBuilder {
         let xhtmlWriter = XHTMLWriter(cssPath: "../css/book.css")
         var chapterItems: [OPFWriter.Item] = []
         var pageMapEntries: [PageMap.Entry] = []
+        // V-Refresh v2: page-body fingerprints, written as a sidecar
+        // alongside the page-map. Bulk Re-OCR compares each page's
+        // current body fingerprint to the snapshot to skip pages
+        // the user has manually edited.
+        var pageSnapshots: [String: String] = [:]
         // R-Hierarchy: per-chapter sub-section list (heading blocks
         // inside the chapter at a deeper level than the chapter's
         // own opening heading). Computed once here so both the
@@ -99,6 +104,12 @@ public struct EPUBBuilder {
                     xhtmlFile: "OEBPS/\(href)",
                     anchorId: anchor.anchorId
                 ))
+                if let body = PageContentReplacer.body(
+                    of: anchor.anchorId, in: xhtml
+                ) {
+                    pageSnapshots[anchor.anchorId] =
+                        PageSnapshots.fingerprint(of: body)
+                }
             }
             for asset in chapter.figureAssets {
                 let imageHref = "images/\(asset.id).\(asset.fileExtension)"
@@ -133,6 +144,22 @@ public struct EPUBBuilder {
             if let data = try? encoder.encode(pageMap) {
                 entries.append(EPUBPackager.Entry(
                     path: PageMap.pathInsideEPUB,
+                    data: data
+                ))
+            }
+        }
+
+        // 4b'. Page-snapshot sidecar — only when we collected
+        // fingerprints (same gate as the pagemap, since both are
+        // anchor-driven). Used by V-Refresh to preserve manual
+        // edits during bulk Re-OCR.
+        if !pageSnapshots.isEmpty {
+            let snapshots = PageSnapshots(fingerprintByAnchor: pageSnapshots)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(snapshots) {
+                entries.append(EPUBPackager.Entry(
+                    path: PageSnapshots.pathInsideEPUB,
                     data: data
                 ))
             }
