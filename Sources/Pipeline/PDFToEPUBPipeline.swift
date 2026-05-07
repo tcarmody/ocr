@@ -256,6 +256,23 @@ public actor PDFToEPUBPipeline {
         return ClaudeChapterClassifier(client: client, budget: budget)
     }
 
+    /// Build the Cloud-mode table extractor for one conversion.
+    /// Same gating shape as the other Cloud helpers — `.cloud` mode
+    /// + `tableExtraction` feature toggle + an API key. When non-nil,
+    /// the per-page loop tries Claude first on each `.table` region
+    /// and falls back to the Surya path on nil (degenerate output,
+    /// network or budget failure).
+    static func makeClaudeTableExtractor(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeTableExtractor? {
+        guard options.processingMode == .cloud else { return nil }
+        guard options.cloudFeatures.tableExtraction else { return nil }
+        guard let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        let client = AnthropicAPIClient(apiKeyProvider: { key })
+        return ClaudeTableExtractor(client: client, budget: budget)
+    }
+
     /// Build the experimental "Claude does the page" engine. Returns
     /// nil unless the user opted in via `useClaudePageOCR`, the
     /// cascade's hard-region-OCR Cloud feature is enabled, the run is
@@ -967,6 +984,13 @@ public actor PDFToEPUBPipeline {
         let claudeTOCParser: ClaudeTOCParser? = Self.makeClaudeTOCParser(
             options: options, budget: claudeBudget
         )
+        // Cloud Phase 5: Sonnet table-structure extractor. When
+        // non-nil, the `.table` dispatch below tries Claude first
+        // and falls back to the Surya path on nil (declined,
+        // budget exhausted, parse failure).
+        let claudeTableExtractor: ClaudeTableExtractor? = Self.makeClaudeTableExtractor(
+            options: options, budget: claudeBudget
+        )
         // Phase 2 hidden flag: end-to-end "Claude does the page".
         // When non-nil, the per-page loop below skips Vision / cascade
         // / region-aware reflow and uses Sonnet to produce structured
@@ -1494,38 +1518,31 @@ public actor PDFToEPUBPipeline {
                 // falls back to `TableHeuristic` for those regions.
                 //
                 // Phase 2 dispatch: `.privateLocal` uses the Surya
-                // table-rec model; `.cloud` will route to a future
-                // `ClaudeTableExtractor` (Sonnet) in Phase 5 when
-                // `AISettings.cloudFeatures.tableExtraction` is on.
-                // Today both arms are identical.
+                // table-rec model. Cloud Phase 5 (`.cloud`) tries
+                // `ClaudeTableExtractor` first and falls back to the
+                // Surya path on nil — same call signature, same
+                // 2×2-floor gate, just a different backend. The
+                // heuristic in `RegionAwareReflow` is the final
+                // fallback when both extractors return nil.
                 if let regions = layoutForPage {
-                    switch options.processingMode {
-                    case .privateLocal:
-                        if let tableExtractor {
-                            for (regionIdx, region) in regions.enumerated()
-                            where region.kind == .table {
-                                if let rows = await tableExtractor.extract(
-                                    pageImage: image,
-                                    regionBox: region.box,
-                                    observations: observations,
-                                    stagingDir: stagingDir,
-                                    pageIndex: i,
-                                    regionIndex: regionIdx
-                                ) {
-                                    let key = CaptionAssociator.PageRegionKey(
-                                        pageIndex: i, regionIndex: regionIdx
-                                    )
-                                    tableExtractionsByKey[key] = rows
-                                }
-                            }
+                    let extractors: [any TableExtractor] = {
+                        switch options.processingMode {
+                        case .privateLocal:
+                            return [tableExtractor].compactMap { $0 }
+                        case .cloud:
+                            // Cloud first, Surya as offline fallback
+                            // for declines / refusals / parse failures.
+                            return [
+                                claudeTableExtractor as (any TableExtractor)?,
+                                tableExtractor as (any TableExtractor)?,
+                            ].compactMap { $0 }
                         }
-                    case .cloud:
-                        // TODO Phase 5: route through ClaudeTableExtractor.
-                        // Falls back to Surya path when Claude declines.
-                        if let tableExtractor {
-                            for (regionIdx, region) in regions.enumerated()
-                            where region.kind == .table {
-                                if let rows = await tableExtractor.extract(
+                    }()
+                    if !extractors.isEmpty {
+                        for (regionIdx, region) in regions.enumerated()
+                        where region.kind == .table {
+                            for ext in extractors {
+                                if let rows = await ext.extract(
                                     pageImage: image,
                                     regionBox: region.box,
                                     observations: observations,
@@ -1537,6 +1554,7 @@ public actor PDFToEPUBPipeline {
                                         pageIndex: i, regionIndex: regionIdx
                                     )
                                     tableExtractionsByKey[key] = rows
+                                    break
                                 }
                             }
                         }

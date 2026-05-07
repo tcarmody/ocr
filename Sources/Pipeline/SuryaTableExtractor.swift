@@ -16,7 +16,7 @@ import OCR
 /// (Surya installed + `table` op available). When the sidecar isn't
 /// present, or fails on a particular table, the caller falls back
 /// to `TableHeuristic` so the user still gets *some* tabular output.
-public struct SuryaTableExtractor {
+public struct SuryaTableExtractor: TableExtractor {
     public let connection: SuryaConnection
 
     public init(connection: SuryaConnection) {

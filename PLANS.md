@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-05, late)
+## Status snapshot (as of 2026-05-06)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -93,7 +93,37 @@ the hybrid Private + Cloud architecture):
   use Reveal in Source and paste manually") rather than mangling
   the file when the match is missing or ambiguous.
 
-**Done — Tier 1.5 first piece**:
+**Done — Cloud-mode structural Haiku features (Cloud Phase 6 final pieces)**:
+- **Cloud Phase 6d — Semantic chapter classification** (commit
+  `e985946`): per-chapter `epub:type` tagging via Haiku, with the
+  English regex classifier as the offline fallback. Multilingual
+  headings (Préface / Vorwort / Praefatio / ΠΡΟΛΟΓΟΣ) handled.
+- **Cloud Phase 6e — Printed-TOC parsing** (commits `bd466f3`,
+  `e3eb46c`): `TOCDetector` + `TOCExtractor` + `ClaudeTOCParser`
+  produce a structured TOC tree; `nav.xhtml` is driven by the
+  parsed TOC when one is available, and chapter titles
+  authoritative-override Surya's heading reads.
+
+**Done — Cloud Phase 7**:
+- **First-run welcome sheet + README rewrite** (commit `e42253f`).
+  Cloud-vs-Private explanation, API-key onboarding link, and a
+  rewritten README that reflects the hybrid architecture.
+
+**Done — Claude Page OCR (whole-page Sonnet path)** (commits
+`766bcfe`, `569c421`, `cba7f64`, `0130e34`, `8442e37`, `3d8e4c3`):
+A second cloud OCR pathway that bypasses the per-region cascade
+entirely. One Sonnet call per page returns structured XHTML →
+`[Block]` + `[Footnote]` directly. Handles its own headings,
+footnotes, language spans, and footnote-ref linking. Surya layout
+still runs in parallel for figures + tables. Per-page checkpoint
++ resume preserves extracted figures across interruptions.
+~$0.04/page (~$15–25/book) with the `Claude OCR ($$$)` toggle in
+the launcher; the legacy Vision→Sonnet cascade-tail is dev-only
+(`useCloudEnhancedOCR`) and not reachable from the UI. Private
+Mode toggle (commit `8442e37`) forces empty CloudFeatures + empty
+key per-job, zero Claude traffic regardless of global Settings.
+
+**Done — Tier 1.5 (pre-flight intelligence)**:
 - **P-Lang-Detect** (commit `5a65827`): `DocumentProfiler` samples
   three evenly-spaced body pages of each dropped PDF, runs
   `NLLanguageRecognizer` on the embedded text, and emits a
@@ -102,8 +132,52 @@ the hybrid Private + Cloud architecture):
   job's `options.languages` is overridden to match. New
   `.profiling` job status during the brief detection window;
   recovers cleanly across crashes.
+- **P-Cloud-Cost** (commit `ddef56d`): `CostEstimator` produces a
+  pre-flight call/dollar estimate keyed off the document profile
+  + enabled Cloud features + page count. Surfaced in the queue UI
+  before the job runs. Honors the page-OCR path's per-page Sonnet
+  pricing when `useClaudePageOCR` is on (replacing the per-region
+  hard-region-OCR + post-OCR-cleanup line items with a single
+  per-page Sonnet line).
+- **P-Profile-Warnings** (commit `e8ac7bd`): non-blocking nudges
+  in the queue row when the profile suggests a different config
+  would do better (e.g. detected language ≠ picker language).
 
-**Done — UX cleanups during this session**:
+**Done — R-Conversion-Summary** (commit `e17cde8`): Claude calls
++ approximate cost surfaced per-job in the queue UI after each
+conversion via the `ConversionStats` struct returned from
+`PDFToEPUBPipeline.convert()`.
+
+**Done — Pipeline / cascade refinements**:
+- Image preprocessing + adaptive DPI on scan-likely pages
+  (commit `c5e01d9`).
+- DictionaryCorrector moved from per-region to post-reflow,
+  running before Haiku post-OCR cleanup (commits `bcebcb2`,
+  `eba13c2`).
+- Cascade Cloud-enhanced (Vision→Sonnet) toggle + tightened
+  thresholds (commit `141fc3f`) — kept as a dev path; not
+  reachable from the user-visible toggle, which now drives the
+  whole-page OCR engine instead.
+- ChapterSplitter splits at the dominant heading level, not just
+  H1 (commit `6fc98ca`); false-heading filter rejects drop caps,
+  body fragments, and recurring running heads as chapter
+  boundaries (commit `d1f4dc1`).
+- ColumnSplitter / RegionAwareReflow span-aware: header /
+  epigraph spanning both columns no longer collapses two-column
+  reading order to row-major (commit `ba7ec62`).
+- SidecarBridge actor reentrancy fix that deadlocked concurrent
+  `send()` (commit `830d400`).
+- Per-page checkpoint + resume from interrupted conversions
+  (commit `f3ee05b`); extended to the page-OCR path with mode
+  guard so cascade-shape and page-OCR-shape checkpoints don't
+  mix mid-conversion (commit `0130e34`).
+- Save log toggle in launcher options (commit `75c1a3f`) — keeps
+  staging dir + writes diagnostic log next to the EPUB.
+- OCR toggles renamed: "Claude OCR" + "Surya OCR" (commit
+  `3d8e4c3`); Claude OCR labeled with cost indicator (commit
+  `766bcfe`).
+
+**Done — UX cleanups**:
 - Force OCR toggle bypassing the embedded-text trust path (commit
   `7654e68`).
 - Embedded-text scorer language gates: language-mismatch downgrade
@@ -126,22 +200,42 @@ the hybrid Private + Cloud architecture):
   Document menu commands (⇧⌘1/2/3) drive alignment from the
   source / PDF / preview pane on demand. File switch via the
   browser still aligns once.
+- Launcher window: status strip, compact options row, adaptive
+  drop zone (commit `56bf252`).
+
+**Done — Editor enhancements**:
+- Source editor formatting toolbar above the CodeMirror pane
+  (commit `4292cf3`).
+- Smart quotes + spellcheck + find/replace (commit `55ee3aa`);
+  NSSpellChecker-backed full-document spelling sheet with
+  find/replace (commit `d7b7722`); customization options +
+  `SPELLING.md` per-book alternatives (commit `2a0611d`); single
+  full-document spell call + lazy guesses (commit `bb74d62`);
+  spellcheck attribute forced on CodeMirror's stable wrapper
+  (commit `ab91db0`).
+- Format / Insert / Edit menus + Special Character + Goto Line
+  (commit `d05ad8d`).
+- Chapter Split / Merge / Regenerate TOC (commit `3f8ab64`).
+- Find in All Files — cross-chapter search + replace +
+  go-to-source (commit `baea472`).
+- Validate EPUB — `epubcheck` wrapper (commit `7179c11`).
+
+**Done — Cloud Phase 5**:
+- **`ClaudeTableExtractor`**: Sonnet-driven table structure behind
+  a new `TableExtractor` protocol. `SuryaTableExtractor` adopts
+  the same protocol; under `.cloud` mode the pipeline tries
+  Claude first per `.table` region and falls back to the Surya
+  path on nil (decline / refusal / parse failure / sub-2×2 grid).
+  `RegionAwareReflow`'s `TableHeuristic` remains the final
+  fallback when both extractors return nil. Same gating shape as
+  the other Cloud helpers (`.cloud` mode + `tableExtraction`
+  toggle + API key); the toggle was already exposed in the
+  Settings pane and the cost estimator's table line item.
 
 **Cloud-mode features remaining** (Tier 2):
-- **Cloud Phase 5**: `ClaudeTableExtractor` — Sonnet-driven table
-  structure behind a `TableExtractor` protocol. Surya path stays
-  as the offline fallback. Only relevant for table-heavy academic
-  books.
-- **Cloud Phase 6 remaining**: two structural Haiku features —
-  semantic chapter classification (`epub:type` per chapter) and
-  printed-TOC parsing.
-- **Cloud Phase 7**: first-run UX polish (Cloud-upgrade prompt,
-  README docs).
-
-**Pre-flight intelligence remaining** (Tier 1.5):
-- **P-Cloud-Cost**: pre-flight Cloud-mode cost estimate.
-- **P-Profile-Warnings**: banner warnings for content-vs-config
-  mismatches.
+- **Cloud Phase 8** (deferred): per-book mode override for
+  sensitive material when default is Cloud — partially obsoleted
+  by the Private Mode toggle that already ships per-job override.
 
 **Original-plan items still outstanding**:
 - Phase 9 — Language extensibility (RTL: Hebrew / Syriac / Coptic)
@@ -255,14 +349,19 @@ None. Self-contained. Could ship next.
 
 ## P-Tables — Table extraction
 
-**Status**: shipped, both paths (commits `915c1d0`, `5473199`).
-Path A — Surya `TableRecPredictor` integration in the Python
-sidecar — runs first; `SuryaTableExtractor` crops the page,
-sends to the sidecar, translates pixel polygons back to
-full-page normalized coords, and maps OCR observations onto
-cells. Path B — `TableHeuristic` Y/X clustering — is the
-fallback when the sidecar isn't available or returns nothing
-usable. Both feed `Block.table`; `XHTMLWriter` renders proper
+**Status**: shipped, all three paths (commits `915c1d0`,
+`5473199`, plus Cloud Phase 5). Path A — Surya
+`TableRecPredictor` — runs as the offline backend;
+`SuryaTableExtractor` crops the page, sends to the sidecar,
+translates pixel polygons back to full-page normalized coords,
+and maps OCR observations onto cells. Cloud Phase 5 added a
+`TableExtractor` protocol with `ClaudeTableExtractor` (Sonnet
+4.6) as the per-region first choice under `.cloud` mode; the
+Surya path is the offline fallback when Claude declines or
+returns a sub-2×2 grid. Path B — `TableHeuristic` Y/X
+clustering inside `RegionAwareReflow` — remains the final
+fallback when neither extractor produces a usable grid. All
+paths feed `Block.table`; `XHTMLWriter` renders proper
 `<table role="table">` with `<thead>` / `<tbody>` /
 `<caption>` / merged-cell spans. CSS in `book.css`.
 
@@ -400,7 +499,13 @@ picker fallback covers it.
 
 ## P-Cloud-Cost — Pre-flight Cloud-mode cost estimate
 
-**Status**: not started.
+**Status**: shipped (commit `ddef56d`; page-OCR pricing extension
+in commit `0130e34`). `CostEstimator` produces a per-book Claude
+call + dollar estimate from the document profile, page count,
+and enabled Cloud features. Surfaced in the queue UI before
+conversion runs. Honors `useClaudePageOCR`: when on, replaces
+the per-region hard-region-OCR + post-OCR-cleanup line items
+with a single per-page Sonnet line (~$0.04/page).
 
 ### Goal
 
@@ -435,7 +540,9 @@ too so the estimate reflects all enabled features.
 
 ## P-Profile-Warnings — Banner warnings for content-vs-config mismatches
 
-**Status**: not started.
+**Status**: shipped (commit `e8ac7bd`). Non-blocking nudges in
+the queue row when the document profile suggests a different
+config would do better.
 
 ### Goal
 
@@ -468,11 +575,11 @@ this is a thin presentation layer on top — a list of
 
 ## Recommended sequencing within this tier
 
+All three pieces of Tier 1.5 have shipped:
+
 1. ~~`P-Lang-Detect`~~ shipped.
-2. `P-Cloud-Cost` next — Phases 3 and 6 are now shipping real
-   Claude calls, so the dollar visibility actually matters.
-3. `P-Profile-Warnings` as a thin layer on the same profile after
-   that.
+2. ~~`P-Cloud-Cost`~~ shipped.
+3. ~~`P-Profile-Warnings`~~ shipped.
 
 ---
 
@@ -513,14 +620,15 @@ content."**
 | 2 | `ProcessingMode` plumbed end-to-end into `PDFToEPUBPipeline.Options` + `JobRunner`; dispatch switches added at engine sites | **Done** (commit `0e00a76`) |
 | 3 | `ClaudeOCREngine` (Sonnet vision) wired in as the cascade's high-quality tier under `.cloud` | **Done** (commit `9a4adfd`) |
 | 4 | Validation spike: CER comparison vs Surya / Tesseract on hand-corrected ground truth (polytonic Greek) | **Done** — Local 15.1% / Cloud cascade 15.1% / Claude-only 11.3% (commit `9a4adfd`) |
-| 5 | `ClaudeTableExtractor` (Sonnet) behind a `TableExtractor` protocol; Surya path stays as offline fallback | Not started |
+| 5 | `ClaudeTableExtractor` (Sonnet) behind a `TableExtractor` protocol; Surya path stays as offline fallback | **Done** |
 | 6a | Post-OCR Haiku cleanup — passages mode (text-only) | **Done** (commit `c6564bd`) |
 | 6b | Post-OCR Haiku cleanup — vision mode (multimodal) | **Done** (commit `ae99693`) |
 | 6c | Correction trail sidecar + interactive editor sheet (apply / revert) | **Done** (commit `f91d0e0`) |
-| 6d | Semantic chapter classification (`epub:type` per chapter, Haiku) | Not started |
-| 6e | Printed-TOC parsing (Haiku, Sonnet escalation if needed) | Not started |
-| 7 | First-run UX polish (Cloud-upgrade prompt, README docs) | Not started |
-| 8 | (Deferred) Per-book mode override for sensitive material when default is Cloud | Deferred |
+| 6d | Semantic chapter classification (`epub:type` per chapter, Haiku) | **Done** (commit `e985946`) |
+| 6e | Printed-TOC parsing (Haiku, Sonnet escalation if needed) | **Done** (commits `bd466f3`, `e3eb46c`) |
+| 7 | First-run UX polish (Cloud-upgrade prompt, README docs) | **Done** (commit `e42253f`) |
+| Page-OCR | Whole-page Sonnet OCR pathway (parallel to the cascade) | **Done** (commits `569c421`, `cba7f64`, `0130e34`) |
+| 8 | (Deferred) Per-book mode override for sensitive material when default is Cloud | Largely covered by Private Mode (commit `8442e37`); formal per-book persistence still deferred |
 
 Phases 1–2 ship the foundation; everything else is incremental
 on top of that infrastructure. The `AnthropicAPIClient`,
@@ -835,9 +943,13 @@ Total: ~5 days for a polished implementation.
 
 ## P-Semantic-Classification — per-chapter `epub:type` tagging (Cloud Phase 6, Haiku)
 
-**Status**: not started. Full design at
-[Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md)
-— read that first before implementing.
+**Status**: shipped (commit `e985946`). `EnglishRegexClassifier`
+ships as the offline fallback; `ClaudeHaikuClassifier` is the
+Cloud-mode path for multilingual headings (Préface / Vorwort /
+Praefatio / ΠΡΟΛΟΓΟΣ). Wired into `ChapterSplitter` output;
+EPUB writer emits per-chapter `<section epub:type="…">` and a
+landmarks `<nav>`. Full design history at
+[Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md).
 
 ### Goal
 
@@ -890,9 +1002,12 @@ handles the third.
 
 ## P-TOC-Parsing — Parse the printed TOC into an authoritative tree (Cloud Phase 6, Haiku)
 
-**Status**: not started. Full design at
-[Plans/Phase3-TOC-Parsing.md](Plans/Phase3-TOC-Parsing.md) — read
-that first before implementing.
+**Status**: shipped (commits `bd466f3`, `e3eb46c`). `TOCDetector`
++ `TOCExtractor` + `ClaudeTOCParser` produce a structured TOC
+tree with printed page numbers; `nav.xhtml` is driven by the
+parsed TOC when one is available, and TOC-derived chapter titles
+override Surya's heading reads. Full design history at
+[Plans/Phase3-TOC-Parsing.md](Plans/Phase3-TOC-Parsing.md).
 
 ### Goal
 
@@ -1298,12 +1413,11 @@ their controls cleanly.
 
 ## R-Conversion-Summary — Post-conversion stats panel
 
-**Status**: not started. The pipeline runs Cloud-mode features
-silently — there's no UI feedback whether Claude fired, how many
-times, or roughly what it cost. Today the only way to inspect is
-to enable `emitDebugLog: true` and grep `log.txt` for `src=c`
-lines (which is exactly what `SpikeRunner` does, and exactly what
-a real user can't do mid-session).
+**Status**: shipped (commit `e17cde8`). `ConversionStats` now
+flows out of `PDFToEPUBPipeline.convert()` and is persisted on
+each `Job`; the queue UI surfaces Claude calls + approximate cost
+per row. Cost rates live in the `AI` module's per-model rate
+table; `≈` prefix communicates these are estimates.
 
 The Phase 4 spike made this gap concrete: a user with Cloud mode
 on can't tell if the cascade actually escalated to Claude on a
@@ -1683,54 +1797,51 @@ things in. The user's stated priorities are quality output + personal
 use; distribution is lower priority than correctness.
 
 **What's already done** (so they're off the runway):
-- **Tier 1**: figures, tables (Surya `TableRecPredictor` + heuristic
-  fallback), math (figure raster path).
-- **Cloud Phases 1–3**: Anthropic API plumbing, Keychain key store,
+- **Tier 1**: figures, tables (Surya `TableRecPredictor` + Claude
+  Sonnet + heuristic fallback), math (figure raster path).
+- **Tier 1.5**: `P-Lang-Detect`, `P-Cloud-Cost`, `P-Profile-Warnings`
+  — full pre-flight pipeline.
+- **Cloud Phases 1–5**: Anthropic API plumbing, Keychain key store,
   Settings UI, `ProcessingMode` plumbed end-to-end, `ClaudeOCREngine`
-  wired into `RegionCascade` as Stage 3.
-- **Cloud Phase 4 spike**: validated against polytonic Greek (Aeschylus
-  *Agamemnon*). Findings in
-  [Tools/spike-results/aeschylus-greek-2026-05-05.md](Tools/spike-results/aeschylus-greek-2026-05-05.md).
-  Headline: cascade as designed never escalates to Claude on this kind
-  of input (Tesseract clears the quality floor); Claude beats local
-  by 3.8 pp when forced. Need Hebrew + Latin data before tuning the
-  per-script floor.
+  wired into `RegionCascade` as Stage 3, polytonic-Greek validation
+  spike, `ClaudeTableExtractor` behind a `TableExtractor` protocol
+  with Surya as the offline fallback.
+- **Cloud Phase 6 (all sub-phases)**: post-OCR cleanup (passages +
+  vision), correction-trail editor sheet, semantic chapter
+  classification, printed-TOC parsing.
+- **Cloud Phase 7**: first-run welcome sheet + README rewrite.
+- **Whole-page Claude OCR pathway** (`useClaudePageOCR`): one
+  Sonnet call per page → structured XHTML → `[Block]` +
+  `[Footnote]`. Now the user-visible "Claude OCR ($$$)" toggle.
+- **R-Conversion-Summary**: per-job Claude call + cost surfaced
+  in queue UI.
+- **Private Mode toggle**: per-conversion Cloud override that
+  guarantees zero Claude traffic.
+- **Editor**: format/insert/edit menus, Special Character, Goto
+  Line, Split / Merge / Regenerate TOC, Find in All Files,
+  Validate EPUB (epubcheck), spellcheck, smart quotes,
+  formatting toolbar.
 
 **Next, in roughly this order:**
 
-1. **R-Conversion-Summary** (Tier 5) — surface "did Claude fire on
-   this conversion?" in the queue UI. ~1 day. The Phase 4 spike made
-   it clear users have no visibility today, and it's a prerequisite
-   for the broader AI trail inspector planned in Cloud Phase 6.
-2. **Cloud Phase 5** — `ClaudeTableExtractor` (Sonnet) behind a
-   `TableExtractor` protocol; Surya path stays as the offline
-   fallback. ~2 days.
-3. **Cloud Phase 6** — Haiku features in this order so the editor's
-   AI-trail inspector ships once and amortizes:
-   - **P-LLM-Pass** post-OCR character cleanup. ~5 days standalone,
-     less now that the API client is already in place.
-   - **P-Semantic-Classification** — `epub:type` per chapter +
-     landmarks. ~2.5 days incremental.
-   - **P-TOC-Parsing** — parse printed TOC, supersede heading-based
-     splitter when present. ~6 days incremental.
-4. **Tier 1.5 pre-flight intelligence** — `P-Lang-Detect` first
-   (~1.5 days, biggest single quality-of-life win), then
-   `P-Cloud-Cost` once Phase 5 is firing real Claude calls on tables,
-   `P-Profile-Warnings` as a thin layer on top.
-5. **Cloud Phase 7** — first-run UX polish.
-6. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
+1. **Phase 9 (RTL + Hebrew/Syriac/Coptic)** — opens up a substantial
    corpus. ~4 days. Phase 4 spike's findings inform this — current
    per-region cascade thresholds may need a per-script-family
    adjustment for Hebrew / Syriac / Coptic where Tesseract is weaker.
-7. **R-Hierarchy** (multi-level chapters) — natural follow-on to
-   ChapterSplitter, low effort. ~1 day.
-8. **R-Footers** (cross-page running footers) — symmetric refactor.
+   Less load-bearing now that the page-OCR path bypasses the
+   per-region cascade entirely on Cloud, but still important for
+   the Private path.
+2. **R-Hierarchy** (multi-level chapters) — natural follow-on to
+   ChapterSplitter, complements the parsed-TOC tree. ~1 day.
+3. **R-Footers** (cross-page running footers) — symmetric refactor.
    ~0.5 day.
-9. **Defer Phase 10 (distribution)** until the user actually wants
+4. **Launcher quality-of-life** — `R-Launcher-Pause`,
+   `R-Launcher-History`, `R-Launcher-Reorder`, `R-Launcher-FullQueue`
+   in whatever order the user reaches for first.
+5. **Defer Phase 10 (distribution)** until the user actually wants
    to share or onboard another machine. The app is signed and runs
    locally; that's enough for personal use.
 
-Total remaining work to reach "substantially production-grade
-output for the user's working corpus": ~14-16 days through Cloud
-Phase 6. After Phase 9, the app handles essentially any book a
-working researcher would feed it.
+The originally planned hybrid Cloud feature set is now complete.
+After Phase 9, the app handles essentially any book a working
+researcher would feed it.
