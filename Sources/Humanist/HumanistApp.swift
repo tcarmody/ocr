@@ -89,15 +89,9 @@ struct HumanistApp: App {
             EditorInsertMenu()
             EditorToolsMenu()
             EditorViewMenu()
-            ShowFullQueueCommand()
-            ShowLibraryCommand()
-            CommandGroup(after: .help) {
-                Button("Show Welcome…") {
-                    NotificationCenter.default.post(
-                        name: .humanistShowWelcome, object: nil
-                    )
-                }
-            }
+            FileSystemToolsMenu()
+            ShowWindowCommands()
+            HelpMenuCommands()
         }
 
         // R-Launcher-FullQueue. Single-instance window for the bulk
@@ -292,6 +286,23 @@ private struct EditorReplaceCommand: View {
 /// auto-detect at queue-add missed (or the user wants to split a PDF
 /// without queueing it for conversion). Opens a file picker → save
 /// dialog → splits → confirms with an alert.
+/// Top-level menu hosting file-system utilities — Join / Split for
+/// PDFs and EPUBs. Distinct from the editor's "Tools" menu (which
+/// holds editor-scoped actions like spellcheck) because these
+/// commands operate on files the user picks directly, no editor
+/// window required. Renders next to "View" in the menu bar.
+struct FileSystemToolsMenu: Commands {
+    var body: some Commands {
+        CommandMenu("File Tools") {
+            Button("Join PDFs…") { ToolsPrompts.runJoinPDFs() }
+            Button("Split PDF…") { ToolsPrompts.runSplitPDF() }
+            Divider()
+            Button("Join EPUBs…") { ToolsPrompts.runJoinEPUBs() }
+            Button("Split EPUB…") { ToolsPrompts.runSplitEPUB() }
+        }
+    }
+}
+
 private struct SplitTwoUpCommand: View {
     var body: some View {
         Button("Split Two-Up PDF…") {
@@ -431,6 +442,30 @@ private struct ShowLibraryCommand: Commands {
         CommandGroup(before: .windowList) {
             ShowLibraryButton()
             Divider()
+        }
+    }
+}
+
+/// Combines `ShowFullQueueCommand` + `ShowLibraryCommand` into a
+/// single `Commands` slot so the top-level `.commands { … }` block
+/// stays under SwiftUI's @CommandsBuilder 10-component cap.
+struct ShowWindowCommands: Commands {
+    var body: some Commands {
+        ShowFullQueueCommand()
+        ShowLibraryCommand()
+    }
+}
+
+/// Help > Show Welcome…. Pulled into its own `Commands` struct so
+/// the top-level `.commands` block can address it as a single slot.
+struct HelpMenuCommands: Commands {
+    var body: some Commands {
+        CommandGroup(after: .help) {
+            Button("Show Welcome…") {
+                NotificationCenter.default.post(
+                    name: .humanistShowWelcome, object: nil
+                )
+            }
         }
     }
 }
