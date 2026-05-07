@@ -229,8 +229,8 @@ struct ContentView: View {
         }
     }
 
-    /// Bottom action bar. Choose Files always present; Clear Done /
-    /// Cancel All conditional on queue state.
+    /// Bottom action bar. Choose Files always present; Pause /
+    /// Resume + Clear Done + Cancel All conditional on queue state.
     @ViewBuilder
     private var bottomBar: some View {
         HStack(spacing: 8) {
@@ -241,6 +241,26 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             Spacer()
+            // Pause / Resume Queue. Visible when there's pending work
+            // OR the queue is currently paused (so an empty paused
+            // queue can still be unpaused — e.g. user paused mid-run,
+            // current job finished, hasPendingWork is now false but
+            // they may still want to "re-arm" before adding more PDFs).
+            if store.hasPendingWork || runner.isPaused {
+                Button {
+                    if runner.isPaused {
+                        runner.resume()
+                    } else {
+                        runner.pause()
+                    }
+                } label: {
+                    if runner.isPaused {
+                        Label("Resume Queue", systemImage: "play.fill")
+                    } else {
+                        Label("Pause Queue", systemImage: "pause.fill")
+                    }
+                }
+            }
             if store.jobs.contains(where: \.isFinished) {
                 Button("Clear Done") { store.clearFinished() }
             }

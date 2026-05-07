@@ -112,5 +112,14 @@ let package = Package(
             dependencies: ["AI"],
             path: "Tests/AITests"
         ),
+        // Tests for `Humanist` executable internals (JobRunner /
+        // JobStore / coordinator classes). UI views aren't covered
+        // here — focus is on the testable model + runner state
+        // machines that don't need a window to exercise.
+        .testTarget(
+            name: "HumanistTests",
+            dependencies: ["Humanist"],
+            path: "Tests/HumanistTests"
+        ),
     ]
 )

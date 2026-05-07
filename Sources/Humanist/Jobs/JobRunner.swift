@@ -18,6 +18,12 @@ final class JobRunner: ObservableObject {
 
     /// `true` while the run loop is processing a job (or about to).
     @Published private(set) var isRunning: Bool = false
+    /// `true` when the user has paused the queue. Soft-pause: the
+    /// currently-running job (if any) finishes; the loop then exits
+    /// and won't pick up further `.queued` jobs until `resume()`.
+    /// Persisted via `UserDefaults` so a "I'll come back to this"
+    /// pause survives app restart.
+    @Published private(set) var isPaused: Bool
     /// Job IDs the user has asked to cancel but whose pipeline hasn't
     /// finished winding down yet. The UI reads this to show
     /// "Cancelling…" instead of the Cancel button — without it,
@@ -31,14 +37,29 @@ final class JobRunner: ObservableObject {
     /// cancellation.
     private var currentJobTask: Task<Void, Never>?
     private var currentJobID: UUID?
+    /// `UserDefaults` instance backing the persisted-pause flag. Test
+    /// seam — production passes `.standard`; tests pass an isolated
+    /// suite so they can assert on persistence without polluting the
+    /// app's defaults.
+    private let defaults: UserDefaults
 
-    init(store: JobStore) {
+    /// Persistence key for `isPaused`. App-scoped so it round-trips
+    /// across launches; cleared on first run by `removeObject` since
+    /// `bool(forKey:)` returns `false` when missing — that's the
+    /// right default ("not paused").
+    static let pausedKey = "humanist.queuePaused"
+
+    init(store: JobStore, defaults: UserDefaults = .standard) {
         self.store = store
+        self.defaults = defaults
+        self.isPaused = defaults.bool(forKey: Self.pausedKey)
     }
 
     /// Kick off the loop if nothing is in flight. Safe to call after
-    /// every add — no-op when already running.
+    /// every add — no-op when already running, and no-op when the
+    /// queue is paused (the user has explicitly told us to hold off).
     func start() {
+        guard !isPaused else { return }
         guard loopTask == nil else { return }
         loopTask = Task { @MainActor in
             isRunning = true
@@ -47,10 +68,33 @@ final class JobRunner: ObservableObject {
                 loopTask = nil
             }
             while let job = store.nextQueued {
+                // Soft-pause check between jobs: lets a long Surya
+                // run finish gracefully rather than mid-page-cancel,
+                // then exits the loop until `resume()`.
+                if isPaused { break }
                 await processJob(job)
                 if Task.isCancelled { break }
             }
         }
+    }
+
+    /// User-initiated pause. The currently-running job (if any)
+    /// finishes; subsequent `.queued` jobs stay queued until
+    /// `resume()`. Persists across launches.
+    func pause() {
+        guard !isPaused else { return }
+        isPaused = true
+        defaults.set(true, forKey: Self.pausedKey)
+    }
+
+    /// Clear the pause flag and re-enter the run loop. No-op when
+    /// not paused. Always calls `start()`; if there's nothing
+    /// queued, that's a cheap no-op of its own.
+    func resume() {
+        guard isPaused else { return }
+        isPaused = false
+        defaults.set(false, forKey: Self.pausedKey)
+        start()
     }
 
     /// Cancel a specific job. Running → propagates Task.cancel into the

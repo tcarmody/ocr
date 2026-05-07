@@ -1326,25 +1326,18 @@ These are smaller items that follow naturally from work we've done.
 
 ## R-Launcher-Pause — Pause / Resume Queue control
 
-**Status**: not started. Today the only way to stop the runner is
-to cancel every queued job individually or hit Cancel All
-(destructive — they're gone). A pause control would suspend the
-runner while leaving jobs queued.
-
-### Approach
-
-- Add `JobRunner.pause()` / `resume()` — toggles a flag the run
-  loop checks between jobs.
-- Persist paused state across launches via `@AppStorage` so the
-  user's "I'll come back to this" intent survives a restart.
-- New "Pause Queue" button in the launcher's bottom bar (between
-  Choose Files and Cancel All), with the icon flipping to
-  "Resume Queue" when active.
-
-### Effort
-
-~2 hours. Mostly UI + state plumbing; the runner already has a
-clear "between jobs" point.
+**Status**: shipped. `JobRunner.pause()` / `resume()` toggle a
+soft-pause flag the run loop checks between jobs — the
+currently-running job finishes; subsequent `.queued` jobs stay
+queued until the user resumes. Persisted via `UserDefaults`
+(`humanist.queuePaused`) so a "come back later" pause survives
+app restart. Bottom-bar Pause / Resume button (icon flips
+between `pause.fill` and `play.fill`) sits between Choose Files
+and Cancel All; visible whenever there's pending work or the
+queue is currently paused. New `HumanistTests` target with 8
+JobRunner state-machine tests (default state, pause / resume /
+idempotence, persistence across runner instances, start no-op
+while paused).
 
 ## R-Launcher-History — Completed-jobs disclosure
 
