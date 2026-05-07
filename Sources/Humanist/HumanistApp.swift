@@ -10,15 +10,18 @@ struct HumanistApp: App {
     @StateObject private var jobStore = JobStore()
     @StateObject private var jobRunner: JobRunner
     @StateObject private var queueVM: QueueViewModel
+    @StateObject private var library = LibraryStore()
 
     init() {
         let store = JobStore()
-        let runner = JobRunner(store: store)
+        let lib = LibraryStore()
+        let runner = JobRunner(store: store, library: lib)
         let vm = QueueViewModel(store: store, runner: runner)
         // Use `_` initializers to wire StateObjects from outside the
         // property wrapper's default-value path. The store/runner pair
         // is built once and shared across all three.
         _jobStore  = StateObject(wrappedValue: store)
+        _library   = StateObject(wrappedValue: lib)
         _jobRunner = StateObject(wrappedValue: runner)
         _queueVM   = StateObject(wrappedValue: vm)
 
@@ -54,7 +57,15 @@ struct HumanistApp: App {
                 .environmentObject(queueVM)
                 .environmentObject(jobStore)
                 .environmentObject(jobRunner)
+                .environmentObject(library)
                 .frame(minWidth: 620, minHeight: 520)
+                .onAppear {
+                    // R-Library: stash the library on OpenRouter so
+                    // the editor-open path can bump `lastOpened`
+                    // without threading the store through every
+                    // call site.
+                    OpenRouter.library = library
+                }
         }
         .commands {
             FileOpenCommands()
@@ -65,6 +76,7 @@ struct HumanistApp: App {
             EditorToolsMenu()
             EditorViewMenu()
             ShowFullQueueCommand()
+            ShowLibraryCommand()
             CommandGroup(after: .help) {
                 Button("Show Welcome…") {
                     NotificationCenter.default.post(
@@ -86,6 +98,15 @@ struct HumanistApp: App {
                 .environmentObject(jobRunner)
         }
         .commandsRemoved()  // no per-window menu items beyond what the launcher already attaches
+
+        // R-Library. Single-instance window listing every EPUB the
+        // user has converted in this app. Same env-object plumbing
+        // as the queue window.
+        Window("Humanist Library", id: "library") {
+            LibraryWindowView()
+                .environmentObject(library)
+        }
+        .commandsRemoved()
 
         // Editor window: one per opened EPUB. macOS reuses an existing
         // window when the same URL value is reopened, so dragging the
@@ -299,13 +320,26 @@ private struct OpenRecentMenu: View {
 
 /// One place to route a URL to the right window kind. Keeps
 /// recents-recording consistent across menu / drop / convert paths.
+@MainActor
 enum OpenRouter {
+    /// Library catalog the open path bumps `lastOpened` against
+    /// when an EPUB is opened. Set once at app launch in
+    /// `HumanistApp.body` via the `.onAppear` modifier on the
+    /// launcher's WindowGroup; nil before that or in test
+    /// fixtures, in which case `recordOpen` is a no-op (which is
+    /// the correct fallback — the editor still opens).
+    static var library: LibraryStore?
+
     static func open(_ url: URL, openWindow: OpenWindowAction) {
         RecentsStore.add(url)
         switch url.pathExtension.lowercased() {
-        case "epub": openWindow(id: "editor", value: url)
-        case "pdf":  openWindow(id: "pdf-viewer", value: url)
-        default: break
+        case "epub":
+            library?.recordOpen(url)
+            openWindow(id: "editor", value: url)
+        case "pdf":
+            openWindow(id: "pdf-viewer", value: url)
+        default:
+            break
         }
     }
 }
@@ -371,6 +405,29 @@ private struct ShowFullQueueButton: View {
             openWindow(id: "queue")
         }
         .keyboardShortcut("q", modifiers: [.command, .shift])
+    }
+}
+
+/// Window > Show Library (⇧⌘L). Opens the dedicated library
+/// window listing every EPUB the user has converted in this
+/// app. Single instance — opening when already open just brings
+/// it to the front.
+private struct ShowLibraryCommand: Commands {
+    var body: some Commands {
+        CommandGroup(before: .windowList) {
+            ShowLibraryButton()
+            Divider()
+        }
+    }
+}
+
+private struct ShowLibraryButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Show Library") {
+            openWindow(id: "library")
+        }
+        .keyboardShortcut("l", modifiers: [.command, .shift])
     }
 }
 

@@ -1571,22 +1571,33 @@ the source pane and scrolls / flashes the match.
 
 ## R-Library — Library browser window
 
-**Status**: Recents menu shows last 10 opened EPUBs. No full library
-view.
+**Status**: shipped. New `LibraryStore` (JSON-backed, persisted
+at `~/Library/Application Support/Humanist/library.json`)
+records every successful conversion with title, language list,
+addedAt, and lastOpened. New single-instance Library window (id
+`"library"`, ⇧⌘L, "Show Library" menu command in Window menu)
+hosts a SwiftUI Table with sortable columns (Title, Languages,
+Added, Last Opened, Actions) and a per-language filter picker.
+Click → opens in editor and bumps lastOpened; right-click →
+Open / Reveal in Finder / Remove from Library. Removing only
+forgets the row — the .epub stays on disk.
 
-### Goal
+`JobRunner` records on the success path (via a new optional
+`library: LibraryStore?` init parameter); `OpenRouter.open`
+bumps lastOpened on EPUB-shaped routes. Re-converting to the
+same EPUB updates title + languages in place rather than
+duplicating; original `addedAt` is preserved. Files that no
+longer exist on disk are pruned on next load (same posture as
+`RecentsStore`).
 
-A library window listing every EPUB the user has converted, with
-thumbnails (from the cover image — depends on Phase 6), filter by
-language, sort by last-opened.
+Cover-image thumbnails are deferred — for v1, title + language
++ dates is enough to find a book; thumbnails are a non-breaking
+enhancement.
 
-### Effort
-
-~2 days.
-
-### Dependencies
-
-Phase 6 (cover image extraction).
+8 new LibraryStoreTests: record-conversion, dedup-by-URL with
+addedAt preservation, recordOpen no-op for unknown URLs, JSON
+persistence round-trip, missing-file pruning on load, and
+remove-without-deleting-file.
 
 ---
 

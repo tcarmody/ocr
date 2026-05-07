@@ -15,6 +15,11 @@ import Pipeline
 @MainActor
 final class JobRunner: ObservableObject {
     let store: JobStore
+    /// Library catalog. When non-nil, successful conversions are
+    /// recorded here so the Library window can list them. Optional
+    /// so test fixtures (which exercise pause/resume + state
+    /// machinery) don't have to plumb a real library through.
+    let library: LibraryStore?
 
     /// `true` while the run loop is processing a job (or about to).
     @Published private(set) var isRunning: Bool = false
@@ -49,8 +54,13 @@ final class JobRunner: ObservableObject {
     /// right default ("not paused").
     static let pausedKey = "humanist.queuePaused"
 
-    init(store: JobStore, defaults: UserDefaults = .standard) {
+    init(
+        store: JobStore,
+        library: LibraryStore? = nil,
+        defaults: UserDefaults = .standard
+    ) {
         self.store = store
+        self.library = library
         self.defaults = defaults
         self.isPaused = defaults.bool(forKey: Self.pausedKey)
     }
@@ -243,6 +253,16 @@ final class JobRunner: ObservableObject {
                 mutable.finishedAt = Date()
                 mutable.stats = stats
             }
+            // R-Library: record the successful conversion in the
+            // library catalog so the Library window surfaces it.
+            // Title falls back to the source PDF's basename — a
+            // future iteration can read the actual book title from
+            // the OPF metadata.
+            library?.recordConversion(
+                epubURL: job.outputURL,
+                title: job.sourceURL.deletingPathExtension().lastPathComponent,
+                languages: job.options.languages
+            )
         } catch is CancellationError {
             store.update(jobID) { mutable in
                 mutable.status = .cancelled

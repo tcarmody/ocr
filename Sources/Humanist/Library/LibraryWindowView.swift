@@ -1,0 +1,204 @@
+import SwiftUI
+import AppKit
+
+/// R-Library. Browser window listing every EPUB the user has
+/// converted in this app. Sortable columns; language filter;
+/// click → open in editor; right-click → Reveal in Finder /
+/// Remove from Library.
+///
+/// Thumbnails (cover-image extraction from each EPUB) are deferred
+/// — for v1 the row carries title + language + dates only, which
+/// is what the user needs to find the book they want. Adding
+/// thumbnails later is a non-breaking enhancement.
+struct LibraryWindowView: View {
+    @EnvironmentObject private var library: LibraryStore
+    @Environment(\.openWindow) private var openWindow
+
+    @State private var sortOrder: [KeyPathComparator<LibraryEntry>] = [
+        // Default: most-recently-added at the top — matches the
+        // user's expectation when they finish a bulk run and open
+        // the library to see their new books.
+        .init(\.addedAt, order: .reverse),
+    ]
+
+    /// Currently-selected language filter. `nil` = "All". Backed
+    /// by `@State` (not @AppStorage) — per-session preference, the
+    /// "All" default is fine on every launch.
+    @State private var languageFilter: String? = nil
+
+    var body: some View {
+        VStack(spacing: 0) {
+            filterBar
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            Divider()
+
+            if library.entries.isEmpty {
+                emptyState
+            } else {
+                table
+            }
+        }
+        .navigationTitle("Humanist Library")
+        .frame(minWidth: 620, minHeight: 380)
+    }
+
+    // MARK: - filter bar
+
+    @ViewBuilder
+    private var filterBar: some View {
+        HStack(spacing: 12) {
+            Text("\(displayedEntries.count) of \(library.entries.count)")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if !availableLanguages.isEmpty {
+                Picker("Language", selection: $languageFilter) {
+                    Text("All Languages").tag(String?.none)
+                    ForEach(availableLanguages, id: \.self) { code in
+                        Text(languageLabel(code)).tag(String?.some(code))
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+            }
+        }
+    }
+
+    // MARK: - empty state
+
+    @ViewBuilder
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "books.vertical")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text("No books in your library yet")
+                .font(.headline)
+            Text("Books appear here after a successful conversion.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
+    }
+
+    // MARK: - table
+
+    @ViewBuilder
+    private var table: some View {
+        Table(of: LibraryEntry.self, sortOrder: $sortOrder) {
+            TableColumn("Title", value: \.title) { entry in
+                Text(entry.title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(entry.epubURL.path)
+            }
+
+            TableColumn("Languages") { (entry: LibraryEntry) in
+                Text(entry.languages.map(languageLabel).joined(separator: ", "))
+                    .foregroundStyle(.secondary)
+            }
+            .width(min: 80, ideal: 120)
+
+            TableColumn("Added", value: \.addedAt) { entry in
+                Text(formattedDate(entry.addedAt))
+                    .foregroundStyle(.secondary)
+            }
+            .width(min: 100, ideal: 130)
+
+            TableColumn("Last Opened", value: \.lastOpenedSortKey) { entry in
+                Text(entry.lastOpened.map(formattedDate) ?? "—")
+                    .foregroundStyle(.secondary)
+            }
+            .width(min: 100, ideal: 130)
+
+            TableColumn("Actions") { (entry: LibraryEntry) in
+                actionButtons(for: entry)
+            }
+            .width(min: 160, ideal: 180)
+        } rows: {
+            ForEach(displayedEntries) { entry in
+                TableRow(entry)
+                    .contextMenu {
+                        rowContextMenu(for: entry)
+                    }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actionButtons(for entry: LibraryEntry) -> some View {
+        HStack(spacing: 4) {
+            Button("Open") {
+                openEntry(entry)
+            }
+            .controlSize(.small)
+            Button("Reveal") {
+                NSWorkspace.shared.activateFileViewerSelecting([entry.epubURL])
+            }
+            .controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    private func rowContextMenu(for entry: LibraryEntry) -> some View {
+        Button("Open") { openEntry(entry) }
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([entry.epubURL])
+        }
+        Divider()
+        Button("Remove from Library", role: .destructive) {
+            library.remove(entry.id)
+        }
+    }
+
+    // MARK: - data
+
+    /// Apply the language filter and the table's sort order.
+    private var displayedEntries: [LibraryEntry] {
+        var rows = library.entries
+        if let lang = languageFilter {
+            rows = rows.filter { $0.languages.contains(lang) }
+        }
+        return rows.sorted(using: sortOrder)
+    }
+
+    /// Distinct language codes across the library, sorted by
+    /// label so the picker reads naturally. Empty when no rows
+    /// carry languages — picker hidden in that case.
+    private var availableLanguages: [String] {
+        let codes = Set(library.entries.flatMap(\.languages))
+        return codes.sorted { languageLabel($0) < languageLabel($1) }
+    }
+
+    private func openEntry(_ entry: LibraryEntry) {
+        OpenRouter.open(entry.epubURL, openWindow: openWindow)
+    }
+
+    /// Map a BCP-47 code to a display label using the same picker
+    /// list the launcher uses. Falls back to the raw code for
+    /// codes that aren't in the picker (e.g. an old conversion
+    /// targeting a language that's since been removed from the UI).
+    private func languageLabel(_ code: String) -> String {
+        QueueViewModel.supportedLanguages
+            .first(where: { $0.id == code })?.label
+            ?? code
+    }
+
+    private func formattedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
+private extension LibraryEntry {
+    /// Sort key for the Last Opened column. `Date.distantPast` for
+    /// nil so unopened entries sort to the bottom on descending
+    /// (= most-recent-first) order.
+    var lastOpenedSortKey: Date {
+        lastOpened ?? .distantPast
+    }
+}
