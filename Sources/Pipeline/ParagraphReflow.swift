@@ -33,9 +33,21 @@ struct ParagraphReflow {
     /// Detects column layout first, then reflows each column in
     /// left-to-right order. Empty input → empty output.
     func reflow(_ observations: [TextObservation]) -> [Block] {
+        reflowWithBoxes(observations).map(\.block)
+    }
+
+    /// Same as `reflow` but also returns each paragraph's bounding
+    /// box in normalized page coordinates (Vision/Surya convention:
+    /// origin bottom-left, [0, 1]). Used by the paragraph-map
+    /// sidecar (`ParagraphMap`) so the editor can re-OCR and align
+    /// at paragraph granularity. Bbox is the union of every
+    /// observation that contributed to the paragraph.
+    func reflowWithBoxes(
+        _ observations: [TextObservation]
+    ) -> [(block: Block, bbox: CGRect)] {
         guard !observations.isEmpty else { return [] }
         let columns = ColumnSplitter().split(observations)
-        return columns.flatMap { reflowColumn($0) }
+        return columns.flatMap { reflowColumnWithBoxes($0) }
     }
 
     /// Reflow a single column's worth of observations.
@@ -92,6 +104,60 @@ struct ParagraphReflow {
 
         return paragraphs.map { lines in
             .paragraph(runs: [InlineRun(joinLines(lines))])
+        }
+    }
+
+    /// Same as `reflowColumn` but emits `(Block, bbox)` per
+    /// paragraph. Bbox is the union of all observations that
+    /// landed in that paragraph.
+    private func reflowColumnWithBoxes(
+        _ observations: [TextObservation]
+    ) -> [(block: Block, bbox: CGRect)] {
+        guard !observations.isEmpty else { return [] }
+        let lines = sortedReadingOrder(observations)
+        let lineHeights = lines.map(\.box.height)
+        let medianLineHeight = median(lineHeights)
+        let leftEdges = lines.map(\.box.minX).sorted()
+        let bodyLeft = quantile(leftEdges, 0.10)
+
+        var paragraphs: [[TextObservation]] = []
+        var current: [TextObservation] = []
+        var previousBaselineY: CGFloat? = nil
+        var previousText: String? = nil
+
+        for line in lines {
+            let baselineY = line.box.minY
+            var startsNewParagraph = false
+            if let prevY = previousBaselineY {
+                let gap = prevY - line.box.maxY
+                if gap > paragraphGapMultiplier * medianLineHeight {
+                    startsNewParagraph = true
+                } else if line.box.minX > bodyLeft + indentThreshold,
+                          gap > 0 {
+                    startsNewParagraph = true
+                } else if let prev = previousText,
+                          endsWithSentenceTerminator(prev),
+                          line.text.first?.isUppercase == true,
+                          gap > softParagraphGapMultiplier * medianLineHeight {
+                    startsNewParagraph = true
+                } else if Self.startsWithListMarker(line.text) {
+                    startsNewParagraph = true
+                }
+            }
+            if startsNewParagraph, !current.isEmpty {
+                paragraphs.append(current)
+                current = []
+            }
+            current.append(line)
+            previousBaselineY = baselineY
+            previousText = line.text
+        }
+        if !current.isEmpty { paragraphs.append(current) }
+
+        return paragraphs.map { obs in
+            let block = Block.paragraph(runs: [InlineRun(joinLines(obs))])
+            let union = obs.dropFirst().reduce(obs[0].box) { $0.union($1.box) }
+            return (block, union)
         }
     }
 

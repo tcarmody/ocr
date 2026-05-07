@@ -76,6 +76,14 @@ final class EditorViewModel: ObservableObject {
     /// (or one that predates the anchor-emitting pipeline) and sync
     /// stays dormant.
     @Published private(set) var pageMap: PageMap?
+    /// Paragraph-level bbox sidecar produced by the converter when
+    /// a chapter has paragraph entries. Tier 9 / paragraph-level
+    /// alignment Pass B. Nil when the EPUB doesn't carry a map
+    /// (third-party EPUBs, or EPUBs from the page-OCR Sonnet path
+    /// — that path doesn't yield per-paragraph PDF coordinates).
+    /// Used (when present) to drive paragraph-precision PDF↔source
+    /// alignment + the Re-OCR Current Paragraph command.
+    @Published private(set) var paragraphMap: ParagraphMap?
     /// Cloud Phase 6 sidecar — every Haiku post-OCR cleanup decision
     /// from the conversion. Nil when the cleanup feature wasn't run
     /// or no regions tripped the trigger gate. Surfaces in the
@@ -358,6 +366,9 @@ final class EditorViewModel: ObservableObject {
             self.loadSourceForSelectedFile()
             self.attachInitialSourcePDF(epubURL: epubURL, package: pkg)
             self.pageMap = PageMap.read(workingDirectory: pkg.workingDirectory)
+            self.paragraphMap = ParagraphMap.read(
+                workingDirectory: pkg.workingDirectory
+            )
             self.correctionTrail = CorrectionTrail.read(
                 workingDirectory: pkg.workingDirectory
             )
