@@ -1448,11 +1448,14 @@ final class EditorViewModel: ObservableObject {
             )
             _ = try editor.splitChapter(at: file.id, splitOffset: cursorOffset)
             try reloadPackageFromDisk()
-            // Drop the buffer for the changed file so the next select
-            // re-reads from disk.
-            buffers.removeValue(forKey: file.id)
-            dirtyURLs.remove(file.id)
-            select(file)
+            // The on-disk file changed — reload its content into
+            // the source pane bypassing the flush-then-load path
+            // `select(_:)` uses (that would stash the pre-split
+            // CodeMirror buffer back over our just-written file).
+            reloadSelectedFileFromDisk()
+            // Bump preview so the WKWebView re-fetches the
+            // truncated chapter file.
+            previewVersion += 1
             isDirty = true
         } catch {
             chapterOperationError = error.localizedDescription
@@ -1473,12 +1476,48 @@ final class EditorViewModel: ObservableObject {
             )
             try editor.mergeWithNextChapter(at: file.id)
             try reloadPackageFromDisk()
-            buffers.removeValue(forKey: file.id)
-            dirtyURLs.remove(file.id)
-            select(file)
+            // The on-disk file now contains both chapters' bodies —
+            // reload its content into the source pane bypassing the
+            // flush-then-load path `select(_:)` uses (that would
+            // stash the pre-merge CodeMirror buffer back over our
+            // just-written merged content).
+            reloadSelectedFileFromDisk()
+            // Bump preview so the WKWebView re-fetches the merged
+            // chapter file.
+            previewVersion += 1
             isDirty = true
         } catch {
             chapterOperationError = error.localizedDescription
+        }
+    }
+
+    /// Reload the selected file's source from disk after an on-disk
+    /// edit (Split / Merge / Regenerate-TOC). Bypasses the flush
+    /// `select(_:)` performs for ordinary file switches — that
+    /// flush would stash the stale pre-edit CodeMirror buffer back
+    /// over the disk write, undoing the operation visually even
+    /// though the file on disk is correct.
+    ///
+    /// Invariants on entry: the selected file's URL still exists
+    /// on disk (the caller already wrote to it) and has the
+    /// post-edit content. We drop any in-memory buffer + dirty
+    /// flag, re-read from disk into both `buffers[url]` and
+    /// `sourceText`. CodeMirror's binding to `sourceText` updates
+    /// on the next render.
+    private func reloadSelectedFileFromDisk() {
+        guard let url = selectedFile?.id,
+              !(selectedFile?.isDirectory ?? true),
+              Self.isTextFile(url) else { return }
+        buffers.removeValue(forKey: url)
+        dirtyURLs.remove(url)
+        do {
+            let data = try Data(contentsOf: url)
+            let text = String(data: data, encoding: .utf8)
+                ?? "(Could not decode \(url.lastPathComponent) as UTF-8)"
+            buffers[url] = text
+            sourceText = text
+        } catch {
+            sourceText = "(Reload failed: \(error.localizedDescription))"
         }
     }
 
