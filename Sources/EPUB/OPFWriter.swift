@@ -30,6 +30,26 @@ struct OPFWriter {
         let identifier = XMLEscape.text(book.identifier)
         let language = XMLEscape.attribute(book.language.rawValue)
         let creator = book.author.map(XMLEscape.text)
+        // Tier 9 / Q-Metadata extras. Each line emits only when
+        // the field is non-nil + non-empty so OPF stays clean for
+        // user-built books that don't supply this info.
+        var extras: [String] = []
+        if let year = book.year, !year.isEmpty {
+            extras.append("<dc:date>\(XMLEscape.text(year))</dc:date>")
+        }
+        if let publisher = book.publisher, !publisher.isEmpty {
+            extras.append("<dc:publisher>\(XMLEscape.text(publisher))</dc:publisher>")
+        }
+        if let isbn = book.isbn, !isbn.isEmpty {
+            // Secondary identifier — primary stays the UUID URN
+            // so the EPUB's unique-id attribute keeps a stable
+            // ref. ISBN as a sibling lets readers + library tools
+            // recognize the book.
+            extras.append(
+                "<dc:identifier>urn:isbn:\(XMLEscape.text(isbn))</dc:identifier>"
+            )
+        }
+        let extrasBlock = extras.isEmpty ? "" : extras.joined(separator: "\n") + "\n"
 
         let metadata = """
         <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -37,7 +57,7 @@ struct OPFWriter {
         <dc:title>\(title)</dc:title>
         <dc:language>\(language)</dc:language>
         \(creator.map { "<dc:creator>\($0)</dc:creator>" } ?? "")
-        <meta property="dcterms:modified">\(modString)</meta>
+        \(extrasBlock)<meta property="dcterms:modified">\(modString)</meta>
         </metadata>
         """
 

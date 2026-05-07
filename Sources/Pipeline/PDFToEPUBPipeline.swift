@@ -243,6 +243,36 @@ public actor PDFToEPUBPipeline {
         return ClaudeTOCParser(client: client, budget: budget)
     }
 
+    /// Build the Cloud-mode coherence analyzer for one conversion.
+    /// One Haiku call over a digest of every chapter; returns
+    /// rewrites the pipeline applies as guarded global find/
+    /// replaces. Same gating shape as the other Cloud helpers.
+    static func makeClaudeCoherenceAnalyzer(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeCoherenceAnalyzer? {
+        guard options.processingMode == .cloud else { return nil }
+        guard options.cloudFeatures.coherencePass else { return nil }
+        guard let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        let client = AnthropicAPIClient(apiKeyProvider: { key })
+        return ClaudeCoherenceAnalyzer(client: client, budget: budget)
+    }
+
+    /// Build the Cloud-mode metadata extractor for one conversion.
+    /// One Haiku call over the front-matter text to extract title
+    /// / author / year / publisher / ISBN into OPF metadata.
+    /// Same gating shape as the other Cloud helpers.
+    static func makeClaudeMetadataExtractor(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeMetadataExtractor? {
+        guard options.processingMode == .cloud else { return nil }
+        guard options.cloudFeatures.metadataExtraction else { return nil }
+        guard let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        let client = AnthropicAPIClient(apiKeyProvider: { key })
+        return ClaudeMetadataExtractor(client: client, budget: budget)
+    }
+
     /// Build the Cloud-mode chapter classifier for one conversion.
     /// Same gating shape as the other Cloud helpers.
     static func makeClaudeChapterClassifier(
@@ -1738,10 +1768,52 @@ public actor PDFToEPUBPipeline {
             classifiedChapters = chapters
         }
 
+        // Tier 9 / Q-Coherence: one Haiku call over a digest of
+        // every chapter to identify recurring OCR errors (names
+        // with stripped diacritics, ligature artifacts that
+        // survived the typography pass). Each suggestion is
+        // guardrailed (length ratio, ≥ 3 occurrences in the
+        // document, no-collision with `right`) before applying.
+        // Runs before metadata extraction so the extractor sees
+        // the corrected text.
+        let coherenceAnalyzer = Self.makeClaudeCoherenceAnalyzer(
+            options: options, budget: claudeBudget
+        )
+        let coherenceCleanedChapters: [Chapter]
+        if let coherenceAnalyzer {
+            coherenceCleanedChapters = await coherenceAnalyzer.analyzeAndApply(
+                chapters: classifiedChapters
+            )
+        } else {
+            coherenceCleanedChapters = classifiedChapters
+        }
+
+        // Tier 9 / Q-Metadata: one Haiku call over the front
+        // matter to extract title / author / year / publisher /
+        // ISBN. Updates the corresponding `Book` fields when the
+        // extractor returns values. Falls through silently when
+        // disabled / declined / parse-failed.
+        let extractor = Self.makeClaudeMetadataExtractor(
+            options: options, budget: claudeBudget
+        )
+        let extracted: ClaudeMetadataExtractor.Result?
+        if let extractor {
+            let frontMatter = ClaudeMetadataExtractor.sampleFrontMatter(
+                from: coherenceCleanedChapters
+            )
+            extracted = await extractor.extract(frontMatterText: frontMatter)
+        } else {
+            extracted = nil
+        }
+
         let book = Book(
-            title: title,
+            title: extracted?.title ?? title,
+            author: extracted?.author,
             language: language,
-            chapters: classifiedChapters
+            chapters: coherenceCleanedChapters,
+            year: extracted?.year,
+            publisher: extracted?.publisher,
+            isbn: extracted?.isbn
         )
 
         let trail = correctionTrailEntries.isEmpty

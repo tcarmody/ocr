@@ -1811,15 +1811,31 @@ shipping sequence (5 rounds) follows.
 
 ### Q-Coherence — Document-level coherence pass
 
-Per-page processing today is independent (with a few cross-page
-classifiers layered on top). A single Haiku call over the whole
-book after reflow could fix things only visible in aggregate:
-chapter-title typos that propagate, inconsistent character /
-place name spellings, recurring OCR errors. Cheap (one call per
-book at Haiku rates), high-impact on long books.
+**Status**: shipped (Tier 9 / Round 2). New
+`ClaudeCoherenceAnalyzer` builds a digest of every chapter
+(title + first ~200 chars of body, capped at 8K total chars),
+asks Haiku to identify recurring OCR errors that should be
+normalized, and returns up to 10 suggestions of the form
+`{wrong, right}`. Each suggestion is filtered by a guardrail
+(`shouldApply`):
 
-**Effort**: ~1.5 days. Reuses `AnthropicAPIClient` + budget +
-guardrail patterns from Cloud Phase 6.
+  * Length-ratio bound: `min(|wrong|, |right|) / max(...) ≥ 0.5`.
+    Beyond that, the rewrite looks like a different word →
+    reject.
+  * Document-occurrence floor: `wrong` must appear ≥ 3 times
+    in the assembled text. Single-occurrence candidates aren't
+    worth a global rewrite + may be legitimate variation.
+  * No-collision: `right` must NOT already appear in the
+    document. If it does, the document has both forms — applying
+    a global rewrite would homogenize legitimate variants.
+  * Empty / equal: trivially rejected.
+
+Surviving suggestions apply as case-sensitive global string
+replacements across every text-bearing run (and chapter titles).
+Run metadata (language, noterefId) is preserved.
+
+Toggle: `cloudFeatures.coherencePass`, default true. Single
+Haiku call per book — effectively free.
 
 ### Q-Hyphenation — Cross-page hyphenation repair
 
@@ -1835,14 +1851,30 @@ deferred — uncommon and conservative-by-design.
 
 ### Q-Metadata — Author / title / ISBN extraction
 
-`Book.author` / `Book.title` today come from user input or the
-source filename. A Haiku pass on the first 3-5 pages
-("frontmatter-summarize → JSON") writes title, author, year,
-publisher, ISBN into the EPUB's OPF metadata. Library window
-gets real titles instead of filenames; `dc:identifier` becomes
-useful for dedup.
+**Status**: shipped (Tier 9 / Round 2). New
+`ClaudeMetadataExtractor` samples the first ~4K chars of the
+first 1-2 chapters' body text (chapter cap is hard — front
+matter + first body chapter is plenty; deeper into the book
+the extractor would mis-identify body sentences as titles), and
+asks Haiku to return a JSON object with `title`, `author`,
+`year`, `publisher`, `isbn`. Each field is verbatim or null —
+the prompt explicitly forbids guessing.
 
-**Effort**: ~1 day. One Haiku call per book, roughly free.
+Year normalization extracts a 4-digit substring from
+freeform-y values like "© 2003" or "first published 2003".
+ISBN normalization strips hyphens / spaces, validates length
+(10 or 13 digits with optional `X` check digit on ISBN-10),
+uppercases the check digit. Both passes return nil for
+malformed values.
+
+`Book` extended with optional `year`, `publisher`, `isbn`
+fields. `OPFWriter` emits `<dc:date>`, `<dc:publisher>`, and
+`<dc:identifier>urn:isbn:…</dc:identifier>` when present;
+absent fields produce no extra OPF lines so user-built books
+stay clean.
+
+Toggle: `cloudFeatures.metadataExtraction`, default true. One
+Haiku call per book — < $0.001 at Haiku rates.
 
 ### Q-Dashes — Em-dash / en-dash / hyphen disambiguation
 
@@ -2030,10 +2062,17 @@ subsequent round.
    chapter splitting): Latin ligature decomposition + soft-
    hyphen strip + `--`→`—` + `\d+-\d+`→`\d+–\d+`.
 
-### Round 2 — Metadata + coherence (~2.5 days)
+### Round 2 — Metadata + coherence (~2.5 days) — **shipped**
 
-4. **Q-Metadata** (author/title/ISBN via Haiku) — 1 day
-5. **Q-Coherence** (document-level Haiku pass) — 1.5 days
+4. ~~**Q-Metadata**~~ shipped — `ClaudeMetadataExtractor` runs
+   one Haiku call over the front matter; `Book` gains `year` /
+   `publisher` / `isbn` fields; OPF emits `<dc:date>`,
+   `<dc:publisher>`, `<dc:identifier>urn:isbn:…`.
+5. ~~**Q-Coherence**~~ shipped — `ClaudeCoherenceAnalyzer`
+   runs one Haiku call over a digest of every chapter; returns
+   up to 10 wrong→right pairs; guardrail rejects suggestions
+   that fail length-ratio / occurrence-count / no-collision /
+   empty-or-equal checks before applying as global find/replaces.
 
 ### Round 3 — Cost + speed wins (~7 days)
 

@@ -79,6 +79,21 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// (Haiku 4.5 default; escalates to Sonnet 4.6 on parse
         /// failure).
         public var tocParsing: Bool
+        /// Tier 9 / Q-Metadata. One Haiku call per book over the
+        /// front matter to extract title / author / year /
+        /// publisher / ISBN into the OPF metadata. ~Free at Haiku
+        /// rates; on by default in Cloud mode because the result
+        /// is mostly upside (Library window gets real titles).
+        public var metadataExtraction: Bool
+        /// Tier 9 / Q-Coherence. One Haiku call per book that
+        /// looks at a digest of every chapter and proposes
+        /// recurring-OCR-error rewrites (character names with
+        /// stripped diacritics, ligature artifacts, etc.). Each
+        /// suggestion is guardrailed (length ratio, document
+        /// occurrence count, no-collision) before applying. On
+        /// by default in Cloud mode — single Haiku call, real
+        /// quality win on long books.
+        public var coherencePass: Bool
 
         public init(
             hardRegionOCR: Bool = true,
@@ -86,7 +101,9 @@ public struct AISettings: Sendable, Codable, Equatable {
             postOCRCleanup: Bool = false,
             postOCRCleanupVisionMode: Bool = false,
             semanticClassification: Bool = false,
-            tocParsing: Bool = false
+            tocParsing: Bool = false,
+            metadataExtraction: Bool = true,
+            coherencePass: Bool = true
         ) {
             self.hardRegionOCR = hardRegionOCR
             self.tableExtraction = tableExtraction
@@ -94,14 +111,19 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.postOCRCleanupVisionMode = postOCRCleanupVisionMode
             self.semanticClassification = semanticClassification
             self.tocParsing = tocParsing
+            self.metadataExtraction = metadataExtraction
+            self.coherencePass = coherencePass
         }
 
         /// Decode optionally so settings persisted before
-        /// `postOCRCleanupVisionMode` existed don't break.
+        /// `postOCRCleanupVisionMode` / `metadataExtraction` existed
+        /// don't break.
         private enum CodingKeys: String, CodingKey {
             case hardRegionOCR, tableExtraction, postOCRCleanup
             case postOCRCleanupVisionMode
             case semanticClassification, tocParsing
+            case metadataExtraction
+            case coherencePass
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -113,6 +135,18 @@ public struct AISettings: Sendable, Codable, Equatable {
             ) ?? false
             self.semanticClassification = try c.decode(Bool.self, forKey: .semanticClassification)
             self.tocParsing = try c.decode(Bool.self, forKey: .tocParsing)
+            // Default to true so users on the existing default-on
+            // Cloud features get metadata extraction without a
+            // resave; persisted "false" still round-trips.
+            self.metadataExtraction = try c.decodeIfPresent(
+                Bool.self, forKey: .metadataExtraction
+            ) ?? true
+            // Default-on for previously-stored settings, same as
+            // metadataExtraction — both are mostly-upside Haiku
+            // features.
+            self.coherencePass = try c.decodeIfPresent(
+                Bool.self, forKey: .coherencePass
+            ) ?? true
         }
     }
 }
