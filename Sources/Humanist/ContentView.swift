@@ -203,6 +203,15 @@ struct ContentView: View {
                         on disk per book — only enable when \
                         diagnosing conversion issues.
                         """)
+                Toggle(".txt + .md", isOn: $queue.emitSiblingTextOutputs)
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Write `<basename>.txt` and `<basename>.md` \
+                        next to the EPUB on conversion. Useful for \
+                        piping into search / archival / RAG pipelines \
+                        without unzipping the EPUB. Cheap (text files \
+                        are small); on by default.
+                        """)
                 Spacer()
                 tesseractStatusBadge
             }

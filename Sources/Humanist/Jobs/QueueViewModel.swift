@@ -75,6 +75,10 @@ final class QueueViewModel: ObservableObject {
     /// reflow / classification issues. Off by default to avoid
     /// leaving 50–100MB of artifacts next to every PDF.
     @Published var emitDebugLog: Bool = false
+    /// Tier 9 / V-Outputs. When on (default), the pipeline writes
+    /// `<basename>.txt` and `<basename>.md` siblings next to the
+    /// EPUB on conversion. Off skips both writes.
+    @Published var emitSiblingTextOutputs: Bool = true
 
     let store: JobStore
     let runner: JobRunner
@@ -153,7 +157,8 @@ final class QueueViewModel: ObservableObject {
                 useCloudEnhancedOCR: useCloudEnhancedOCR,
                 forceOCR: forceOCR,
                 privateMode: privateMode,
-                emitDebugLog: emitDebugLog
+                emitDebugLog: emitDebugLog,
+                emitSiblingTextOutputs: emitSiblingTextOutputs
             ),
             status: .profiling
         )

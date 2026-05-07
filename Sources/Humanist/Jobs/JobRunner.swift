@@ -228,7 +228,8 @@ final class JobRunner: ObservableObject {
             // Settings UI takes effect on the next request without
             // rebuilding the pipeline.
             anthropicAPIKeyProvider: keyProvider,
-            useClaudePageOCR: claudePageOCR
+            useClaudePageOCR: claudePageOCR,
+            emitSiblingTextOutputs: job.options.emitSiblingTextOutputs
         )
         let storeRef = store
         let jobID = job.id

@@ -166,6 +166,12 @@ struct ConversionOptions: Codable, Equatable {
     /// conversion issues, otherwise leaves a directory's worth of
     /// artifacts on disk.
     var emitDebugLog: Bool
+    /// Tier 9 / V-Outputs. When true, write `<basename>.txt` and
+    /// `<basename>.md` next to the EPUB on conversion. Useful for
+    /// piping into search / archival / RAG pipelines without
+    /// unzipping the EPUB. Cheap (text files are small); default
+    /// on. Off skips both writes.
+    var emitSiblingTextOutputs: Bool
 
     init(
         languages: [String] = ["en"],
@@ -173,7 +179,8 @@ struct ConversionOptions: Codable, Equatable {
         useCloudEnhancedOCR: Bool = false,
         forceOCR: Bool = false,
         privateMode: Bool = false,
-        emitDebugLog: Bool = false
+        emitDebugLog: Bool = false,
+        emitSiblingTextOutputs: Bool = true
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
@@ -181,6 +188,7 @@ struct ConversionOptions: Codable, Equatable {
         self.forceOCR = forceOCR
         self.privateMode = privateMode
         self.emitDebugLog = emitDebugLog
+        self.emitSiblingTextOutputs = emitSiblingTextOutputs
     }
 
     /// Codable: decodes both the new `useSuryaOCR` key and the
@@ -195,6 +203,7 @@ struct ConversionOptions: Codable, Equatable {
         case forceOCR
         case privateMode
         case emitDebugLog
+        case emitSiblingTextOutputs
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -216,6 +225,11 @@ struct ConversionOptions: Codable, Equatable {
         self.emitDebugLog = try c.decodeIfPresent(
             Bool.self, forKey: .emitDebugLog
         ) ?? false
+        // Default-on for legacy decode: existing users get the
+        // sibling .txt / .md files without a re-save.
+        self.emitSiblingTextOutputs = try c.decodeIfPresent(
+            Bool.self, forKey: .emitSiblingTextOutputs
+        ) ?? true
     }
 
     /// Encode under the new keys only — the legacy alias is for
@@ -228,6 +242,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(forceOCR, forKey: .forceOCR)
         try c.encode(privateMode, forKey: .privateMode)
         try c.encode(emitDebugLog, forKey: .emitDebugLog)
+        try c.encode(emitSiblingTextOutputs, forKey: .emitSiblingTextOutputs)
     }
 }
 

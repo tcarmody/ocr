@@ -1917,15 +1917,30 @@ coords + page DPI gets us there.
 
 ### V-Outputs — Plain-text + Markdown + DOCX siblings
 
-EPUB stays the canonical output; `.txt` and `.md` ship as
-sibling files alongside on conversion when the user opts in.
-DOCX is heavier (binary OOXML format) and lands in a later
-round. `XHTMLWriter` already produces structured `[Block]` —
-walking it to plain text or Markdown is a small writer per
-format.
+**Status**: txt + md shipped (Tier 9 / Round 4). DOCX deferred
+to Round 5.
 
-**Effort**: ~1 day for txt + md; ~3 days for DOCX (third-party
-library or hand-rolled OOXML).
+`PlainTextWriter` and `MarkdownWriter` both walk a `Book` →
+`String`. PlainText: title + author header, chapter titles
+underlined with `=`, paragraphs flat, anchors skipped, figures
++ tables summarized as bracketed lines, footnotes in a `Notes`
+section per chapter. Markdown: `# title`, `*by author*`,
+`*year · publisher*`, `## chapter`, `### sub-section`,
+`![alt](images/...)` for figures, GitHub-flavored table
+syntax with pipe-escaping, `[^N]: ...` footnote definitions.
+
+Pipeline emits both as siblings of the EPUB on conversion via
+`<basename>.txt` and `<basename>.md`. Best-effort writes
+(failures don't fail the conversion). New
+`emitSiblingTextOutputs` flag on `ConversionOptions` +
+`PDFToEPUBPipeline.Options` (default true; UI toggle ".txt +
+.md" in the launcher options row). Existing persisted jobs
+decode as default-on.
+
+23 new tests across both writers covering header rendering,
+chapter / paragraph / heading / figure / table / footnote /
+anchor handling, pipe-escaping in table cells, and metadata
+line rendering.
 
 ### V-Trust-PerPage — Per-page embedded-text trust
 
@@ -2189,11 +2204,13 @@ so it's worth eating the heavier lift earlier.
    higher values cut bulk-run wall time near-proportionally.
    E-Batches step 2 plugs into the same deferred-append slot.
 
-### Round 4 — Output formats + ingestion options (~2 days)
+### Round 4 — Output formats + ingestion options (~2 days) — **partial**
 
-9. **V-Outputs (txt + md only)** — 1 day; DOCX deferred to
-   Round 5
-10. **V-Trust-PerPage** (per-page embedded-text trust) — 1 day
+9. ~~**V-Outputs (txt + md)**~~ shipped — `PlainTextWriter` +
+   `MarkdownWriter` emit as siblings of the EPUB on conversion;
+   `emitSiblingTextOutputs` toggle in launcher (default on).
+   DOCX still deferred to Round 5.
+10. **V-Trust-PerPage** (per-page embedded-text trust) — pending.
 
 ### Round 5 — Heavier features (~12 days)
 

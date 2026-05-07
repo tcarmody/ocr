@@ -114,6 +114,12 @@ public actor PDFToEPUBPipeline {
         /// Phase 3 will wire it into the user-visible "Claude OCR"
         /// toggle as the new default behavior.
         public var useClaudePageOCR: Bool
+        /// Tier 9 / V-Outputs. When true, the conversion writes
+        /// `<basename>.txt` and `<basename>.md` next to the EPUB.
+        /// Cheap (text files are small), useful for piping into
+        /// search / archival / RAG pipelines without unzipping
+        /// the EPUB. Default true; turn off to skip both writes.
+        public var emitSiblingTextOutputs: Bool
 
         public init(
             dpi: CGFloat = 400,
@@ -130,7 +136,8 @@ public actor PDFToEPUBPipeline {
             perBookCallCap: Int = 200,
             anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
             disableLocalCascadeEscalation: Bool = false,
-            useClaudePageOCR: Bool = false
+            useClaudePageOCR: Bool = false,
+            emitSiblingTextOutputs: Bool = true
         ) {
             self.dpi = dpi
             self.dpiForScans = dpiForScans
@@ -147,6 +154,7 @@ public actor PDFToEPUBPipeline {
             self.anthropicAPIKeyProvider = anthropicAPIKeyProvider
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
             self.useClaudePageOCR = useClaudePageOCR
+            self.emitSiblingTextOutputs = emitSiblingTextOutputs
         }
     }
 
@@ -1853,6 +1861,21 @@ public actor PDFToEPUBPipeline {
             parsedTOC: appliedTOC,
             to: outputURL
         )
+
+        // Tier 9 / V-Outputs: emit `.txt` + `.md` siblings next
+        // to the EPUB. Best-effort — failures don't fail the
+        // conversion (the canonical output is the EPUB; siblings
+        // are convenience).
+        if options.emitSiblingTextOutputs {
+            let txtURL = outputURL.deletingPathExtension()
+                .appendingPathExtension("txt")
+            let mdURL = outputURL.deletingPathExtension()
+                .appendingPathExtension("md")
+            let txt = PlainTextWriter.render(book)
+            let md = MarkdownWriter.render(book)
+            try? txt.write(to: txtURL, atomically: true, encoding: .utf8)
+            try? md.write(to: mdURL, atomically: true, encoding: .utf8)
+        }
 
         // Conversion succeeded — staging dir's purpose is served.
         // Skip cleanup when debug logging is on so the user can
