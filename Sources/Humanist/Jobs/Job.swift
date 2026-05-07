@@ -172,6 +172,15 @@ struct ConversionOptions: Codable, Equatable {
     /// unzipping the EPUB. Cheap (text files are small); default
     /// on. Off skips both writes.
     var emitSiblingTextOutputs: Bool
+    /// Tier 9 / V-Trust-PerPage. User-typed page-range string —
+    /// 1-based, comma-separated, with `N-M` ranges:
+    /// "1-20, 150-160". Pages in any range bypass the embedded-
+    /// text trust path and force OCR. Empty string = no per-page
+    /// override (the global `forceOCR` still applies if set).
+    /// Stored as the typed string so the UI can show what the
+    /// user entered; parsed to `[ClosedRange<Int>]` at job-run
+    /// time via `PageRangeParser`.
+    var forceOCRPageRangesString: String
 
     init(
         languages: [String] = ["en"],
@@ -180,7 +189,8 @@ struct ConversionOptions: Codable, Equatable {
         forceOCR: Bool = false,
         privateMode: Bool = false,
         emitDebugLog: Bool = false,
-        emitSiblingTextOutputs: Bool = true
+        emitSiblingTextOutputs: Bool = true,
+        forceOCRPageRangesString: String = ""
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
@@ -189,6 +199,7 @@ struct ConversionOptions: Codable, Equatable {
         self.privateMode = privateMode
         self.emitDebugLog = emitDebugLog
         self.emitSiblingTextOutputs = emitSiblingTextOutputs
+        self.forceOCRPageRangesString = forceOCRPageRangesString
     }
 
     /// Codable: decodes both the new `useSuryaOCR` key and the
@@ -204,6 +215,7 @@ struct ConversionOptions: Codable, Equatable {
         case privateMode
         case emitDebugLog
         case emitSiblingTextOutputs
+        case forceOCRPageRangesString
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -230,6 +242,9 @@ struct ConversionOptions: Codable, Equatable {
         self.emitSiblingTextOutputs = try c.decodeIfPresent(
             Bool.self, forKey: .emitSiblingTextOutputs
         ) ?? true
+        self.forceOCRPageRangesString = try c.decodeIfPresent(
+            String.self, forKey: .forceOCRPageRangesString
+        ) ?? ""
     }
 
     /// Encode under the new keys only — the legacy alias is for
@@ -243,6 +258,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(privateMode, forKey: .privateMode)
         try c.encode(emitDebugLog, forKey: .emitDebugLog)
         try c.encode(emitSiblingTextOutputs, forKey: .emitSiblingTextOutputs)
+        try c.encode(forceOCRPageRangesString, forKey: .forceOCRPageRangesString)
     }
 }
 

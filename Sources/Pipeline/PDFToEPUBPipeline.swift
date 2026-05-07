@@ -120,6 +120,14 @@ public actor PDFToEPUBPipeline {
         /// search / archival / RAG pipelines without unzipping
         /// the EPUB. Default true; turn off to skip both writes.
         public var emitSiblingTextOutputs: Bool
+        /// Tier 9 / V-Trust-PerPage. Per-page force-OCR override.
+        /// Empty array = no per-page force; the global `forceOCR`
+        /// flag still applies if set. Each range is a 0-indexed
+        /// inclusive range; pages inside any range bypass the
+        /// embedded-text-trust path and run OCR. Use cases:
+        /// born-digital front matter (pages 1-20) + scanned
+        /// appendix (pages 200-end), or any mix of trust-quality.
+        public var forceOCRPageRanges: [ClosedRange<Int>]
 
         public init(
             dpi: CGFloat = 400,
@@ -137,7 +145,8 @@ public actor PDFToEPUBPipeline {
             anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
             disableLocalCascadeEscalation: Bool = false,
             useClaudePageOCR: Bool = false,
-            emitSiblingTextOutputs: Bool = true
+            emitSiblingTextOutputs: Bool = true,
+            forceOCRPageRanges: [ClosedRange<Int>] = []
         ) {
             self.dpi = dpi
             self.dpiForScans = dpiForScans
@@ -155,6 +164,17 @@ public actor PDFToEPUBPipeline {
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
             self.useClaudePageOCR = useClaudePageOCR
             self.emitSiblingTextOutputs = emitSiblingTextOutputs
+            self.forceOCRPageRanges = forceOCRPageRanges
+        }
+
+        /// True when `pageIndex` should bypass the embedded-text
+        /// trust path and force OCR. The global `forceOCR` flag
+        /// applies to all pages; per-page `forceOCRPageRanges`
+        /// override individual pages or ranges. Either matching is
+        /// sufficient — both controls compose additively.
+        public func shouldForceOCR(forPageIndex i: Int) -> Bool {
+            if forceOCR { return true }
+            return forceOCRPageRanges.contains { $0.contains(i) }
         }
     }
 
@@ -1100,7 +1120,12 @@ public actor PDFToEPUBPipeline {
             // Resume fast path: this page has a checkpoint on disk
             // from a prior (interrupted) run. Load it, restore the
             // accumulators, skip all the expensive per-page work.
+            // Tier 9 / V-Trust-PerPage: force-OCR pages skip
+            // checkpoint resume so a re-run with new force ranges
+            // actually re-processes the affected pages instead of
+            // silently using the previous run's verdict.
             if alreadyDonePages.contains(i),
+               !options.shouldForceOCR(forPageIndex: i),
                let checkpoint = resumeManager.readCheckpoint(forPage: i) {
                 // Page-OCR resume path: checkpoint stores the parsed
                 // [Block] / [Footnote] slice from a prior Sonnet
@@ -1230,13 +1255,14 @@ public actor PDFToEPUBPipeline {
             let confidenceForProgress: Double
             var layoutForPage: [LayoutRegion]? = nil
 
-            // `forceOCR` overrides the scorer's `.trust` verdict for
-            // every page. The scorer's score/diagnostics are still
-            // recorded (`qualityScores` already populated above) so
-            // the debug log shows what *would* have happened — but
-            // the dispatch always takes the `.reocr` branch.
+            // `forceOCR` (and per-page `forceOCRPageRanges`)
+            // override the scorer's `.trust` verdict. The scorer's
+            // score/diagnostics are still recorded (`qualityScores`
+            // already populated above) so the debug log shows what
+            // *would* have happened — but the dispatch always takes
+            // the `.reocr` branch.
             let effectiveVerdict: EmbeddedTextQualityScorer.Verdict =
-                options.forceOCR ? .reocr : quality.verdict
+                options.shouldForceOCR(forPageIndex: i) ? .reocr : quality.verdict
             verdictsByPage[i] = effectiveVerdict
 
             switch effectiveVerdict {
@@ -2075,7 +2101,8 @@ public actor PDFToEPUBPipeline {
         // E-Routing: trust-verdict pages skip Sonnet.
         var routingScore: EmbeddedTextQualityScorer.Score?
         var routingDiagnostics: EmbeddedTextExtractor.Diagnostics?
-        if options.cloudFeatures.adaptivePageRouting && !options.forceOCR {
+        if options.cloudFeatures.adaptivePageRouting
+           && !options.shouldForceOCR(forPageIndex: i) {
             let extracted = autoreleasepool {
                 embeddedExtractor.extract(from: pdf, pageIndex: i)
             }
@@ -2448,7 +2475,8 @@ public actor PDFToEPUBPipeline {
 
         var routingScore: EmbeddedTextQualityScorer.Score?
         var routingDiagnostics: EmbeddedTextExtractor.Diagnostics?
-        if options.cloudFeatures.adaptivePageRouting && !options.forceOCR {
+        if options.cloudFeatures.adaptivePageRouting
+           && !options.shouldForceOCR(forPageIndex: i) {
             let extracted = autoreleasepool {
                 embeddedExtractor.extract(from: pdf, pageIndex: i)
             }

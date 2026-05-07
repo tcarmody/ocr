@@ -1944,14 +1944,37 @@ line rendering.
 
 ### V-Trust-PerPage — Per-page embedded-text trust
 
-Today the embedded-text trust path is all-or-nothing per book.
-A flag for "trust embedded text on pages 1-50, OCR pages 51+"
-helps mixed sources (born-digital front matter + scanned
-appendix). Surface as a per-page checkbox column in the
-launcher's pre-flight inspection (reuses the document
-profiler), or a "force OCR from page N" option.
+**Status**: shipped (Tier 9 / Round 4).
 
-**Effort**: ~1 day.
+User types a 1-based page-range string in the launcher's "Force
+OCR pages:" field — `"1-20, 150-160"` syntax, comma-separated
+with `N-M` ranges. Empty string keeps the existing global
+behavior. New `PageRangeParser.parse(_:)` produces 0-indexed
+`[ClosedRange<Int>]`; resilient — malformed tokens (non-numeric,
+reversed ranges, zero/negative) skip silently rather than
+discarding the whole input.
+
+`PDFToEPUBPipeline.Options.shouldForceOCR(forPageIndex:)`
+unifies the gate: returns true when global `forceOCR` is set OR
+the page falls inside any per-page range. Replaces the
+all-or-nothing global check at three sites (cascade verdict
+selection, page-OCR E-Routing trust check, batch prep trust
+check). Checkpoint resume also gates on this — a re-run with
+new force ranges actually re-processes the affected pages
+instead of silently using the previous run's verdict.
+
+UI: dedicated "Force OCR pages:" text field above the toggle
+row in the launcher options, with placeholder "e.g. 1-20,
+150-160" and help text explaining the use case (mixed-quality
+books — born-digital front matter + scanned appendix).
+
+17 new tests: 13 `PageRangeParserTests` (empty / single page /
+single range / multi-token / whitespace tolerance / malformed
+skip / negative skip / degenerate same-page range / no merge of
+overlaps + format / round-trip) + 4 `OptionsForceOCRTests`
+(global override every page, no-force matches nothing, per-page
+ranges match only listed pages, additive composition with
+global).
 
 ### V-Refresh — EPUB refresh (re-OCR)
 
@@ -2204,13 +2227,17 @@ so it's worth eating the heavier lift earlier.
    higher values cut bulk-run wall time near-proportionally.
    E-Batches step 2 plugs into the same deferred-append slot.
 
-### Round 4 — Output formats + ingestion options (~2 days) — **partial**
+### Round 4 — Output formats + ingestion options (~2 days) — **shipped**
 
 9. ~~**V-Outputs (txt + md)**~~ shipped — `PlainTextWriter` +
    `MarkdownWriter` emit as siblings of the EPUB on conversion;
    `emitSiblingTextOutputs` toggle in launcher (default on).
    DOCX still deferred to Round 5.
-10. **V-Trust-PerPage** (per-page embedded-text trust) — pending.
+10. ~~**V-Trust-PerPage**~~ shipped — `PageRangeParser` + new
+    "Force OCR pages:" field in the launcher (1-based ranges,
+    e.g. "1-20, 150-160"). Per-page gate replaces the global
+    `forceOCR` check at every site; checkpoint resume respects
+    the gate so re-runs honor new ranges.
 
 ### Round 5 — Heavier features (~12 days)
 

@@ -152,6 +152,28 @@ struct ContentView: View {
     @ViewBuilder
     private var optionsBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Force OCR pages:")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                TextField("e.g. 1-20, 150-160",
+                          text: $queue.forceOCRPageRangesString)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout)
+                    .frame(maxWidth: 200)
+                    .help("""
+                        Re-OCR these specific pages even when their \
+                        embedded text would otherwise pass the trust \
+                        scorer. 1-based, comma-separated, with N-M \
+                        ranges (e.g. "1-20, 150-160"). Useful for \
+                        mixed-quality books — born-digital front \
+                        matter + scanned appendix, or any pages where \
+                        the embedded text is bad OCR. The global \
+                        "Force OCR" toggle overrides every page; this \
+                        field overrides only the listed pages.
+                        """)
+                Spacer()
+            }
             HStack(spacing: 14) {
                 languageMenu
                 Divider().frame(height: 18)

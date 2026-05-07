@@ -229,7 +229,10 @@ final class JobRunner: ObservableObject {
             // rebuilding the pipeline.
             anthropicAPIKeyProvider: keyProvider,
             useClaudePageOCR: claudePageOCR,
-            emitSiblingTextOutputs: job.options.emitSiblingTextOutputs
+            emitSiblingTextOutputs: job.options.emitSiblingTextOutputs,
+            forceOCRPageRanges: PageRangeParser.parse(
+                job.options.forceOCRPageRangesString
+            )
         )
         let storeRef = store
         let jobID = job.id

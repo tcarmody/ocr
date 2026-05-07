@@ -79,6 +79,12 @@ final class QueueViewModel: ObservableObject {
     /// `<basename>.txt` and `<basename>.md` siblings next to the
     /// EPUB on conversion. Off skips both writes.
     @Published var emitSiblingTextOutputs: Bool = true
+    /// Tier 9 / V-Trust-PerPage. User-typed page-range string —
+    /// 1-based, comma-separated, with `N-M` ranges
+    /// (e.g. "1-20, 150-160"). Pages in any range bypass the
+    /// embedded-text trust path and force OCR. Empty = no per-page
+    /// override. Snapshotted into ConversionOptions at queue-add.
+    @Published var forceOCRPageRangesString: String = ""
 
     let store: JobStore
     let runner: JobRunner
@@ -158,7 +164,8 @@ final class QueueViewModel: ObservableObject {
                 forceOCR: forceOCR,
                 privateMode: privateMode,
                 emitDebugLog: emitDebugLog,
-                emitSiblingTextOutputs: emitSiblingTextOutputs
+                emitSiblingTextOutputs: emitSiblingTextOutputs,
+                forceOCRPageRangesString: forceOCRPageRangesString
             ),
             status: .profiling
         )
