@@ -491,6 +491,13 @@ public struct PackageEditor {
     /// chapter at `url`. Returns nil if no heading is present.
     static func firstHeadingTitle(in url: URL) throws -> String? {
         let content = try String(contentsOf: url, encoding: .utf8)
+        return firstHeadingTitle(in: content)
+    }
+
+    /// Same as the URL-based form, but takes the chapter content
+    /// directly. Used by the in-memory book path so we don't need to
+    /// read from disk to regenerate a nav.
+    static func firstHeadingTitle(in content: String) -> String? {
         for tag in ["h1", "h2", "h3"] {
             let pattern = "<\(tag)[^>]*>([\\s\\S]*?)</\(tag)>"
             if let regex = try? NSRegularExpression(

@@ -171,6 +171,68 @@ public final class EPUBBook: @unchecked Sendable {
         })
     }
 
+    /// Look up a resource by its absolute URL on disk. Used by editor
+    /// callers that hold a chapter URL and need the corresponding
+    /// resource id. Returns nil when the URL doesn't match any
+    /// manifest item.
+    public func resource(at absoluteURL: URL) -> Resource? {
+        let target = absoluteURL.canonicalForFile.standardizedFileURL.path
+        for resource in resourcesByID.values {
+            let candidate = self.absoluteURL(for: resource)
+                .canonicalForFile.standardizedFileURL.path
+            if candidate == target { return resource }
+        }
+        return nil
+    }
+
+    /// The resource id that follows `id` in the spine, or nil when
+    /// `id` is the last spine entry (or not in the spine at all).
+    public func nextSpineResourceID(after id: String) -> String? {
+        guard let idx = spine.firstIndex(of: id),
+              idx + 1 < spine.count
+        else { return nil }
+        return spine[idx + 1]
+    }
+
+    /// Manifest @id not currently in use. Generates `prefix-001`,
+    /// `prefix-002`, … until it finds a free slot.
+    public func nextAvailableResourceID(prefix: String) -> String {
+        var i = 1
+        while true {
+            let candidate = String(format: "\(prefix)-%03d", i)
+            if resourcesByID[candidate] == nil { return candidate }
+            i += 1
+        }
+    }
+
+    /// Href (relative to the OPF) not currently in use, derived from
+    /// `nearHref`'s directory + extension. Format: `{dir}/chapter-
+    /// split-NNNNN.{ext}`. Used by Split to name a new chapter
+    /// in the same directory as the chapter being split. The check
+    /// covers both manifest hrefs and any pre-existing on-disk files
+    /// in the working directory — we don't want to clobber a sibling
+    /// file the manifest forgot to declare.
+    public func nextAvailableHref(near nearHref: String) -> String {
+        let nearURL = URL(fileURLWithPath: nearHref)
+        let dir = nearURL.deletingLastPathComponent().path
+        let ext = nearURL.pathExtension.isEmpty ? "xhtml" : nearURL.pathExtension
+        let usedHrefs = Set(resourcesByID.values.map(\.hrefRelativeToOPF))
+        var i = 1
+        while true {
+            let basename = String(format: "chapter-split-%05d.\(ext)", i)
+            let href: String = dir.isEmpty || dir == "."
+                ? basename
+                : "\(dir)/\(basename)"
+            let absoluteOnDisk = opfDirectory.appendingPathComponent(href)
+            let collidesOnDisk = FileManager.default
+                .fileExists(atPath: absoluteOnDisk.path)
+            if !usedHrefs.contains(href), !collidesOnDisk {
+                return href
+            }
+            i += 1
+        }
+    }
+
     // MARK: - Mutations (used by future BookPackageEditor)
 
     /// Insert a new resource into the manifest at the end of the
