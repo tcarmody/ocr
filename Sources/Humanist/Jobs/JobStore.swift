@@ -120,4 +120,39 @@ final class JobStore: ObservableObject {
             $0.status == .queued || $0.status == .running || $0.status == .profiling
         }
     }
+
+    /// Jobs the launcher renders at the top of the queue list —
+    /// the user's active focus. Order matches `jobs` (arrival, with
+    /// any user reorder applied via `move(from:to:)`).
+    var activeJobs: [Job] {
+        jobs.filter {
+            switch $0.status {
+            case .queued, .running, .profiling: return true
+            case .done, .failed, .cancelled:    return false
+            }
+        }
+    }
+
+    /// Jobs the launcher renders inside the History disclosure at
+    /// the bottom of the queue list. Sorted most-recent-finish first
+    /// so a quick scan after a bulk run shows the newest results at
+    /// the top of the disclosure. Jobs missing `finishedAt`
+    /// (shouldn't happen for finished statuses, but defensively)
+    /// sort to the bottom.
+    var finishedJobs: [Job] {
+        jobs.filter {
+            switch $0.status {
+            case .done, .failed, .cancelled:    return true
+            case .queued, .running, .profiling: return false
+            }
+        }
+        .sorted { (a, b) in
+            switch (a.finishedAt, b.finishedAt) {
+            case (nil, nil): return false
+            case (nil, _):   return false
+            case (_, nil):   return true
+            case (let l?, let r?): return l > r
+            }
+        }
+    }
 }

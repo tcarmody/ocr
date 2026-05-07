@@ -101,6 +101,85 @@ final class JobStoreTests: XCTestCase {
         XCTAssertEqual(restarted.jobs.map(\.id), [b.id, c.id, a.id])
     }
 
+    // MARK: - activeJobs / finishedJobs (R-Launcher-History)
+
+    func test_activeJobs_filters_to_pending_states() {
+        let store = makeStore()
+        let queued    = makeJob(name: "queued",    status: .queued)
+        let running   = makeJob(name: "running",   status: .running)
+        let profiling = makeJob(name: "profiling", status: .profiling)
+        let done      = makeJob(name: "done",      status: .done)
+        let failed    = makeJob(name: "failed",    status: .failed)
+        let cancelled = makeJob(name: "cancelled", status: .cancelled)
+        for j in [queued, running, profiling, done, failed, cancelled] {
+            store.add(j)
+        }
+
+        let activeIds = Set(store.activeJobs.map(\.id))
+        XCTAssertEqual(activeIds, [queued.id, running.id, profiling.id])
+    }
+
+    func test_finishedJobs_filters_to_resolved_states() {
+        let store = makeStore()
+        let queued    = makeJob(name: "queued",    status: .queued)
+        let running   = makeJob(name: "running",   status: .running)
+        let done      = makeJob(name: "done",      status: .done)
+        let failed    = makeJob(name: "failed",    status: .failed)
+        let cancelled = makeJob(name: "cancelled", status: .cancelled)
+        for j in [queued, running, done, failed, cancelled] { store.add(j) }
+
+        let finishedIds = Set(store.finishedJobs.map(\.id))
+        XCTAssertEqual(finishedIds, [done.id, failed.id, cancelled.id])
+    }
+
+    func test_finishedJobs_sorts_most_recent_first() {
+        // Three finished jobs with different finishedAt timestamps;
+        // newest should appear first in the disclosure so a bulk-run
+        // results scan starts at the most recent job.
+        let store = makeStore()
+        var older = makeJob(name: "older", status: .done)
+        older.finishedAt = Date(timeIntervalSinceReferenceDate: 100)
+        var middle = makeJob(name: "middle", status: .failed)
+        middle.finishedAt = Date(timeIntervalSinceReferenceDate: 200)
+        var newest = makeJob(name: "newest", status: .cancelled)
+        newest.finishedAt = Date(timeIntervalSinceReferenceDate: 300)
+        // Add in arrival (out-of-finish-order) order.
+        for j in [older, middle, newest] { store.add(j) }
+
+        let order = store.finishedJobs.map(\.id)
+        XCTAssertEqual(order, [newest.id, middle.id, older.id])
+    }
+
+    func test_finishedJobs_with_nil_finishedAt_sorts_to_bottom() {
+        // Defensive: a finished-status job missing `finishedAt`
+        // (shouldn't happen in production, but defend the sort)
+        // shouldn't crash and should land below jobs that do
+        // carry a timestamp.
+        let store = makeStore()
+        var dated = makeJob(name: "dated", status: .done)
+        dated.finishedAt = Date(timeIntervalSinceReferenceDate: 100)
+        let undated = makeJob(name: "undated", status: .failed)  // no finishedAt
+        store.add(undated); store.add(dated)
+
+        let order = store.finishedJobs.map(\.id)
+        XCTAssertEqual(order, [dated.id, undated.id])
+    }
+
+    func test_active_and_finished_are_disjoint_and_cover_all_jobs() {
+        // Every job must land in exactly one of the two views.
+        let store = makeStore()
+        let cases: [Job.Status] = [.queued, .running, .profiling, .done, .failed, .cancelled]
+        for status in cases {
+            store.add(makeJob(name: "\(status)", status: status))
+        }
+
+        let active = Set(store.activeJobs.map(\.id))
+        let finished = Set(store.finishedJobs.map(\.id))
+        XCTAssertTrue(active.isDisjoint(with: finished))
+        XCTAssertEqual(active.union(finished),
+                       Set(store.jobs.map(\.id)))
+    }
+
     func test_move_lets_user_reorder_among_mixed_statuses() {
         // Mixed queue: [done, queued1, queued2, queued3]. The user
         // should be able to drag queued3 ahead of queued1. The done

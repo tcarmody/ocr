@@ -16,6 +16,13 @@ struct ContentView: View {
     @State private var isTargeted = false
     @State private var showingWelcome = false
     @StateObject private var twoUpProcessor = TwoUpProcessor()
+    /// History disclosure state. Defaults collapsed so a long
+    /// bulk run doesn't push the active queue off-screen; users
+    /// expand it to inspect past conversions or retry failures.
+    /// Per-session only — once the user toggles it, the choice
+    /// persists for the launcher's lifetime but resets across
+    /// app launches.
+    @State private var historyExpanded: Bool = false
     @Environment(\.openWindow) private var openWindow
     /// First-run flag. When false, `onAppear` flips
     /// `showingWelcome` true so the welcome sheet presents
@@ -297,14 +304,15 @@ struct ContentView: View {
         // non-empty — the empty-queue case is handled by the
         // hero drop zone above instead of an "empty queue" label.
         //
-        // Switched from LazyVStack → List for R-Launcher-Reorder:
-        // `.onMove` is List-only on macOS, and List ships a built-in
-        // hover-drag handle. Custom card visual is preserved via
-        // `.listRowBackground` + clear separators + zeroed insets;
-        // `.listStyle(.plain)` keeps the rows flush to the window
-        // chrome the way the LazyVStack version did.
+        // Two sections (R-Launcher-History): active jobs at the top
+        // (reorderable via `.onMove`, the user's working surface),
+        // and a collapsible "History" disclosure at the bottom for
+        // done / failed / cancelled jobs. The disclosure defaults
+        // to collapsed so a long bulk run doesn't push the active
+        // queue off-screen; the user expands it when they want to
+        // open a past EPUB or retry a failure.
         List {
-            ForEach(store.jobs) { job in
+            ForEach(store.activeJobs) { job in
                 JobRow(job: job)
                     .padding(.vertical, 8)
                     .padding(.horizontal, 12)
@@ -318,6 +326,35 @@ struct ContentView: View {
             }
             .onMove { source, destination in
                 store.move(from: source, to: destination)
+            }
+
+            // History disclosure — only present when there are
+            // finished jobs, so the section header doesn't render
+            // as an empty stub on a fresh queue.
+            let finished = store.finishedJobs
+            if !finished.isEmpty {
+                Section {
+                    DisclosureGroup(isExpanded: $historyExpanded) {
+                        ForEach(finished) { job in
+                            JobRow(job: job)
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .listRowBackground(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color(nsColor: .controlBackgroundColor))
+                                        .padding(.vertical, 3)
+                                )
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                        }
+                    } label: {
+                        Text("History (\(finished.count))")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
             }
         }
         .listStyle(.plain)

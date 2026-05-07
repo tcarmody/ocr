@@ -1341,24 +1341,22 @@ while paused).
 
 ## R-Launcher-History — Completed-jobs disclosure
 
-**Status**: not started. Done jobs stay in the active queue list,
-which gets cluttered after a bulk run. "Clear Done" exists but
-discards the metadata (stats, output URL) — useful for finding a
-past EPUB later.
+**Status**: shipped. Queue list now splits into two sections:
+active jobs (queued / running / profiling) at the top with
+reorder; finished jobs (done / failed / cancelled) under a
+collapsible "History (N)" `DisclosureGroup` at the bottom,
+sorted most-recent-finish first. Defaults collapsed so a long
+bulk run doesn't push the active queue off-screen; the user
+expands it to inspect past results, retry failures, or open a
+past EPUB. Existing JobRow actions (open, retry, etc.) work
+identically inside the disclosure — no per-row code changes
+needed. The existing on-disk JSON store already persists across
+launches, so history survives app restart for free.
 
-### Approach
-
-- Auto-collapse `.done` / `.cancelled` / `.failed` jobs into a
-  "History" disclosure section at the bottom of the queue.
-- History entries keep their stats / output URL — clicking opens
-  the EPUB. Right-click → Reveal in Finder, Re-run, Remove.
-- Optional: persist history beyond the current session (cap at
-  some count) so the user can find an EPUB from yesterday's
-  bulk run.
-
-### Effort
-
-~half day. Mostly view-tree restructuring.
+New `JobStore.activeJobs` / `JobStore.finishedJobs` computed
+properties are the partition surface; 5 tests cover filter
+correctness, recency sort, nil-`finishedAt` handling, and
+disjoint coverage of every job status.
 
 ## R-Launcher-Reorder — Drag-reorder queued jobs
 
