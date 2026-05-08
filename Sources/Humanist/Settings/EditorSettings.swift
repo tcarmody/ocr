@@ -24,6 +24,41 @@ public enum EditorSettingsKeys {
     public static let previewFontSize = "humanist.editor.previewFontSize"
     /// Theme override for the preview pane: "system" / "light" / "dark".
     public static let previewTheme = "humanist.editor.previewTheme"
+    /// WYSIWYG pane font family token: "system" / "serif" / "monospace".
+    public static let wysiwygFontFamily = "humanist.editor.wysiwygFontFamily"
+    /// WYSIWYG pane font size in points (12–24).
+    public static let wysiwygFontSize = "humanist.editor.wysiwygFontSize"
+    /// Theme override for the WYSIWYG pane: "system" / "light" / "dark".
+    public static let wysiwygTheme = "humanist.editor.wysiwygTheme"
+}
+
+/// Font-family token for WYSIWYG / preview rendering. Resolves to a
+/// CSS `font-family` stack — we don't expose arbitrary fonts to keep
+/// the picker tight and the rendered output portable.
+public enum EditorFontFamily: String, CaseIterable, Identifiable, Sendable {
+    case system, serif, monospace
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .system:    return "System"
+        case .serif:     return "Serif"
+        case .monospace: return "Monospace"
+        }
+    }
+
+    /// CSS font-family stack. Uses generic family names so the
+    /// browser picks the platform's idiomatic typeface.
+    public var cssStack: String {
+        switch self {
+        case .system:
+            return "-apple-system, BlinkMacSystemFont, \"Helvetica Neue\", system-ui, sans-serif"
+        case .serif:
+            return "\"New York\", \"Iowan Old Style\", Charter, Georgia, serif"
+        case .monospace:
+            return "ui-monospace, \"SF Mono\", \"Menlo\", monospace"
+        }
+    }
 }
 
 /// Three-way theme selector — `system` honors the OS appearance
@@ -53,4 +88,7 @@ public enum EditorSettingsDefaults {
     public static let sourceWordWrap: Bool = true
     public static let previewFontSize: Double = 16
     public static let previewTheme: String = EditorThemeMode.system.rawValue
+    public static let wysiwygFontFamily: String = EditorFontFamily.serif.rawValue
+    public static let wysiwygFontSize: Double = 16
+    public static let wysiwygTheme: String = EditorThemeMode.system.rawValue
 }

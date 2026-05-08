@@ -18,6 +18,12 @@ struct EditorSettingsView: View {
     private var previewFontSize: Double = EditorSettingsDefaults.previewFontSize
     @AppStorage(EditorSettingsKeys.previewTheme)
     private var previewTheme: String = EditorSettingsDefaults.previewTheme
+    @AppStorage(EditorSettingsKeys.wysiwygFontFamily)
+    private var wysiwygFontFamily: String = EditorSettingsDefaults.wysiwygFontFamily
+    @AppStorage(EditorSettingsKeys.wysiwygFontSize)
+    private var wysiwygFontSize: Double = EditorSettingsDefaults.wysiwygFontSize
+    @AppStorage(EditorSettingsKeys.wysiwygTheme)
+    private var wysiwygTheme: String = EditorSettingsDefaults.wysiwygTheme
 
     var body: some View {
         Form {
@@ -49,6 +55,23 @@ struct EditorSettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Section("WYSIWYG pane") {
+                Picker("Font", selection: $wysiwygFontFamily) {
+                    ForEach(EditorFontFamily.allCases) { family in
+                        Text(family.label).tag(family.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                fontSizeRow(
+                    label: "Font size",
+                    value: $wysiwygFontSize,
+                    range: 12...24
+                )
+                themePicker(
+                    label: "Theme",
+                    selection: $wysiwygTheme
+                )
+            }
             Section {
                 Button("Restore Defaults", role: .destructive) {
                     sourceFontSize = EditorSettingsDefaults.sourceFontSize
@@ -57,6 +80,9 @@ struct EditorSettingsView: View {
                     sourceWordWrap = EditorSettingsDefaults.sourceWordWrap
                     previewFontSize = EditorSettingsDefaults.previewFontSize
                     previewTheme = EditorSettingsDefaults.previewTheme
+                    wysiwygFontFamily = EditorSettingsDefaults.wysiwygFontFamily
+                    wysiwygFontSize = EditorSettingsDefaults.wysiwygFontSize
+                    wysiwygTheme = EditorSettingsDefaults.wysiwygTheme
                 }
             }
         }

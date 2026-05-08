@@ -29,6 +29,12 @@ struct EditorView: View {
     private var previewFontSize: Double = EditorSettingsDefaults.previewFontSize
     @AppStorage(EditorSettingsKeys.previewTheme)
     private var previewTheme: String = EditorSettingsDefaults.previewTheme
+    @AppStorage(EditorSettingsKeys.wysiwygFontFamily)
+    private var wysiwygFontFamily: String = EditorSettingsDefaults.wysiwygFontFamily
+    @AppStorage(EditorSettingsKeys.wysiwygFontSize)
+    private var wysiwygFontSize: Double = EditorSettingsDefaults.wysiwygFontSize
+    @AppStorage(EditorSettingsKeys.wysiwygTheme)
+    private var wysiwygTheme: String = EditorSettingsDefaults.wysiwygTheme
 
     init(epubURL: URL) {
         self.epubURL = epubURL
@@ -403,7 +409,12 @@ struct EditorView: View {
                     xhtml: $vm.sourceText,
                     resetID: AnyHashable(file.id),
                     cssURL: vm.bookCSSURL,
-                    commandRequest: $wysiwygCommand
+                    commandRequest: $wysiwygCommand,
+                    appearance: WYSIWYGAppearance(
+                        fontFamily: EditorFontFamily(rawValue: wysiwygFontFamily) ?? .serif,
+                        fontSize: wysiwygFontSize,
+                        theme: EditorThemeMode(rawValue: wysiwygTheme) ?? .system
+                    )
                 )
             } else if vm.selectedFile != nil {
                 VStack {

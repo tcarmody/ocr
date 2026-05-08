@@ -34,6 +34,10 @@ struct WYSIWYGView: NSViewRepresentable {
     /// Outbound formatting commands from the toolbar. The
     /// coordinator drains these on every update.
     @Binding var commandRequest: WYSIWYGCommand?
+    /// User-tweakable look. Bundle of font + size + theme — when
+    /// these change, the coordinator reapplies them via a tiny JS
+    /// hook without reloading the page (no cursor jump).
+    var appearance: WYSIWYGAppearance
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -61,6 +65,9 @@ struct WYSIWYGView: NSViewRepresentable {
         if context.coordinator.lastResetID != resetID {
             context.coordinator.lastResetID = resetID
             context.coordinator.loadInitial()
+        } else if context.coordinator.lastAppearance != appearance {
+            context.coordinator.lastAppearance = appearance
+            context.coordinator.applyAppearance()
         }
         if let cmd = commandRequest {
             coord.applyCommand(cmd)
@@ -75,6 +82,7 @@ struct WYSIWYGView: NSViewRepresentable {
         var parent: WYSIWYGView
         weak var webView: WKWebView?
         var lastResetID: AnyHashable?
+        var lastAppearance: WYSIWYGAppearance?
         /// HTML the coordinator most-recently received from the
         /// WebView. Compared against the binding on every update so
         /// outside-driven changes (e.g. a source-pane edit) trigger
@@ -91,13 +99,15 @@ struct WYSIWYGView: NSViewRepresentable {
             self.parent = parent
             super.init()
             self.lastResetID = parent.resetID
+            self.lastAppearance = parent.appearance
         }
 
         func loadInitial() {
             isReady = false
             let html = renderEnvelope(
                 bodyContents: WYSIWYGHTML.extractBody(from: parent.xhtml),
-                cssURL: parent.cssURL
+                cssURL: parent.cssURL,
+                appearance: parent.appearance
             )
             // Use the EPUB working directory as the read-access
             // base so relative `<img>` / CSS paths resolve.
@@ -105,6 +115,26 @@ struct WYSIWYGView: NSViewRepresentable {
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
             webView?.loadHTMLString(html, baseURL: baseURL)
+        }
+
+        /// Apply font / size / theme tweaks live without reloading
+        /// the document — keeps the cursor + selection intact while
+        /// the user fiddles with Settings.
+        func applyAppearance() {
+            let app = parent.appearance
+            let css = """
+            (function() {
+              const r = document.documentElement.style;
+              r.setProperty('--humanist-font-family', \"\(escapeJSString(app.fontFamily.cssStack))\");
+              r.setProperty('--humanist-font-size', '\(app.fontSize)px');
+              document.body.dataset.humanistTheme = '\(app.theme.rawValue)';
+            })();
+            """
+            if isReady {
+                webView?.evaluateJavaScript(css, completionHandler: nil)
+            } else {
+                pendingJS.append(css)
+            }
         }
 
         func userContentController(
@@ -173,6 +203,17 @@ struct WYSIWYGView: NSViewRepresentable {
             }
         }
     }
+}
+
+/// Bundle of user appearance preferences for the WYSIWYG pane —
+/// flows in from Settings and propagates to the running WebView
+/// either via the initial HTML envelope or, on subsequent
+/// changes, via a small JS hook that updates CSS variables in
+/// place.
+struct WYSIWYGAppearance: Equatable {
+    var fontFamily: EditorFontFamily
+    var fontSize: Double
+    var theme: EditorThemeMode
 }
 
 /// Toolbar-driven action a `WYSIWYGView` can dispatch into the
@@ -275,7 +316,22 @@ enum WYSIWYGHTML {
     }
 }
 
-private func renderEnvelope(bodyContents: String, cssURL: URL?) -> String {
+/// Escape a string for safe interpolation inside a single-quoted
+/// JS literal. Just covers the cases we actually emit (backslashes
+/// and single quotes); the strings here are short configurable
+/// values from Settings and CSS stacks, no untrusted input.
+private func escapeJSString(_ s: String) -> String {
+    s
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "'", with: "\\'")
+}
+
+private func renderEnvelope(
+    bodyContents: String,
+    cssURL: URL?,
+    appearance: WYSIWYGAppearance
+) -> String {
     let cssLink: String
     if let cssURL = cssURL {
         cssLink = "<link rel=\"stylesheet\" href=\"\(cssURL.absoluteString)\">"
@@ -297,20 +353,29 @@ private func renderEnvelope(bodyContents: String, cssURL: URL?) -> String {
       <meta charset="utf-8">
       \(cssLink)
       <style>
+        :root {
+          --humanist-font-family: \(appearance.fontFamily.cssStack);
+          --humanist-font-size: \(appearance.fontSize)px;
+        }
         html, body {
           margin: 0; padding: 0;
           height: 100%;
-          background: \(systemBackgroundCSS);
-          color: \(systemTextCSS);
+          background: Canvas;
+          color: CanvasText;
         }
+        /* `data-humanist-theme="light"` / `"dark"` overrides the
+           system appearance for the editing surface only. The
+           "system" theme leaves the data attr empty and lets
+           Canvas / CanvasText follow the OS. */
+        body[data-humanist-theme="light"] { background: #ffffff; color: #1a1a1a; }
+        body[data-humanist-theme="dark"]  { background: #1c1c1e; color: #f5f5f7; }
         body {
           padding: 1.25rem 1.5rem 5rem;
-          font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue",
-                       "Segoe UI", system-ui, serif;
+          font-family: var(--humanist-font-family);
+          font-size: var(--humanist-font-size);
           line-height: 1.5;
-          font-size: 16px;
           outline: none;
-          caret-color: \(systemTextCSS);
+          caret-color: currentColor;
         }
         body[contenteditable="true"]:focus { outline: none; }
         body * { max-width: 38rem; margin-left: auto; margin-right: auto; }
@@ -433,16 +498,10 @@ private func renderEnvelope(bodyContents: String, cssURL: URL?) -> String {
       })();
       </script>
     </head>
-    <body contenteditable="true" spellcheck="true">
+    <body contenteditable="true" spellcheck="true" data-humanist-theme="\(appearance.theme.rawValue == "system" ? "" : appearance.theme.rawValue)">
     \(bodyContents)
     </body>
     </html>
     """
 }
 
-// We can't reach SwiftUI Color values from the JS string template,
-// so use CSS system colors / named colors that look right in both
-// light and dark — the WebView automatically picks up the system
-// appearance.
-private let systemBackgroundCSS = "Canvas"
-private let systemTextCSS = "CanvasText"
