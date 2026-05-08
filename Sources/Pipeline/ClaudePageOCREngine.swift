@@ -235,13 +235,22 @@ public struct ClaudePageOCREngine: Sendable {
     /// `buildBatchRequest`. Encodes the page image as base64 PNG
     /// and assembles the Messages API request body. Returns nil
     /// on PNG encode failure (no recovery — fall back to cascade).
+    ///
+    /// The image gets downsized to fit Anthropic's API limits
+    /// before encoding: max 8000 px on either dimension AND max
+    /// 5 MB base64-encoded. Books rendered at 600 DPI for scans
+    /// blew past both limits silently — the API rejected every
+    /// page and the per-page error swallow in the pipeline made
+    /// the conversion produce a blank EPUB. Anthropic's vision
+    /// model auto-downscales above ~1568 px anyway, so anything
+    /// larger is wasted bandwidth + tokens.
     private static func buildRequest(
         pageImage: CGImage,
         languages: [BCP47],
         model: AnthropicModel,
         maxOutputTokens: Int
     ) -> AnthropicMessageRequest? {
-        guard let png = Self.encodePNG(pageImage) else { return nil }
+        guard let (png, _) = Self.encodeForAnthropic(pageImage) else { return nil }
         let base64 = png.base64EncodedString()
         return AnthropicMessageRequest(
             model: model,
@@ -333,6 +342,80 @@ public struct ClaudePageOCREngine: Sendable {
         CGImageDestinationAddImage(dest, image, nil)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return buffer as Data
+    }
+
+    /// Anthropic API request limits we pre-clamp against.
+    /// Source: Anthropic Messages API image-input docs.
+    private static let anthropicMaxBase64Bytes: Int = 5 * 1024 * 1024  // 5 MB
+    /// Anthropic auto-downscales images larger than this, so anything
+    /// bigger is wasted bytes + tokens. Use as our preferred starting
+    /// dimension; iterate downward only if PNG still exceeds 5 MB at
+    /// this size (rare but possible for very dense scans).
+    private static let anthropicPreferredMaxDim: Int = 1568
+    /// Floor we won't shrink past; below this OCR quality drops
+    /// faster than the 5 MB win is worth.
+    private static let anthropicMinMaxDim: Int = 768
+
+    /// Returns a base64-safe PNG of `image`, resized down if needed
+    /// to fit Anthropic's 5 MB / 8000 px-per-side limits. Starts at
+    /// `anthropicPreferredMaxDim` (1568 — the resolution Anthropic's
+    /// vision model uses internally) and halves until under 5 MB or
+    /// until the floor is hit. Returns the encoded data + the final
+    /// long-edge dimension (useful for diagnostics).
+    static func encodeForAnthropic(
+        _ image: CGImage
+    ) -> (data: Data, longEdge: Int)? {
+        // Initial size: cap to preferred max dim. Scan-DPI inputs
+        // are routinely 5000-8000 px across; capping to 1568 cuts
+        // the byte count by an order of magnitude with no quality
+        // loss (server-side downscale would do the same anyway).
+        let initialDim = max(image.width, image.height)
+        var targetDim = min(initialDim, anthropicPreferredMaxDim)
+        var current = downsize(image, longEdge: targetDim)
+        while true {
+            guard let png = encodePNG(current) else { return nil }
+            if png.count <= anthropicMaxBase64Bytes {
+                return (png, max(current.width, current.height))
+            }
+            // PNG still too large — halve the long edge and try
+            // again. Floor at `anthropicMinMaxDim`; if we hit it
+            // and still can't fit, return what we have (the API
+            // will reject; the user gets a clear error in
+            // claude-pages.txt).
+            let nextDim = max(targetDim / 2, anthropicMinMaxDim)
+            if nextDim == targetDim {
+                return (png, max(current.width, current.height))
+            }
+            targetDim = nextDim
+            current = downsize(image, longEdge: targetDim)
+        }
+    }
+
+    /// Resize `image` so its long edge is at most `longEdge` pixels.
+    /// Returns the original when it already fits. Bilinear filtering
+    /// (high quality CoreGraphics interpolation).
+    private static func downsize(_ image: CGImage, longEdge: Int) -> CGImage {
+        let w = image.width
+        let h = image.height
+        let larger = max(w, h)
+        if larger <= longEdge { return image }
+        let scale = CGFloat(longEdge) / CGFloat(larger)
+        let newW = max(1, Int((CGFloat(w) * scale).rounded()))
+        let newH = max(1, Int((CGFloat(h) * scale).rounded()))
+        let colorSpace = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        let bytesPerRow = newW * 4
+        guard let ctx = CGContext(
+            data: nil,
+            width: newW,
+            height: newH,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return image }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: newW, height: newH))
+        return ctx.makeImage() ?? image
     }
 }
 
