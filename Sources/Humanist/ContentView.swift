@@ -90,6 +90,17 @@ struct ContentView: View {
         )) { _ in
             showingWelcome = true
         }
+        // Tools → Compare EPUBs… stashes the diff on
+        // `EPUBDiffPresenter.shared` then posts this; we open the
+        // single-instance "epub-diff" Window scene here. Keeping
+        // the openWindow in this view (rather than the menu
+        // command) is the only place a SwiftUI menu callback can
+        // reach an `@Environment(\.openWindow)` reference.
+        .onReceive(NotificationCenter.default.publisher(
+            for: .humanistShowEPUBDiff
+        )) { _ in
+            openWindow(id: "epub-diff")
+        }
     }
 
     /// Route dropped URLs: EPUBs open immediately; PDFs go through

@@ -188,7 +188,22 @@ struct EditorToolsMenu: Commands {
         CommandMenu("Tools") {
             EditorValidateEPUBCommand()
             EditorCustomizeStyleCommand()
+            Divider()
+            // Re-OCR commands moved here from the Document menu —
+            // they're tool-like (run an engine, surface a result),
+            // not document-edit operations.
+            EditorReOCRCurrentPageMenu()
+            EditorReOCRPDFSelectionMenu()
+            EditorReOCRAllPagesMenu()
+            Divider()
+            EditorCompareEPUBsCommand()
         }
+    }
+}
+
+private struct EditorCompareEPUBsCommand: View {
+    var body: some View {
+        Button("Compare EPUBs…") { ToolsPrompts.runDiffEPUBs() }
     }
 }
 
@@ -219,25 +234,16 @@ private struct EditorCustomizeStyleCommand: View {
 /// "Document" rather than "View" so it doesn't collide with the
 /// system View menu (Show Toolbar, Enter Full Screen, etc.) and
 /// produce two side-by-side View menus in the bar.
-struct EditorViewMenu: Commands {
+/// Top-level "Document" menu — chapter operations + source-PDF
+/// attach + correction trail. Pane toggles, alignment commands, and
+/// the reload-preview command moved to the new View menu; Re-OCR
+/// commands moved to the Tools menu. Each lives where users would
+/// naturally look for it.
+struct EditorDocumentMenu: Commands {
     var body: some Commands {
         CommandMenu("Document") {
-            EditorPaneToggle(pane: .pdf)
-            EditorPaneToggle(pane: .source)
-            EditorPaneToggle(pane: .preview)
-            Divider()
             EditorAttachPDFCommand()
             EditorPDFNavMenu()
-            Divider()
-            EditorReloadPreviewCommand()
-            Divider()
-            EditorAlignFromSourceCommand()
-            EditorAlignFromPDFCommand()
-            EditorAlignFromPreviewCommand()
-            Divider()
-            EditorReOCRCurrentPageMenu()
-            EditorReOCRPDFSelectionMenu()
-            EditorReOCRAllPagesMenu()
             Divider()
             EditorSplitChapterCommand()
             EditorMergeChapterCommand()
@@ -246,6 +252,25 @@ struct EditorViewMenu: Commands {
             EditorRegenerateTOCCommand()
             Divider()
             ShowCorrectionTrailCommand()
+        }
+    }
+}
+
+/// Top-level "View" menu — pane visibility toggles, preview
+/// reload, alignment commands. The natural macOS home for "what's
+/// shown on screen and where it's focused."
+struct EditorViewMenu: Commands {
+    var body: some Commands {
+        CommandMenu("View") {
+            EditorPaneToggle(pane: .pdf)
+            EditorPaneToggle(pane: .source)
+            EditorPaneToggle(pane: .preview)
+            Divider()
+            EditorReloadPreviewCommand()
+            Divider()
+            EditorAlignFromSourceCommand()
+            EditorAlignFromPDFCommand()
+            EditorAlignFromPreviewCommand()
         }
     }
 }

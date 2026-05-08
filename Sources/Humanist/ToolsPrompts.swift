@@ -175,6 +175,41 @@ enum ToolsPrompts {
         }
     }
 
+    // MARK: - Compare EPUBs (O-Diff)
+
+    /// Pick exactly two EPUBs, run the differ, stash the result on
+    /// the presenter, and post a notification so the diff window
+    /// scene can openWindow itself. (Direct openWindow access from
+    /// a menu callback isn't available here — the launcher window's
+    /// scene posts on receipt.)
+    @MainActor
+    static func runDiffEPUBs() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.epub]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Pick exactly two EPUBs to compare. The first you pick is the “left”; the second is the “right”."
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        guard urls.count == 2 else {
+            errorAlert(message: "Pick exactly two EPUB files (you picked \(urls.count)).")
+            return
+        }
+
+        do {
+            let diff = try EPUBDiffer().diff(
+                leftURL: urls[0], rightURL: urls[1]
+            )
+            EPUBDiffPresenter.shared.present(diff)
+            NotificationCenter.default.post(
+                name: .humanistShowEPUBDiff, object: nil
+            )
+        } catch {
+            errorAlert(message: error.localizedDescription)
+        }
+    }
+
     // MARK: - Shared helpers
 
     /// NSAlert with an NSTextField accessory view. Returns the entered

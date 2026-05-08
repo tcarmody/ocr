@@ -89,6 +89,7 @@ struct HumanistApp: App {
             EditorInsertMenu()
             EditorToolsMenu()
             EditorViewMenu()
+            EditorDocumentMenu()
             ShowWindowCommands()
             HelpMenuCommands()
         }
@@ -112,6 +113,17 @@ struct HumanistApp: App {
         Window("Humanist Library", id: "library") {
             LibraryWindowView()
                 .environmentObject(library)
+        }
+        .commandsRemoved()
+
+        // O-Diff. Single-instance window for the most-recent EPUB
+        // comparison. Tools → Compare EPUBs… stashes a diff on
+        // EPUBDiffPresenter and posts `humanistShowEPUBDiff`; the
+        // launcher picks up that notification (it's the only scene
+        // that can openWindow from a notification callback) and
+        // brings the window forward.
+        Window("Compare EPUBs", id: "epub-diff") {
+            EPUBDiffWindow()
         }
         .commandsRemoved()
 
@@ -491,5 +503,11 @@ extension Notification.Name {
     /// welcome sheet. Posted by the Help menu item.
     static let humanistShowWelcome = Notification.Name(
         "humanistShowWelcome"
+    )
+    /// Launcher window listens for this and opens the EPUB diff
+    /// window. Posted by Tools → Compare EPUBs… after the differ
+    /// has populated the presenter.
+    static let humanistShowEPUBDiff = Notification.Name(
+        "humanistShowEPUBDiff"
     )
 }
