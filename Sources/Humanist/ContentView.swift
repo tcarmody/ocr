@@ -205,6 +205,18 @@ struct ContentView: View {
             HStack(spacing: 14) {
                 languageMenu
                 Divider().frame(height: 18)
+                Toggle("Private", isOn: $queue.privateMode)
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Override Settings: disable every cloud feature \
+                        for this conversion. No Claude calls, no cost. \
+                        Forces local-only processing regardless of your \
+                        global Cloud-mode toggles. Coerces Claude OCR \
+                        off; Surya OCR / Force OCR still apply.
+                        """)
+                Toggle("Force OCR", isOn: $queue.forceOCR)
+                    .toggleStyle(.checkbox)
+                    .help("Skip the PDF's embedded text layer and run OCR on every page. Use when the embedded text is the output of a previous bad OCR pass.")
                 Toggle("Claude OCR ($$$)", isOn: $queue.useCloudEnhancedOCR)
                     .toggleStyle(.checkbox)
                     .help("""
@@ -228,17 +240,24 @@ struct ContentView: View {
                         than the standard cascade — use it when you're \
                         offline and getting poor Vision results.
                         """)
-                Toggle("Force OCR", isOn: $queue.forceOCR)
-                    .toggleStyle(.checkbox)
-                    .help("Skip the PDF's embedded text layer and run OCR on every page. Use when the embedded text is the output of a previous bad OCR pass.")
-                Toggle("Private", isOn: $queue.privateMode)
+                Toggle("Searchable PDF", isOn: $queue.emitSearchablePDF)
                     .toggleStyle(.checkbox)
                     .help("""
-                        Override Settings: disable every cloud feature \
-                        for this conversion. No Claude calls, no cost. \
-                        Forces local-only processing regardless of your \
-                        global Cloud-mode toggles. Coerces Claude OCR \
-                        off; Surya OCR / Force OCR still apply.
+                        Write `<basename>.searchable.pdf` next to the \
+                        EPUB — visually identical to the source PDF, \
+                        with invisible OCR text per page so the result \
+                        is fully Cmd+F searchable / selectable / \
+                        Spotlight-indexed. Off by default; output is \
+                        several MB per book.
+                        """)
+                Toggle(".txt + .md", isOn: $queue.emitSiblingTextOutputs)
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Write `<basename>.txt` and `<basename>.md` \
+                        next to the EPUB on conversion. Useful for \
+                        piping into search / archival / RAG pipelines \
+                        without unzipping the EPUB. Cheap (text files \
+                        are small); on by default.
                         """)
                 Toggle("Save log", isOn: $queue.emitDebugLog)
                     .toggleStyle(.checkbox)
@@ -252,25 +271,6 @@ struct ContentView: View {
                         trust verdicts. Leaves 50–100MB of artifacts \
                         on disk per book — only enable when \
                         diagnosing conversion issues.
-                        """)
-                Toggle(".txt + .md", isOn: $queue.emitSiblingTextOutputs)
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Write `<basename>.txt` and `<basename>.md` \
-                        next to the EPUB on conversion. Useful for \
-                        piping into search / archival / RAG pipelines \
-                        without unzipping the EPUB. Cheap (text files \
-                        are small); on by default.
-                        """)
-                Toggle("Searchable PDF", isOn: $queue.emitSearchablePDF)
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Write `<basename>.searchable.pdf` next to the \
-                        EPUB — visually identical to the source PDF, \
-                        with invisible OCR text per page so the result \
-                        is fully Cmd+F searchable / selectable / \
-                        Spotlight-indexed. Off by default; output is \
-                        several MB per book.
                         """)
                 Spacer()
                 tesseractStatusBadge
