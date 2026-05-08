@@ -846,7 +846,7 @@ private struct DropZone: View {
                     Text(isTargeted ? "Release to add to queue" : "Drop documents or a folder")
                         .font(.title3)
                         .foregroundStyle(.secondary)
-                    Text("PDF, TXT, MD, RTF — folders enumerate every PDF inside, recursively.")
+                    Text("PDF, DOCX, HTML, RTF, MD, TXT — folders enumerate every PDF inside, recursively.")
                         .font(.callout)
                         .foregroundStyle(.tertiary)
                 }

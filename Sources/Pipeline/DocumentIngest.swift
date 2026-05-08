@@ -28,6 +28,7 @@ public struct DocumentIngest {
     /// launcher's drop-target check and file-picker filter.
     public static let supportedExtensions: Set<String> = [
         "txt", "md", "markdown", "rtf",
+        "html", "htm", "docx", "doc", "odt",
     ]
 
     /// True when the file extension is one we know how to ingest
@@ -46,7 +47,30 @@ public struct DocumentIngest {
         case "md", "markdown":
             return try ingestMarkdown(url: url, title: title, language: language)
         case "rtf":
-            return try ingestRichText(url: url, title: title, language: language)
+            return try ingestAttributedDocument(
+                url: url, title: title, language: language,
+                documentType: .rtf
+            )
+        case "html", "htm":
+            return try ingestAttributedDocument(
+                url: url, title: title, language: language,
+                documentType: .html
+            )
+        case "docx":
+            return try ingestAttributedDocument(
+                url: url, title: title, language: language,
+                documentType: .officeOpenXML
+            )
+        case "doc":
+            return try ingestAttributedDocument(
+                url: url, title: title, language: language,
+                documentType: .docFormat
+            )
+        case "odt":
+            return try ingestAttributedDocument(
+                url: url, title: title, language: language,
+                documentType: .openDocument
+            )
         default:
             throw Failure.unsupportedFormat(ext)
         }
@@ -265,25 +289,32 @@ public struct DocumentIngest {
         }
     }
 
-    // MARK: - rich text
+    // MARK: - rich text (RTF / HTML / DOC / DOCX / ODT)
 
-    private func ingestRichText(url: URL, title: String, language: BCP47) throws -> Book {
+    /// Read any format `NSAttributedString` understands natively and
+    /// walk paragraphs into `Book` blocks. Heading detection +
+    /// italic / bold inference are shared with the RTF path; HTML
+    /// `<h1>`–`<h6>`, RTF style "Heading 1", and DOCX heading styles
+    /// all populate `NSParagraphStyle.headerLevel`, so the same
+    /// downstream logic catches them.
+    private func ingestAttributedDocument(
+        url: URL,
+        title: String,
+        language: BCP47,
+        documentType: NSAttributedString.DocumentType
+    ) throws -> Book {
         var docAttrs: NSDictionary? = nil
         let attr: NSAttributedString
         do {
             attr = try NSAttributedString(
                 url: url,
-                options: [
-                    .documentType: NSAttributedString.DocumentType.rtf,
-                ],
+                options: [.documentType: documentType],
                 documentAttributes: &docAttrs
             )
         } catch {
             throw Failure.unreadable
         }
         let blocks = blocksFromAttributedString(attr)
-        // RTF carries an optional title in the document attributes;
-        // honor it when present, otherwise fall back to the filename.
         let docTitle = (docAttrs?[NSAttributedString.DocumentAttributeKey.title] as? String)
             .flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
             ?? title

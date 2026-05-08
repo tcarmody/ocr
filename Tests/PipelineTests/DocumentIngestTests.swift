@@ -135,16 +135,103 @@ final class DocumentIngestTests: XCTestCase {
         XCTAssertEqual(italic?.text, "italic")
     }
 
+    // MARK: - html
+
+    func test_html_paragraphs_and_headings_round_trip() throws {
+        let html = """
+            <html><body>
+            <h1>Top Title</h1>
+            <p>First <em>italic</em> paragraph.</p>
+            <h2>Sub</h2>
+            <p>Body text with <strong>bold</strong> emphasis.</p>
+            </body></html>
+            """
+        let url = try writeFile("page.html", contents: html)
+        let book = try DocumentIngest().ingest(from: url)
+        let blocks = book.chapters[0].blocks
+        // NSAttributedString may emit a leading or trailing empty
+        // paragraph from the body wrapper; filter for the cases we
+        // care about.
+        let headings = blocks.compactMap { block -> (Int, String)? in
+            guard case let .heading(level, runs) = block else { return nil }
+            return (level, runs.map(\.text).joined())
+        }
+        XCTAssertTrue(headings.contains(where: { $0.0 == 1 && $0.1 == "Top Title" }))
+        XCTAssertTrue(headings.contains(where: { $0.0 == 2 && $0.1 == "Sub" }))
+
+        let paragraphs = blocks.compactMap { block -> [InlineRun]? in
+            guard case let .paragraph(runs) = block else { return nil }
+            return runs
+        }
+        let firstPara = try XCTUnwrap(paragraphs.first {
+            $0.map(\.text).joined().contains("italic")
+        })
+        XCTAssertTrue(firstPara.contains(where: { $0.text == "italic" && $0.isItalic }))
+
+        let boldPara = try XCTUnwrap(paragraphs.first {
+            $0.map(\.text).joined().contains("bold")
+        })
+        XCTAssertTrue(boldPara.contains(where: { $0.text == "bold" && $0.isBold }))
+    }
+
+    // MARK: - docx (round-trip via NSAttributedString.data)
+
+    func test_docx_round_trip_preserves_paragraphs_and_emphasis() throws {
+        // Build a docx fixture by serializing an NSAttributedString
+        // we control end-to-end. This validates the full
+        // round-trip without needing a real Word document fixture
+        // checked into the repo.
+        let body = NSMutableAttributedString()
+        let baseFont = NSFont.systemFont(ofSize: 12)
+        body.append(NSAttributedString(
+            string: "Plain paragraph text.\n",
+            attributes: [.font: baseFont]
+        ))
+        let boldFont = NSFontManager.shared.convert(baseFont, toHaveTrait: .boldFontMask)
+        body.append(NSAttributedString(
+            string: "Bold word",
+            attributes: [.font: boldFont]
+        ))
+        body.append(NSAttributedString(
+            string: " then plain.\n",
+            attributes: [.font: baseFont]
+        ))
+        let docxData = try body.data(
+            from: NSRange(location: 0, length: body.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.officeOpenXML]
+        )
+        let url = tempDir.appendingPathComponent("doc.docx")
+        try docxData.write(to: url)
+
+        let book = try DocumentIngest().ingest(from: url)
+        let blocks = book.chapters[0].blocks
+        let paragraphs = blocks.compactMap { block -> [InlineRun]? in
+            guard case let .paragraph(runs) = block else { return nil }
+            return runs
+        }
+        XCTAssertGreaterThanOrEqual(paragraphs.count, 2)
+        let plain = try XCTUnwrap(paragraphs.first(where: {
+            $0.map(\.text).joined().contains("Plain paragraph")
+        }))
+        XCTAssertEqual(plain.map(\.text).joined(), "Plain paragraph text.")
+        let mixed = try XCTUnwrap(paragraphs.first(where: {
+            $0.map(\.text).joined().contains("Bold word")
+        }))
+        XCTAssertTrue(mixed.contains(where: { $0.text == "Bold word" && $0.isBold }))
+    }
+
     // MARK: - support detection
 
     func test_isSupported_recognizes_known_extensions() {
-        XCTAssertTrue(DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.txt")))
-        XCTAssertTrue(DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.md")))
-        XCTAssertTrue(DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.markdown")))
-        XCTAssertTrue(DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.rtf")))
+        for ext in ["txt", "md", "markdown", "rtf", "html", "htm", "docx", "doc", "odt"] {
+            XCTAssertTrue(
+                DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.\(ext)")),
+                "expected \(ext) to be supported"
+            )
+        }
         XCTAssertTrue(DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.MD")))   // case
         XCTAssertFalse(DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.pdf")))
-        XCTAssertFalse(DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.docx")))
+        XCTAssertFalse(DocumentIngest.isSupported(URL(fileURLWithPath: "/tmp/x.epub")))
     }
 
     // MARK: - helpers
