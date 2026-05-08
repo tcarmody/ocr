@@ -114,6 +114,24 @@ enum RegionAwareReflow {
     /// (recurring across many pages).
     static var lastCrossPageDecisionsPerPage: [Int: [CrossPageDecision]] = [:]
 
+    /// Per-page record of `.text` regions promoted to
+    /// `.sectionHeader` (or `.title`) by the typographic-cue pass —
+    /// regions whose geometry + content look like a heading even
+    /// though Surya tagged them as body.
+    static var lastTypographicPromotionsPerPage: [Int: [TypographicPromotion]] = [:]
+
+    /// Audit trace for one typographic promotion.
+    struct TypographicPromotion: Sendable, Equatable {
+        let regionIndex: Int
+        let promotedTo: String   // ".sectionHeader" or ".title"
+        let firstLineExcerpt: String
+        let medianLineHeight: Double
+        let pageMedianLineHeight: Double
+        let isCentered: Bool
+        let isAllCaps: Bool
+        let charCount: Int
+    }
+
     /// Audit trace for one cross-page recurrence decision.
     struct CrossPageDecision: Sendable, Equatable {
         let regionIndex: Int
@@ -283,12 +301,26 @@ enum RegionAwareReflow {
             if !hfDecisions.isEmpty {
                 lastHFReclassificationsPerPage[page.pageIndex] = hfDecisions
             }
+            // Promote `.text` regions whose geometry + content look
+            // like chapter titles or section headers (larger font +
+            // short + centered or all-caps). Catches one-off
+            // chapter openers Surya misclassified as body. Runs
+            // before reading-order repair so newly-promoted headings
+            // participate in the same reading-order fix.
+            let (afterTypographic, typographicDecisions) =
+                promoteTypographicHeadings(
+                    regions: afterHF, observations: page.observations
+                )
+            if !typographicDecisions.isEmpty {
+                lastTypographicPromotionsPerPage[page.pageIndex] =
+                    typographicDecisions
+            }
             // Repair Surya's reading order for `.title`/`.sectionHeader`
             // regions that sit visually above all body content but got
             // sorted to the back. Runs last so it operates on the
             // final region kinds.
             let (effectiveRegions, headingPromotions) = correctHeadingReadingOrder(
-                regions: afterHF, observations: page.observations
+                regions: afterTypographic, observations: page.observations
             )
             if !headingPromotions.isEmpty {
                 lastHeadingPromotionsPerPage[page.pageIndex] = headingPromotions
@@ -925,6 +957,161 @@ enum RegionAwareReflow {
         }
 
         return (output, decisions)
+    }
+
+    // MARK: - typographic heading promotion
+
+    /// A region's median line height must exceed the page median by
+    /// this multiplier to count as a "larger font" cue.
+    private static let typographicLargerFontMultiplier: CGFloat = 1.4
+    /// Region's horizontal center can be off the page center by at
+    /// most this fraction (each side) and still count as centered.
+    private static let typographicCenterTolerance: CGFloat = 0.06
+    /// Centered region's width must be less than this fraction of
+    /// the body width to count as centered (pure centering of a
+    /// full-width line is meaningless — it's just regular justified
+    /// text).
+    private static let typographicCenteredMaxWidth: CGFloat = 0.75
+    /// Maximum text length for a region to be promoted. Real chapter
+    /// titles are short.
+    private static let typographicMaxChars: Int = 80
+    /// At least this many alphabetic characters before all-caps
+    /// detection fires — single letters / acronyms shouldn't count.
+    private static let typographicAllCapsMinAlpha: Int = 3
+
+    /// Walk the region list and promote `.text` regions to
+    /// `.sectionHeader` (or `.title`) when their geometry + content
+    /// look like a heading, even though Surya tagged them as body.
+    /// Same intent as the cross-page recurrence pass but driven by
+    /// per-page typographic cues rather than cross-page repetition;
+    /// catches one-off chapter openers + section breaks.
+    ///
+    /// Promotion fires when **all** of:
+    ///   1. Region's median line height > page median × 1.4
+    ///   2. Total text ≤ 80 characters
+    ///   3. Either centered (width < 75% of body, midX within 6% of
+    ///      page center) OR all-uppercase (no lowercase letters,
+    ///      ≥ 3 alphabetic chars).
+    ///
+    /// **Italics are explicitly NOT a signal here** — per
+    /// PLANS-discussion they produce too many false positives as
+    /// chapter cues. Italics propagate as inline emphasis instead.
+    ///
+    /// Promotion target: `.title` when median line height >
+    /// page median × 1.8 (very tall — typically chapter opener);
+    /// otherwise `.sectionHeader`.
+    static func promoteTypographicHeadings(
+        regions: [LayoutRegion],
+        observations: [TextObservation]
+    ) -> (regions: [LayoutRegion], decisions: [TypographicPromotion]) {
+        // Page-level baseline: median line height across all
+        // observations. A typical body line is the mode here; chapter
+        // titles will sit well above the median.
+        let allHeights = observations.map(\.box.height).filter { $0 > 0 }
+        guard !allHeights.isEmpty else { return (regions, []) }
+        let pageMedian = median(allHeights)
+
+        // Body-width baseline for the centering check: max region
+        // width across `.text` regions. Chapter titles centered on a
+        // narrower-than-body line should look short relative to this.
+        let bodyWidth = regions
+            .filter { $0.kind == .text }
+            .map(\.box.width)
+            .max() ?? 1
+
+        var output = regions
+        var decisions: [TypographicPromotion] = []
+
+        for (idx, region) in regions.enumerated() {
+            guard region.kind == .text else { continue }
+
+            // Pull the region's observations.
+            let inflated = region.box.insetBy(
+                dx: -regionInflation, dy: -regionInflation
+            )
+            let inRegion = observations.filter { obs in
+                inflated.contains(CGPoint(x: obs.box.midX, y: obs.box.midY))
+            }
+            guard !inRegion.isEmpty else { continue }
+
+            // Length gate.
+            let text = inRegion
+                .sorted { $0.box.midY > $1.box.midY }
+                .map(\.text)
+                .joined(separator: " ")
+            let charCount = text.count
+            guard charCount > 0, charCount <= typographicMaxChars else {
+                continue
+            }
+
+            // Font-size signal.
+            let regionHeights = inRegion.map(\.box.height).filter { $0 > 0 }
+            guard !regionHeights.isEmpty else { continue }
+            let regionMedian = median(regionHeights)
+            guard regionMedian > pageMedian * typographicLargerFontMultiplier else {
+                continue
+            }
+
+            // Centering signal: region midX near 0.5, region width
+            // less than the body-width fraction.
+            let isCentered =
+                abs(region.box.midX - 0.5) <= typographicCenterTolerance
+                && region.box.width < bodyWidth * typographicCenteredMaxWidth
+
+            // All-caps signal: no lowercase letters in alphabetic
+            // characters, with a minimum letter count.
+            let isAllCaps = Self.isLikelyAllCaps(text)
+
+            guard isCentered || isAllCaps else { continue }
+
+            // Promote. Tall regions become titles; smaller heading-
+            // sized regions become section headers.
+            let promotedKind: LayoutRegion.Kind = regionMedian
+                > pageMedian * 1.8 ? .title : .sectionHeader
+            output[idx] = LayoutRegion(
+                kind: promotedKind,
+                box: region.box,
+                readingOrder: region.readingOrder,
+                confidence: region.confidence
+            )
+            decisions.append(TypographicPromotion(
+                regionIndex: idx,
+                promotedTo: promotedKind == .title ? ".title" : ".sectionHeader",
+                firstLineExcerpt: String(text.prefix(60)),
+                medianLineHeight: Double(regionMedian),
+                pageMedianLineHeight: Double(pageMedian),
+                isCentered: isCentered,
+                isAllCaps: isAllCaps,
+                charCount: charCount
+            ))
+        }
+
+        return (output, decisions)
+    }
+
+    /// True if `text` has at least `typographicAllCapsMinAlpha`
+    /// alphabetic characters AND none of them are lowercase. Allows
+    /// numbers, punctuation, whitespace freely — chapter titles like
+    /// "CHAPTER 3" or "PART II" should pass.
+    private static func isLikelyAllCaps(_ text: String) -> Bool {
+        var alphaCount = 0
+        for ch in text {
+            if ch.isLetter {
+                alphaCount += 1
+                if ch.isLowercase { return false }
+            }
+        }
+        return alphaCount >= typographicAllCapsMinAlpha
+    }
+
+    private static func median(_ values: [CGFloat]) -> CGFloat {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let mid = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[mid - 1] + sorted[mid]) / 2
+        }
+        return sorted[mid]
     }
 
     // MARK: - region split at footnote gap

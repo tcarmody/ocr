@@ -142,6 +142,8 @@ public struct ClaudePageXHTMLParser: Sendable {
         struct InlineFrame {
             var language: BCP47?
             var noterefId: String?
+            var isItalic: Bool = false
+            var isBold: Bool = false
         }
 
         var currentBlockKind: BlockKind?
@@ -181,8 +183,10 @@ public struct ClaudePageXHTMLParser: Sendable {
                     // closing tag balances; treat content as inline.
                     pushInlineFrame()
                 }
-            case "em", "i", "strong", "b":
-                pushInlineFrame()
+            case "em", "i":
+                pushInlineFrame(italic: true)
+            case "strong", "b":
+                pushInlineFrame(bold: true)
             case "span":
                 let lang = attributeDict["lang"] ?? attributeDict["xml:lang"]
                 pushInlineFrame(language: lang.map { BCP47($0) })
@@ -250,15 +254,25 @@ public struct ClaudePageXHTMLParser: Sendable {
 
         // MARK: Block / inline state machine
 
-        private func pushInlineFrame(language: BCP47? = nil, noterefId: String? = nil) {
+        private func pushInlineFrame(
+            language: BCP47? = nil,
+            noterefId: String? = nil,
+            italic: Bool = false,
+            bold: Bool = false
+        ) {
             // Flush any pending text under the *previous* frame
             // before switching, so a `<span>` partway through a
             // paragraph correctly attributes the preceding chars.
             flushTextBuffer()
-            let parent = inlineStack.last ?? InlineFrame(language: nil, noterefId: nil)
+            let parent = inlineStack.last ?? InlineFrame()
             inlineStack.append(InlineFrame(
                 language: language ?? parent.language,
-                noterefId: noterefId ?? parent.noterefId
+                noterefId: noterefId ?? parent.noterefId,
+                // Emphasis is additive: a `<strong>` inside an
+                // `<em>` produces both italic + bold on the inner
+                // run, matching how readers render bold-italic.
+                isItalic: parent.isItalic || italic,
+                isBold: parent.isBold || bold
             ))
         }
 
@@ -278,11 +292,13 @@ public struct ClaudePageXHTMLParser: Sendable {
         private func flushTextBuffer() {
             guard !textBuffer.isEmpty else { return }
             // Don't bury whitespace-only text from inter-tag chars.
-            let frame = inlineStack.last ?? InlineFrame(language: nil, noterefId: nil)
+            let frame = inlineStack.last ?? InlineFrame()
             currentRuns.append(InlineRun(
                 textBuffer,
                 language: frame.language,
-                noterefId: frame.noterefId
+                noterefId: frame.noterefId,
+                isItalic: frame.isItalic,
+                isBold: frame.isBold
             ))
             textBuffer = ""
         }
@@ -352,11 +368,15 @@ public struct ClaudePageXHTMLParser: Sendable {
                 if run.text.isEmpty { continue }
                 if let last = out.last,
                    last.language == run.language,
-                   last.noterefId == run.noterefId {
+                   last.noterefId == run.noterefId,
+                   last.isItalic == run.isItalic,
+                   last.isBold == run.isBold {
                     out[out.count - 1] = InlineRun(
                         last.text + run.text,
                         language: last.language,
-                        noterefId: last.noterefId
+                        noterefId: last.noterefId,
+                        isItalic: last.isItalic,
+                        isBold: last.isBold
                     )
                 } else {
                     out.append(run)

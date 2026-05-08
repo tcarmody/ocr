@@ -193,23 +193,39 @@ struct XHTMLWriter {
             // Noteref runs render as a superscript link to the matching
             // <aside> at the end of the chapter. Language attrs still
             // apply (rare, but a Greek footnote marker should still be
-            // language-tagged consistently).
+            // language-tagged consistently). Emphasis on a noteref is
+            // unusual but possible — wrap the noteref's inner content.
             if let id = run.noterefId {
                 let href = XMLEscape.attribute("#" + id)
-                let inner: String
+                var inner: String
                 if let lang = run.language, lang != parentLanguage {
                     let l = XMLEscape.attribute(lang.rawValue)
                     inner = "<span xml:lang=\"\(l)\" lang=\"\(l)\">\(escaped)</span>"
                 } else {
                     inner = escaped
                 }
+                inner = wrapEmphasis(inner, run: run)
                 return "<a epub:type=\"noteref\" role=\"doc-noteref\" href=\"\(href)\">\(inner)</a>"
             }
+            var rendered: String = escaped
             if let lang = run.language, lang != parentLanguage {
                 let l = XMLEscape.attribute(lang.rawValue)
-                return "<span xml:lang=\"\(l)\" lang=\"\(l)\">\(escaped)</span>"
+                rendered = "<span xml:lang=\"\(l)\" lang=\"\(l)\">\(rendered)</span>"
             }
-            return escaped
+            rendered = wrapEmphasis(rendered, run: run)
+            return rendered
         }.joined()
+    }
+
+    /// Wrap `inner` in `<strong>` and/or `<em>` based on the run's
+    /// emphasis flags. `<strong>` is the outer wrapper when both are
+    /// set so the visual order is "bold containing italic" — readers
+    /// render bold-italic identically either way, but the canonical
+    /// nesting matches what most authoring tools emit.
+    private func wrapEmphasis(_ inner: String, run: InlineRun) -> String {
+        var s = inner
+        if run.isItalic { s = "<em>\(s)</em>" }
+        if run.isBold { s = "<strong>\(s)</strong>" }
+        return s
     }
 }

@@ -151,21 +151,39 @@ public enum MarkdownWriter {
         out.append("\n")
     }
 
-    /// Render inline runs to Markdown text. Today's `InlineRun`
-    /// only carries text + language + noterefId — no
-    /// emphasis/strong markers — so we emit text + footnote
-    /// references. Language spans don't have a clean Markdown
-    /// equivalent; we drop them and rely on the EPUB for that.
+    /// Render inline runs to Markdown text. Emphasis maps to the
+    /// canonical Markdown markers: `*…*` for italic, `**…**` for
+    /// bold, `***…***` for both. Language spans don't have a clean
+    /// Markdown equivalent; we drop them and rely on the EPUB for
+    /// that.
     private static func renderRuns(_ runs: [InlineRun]) -> String {
         var out = ""
         for run in runs {
             if let id = run.noterefId, let n = noterefMarker(from: id) {
                 out.append("[^\(n)]")
-            } else {
-                out.append(run.text)
+                continue
             }
+            out.append(applyEmphasis(run.text, italic: run.isItalic, bold: run.isBold))
         }
         return out
+    }
+
+    private static func applyEmphasis(
+        _ text: String, italic: Bool, bold: Bool
+    ) -> String {
+        // Skip wrapping for whitespace-only runs — `**  **` is
+        // visible noise in plain Markdown viewers and Markdown's
+        // emphasis is supposed to hug the text.
+        let stripped = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stripped.isEmpty, italic || bold else { return text }
+        let marker: String
+        switch (bold, italic) {
+        case (true, true):   marker = "***"
+        case (true, false):  marker = "**"
+        case (false, true):  marker = "*"
+        case (false, false): return text
+        }
+        return marker + text + marker
     }
 
     /// `fn-pP-N` → `N`. Best-effort; falls back to nil.
