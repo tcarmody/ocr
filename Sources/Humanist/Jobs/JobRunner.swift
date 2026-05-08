@@ -1,6 +1,7 @@
 import Foundation
 import AI
 import Document
+import EPUB
 import Pipeline
 
 /// Serial job processor. Picks the next `.queued` job from the store
@@ -176,6 +177,14 @@ final class JobRunner: ObservableObject {
     }
 
     private func runPipeline(for job: Job) async {
+        // Branch by source extension. Non-PDF text-based formats
+        // (TXT / MD / RTF) go through DocumentIngest — no OCR, no
+        // rasterization, no Claude calls. PDFs continue down the
+        // OCR pipeline.
+        if DocumentIngest.isSupported(job.sourceURL) {
+            await runDocumentIngest(for: job)
+            return
+        }
         let pipeline = PDFToEPUBPipeline()
         let languages = job.options.languages.map { BCP47($0) }
         // Read the user's current AI processing mode + per-feature
@@ -300,6 +309,76 @@ final class JobRunner: ObservableObject {
                 title: job.sourceURL.deletingPathExtension().lastPathComponent,
                 languages: job.options.languages
             )
+        } catch is CancellationError {
+            store.update(jobID) { mutable in
+                mutable.status = .cancelled
+                mutable.finishedAt = Date()
+            }
+        } catch {
+            store.update(jobID) { mutable in
+                mutable.status = .failed
+                mutable.error = error.localizedDescription
+                mutable.finishedAt = Date()
+            }
+        }
+    }
+
+    /// Non-PDF text input → EPUB. Bypasses the OCR pipeline entirely:
+    /// `DocumentIngest` builds the `Book` IR directly from the
+    /// source file, then `EPUBBuilder` writes it out using the same
+    /// machinery the PDF pipeline finishes with.
+    private func runDocumentIngest(for job: Job) async {
+        let jobID = job.id
+        let storeRef = store
+        let langID = job.options.languages.first ?? "en"
+        let language = BCP47(langID)
+        // Make sure the output directory exists — the user may have
+        // configured a fresh root with no `Books/` subfolder yet.
+        let outputDir = job.outputURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(
+            at: outputDir, withIntermediateDirectories: true
+        )
+        let sourceURL = job.sourceURL
+        let outputURL = job.outputURL
+        let emitSiblings = job.options.emitSiblingTextOutputs
+        let txtURL = ConversionOutputResolver
+            .siblingTextOverrides(forSource: sourceURL, suffix: job.options.outputSuffix).txt
+            ?? outputURL.deletingPathExtension().appendingPathExtension("txt")
+        let mdURL = ConversionOutputResolver
+            .siblingTextOverrides(forSource: sourceURL, suffix: job.options.outputSuffix).md
+            ?? outputURL.deletingPathExtension().appendingPathExtension("md")
+        do {
+            let book = try await Task.detached(priority: .userInitiated) {
+                try DocumentIngest().ingest(from: sourceURL, language: language)
+            }.value
+            try await Task.detached(priority: .userInitiated) {
+                try EPUBBuilder().write(book: book, to: outputURL)
+                if emitSiblings {
+                    for url in [txtURL, mdURL] {
+                        let parent = url.deletingLastPathComponent()
+                        if !FileManager.default.fileExists(atPath: parent.path) {
+                            try? FileManager.default.createDirectory(
+                                at: parent, withIntermediateDirectories: true
+                            )
+                        }
+                    }
+                    let txt = PlainTextWriter.render(book)
+                    let md = MarkdownWriter.render(book)
+                    try? txt.write(to: txtURL, atomically: true, encoding: .utf8)
+                    try? md.write(to: mdURL, atomically: true, encoding: .utf8)
+                }
+            }.value
+            store.update(jobID) { mutable in
+                mutable.status = .done
+                mutable.finishedAt = Date()
+                mutable.progress = JobProgress(completedPages: 1, totalPages: 1)
+            }
+            library?.recordConversion(
+                epubURL: outputURL,
+                title: book.title,
+                languages: job.options.languages
+            )
+            _ = storeRef
         } catch is CancellationError {
             store.update(jobID) { mutable in
                 mutable.status = .cancelled

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import UniformTypeIdentifiers
 import AI
 import Document
 import OCR
@@ -171,6 +172,13 @@ final class QueueViewModel: ObservableObject {
         let outputURL = ConversionOutputResolver.epubOutputURL(
             forSource: url, suffix: outputSuffix
         )
+        // Non-PDF text inputs (TXT / MD / RTF) skip the OCR pipeline
+        // and the document profiler entirely — they enqueue directly
+        // and run through DocumentIngest in the JobRunner.
+        if DocumentIngest.isSupported(url) {
+            addTextDocument(url, outputURL: outputURL)
+            return
+        }
         let job = Job(
             sourceURL: url,
             outputURL: outputURL,
@@ -261,6 +269,31 @@ final class QueueViewModel: ObservableObject {
     /// than to confidently set a wrong one).
     static let applyConfidenceFloor: Double = 0.7
 
+    /// Enqueue a non-PDF text input (TXT / MD / RTF). No profiling,
+    /// no cost estimate, no Claude warnings — straight to `.queued`.
+    private func addTextDocument(_ url: URL, outputURL: URL) {
+        let job = Job(
+            sourceURL: url,
+            outputURL: outputURL,
+            options: ConversionOptions(
+                languages: selectedLanguages.map { $0.rawValue },
+                useSuryaOCR: false,
+                useCloudEnhancedOCR: false,
+                forceOCR: false,
+                privateMode: privateMode,
+                emitDebugLog: false,
+                emitSiblingTextOutputs: emitSiblingTextOutputs,
+                forceOCRPageRangesString: "",
+                outputSuffix: outputSuffix,
+                // No source PDF means no searchable-PDF target.
+                emitSearchablePDF: false
+            ),
+            status: .queued
+        )
+        store.add(job)
+        runner.start()
+    }
+
     /// Add every PDF inside `folder` (recursively). Hidden files,
     /// .DS_Store, and macOS package contents are skipped.
     func addFolder(_ folder: URL) {
@@ -309,13 +342,24 @@ final class QueueViewModel: ObservableObject {
 
     func chooseFiles() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.pdf]
+        panel.allowedContentTypes = [.pdf, .plainText, .rtf] + textInputUTTypes
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         if panel.runModal() == .OK {
             addDropped(panel.urls)
         }
+    }
+
+    /// UTTypes for the non-PDF text inputs the launcher accepts.
+    /// Markdown isn't a system-defined type, so we declare it by
+    /// filename extension — the resolver returns the dynamic type
+    /// macOS assigns to `.md` files.
+    private var textInputUTTypes: [UTType] {
+        [
+            UTType(filenameExtension: "md"),
+            UTType(filenameExtension: "markdown"),
+        ].compactMap { $0 }
     }
 }
 

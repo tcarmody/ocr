@@ -125,6 +125,9 @@ struct ContentView: View {
                 handledImmediately = true
             } else if ext == "pdf" {
                 pdfBatch.append(url)
+            } else if DocumentIngest.isSupported(url) {
+                queue.addPDF(url)
+                handledImmediately = true
             } else if isDir {
                 // Folders skip two-up detection entirely. Queue
                 // every PDF as-is — the per-file detection cost
