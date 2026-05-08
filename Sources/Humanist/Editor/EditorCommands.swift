@@ -276,19 +276,12 @@ private struct EditorCustomizeStyleCommand: View {
 struct EditorDocumentMenu: Commands {
     var body: some Commands {
         CommandMenu("Document") {
-            DocumentMenuPDFCommands()
+            EditorAttachPDFCommand()
             Divider()
             DocumentMenuChapterCommands()
             Divider()
             ShowCorrectionTrailCommand()
         }
-    }
-}
-
-private struct DocumentMenuPDFCommands: View {
-    var body: some View {
-        EditorAttachPDFCommand()
-        EditorPDFNavMenu()
     }
 }
 
@@ -317,6 +310,8 @@ struct EditorViewMenu: Commands {
             ViewMenuPaneToggles()
             Divider()
             EditorReloadPreviewCommand()
+            Divider()
+            EditorPDFViewCommands()
             Divider()
             ViewMenuAlignmentCommands()
         }
@@ -465,34 +460,32 @@ private struct ShowCorrectionTrailCommand: View {
 }
 
 /// View > Source PDF ▸ — zoom + page navigation for the embedded
-/// PDF pane. Mirror of the standalone PDF viewer's toolbar; lives
-/// as a submenu so the View menu stays compact.
-private struct EditorPDFNavMenu: View {
+/// PDF pane navigation commands — zoom + page nav. Flat (not
+/// submenu-wrapped) so each command is a direct top-level item in
+/// the View menu. Earlier shape wrapped them in a "Source PDF"
+/// submenu, which buried them one click deeper than necessary.
+private struct EditorPDFViewCommands: View {
     @FocusedObject private var vm: EditorViewModel?
 
     var body: some View {
-        Menu("Source PDF") {
-            Button("Zoom In") { vm?.pdfZoomIn() }
-                .keyboardShortcut("=", modifiers: .command)
-                .disabled(vm?.canNavigatePDF != true)
-            Button("Zoom Out") { vm?.pdfZoomOut() }
-                .keyboardShortcut("-", modifiers: .command)
-                .disabled(vm?.canNavigatePDF != true)
-            Button("Fit Page") { vm?.pdfFitPage() }
-                .keyboardShortcut("0", modifiers: .command)
-                .disabled(vm?.canNavigatePDF != true)
-            Divider()
-            // ⇧⌘← / ⇧⌘→ rather than ⌘←/⌘→ so we don't fight
-            // CodeMirror's beginning-/end-of-line bindings when the
-            // user's cursor is in the source pane.
-            Button("Previous Page") { vm?.pdfPrevPage() }
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
-                .disabled(vm?.canNavigatePDF != true)
-            Button("Next Page") { vm?.pdfNextPage() }
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
-                .disabled(vm?.canNavigatePDF != true)
-        }
-        .disabled(vm?.canNavigatePDF != true)
+        Button("Zoom In Source PDF") { vm?.pdfZoomIn() }
+            .keyboardShortcut("=", modifiers: .command)
+            .disabled(vm?.canNavigatePDF != true)
+        Button("Zoom Out Source PDF") { vm?.pdfZoomOut() }
+            .keyboardShortcut("-", modifiers: .command)
+            .disabled(vm?.canNavigatePDF != true)
+        Button("Fit Source PDF Page") { vm?.pdfFitPage() }
+            .keyboardShortcut("0", modifiers: .command)
+            .disabled(vm?.canNavigatePDF != true)
+        // ⇧⌘← / ⇧⌘→ rather than ⌘←/⌘→ so we don't fight
+        // CodeMirror's beginning-/end-of-line bindings when the
+        // user's cursor is in the source pane.
+        Button("Previous Source PDF Page") { vm?.pdfPrevPage() }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+            .disabled(vm?.canNavigatePDF != true)
+        Button("Next Source PDF Page") { vm?.pdfNextPage() }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
+            .disabled(vm?.canNavigatePDF != true)
     }
 }
 
