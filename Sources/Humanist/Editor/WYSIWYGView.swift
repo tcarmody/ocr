@@ -320,17 +320,48 @@ private func renderEnvelope(bodyContents: String, cssURL: URL?) -> String {
       </style>
       <script>
       (function() {
+        function sanitize(html) {
+          // Self-close void elements (XHTML requires `<br/>`, but
+          // the HTML serializer emits `<br>`).
+          html = html.replace(
+            /<(br|hr|img|input|meta|link|area|base|col|embed|param|source|track|wbr)\\b([^>]*?)>/gi,
+            '<$1$2/>'
+          );
+          // The replacement above adds a trailing `/` even when
+          // one was already present — collapse `//>` to `/>`.
+          html = html.replace(/\\/+>/g, '/>');
+          // Browsers default `B`/`I` for ⌘B/⌘I; the rest of the
+          // codebase emits `strong`/`em`. Normalize so the source
+          // doesn't drift.
+          html = html.replace(/<b\\b/gi, '<strong').replace(/<\\/b>/gi, '</strong>');
+          html = html.replace(/<i\\b/gi, '<em').replace(/<\\/i>/gi, '</em>');
+          // Empty `<p>` (and `<p><br/></p>`) creep in when the
+          // user presses Enter on a blank line.
+          html = html.replace(/<p>\\s*(<br\\/>)?\\s*<\\/p>/gi, '');
+          return html;
+        }
         function postEdit() {
-          // Defensive: clone the body and strip any <script> /
-          // <style> / <link> nodes before serializing. The editor
-          // helpers should only ever live in <head>, but if
-          // something ever leaks into body the safest answer is
-          // not to bake it into the chapter source.
+          // Clone first so cleanup doesn't disturb the live DOM
+          // (cursor / selection / undo stack).
           const clone = document.body.cloneNode(true);
+          // Strip helpers that should never reach the chapter
+          // source — see the head comment on this script's
+          // location for why.
           for (const node of clone.querySelectorAll('script, style, link')) {
             node.remove();
           }
-          const body = clone.innerHTML;
+          // Replace U+00A0 (non-breaking space) with a regular
+          // space in every text node. WKWebView's contenteditable
+          // injects NBSP for runs of regular spaces and at edge
+          // positions; the HTML serializer then emits `&nbsp;`,
+          // which is undefined in XHTML and trips the preview's
+          // XML parser.
+          const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            walker.currentNode.nodeValue =
+              walker.currentNode.nodeValue.replace(/\\u00A0/g, ' ');
+          }
+          const body = sanitize(clone.innerHTML);
           window.webkit.messageHandlers.wysiwyg.postMessage({
             type: 'edit',
             body: body,
@@ -393,6 +424,10 @@ private func renderEnvelope(bodyContents: String, cssURL: URL?) -> String {
           postEdit();
         };
         document.addEventListener('DOMContentLoaded', () => {
+          // Make Enter produce `<p>` instead of the WebKit
+          // default `<div>` — keeps the source consistent with
+          // the rest of the codebase's paragraph convention.
+          try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (e) {}
           document.body.addEventListener('input', scheduleEdit);
         });
       })();
