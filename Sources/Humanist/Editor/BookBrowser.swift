@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import EPUB
 
 /// Sidebar file tree for the editor. SwiftUI's `OutlineGroup` uses
@@ -95,33 +94,16 @@ struct BookBrowser: View {
     }
 }
 
-/// Transferable payload for sidebar chapter drags. Carries the
-/// chapter's URL so the drop site can resolve it back to a Resource
-/// via `book.resource(at:)`. Codable + JSON content type so the
-/// drag/drop pair round-trips through SwiftUI's transferable
-/// machinery without us needing custom data converters.
-private struct ChapterDragPayload: Codable, Transferable {
-    let url: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .humanistChapterDrag)
-    }
-}
-
-private extension UTType {
-    /// Internal-only UTI for chapter drags. Not registered in
-    /// Info.plist because the drags never leave the app — SwiftUI
-    /// treats unknown UTIs as opaque transfer-representation
-    /// envelopes when the `Transferable` type drives them.
-    static let humanistChapterDrag = UTType(
-        exportedAs: "com.tcarmody.humanist.chapter-drag"
-    )
-}
-
 /// Per-row drag/drop wiring. Only chapter rows (resources in the
 /// spine) participate. Non-spine rows render as-is, no drag handle
 /// and no drop response — drops onto a CSS file or image silently
 /// no-op.
+///
+/// Uses `URL` as the Transferable type — SwiftUI's built-in URL
+/// conformance handles the round-trip without us needing to
+/// register a custom UTI. Custom Codable types worked in tests
+/// but didn't activate the drop indicator in the actual sidebar
+/// at runtime; URL is the well-trod path.
 private struct ChapterDragDropModifier: ViewModifier {
     let node: FileNode
     let viewModel: EditorViewModel?
@@ -134,11 +116,11 @@ private struct ChapterDragDropModifier: ViewModifier {
            book.spine.contains(resource.id)
         {
             content
-                .draggable(ChapterDragPayload(url: node.id))
-                .dropDestination(for: ChapterDragPayload.self) { items, _ in
-                    guard let item = items.first else { return false }
-                    guard item.url != node.id else { return false }
-                    vm.moveChapter(at: item.url, before: node.id)
+                .draggable(node.id)
+                .dropDestination(for: URL.self) { items, _ in
+                    guard let sourceURL = items.first else { return false }
+                    guard sourceURL != node.id else { return false }
+                    vm.moveChapter(at: sourceURL, before: node.id)
                     return true
                 }
         } else {
