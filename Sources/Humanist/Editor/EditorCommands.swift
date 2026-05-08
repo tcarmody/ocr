@@ -46,40 +46,62 @@ struct EditorSaveAsCommand: View {
 /// unreliable for these (same reason as Save / Find).
 struct EditorFormatMenu: Commands {
     var body: some Commands {
+        // Wrapped in sub-Views to keep the body under SwiftUI's
+        // @CommandsBuilder 10-element cap. See
+        // feedback_swiftui_commandsbuilder_cap.md — overflow items
+        // get silently dropped from the menu bar.
         CommandMenu("Format") {
-            EditorWrapCommand(
-                title: "Bold", opening: "<strong>", closing: "</strong>",
-                shortcut: "b", modifiers: .command
-            )
-            EditorWrapCommand(
-                title: "Italic", opening: "<em>", closing: "</em>",
-                shortcut: "i", modifiers: .command
-            )
-            EditorWrapCommand(
-                title: "Inline Code", opening: "<code>", closing: "</code>",
-                shortcut: nil, modifiers: []
-            )
+            FormatInlineCommands()
             Divider()
-            Menu("Heading") {
-                ForEach(1...6, id: \.self) { level in
-                    EditorWrapCommand(
-                        title: "Heading \(level)",
-                        opening: "<h\(level)>", closing: "</h\(level)>",
-                        shortcut: KeyEquivalent(Character("\(level)")),
-                        modifiers: [.command, .option]
-                    )
-                }
-            }
-            Menu("Casing") {
-                EditorTransformCommand(title: "UPPER CASE",     kind: .upper)
-                EditorTransformCommand(title: "lower case",     kind: .lower)
-                EditorTransformCommand(title: "Title Case",     kind: .title)
-                EditorTransformCommand(title: "Sentence case",  kind: .sentence)
-            }
+            FormatStructureMenus()
             Divider()
-            EditorRemoveFormattingCommand()
-            EditorSmartQuotesCommand()
+            FormatNormalizationCommands()
         }
+    }
+}
+
+private struct FormatInlineCommands: View {
+    var body: some View {
+        EditorWrapCommand(
+            title: "Bold", opening: "<strong>", closing: "</strong>",
+            shortcut: "b", modifiers: .command
+        )
+        EditorWrapCommand(
+            title: "Italic", opening: "<em>", closing: "</em>",
+            shortcut: "i", modifiers: .command
+        )
+        EditorWrapCommand(
+            title: "Inline Code", opening: "<code>", closing: "</code>",
+            shortcut: nil, modifiers: []
+        )
+    }
+}
+
+private struct FormatStructureMenus: View {
+    var body: some View {
+        Menu("Heading") {
+            ForEach(1...6, id: \.self) { level in
+                EditorWrapCommand(
+                    title: "Heading \(level)",
+                    opening: "<h\(level)>", closing: "</h\(level)>",
+                    shortcut: KeyEquivalent(Character("\(level)")),
+                    modifiers: [.command, .option]
+                )
+            }
+        }
+        Menu("Casing") {
+            EditorTransformCommand(title: "UPPER CASE",     kind: .upper)
+            EditorTransformCommand(title: "lower case",     kind: .lower)
+            EditorTransformCommand(title: "Title Case",     kind: .title)
+            EditorTransformCommand(title: "Sentence case",  kind: .sentence)
+        }
+    }
+}
+
+private struct FormatNormalizationCommands: View {
+    var body: some View {
+        EditorRemoveFormattingCommand()
+        EditorSmartQuotesCommand()
     }
 }
 
@@ -186,18 +208,30 @@ private struct EditorFootnoteCommand: View {
 struct EditorToolsMenu: Commands {
     var body: some Commands {
         CommandMenu("Tools") {
-            EditorValidateEPUBCommand()
-            EditorCustomizeStyleCommand()
+            ToolsMenuValidationCommands()
             Divider()
-            // Re-OCR commands moved here from the Document menu —
-            // they're tool-like (run an engine, surface a result),
-            // not document-edit operations.
-            EditorReOCRCurrentPageMenu()
-            EditorReOCRPDFSelectionMenu()
-            EditorReOCRAllPagesMenu()
+            ToolsMenuReOCRCommands()
             Divider()
             EditorCompareEPUBsCommand()
         }
+    }
+}
+
+private struct ToolsMenuValidationCommands: View {
+    var body: some View {
+        EditorValidateEPUBCommand()
+        EditorCustomizeStyleCommand()
+    }
+}
+
+/// Re-OCR commands moved here from the Document menu — they're
+/// tool-like (run an engine, surface a result), not document-edit
+/// operations.
+private struct ToolsMenuReOCRCommands: View {
+    var body: some View {
+        EditorReOCRCurrentPageMenu()
+        EditorReOCRPDFSelectionMenu()
+        EditorReOCRAllPagesMenu()
     }
 }
 
@@ -242,17 +276,29 @@ private struct EditorCustomizeStyleCommand: View {
 struct EditorDocumentMenu: Commands {
     var body: some Commands {
         CommandMenu("Document") {
-            EditorAttachPDFCommand()
-            EditorPDFNavMenu()
+            DocumentMenuPDFCommands()
             Divider()
-            EditorSplitChapterCommand()
-            EditorMergeChapterCommand()
-            EditorMoveChapterUpCommand()
-            EditorMoveChapterDownCommand()
-            EditorRegenerateTOCCommand()
+            DocumentMenuChapterCommands()
             Divider()
             ShowCorrectionTrailCommand()
         }
+    }
+}
+
+private struct DocumentMenuPDFCommands: View {
+    var body: some View {
+        EditorAttachPDFCommand()
+        EditorPDFNavMenu()
+    }
+}
+
+private struct DocumentMenuChapterCommands: View {
+    var body: some View {
+        EditorSplitChapterCommand()
+        EditorMergeChapterCommand()
+        EditorMoveChapterUpCommand()
+        EditorMoveChapterDownCommand()
+        EditorRegenerateTOCCommand()
     }
 }
 
@@ -262,16 +308,28 @@ struct EditorDocumentMenu: Commands {
 struct EditorViewMenu: Commands {
     var body: some Commands {
         CommandMenu("View") {
-            EditorPaneToggle(pane: .pdf)
-            EditorPaneToggle(pane: .source)
-            EditorPaneToggle(pane: .preview)
+            ViewMenuPaneToggles()
             Divider()
             EditorReloadPreviewCommand()
             Divider()
-            EditorAlignFromSourceCommand()
-            EditorAlignFromPDFCommand()
-            EditorAlignFromPreviewCommand()
+            ViewMenuAlignmentCommands()
         }
+    }
+}
+
+private struct ViewMenuPaneToggles: View {
+    var body: some View {
+        EditorPaneToggle(pane: .pdf)
+        EditorPaneToggle(pane: .source)
+        EditorPaneToggle(pane: .preview)
+    }
+}
+
+private struct ViewMenuAlignmentCommands: View {
+    var body: some View {
+        EditorAlignFromSourceCommand()
+        EditorAlignFromPDFCommand()
+        EditorAlignFromPreviewCommand()
     }
 }
 

@@ -233,18 +233,27 @@ struct EditorSaveCommands: Commands {
 /// `after: .pasteboard` (i.e. just below Cut/Copy/Paste).
 struct EditorFindCommands: Commands {
     var body: some Commands {
+        // Wrapped in sub-Views to keep the body under SwiftUI's
+        // @CommandsBuilder 10-element cap. See
+        // feedback_swiftui_commandsbuilder_cap.md.
         CommandGroup(after: .pasteboard) {
             Divider()
-            EditorFindCommand()
-            EditorFindNextCommand()
-            EditorFindPrevCommand()
-            EditorReplaceCommand()
-            EditorFindInFilesCommand()
+            FindMenuSearchCommands()
             Divider()
             EditorGotoLineCommand()
             Divider()
             EditorSpellCheckCommand()
         }
+    }
+}
+
+private struct FindMenuSearchCommands: View {
+    var body: some View {
+        EditorFindCommand()
+        EditorFindNextCommand()
+        EditorFindPrevCommand()
+        EditorReplaceCommand()
+        EditorFindInFilesCommand()
     }
 }
 
