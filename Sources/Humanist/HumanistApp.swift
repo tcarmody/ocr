@@ -74,6 +74,7 @@ struct HumanistApp: App {
                 .environmentObject(jobRunner)
                 .environmentObject(library)
                 .frame(minWidth: 620, minHeight: 520)
+                .humanistChrome()
                 .onAppear {
                     // R-Library: stash the library on OpenRouter so
                     // the editor-open path can bump `lastOpened`
@@ -105,6 +106,7 @@ struct HumanistApp: App {
             QueueWindowView()
                 .environmentObject(jobStore)
                 .environmentObject(jobRunner)
+                .humanistChrome()
         }
         .commandsRemoved()  // no per-window menu items beyond what the launcher already attaches
 
@@ -115,6 +117,7 @@ struct HumanistApp: App {
             LibraryWindowView()
                 .environmentObject(library)
                 .environmentObject(coverCache)
+                .humanistChrome()
         }
         .commandsRemoved()
 
@@ -126,6 +129,7 @@ struct HumanistApp: App {
         // brings the window forward.
         Window("Compare EPUBs", id: "epub-diff") {
             EPUBDiffWindow()
+                .humanistChrome()
         }
         .commandsRemoved()
 
@@ -136,6 +140,7 @@ struct HumanistApp: App {
             if let url {
                 EditorView(epubURL: url)
                     .frame(minWidth: 900, minHeight: 600)
+                    .humanistChrome()
             } else {
                 Text("No EPUB loaded.")
             }
@@ -149,6 +154,7 @@ struct HumanistApp: App {
         WindowGroup("Original", id: "source-viewer", for: URL.self) { $url in
             if let url {
                 SourceViewerView(sourceURL: url)
+                    .humanistChrome()
             } else {
                 Text("No document loaded.")
             }

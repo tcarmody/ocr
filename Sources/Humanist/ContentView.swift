@@ -819,7 +819,7 @@ private struct DropZone: View {
         ZStack {
             RoundedRectangle(cornerRadius: compact ? 8 : 14, style: .continuous)
                 .strokeBorder(
-                    isTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
+                    isTargeted ? HumanistTheme.accent : HumanistTheme.divider,
                     style: StrokeStyle(
                         lineWidth: isTargeted ? 2.5 : 1.5,
                         dash: [6, 4]
@@ -828,29 +828,33 @@ private struct DropZone: View {
                 .background(
                     RoundedRectangle(cornerRadius: compact ? 8 : 14, style: .continuous)
                         .fill(isTargeted
-                              ? Color.accentColor.opacity(0.06)
-                              : Color.secondary.opacity(0.03))
+                              ? HumanistTheme.accentMuted
+                              : HumanistTheme.surface.opacity(0.5))
                 )
             if compact {
                 HStack(spacing: 8) {
                     Image(systemName: "plus.rectangle.on.rectangle")
                         .font(.callout)
-                        .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                        .foregroundStyle(isTargeted
+                            ? AnyShapeStyle(HumanistTheme.accent)
+                            : AnyShapeStyle(HumanistTheme.inkSecondary))
                     Text(isTargeted ? "Release to add" : "Drop more documents here")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(HumanistTheme.inkSecondary)
                 }
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "doc.text.image")
                         .font(.system(size: 44, weight: .light))
-                        .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                        .foregroundStyle(isTargeted
+                            ? AnyShapeStyle(HumanistTheme.accent)
+                            : AnyShapeStyle(HumanistTheme.inkTertiary))
                     Text(isTargeted ? "Release to add to queue" : "Drop documents or a folder")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
+                        .font(.system(.title3, design: .serif))
+                        .foregroundStyle(HumanistTheme.inkPrimary)
                     Text("PDF, DOCX, HTML, RTF, MD, TXT — folders enumerate every PDF inside, recursively.")
                         .font(.callout)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(HumanistTheme.inkTertiary)
                 }
             }
         }
