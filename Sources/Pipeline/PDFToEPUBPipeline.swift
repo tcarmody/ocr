@@ -1199,7 +1199,8 @@ public actor PDFToEPUBPipeline {
                         extractorDiagnostics: nil,
                         // Skip checkpoint re-write during assembly
                         // (already on disk).
-                        sonnetSucceeded: false
+                        sonnetSucceeded: false,
+                        usedLocalFallback: false
                     )
                     pageOCRPendingByIndex[i] = pending
                     pageOCRPageIndices.append(i)
@@ -2164,6 +2165,12 @@ public actor PDFToEPUBPipeline {
         let qualityScore: EmbeddedTextQualityScorer.Score?
         let extractorDiagnostics: EmbeddedTextExtractor.Diagnostics?
         let sonnetSucceeded: Bool
+        /// True when Sonnet failed for this page and the local
+        /// Vision-OCR fallback produced blocks instead. Surfaced in
+        /// the debug log so the user can see which pages didn't get
+        /// the full Sonnet treatment (typical causes: Anthropic
+        /// content-filter false positives, transient API overload).
+        let usedLocalFallback: Bool
     }
 
     /// Process one page through the page-OCR (Sonnet) path. Handles
@@ -2228,7 +2235,8 @@ public actor PDFToEPUBPipeline {
                     verdict: .trust,
                     qualityScore: score,
                     extractorDiagnostics: extracted.diagnostics,
-                    sonnetSucceeded: true
+                    sonnetSucceeded: true,
+                    usedLocalFallback: false
                 )
             }
             // Verdict was .reocr; fall through to Sonnet but
@@ -2263,6 +2271,7 @@ public actor PDFToEPUBPipeline {
         var sonnetBlocks: [Block] = []
         var sonnetFootnotes: [Footnote] = []
         var sonnetSucceeded = false
+        var usedLocalFallback = false
         do {
             let result = try await pageEngine.recognize(
                 pageImage: image, pageIndex: i,
@@ -2276,10 +2285,33 @@ public actor PDFToEPUBPipeline {
             layoutTask.cancel()
             throw CancellationError()
         } catch {
-            // Refusal / network / parse failure on one page
-            // shouldn't fail the whole conversion — the assembly
-            // pass logs the empty-blocks page and figures still
-            // attach.
+            // Sonnet failed for this page — refusal, content-filter
+            // false positive, transient network/overload error, etc.
+            // Fall back to local Vision OCR so the page contributes
+            // *something* to the EPUB instead of going blank.
+            // Quality is lower than Sonnet but beats an empty page;
+            // the user can always Re-OCR a single page from the
+            // editor if they want to retry Sonnet later.
+            let hints = OCRHints(
+                languages: options.languages,
+                quality: options.ocrQuality
+            )
+            do {
+                let visionResult = try await visionEngine.recognize(
+                    image: image, hints: hints
+                )
+                let blocks = ParagraphReflow().reflow(
+                    visionResult.observations
+                )
+                if !blocks.isEmpty {
+                    sonnetBlocks = blocks
+                    usedLocalFallback = true
+                }
+            } catch {
+                // Vision also failed — leave the page empty. The
+                // claude-pages.txt dump still records the original
+                // Sonnet error so the user can diagnose.
+            }
         }
 
         let layoutRegions = await layoutTask.value
@@ -2300,7 +2332,8 @@ public actor PDFToEPUBPipeline {
             verdict: .reocr,
             qualityScore: routingScore,
             extractorDiagnostics: routingDiagnostics,
-            sonnetSucceeded: sonnetSucceeded
+            sonnetSucceeded: sonnetSucceeded,
+            usedLocalFallback: usedLocalFallback
         )
     }
 
@@ -2528,7 +2561,12 @@ public actor PDFToEPUBPipeline {
                 verdict: prep.partial.verdict,
                 qualityScore: prep.partial.qualityScore,
                 extractorDiagnostics: prep.partial.extractorDiagnostics,
-                sonnetSucceeded: success
+                sonnetSucceeded: success,
+                // Batch path doesn't currently retry locally on
+                // refusal — would need a separate per-page Vision
+                // pass keyed off the batch result. Falls under the
+                // batch-path follow-up; for now leave false.
+                usedLocalFallback: false
             )
             pendingByIndex[pageIndex] = final
             progress?(Progress(
@@ -2601,7 +2639,8 @@ public actor PDFToEPUBPipeline {
                     verdict: .trust,
                     qualityScore: score,
                     extractorDiagnostics: extracted.diagnostics,
-                    sonnetSucceeded: true
+                    sonnetSucceeded: true,
+                    usedLocalFallback: false
                 )
                 return (i, pending, nil)
             }
@@ -2648,7 +2687,8 @@ public actor PDFToEPUBPipeline {
             verdict: .reocr,
             qualityScore: routingScore,
             extractorDiagnostics: routingDiagnostics,
-            sonnetSucceeded: false
+            sonnetSucceeded: false,
+            usedLocalFallback: false
         )
         return (i, partial, request)
     }
