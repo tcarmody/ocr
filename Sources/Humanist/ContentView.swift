@@ -165,8 +165,9 @@ struct ContentView: View {
     /// existing queued/running jobs keep their snapshotted options.
     @ViewBuilder
     private var optionsBlock: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
+                Spacer()
                 Text("Force OCR pages:")
                     .font(.callout)
                     .foregroundStyle(.secondary)
