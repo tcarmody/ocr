@@ -95,14 +95,21 @@ enum HumanistTheme {
         return HumanistThemeID(rawValue: raw) ?? .system
     }
 
-    static let accent          = dynamic(.accent)
-    static let accentMuted     = dynamic(.accentMuted)
-    static let background      = dynamic(.background)
-    static let surface         = dynamic(.surface)
-    static let inkPrimary      = dynamic(.inkPrimary)
-    static let inkSecondary    = dynamic(.inkSecondary)
-    static let inkTertiary     = dynamic(.inkTertiary)
-    static let divider         = dynamic(.divider)
+    // Computed (not stored) so each access returns a fresh
+    // `Color` whose identity reflects the current theme. SwiftUI's
+    // environment diffing for `.tint` / `.background` keys on
+    // value identity, so a stored-let `Color` (same identity
+    // whose underlying NSColor closure resolves at draw time)
+    // wouldn't propagate to descendant Toggles / Buttons / etc.
+    // when the user picks a new theme.
+    static var accent: Color          { dynamic(.accent) }
+    static var accentMuted: Color     { dynamic(.accentMuted) }
+    static var background: Color      { dynamic(.background) }
+    static var surface: Color         { dynamic(.surface) }
+    static var inkPrimary: Color      { dynamic(.inkPrimary) }
+    static var inkSecondary: Color    { dynamic(.inkSecondary) }
+    static var inkTertiary: Color     { dynamic(.inkTertiary) }
+    static var divider: Color         { dynamic(.divider) }
 
     /// Display-context font that respects the current theme's
     /// serif-titles preference. `.system(.title3, design: ...)`
@@ -241,12 +248,24 @@ extension View {
 }
 
 private struct HumanistChromeModifier: ViewModifier {
-    @ObservedObject private var store = HumanistThemeStore.shared
-
     func body(content: Content) -> some View {
+        // ViewModifiers with `@ObservedObject` properties don't
+        // reliably re-render when the observed object publishes.
+        // Wrapping content in a real `View` (not a ViewModifier)
+        // gives SwiftUI a stable subscription point — the View's
+        // `body` re-evaluates on every store mutation, which
+        // forces a redraw of `content` and AppKit re-resolves the
+        // dynamic NSColors that back the palette.
+        ChromedView(content: content)
+    }
+}
+
+private struct ChromedView<Content: View>: View {
+    @ObservedObject private var store = HumanistThemeStore.shared
+    let content: Content
+
+    var body: some View {
         let theme = store.themeID
-        // System theme uses native macOS chrome — don't paint over
-        // the window background, just keep the default tint cascade.
         let base = content.tint(HumanistTheme.accent)
         Group {
             if theme == .system {

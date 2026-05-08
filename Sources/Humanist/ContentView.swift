@@ -814,6 +814,12 @@ private struct ModeStrip: View {
 private struct DropZone: View {
     let isTargeted: Bool
     let compact: Bool
+    // Static `HumanistTheme.accent` etc. resolve via dynamic
+    // NSColor at draw time but their SwiftUI Color identity
+    // doesn't change on theme switch — without observing the
+    // store directly, this view won't redraw and AppKit won't
+    // re-ask for the colors.
+    @ObservedObject private var themeStore = HumanistThemeStore.shared
 
     var body: some View {
         ZStack {
