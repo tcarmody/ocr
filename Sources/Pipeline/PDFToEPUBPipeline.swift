@@ -138,6 +138,15 @@ public actor PDFToEPUBPipeline {
         /// Same as `siblingTextURLOverride`, for the markdown
         /// sibling output.
         public var siblingMarkdownURLOverride: URL?
+        /// Optional override for the debug-mode staging directory.
+        /// The pipeline default puts the staging dir next to the
+        /// EPUB (when `emitDebugLog` is on) or next to the source
+        /// PDF (otherwise). When this override is set + emitDebugLog
+        /// is on, the staging dir lives at this exact URL — used
+        /// by the configured-output-folder feature to centralize
+        /// debug logs under `<root>/Logs/`. Nil keeps default
+        /// behavior.
+        public var debugStagingURLOverride: URL?
 
         public init(
             dpi: CGFloat = 400,
@@ -158,7 +167,8 @@ public actor PDFToEPUBPipeline {
             emitSiblingTextOutputs: Bool = true,
             forceOCRPageRanges: [ClosedRange<Int>] = [],
             siblingTextURLOverride: URL? = nil,
-            siblingMarkdownURLOverride: URL? = nil
+            siblingMarkdownURLOverride: URL? = nil,
+            debugStagingURLOverride: URL? = nil
         ) {
             self.dpi = dpi
             self.dpiForScans = dpiForScans
@@ -179,6 +189,7 @@ public actor PDFToEPUBPipeline {
             self.forceOCRPageRanges = forceOCRPageRanges
             self.siblingTextURLOverride = siblingTextURLOverride
             self.siblingMarkdownURLOverride = siblingMarkdownURLOverride
+            self.debugStagingURLOverride = debugStagingURLOverride
         }
 
         /// True when `pageIndex` should bypass the embedded-text
@@ -956,11 +967,25 @@ public actor PDFToEPUBPipeline {
         // `<basename>.humanist-debug/` so the user can locate the
         // logs more easily; both shapes work identically as
         // resume-staging dirs.
-        let stagingDir: URL = options.emitDebugLog
-            ? outputURL.deletingPathExtension()
+        // Staging-dir resolution:
+        //  * emitDebugLog + debugStagingURLOverride → use the
+        //    override (configured-output-folder feature routes here
+        //    so logs land in <root>/Logs/<basename>.humanist-debug/).
+        //  * emitDebugLog only → next to the EPUB output, named
+        //    `<basename>.humanist-debug` (the inspect-friendly path).
+        //  * default → next to the source PDF, named
+        //    `<basename>.humanist-staging` (resume-friendly: a re-run
+        //    of the same source finds the same checkpoints).
+        let stagingDir: URL
+        if options.emitDebugLog, let override = options.debugStagingURLOverride {
+            stagingDir = override
+        } else if options.emitDebugLog {
+            stagingDir = outputURL.deletingPathExtension()
                 .appendingPathExtension("humanist-debug")
-            : pdfURL.deletingPathExtension()
+        } else {
+            stagingDir = pdfURL.deletingPathExtension()
                 .appendingPathExtension("humanist-staging")
+        }
         try? FileManager.default.createDirectory(
             at: stagingDir, withIntermediateDirectories: true
         )

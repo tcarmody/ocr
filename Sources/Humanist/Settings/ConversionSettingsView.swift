@@ -63,7 +63,7 @@ struct ConversionSettingsView: View {
                 folderLine("📚 \(ConversionOutputSubfolder.books)/", "EPUBs (and PDF outputs, when supported)")
                 folderLine("📝 \(ConversionOutputSubfolder.textFiles)/", "Plain-text sibling outputs")
                 folderLine("📄 \(ConversionOutputSubfolder.markdown)/", "Markdown sibling outputs")
-                folderLine("🪵 \(ConversionOutputSubfolder.logs)/", "Conversion debug logs (when enabled)")
+                folderLine("🪵 \(ConversionOutputSubfolder.logs)/", "Conversion debug staging (when “Emit debug log” is on)")
             }
             .font(.callout.monospaced())
         }

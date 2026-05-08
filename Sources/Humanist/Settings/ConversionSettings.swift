@@ -21,11 +21,11 @@ public enum ConversionOutputSubfolder {
     public static let textFiles = "Text Files"
     /// Markdown sibling outputs (V-Outputs).
     public static let markdown = "Markdown"
-    /// Per-conversion debug logs. v1 doesn't yet route the staging
-    /// dir here — the Settings UI shows the slot so the user knows
-    /// it'll be populated when we wire the staging-dir relocation
-    /// in a follow-up. Today the staging dir still lives next to
-    /// the source PDF.
+    /// Per-conversion debug staging directories — populated only
+    /// when "Emit debug log" is on for the conversion. Without
+    /// debug-log enabled, the staging dir stays next to the source
+    /// PDF (resume-friendly: re-runs find checkpoints regardless
+    /// of where the EPUB landed).
     public static let logs = "Logs"
 }
 
@@ -84,5 +84,22 @@ public enum ConversionOutputResolver {
             .appendingPathComponent(basename)
             .appendingPathExtension("md")
         return (txt, md)
+    }
+
+    /// Override for the debug-mode staging directory for a source
+    /// PDF. The pipeline normally stashes per-page artifacts in
+    /// `<source>.humanist-debug/` next to the EPUB output (when
+    /// `emitDebugLog` is on); when the user has configured an
+    /// output root, route it under `<root>/Logs/` instead so the
+    /// Settings layout preview's "Logs/" promise is real.
+    /// Returns nil when no root is configured — pipeline keeps the
+    /// original next-to-EPUB behavior.
+    public static func debugStagingURL(forSource sourcePDF: URL) -> URL? {
+        let basename = sourcePDF.deletingPathExtension().lastPathComponent
+        guard let root = currentRoot() else { return nil }
+        return root
+            .appendingPathComponent(ConversionOutputSubfolder.logs, isDirectory: true)
+            .appendingPathComponent(basename)
+            .appendingPathExtension("humanist-debug")
     }
 }

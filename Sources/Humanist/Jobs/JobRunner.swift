@@ -239,7 +239,13 @@ final class JobRunner: ObservableObject {
             siblingTextURLOverride: ConversionOutputResolver
                 .siblingTextOverrides(forSource: job.sourceURL).txt,
             siblingMarkdownURLOverride: ConversionOutputResolver
-                .siblingTextOverrides(forSource: job.sourceURL).md
+                .siblingTextOverrides(forSource: job.sourceURL).md,
+            // Same idea for the debug staging dir → <root>/Logs/.
+            // Only honored when emitDebugLog is on; otherwise the
+            // pipeline keeps the resume-friendly next-to-source-PDF
+            // location.
+            debugStagingURLOverride: ConversionOutputResolver
+                .debugStagingURL(forSource: job.sourceURL)
         )
         let storeRef = store
         let jobID = job.id
