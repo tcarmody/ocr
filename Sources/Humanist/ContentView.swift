@@ -834,7 +834,7 @@ private struct DropZone: View {
                     Image(systemName: "plus.rectangle.on.rectangle")
                         .font(.callout)
                         .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
-                    Text(isTargeted ? "Release to add" : "Drop more PDFs here")
+                    Text(isTargeted ? "Release to add" : "Drop more documents here")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
