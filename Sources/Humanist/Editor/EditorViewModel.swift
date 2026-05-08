@@ -375,7 +375,7 @@ final class EditorViewModel: ObservableObject {
                 try EPUBBook.open(epubURL: epubURL)
             }.value
             self.book = book
-            self.fileTree = FileNode.walk(book.workingDirectory)
+            self.fileTree = FileNode.walk(book.workingDirectory, spineOrder: book.spineURLOrder)
             self.state = .ready
             self.selectedFile = Self.preferredInitialSelection(
                 in: book, fileTree: self.fileTree
@@ -2133,6 +2133,7 @@ final class EditorViewModel: ObservableObject {
         book.moveInSpine(id: source.id, toIndex: targetIdx)
         do {
             try EPUBBookSaver().save(book)
+            refreshFileTree()
             previewVersion += 1
             isDirty = true
         } catch {
@@ -2153,9 +2154,11 @@ final class EditorViewModel: ObservableObject {
         do {
             try EPUBBookSaver().save(book)
             // The OPF on disk now lists chapters in the new order.
-            // The file tree itself is unchanged (we don't rename
-            // files for a reorder), but bump preview so any
-            // navigation chrome that depends on spine order updates.
+            // Files on disk are unchanged (we don't rename for a
+            // reorder), but the sidebar sorts chapter rows by spine
+            // index so it needs a tree-walk refresh to reflect the
+            // new order.
+            refreshFileTree()
             previewVersion += 1
             isDirty = true
         } catch {
@@ -2170,7 +2173,7 @@ final class EditorViewModel: ObservableObject {
     /// needs to be refreshed.
     private func refreshFileTree() {
         guard let book = book else { return }
-        fileTree = FileNode.walk(book.workingDirectory)
+        fileTree = FileNode.walk(book.workingDirectory, spineOrder: book.spineURLOrder)
     }
 
     /// Re-read the in-memory book from disk. Called after the editor's
@@ -2190,7 +2193,7 @@ final class EditorViewModel: ObservableObject {
         // doesn't delete the directory out from under the new one.
         oldBook.disownWorkingDirectory()
         self.book = fresh
-        self.fileTree = FileNode.walk(fresh.workingDirectory)
+        self.fileTree = FileNode.walk(fresh.workingDirectory, spineOrder: fresh.spineURLOrder)
     }
 
     /// Sync every dirty source-pane buffer into the corresponding

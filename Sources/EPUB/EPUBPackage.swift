@@ -108,7 +108,17 @@ public struct FileNode: Identifiable, Sendable, Hashable {
 
     /// Walk a directory recursively, sorting directories first then by
     /// name so the tree reads consistently in the sidebar.
-    public static func walk(_ url: URL) -> FileNode {
+    ///
+    /// `spineOrder`, when supplied, lets chapter files appear in the
+    /// reading order recorded by the OPF spine instead of alphabetical
+    /// order — necessary so user reorderings (drag-drop, Move Up/Down)
+    /// show up in the sidebar. Files whose canonical URL is not in the
+    /// map fall back to alphabetical, sorted *below* spine-indexed
+    /// siblings so chapters cluster at the top.
+    public static func walk(
+        _ url: URL,
+        spineOrder: [URL: Int]? = nil
+    ) -> FileNode {
         let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
         let name = url.lastPathComponent
         guard isDir else {
@@ -118,10 +128,18 @@ public struct FileNode: Identifiable, Sendable, Hashable {
             at: url, includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         )) ?? []
-        let nodes = contents.map { walk($0) }
+        let nodes = contents.map { walk($0, spineOrder: spineOrder) }
         let sorted = nodes.sorted { a, b in
             if a.isDirectory != b.isDirectory { return a.isDirectory && !b.isDirectory }
-            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            let aIdx = spineOrder?[a.id]
+            let bIdx = spineOrder?[b.id]
+            switch (aIdx, bIdx) {
+            case let (l?, r?): return l < r
+            case (_?, nil):    return true   // spine before non-spine
+            case (nil, _?):    return false
+            case (nil, nil):
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
         }
         return FileNode(id: url, name: name, isDirectory: true, children: sorted)
     }

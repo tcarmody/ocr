@@ -206,6 +206,18 @@ public final class EPUBBook: @unchecked Sendable {
         resourceOrder.compactMap { resourcesByID[$0] }
     }
 
+    /// Map of canonical on-disk URL → spine index, suitable for
+    /// passing to `FileNode.walk(_:spineOrder:)` so the sidebar shows
+    /// chapters in reading order rather than alphabetical order.
+    public var spineURLOrder: [URL: Int] {
+        var out: [URL: Int] = [:]
+        for (idx, resourceID) in spine.enumerated() {
+            guard let resource = resourcesByID[resourceID] else { continue }
+            out[absoluteURL(for: resource).canonicalForFile] = idx
+        }
+        return out
+    }
+
     /// Manifest entry flagged with `properties="nav"`, if present.
     public var navResource: Resource? {
         resourcesByID.values.first(where: {
