@@ -8,7 +8,6 @@ enum HumanistThemeID: String, CaseIterable, Identifiable {
     case system
     case parchment
     case scholarly
-    case nocturne
     case studio
 
     var id: String { rawValue }
@@ -18,7 +17,6 @@ enum HumanistThemeID: String, CaseIterable, Identifiable {
         case .system:    return "System"
         case .parchment: return "Parchment"
         case .scholarly: return "Scholarly"
-        case .nocturne:  return "Nocturne"
         case .studio:    return "Studio"
         }
     }
@@ -28,17 +26,7 @@ enum HumanistThemeID: String, CaseIterable, Identifiable {
         case .system:    return "Default macOS appearance with the system accent color."
         case .parchment: return "Warm cream paper, muted terracotta accent. Quiet and unhurried."
         case .scholarly: return "Cream background, deep navy accent, serif titles. Reference-press feel."
-        case .nocturne:  return "Dark editorial palette with a warm gold accent. Forced dark appearance."
         case .studio:    return "Bright white surface with a vibrant rose accent. Modern lab aesthetic."
-        }
-    }
-
-    /// Some themes commit to a color scheme (Nocturne is dark-only).
-    /// Returning nil follows the system appearance.
-    var forcedColorScheme: ColorScheme? {
-        switch self {
-        case .nocturne: return .dark
-        default:        return nil
         }
     }
 
@@ -46,8 +34,8 @@ enum HumanistThemeID: String, CaseIterable, Identifiable {
     /// (drop-zone hero, library row title, window subtitles, etc.).
     var usesSerifTitles: Bool {
         switch self {
-        case .parchment, .scholarly, .nocturne: return true
-        case .system, .studio:                  return false
+        case .parchment, .scholarly: return true
+        case .system, .studio:       return false
         }
     }
 }
@@ -140,7 +128,6 @@ enum HumanistTheme {
         case .system:    return SystemPalette.color(slot, dark: dark)
         case .parchment: return ParchmentPalette.color(slot, dark: dark)
         case .scholarly: return ScholarlyPalette.color(slot, dark: dark)
-        case .nocturne:  return NocturnePalette.color(slot, dark: dark)
         case .studio:    return StudioPalette.color(slot, dark: dark)
         }
     }
@@ -191,23 +178,6 @@ private enum ScholarlyPalette {
         case .inkSecondary:  return dark ? hex(0x9C927E) : hex(0x6E6451)
         case .inkTertiary:   return dark ? hex(0x6E6552) : hex(0x9C9079)
         case .divider:       return dark ? hex(0x3A3025) : hex(0xDCD4BD)
-        }
-    }
-}
-
-private enum NocturnePalette {
-    /// Forced-dark theme — light variants are present for
-    /// completeness but the chrome forces `.dark` color scheme.
-    static func color(_ slot: HumanistTheme.Slot, dark: Bool) -> NSColor {
-        switch slot {
-        case .accent:        return hex(0xD4A659)        // warm gold
-        case .accentMuted:   return hex(0xD4A659, alpha: 0.16)
-        case .background:    return hex(0x121212)
-        case .surface:       return hex(0x1B1B1B)
-        case .inkPrimary:    return hex(0xE6DFCF)
-        case .inkSecondary:  return hex(0x95897A)
-        case .inkTertiary:   return hex(0x6A6155)
-        case .divider:       return hex(0x2D2A24)
         }
     }
 }
@@ -267,13 +237,10 @@ private struct ChromedView<Content: View>: View {
     var body: some View {
         let theme = store.themeID
         let base = content.tint(HumanistTheme.accent)
-        Group {
-            if theme == .system {
-                base
-            } else {
-                base.background(HumanistTheme.background)
-            }
+        if theme == .system {
+            base
+        } else {
+            base.background(HumanistTheme.background)
         }
-        .preferredColorScheme(theme.forcedColorScheme)
     }
 }

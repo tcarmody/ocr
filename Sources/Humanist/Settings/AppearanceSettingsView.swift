@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// Settings → Appearance. Lets the user pick among the bundled
-/// themes (System / Parchment / Scholarly / Nocturne / Studio).
-/// Selection writes to `humanist.theme`; every window's
-/// `humanistChrome()` re-renders on the change.
+/// themes (System / Parchment / Scholarly / Studio). Selection
+/// writes to `humanist.theme`; every window's `humanistChrome()`
+/// re-renders on the change.
 struct AppearanceSettingsView: View {
     @ObservedObject private var store = HumanistThemeStore.shared
 
@@ -63,7 +63,10 @@ private struct ThemeSwatch: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let dark = (theme.forcedColorScheme == .dark)
+            // Sample the theme at the system's current appearance —
+            // every theme now follows system light/dark.
+            let appearance = NSApp.effectiveAppearance
+            let dark = appearance.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
             HStack(spacing: 0) {
                 Color(nsColor: PaletteSnapshot.color(.background, theme: theme, dark: dark))
                     .frame(width: proxy.size.width * 0.55)
@@ -131,13 +134,6 @@ private enum PaletteSnapshot {
             case .background: return dark ? hex(0x1A1612) : hex(0xF6F0DF)
             case .surface:    return dark ? hex(0x231D17) : hex(0xEDE6D2)
             default:          return dark ? hex(0xEDE6D2) : hex(0x2A2418)
-            }
-        case .nocturne:
-            switch slot {
-            case .accent:     return hex(0xD4A659)
-            case .background: return hex(0x121212)
-            case .surface:    return hex(0x1B1B1B)
-            default:          return hex(0xE6DFCF)
             }
         case .studio:
             switch slot {
