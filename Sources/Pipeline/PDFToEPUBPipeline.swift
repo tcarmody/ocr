@@ -1771,6 +1771,22 @@ public actor PDFToEPUBPipeline {
                 pageAnchors: claudePageAnchors,
                 figureAssets: claudePageFigureAssets
             )
+            // Cloud Page-OCR bypasses the reflow path's debug-log
+            // emission; dump the captured Sonnet responses here so
+            // the user can inspect what the model returned per page
+            // even when the assembly never touches RegionAwareReflow.
+            if options.emitDebugLog {
+                let pageResponses = ClaudePageOCREngine
+                    .snapshotCapturedResponses()
+                if !pageResponses.isEmpty {
+                    let dumpURL = stagingDir.appendingPathComponent(
+                        "claude-pages.txt"
+                    )
+                    try? Self.writeClaudePageResponses(
+                        pageResponses, to: dumpURL
+                    )
+                }
+            }
         } else if options.emitDebugLog {
             // Log lives in the same `humanist-debug/` folder as the
             // PNGs so all artifacts for one book stay together.
