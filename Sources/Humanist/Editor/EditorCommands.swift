@@ -295,18 +295,21 @@ private struct DocumentMenuChapterCommands: View {
     }
 }
 
-/// Adds editor-specific items to the **system** View menu — pane
-/// visibility toggles, preview reload, alignment commands. Uses
-/// `CommandGroup(after: .sidebar)` rather than `CommandMenu("View")`
-/// so our items merge into the existing macOS View menu (which
-/// already holds Show Toolbar, Enter Full Screen, etc.) instead of
-/// producing a second "View" menu next to it. The earlier
-/// `CommandMenu("View")` shape did exactly that — two View menus —
-/// which broke the system convention.
+/// Top-level "View" menu — pane visibility toggles, preview reload,
+/// PDF view commands, alignment commands. Uses `CommandMenu("View")`
+/// because `CommandGroup(after: .sidebar)` didn't reliably expand
+/// our sub-Views into the system View menu (zoom commands ended up
+/// dropped). With CommandMenu the menu is fully under our control;
+/// there's no system-generated View menu to collide with in this
+/// app's scene shape (no DocumentGroup, no auto sidebar/toolbar
+/// commands), so the earlier "two View menus" reading was probably
+/// the CommandGroup placement creating a phantom secondary menu.
 struct EditorViewMenu: Commands {
     var body: some Commands {
-        CommandGroup(after: .sidebar) {
-            Divider()
+        // Body wrapping kept under SwiftUI's @CommandsBuilder cap by
+        // grouping items into per-section sub-Views — see
+        // feedback_swiftui_commandsbuilder_cap.md.
+        CommandMenu("View") {
             ViewMenuPaneToggles()
             Divider()
             EditorReloadPreviewCommand()
