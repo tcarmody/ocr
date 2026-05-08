@@ -3075,8 +3075,13 @@ public actor PDFToEPUBPipeline {
             }
 
             var combinedRuns = prevRuns
+            let lastRun = combinedRuns.last
             combinedRuns[combinedRuns.count - 1] = InlineRun(
-                mergedTail, language: combinedRuns.last?.language
+                mergedTail,
+                language: lastRun?.language,
+                noterefId: lastRun?.noterefId,
+                isItalic: lastRun?.isItalic ?? false,
+                isBold: lastRun?.isBold ?? false
             )
             combinedRuns.append(contentsOf: runs.dropFirst())
 

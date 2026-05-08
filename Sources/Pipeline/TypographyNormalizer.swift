@@ -83,7 +83,9 @@ public enum TypographyNormalizer {
             InlineRun(
                 normalize(run.text),
                 language: run.language,
-                noterefId: run.noterefId
+                noterefId: run.noterefId,
+                isItalic: run.isItalic,
+                isBold: run.isBold
             )
         }
     }

@@ -309,7 +309,13 @@ public struct ClaudeCoherenceAnalyzer: Sendable {
             for sug in accepted {
                 t = t.replacingOccurrences(of: sug.wrong, with: sug.right)
             }
-            return InlineRun(t, language: run.language, noterefId: run.noterefId)
+            return InlineRun(
+                t,
+                language: run.language,
+                noterefId: run.noterefId,
+                isItalic: run.isItalic,
+                isBold: run.isBold
+            )
         }
     }
 
