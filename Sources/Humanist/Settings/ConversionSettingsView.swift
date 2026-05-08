@@ -60,9 +60,10 @@ struct ConversionSettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                folderLine("📚 \(ConversionOutputSubfolder.books)/", "EPUBs (and PDF outputs, when supported)")
+                folderLine("📚 \(ConversionOutputSubfolder.books)/", "EPUBs and searchable-PDF copies")
                 folderLine("📝 \(ConversionOutputSubfolder.textFiles)/", "Plain-text sibling outputs")
                 folderLine("📄 \(ConversionOutputSubfolder.markdown)/", "Markdown sibling outputs")
+                folderLine("🌐 \(ConversionOutputSubfolder.html)/", "Self-contained HTML sibling outputs")
                 folderLine("🪵 \(ConversionOutputSubfolder.logs)/", "Conversion debug staging (when “Emit debug log” is on)")
             }
             .font(.callout.monospaced())
