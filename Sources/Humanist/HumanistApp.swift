@@ -172,6 +172,8 @@ struct HumanistApp: App {
                     .tabItem { Label("Conversion", systemImage: "folder") }
                 AISettingsView()
                     .tabItem { Label("AI", systemImage: "sparkles") }
+                AppearanceSettingsView()
+                    .tabItem { Label("Appearance", systemImage: "paintpalette") }
             }
             .frame(width: 540, height: 520)
         }
