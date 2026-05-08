@@ -326,6 +326,7 @@ private struct ViewMenuPaneToggles: View {
         EditorPaneToggle(pane: .source)
         EditorPaneToggle(pane: .preview)
         EditorPaneToggle(pane: .wysiwyg)
+        EditorPaneToggle(pane: .chat)
     }
 }
 
@@ -659,6 +660,7 @@ private struct EditorPaneToggle: View {
         case .source:  return "\(action) Source"
         case .wysiwyg: return "\(action) WYSIWYG"
         case .preview: return "\(action) Preview"
+        case .chat:    return "\(action) Chat"
         }
     }
 
@@ -668,6 +670,7 @@ private struct EditorPaneToggle: View {
         case .source:  return "2"
         case .preview: return "3"
         case .wysiwyg: return "4"
+        case .chat:    return "5"
         }
     }
 }

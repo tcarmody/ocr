@@ -18,7 +18,7 @@ import UniformTypeIdentifiers
 /// One of the three central panes in the editor window. Used by the
 /// VM and menu commands to address pane visibility uniformly.
 enum EditorPane: String, CaseIterable {
-    case pdf, source, wysiwyg, preview
+    case pdf, source, wysiwyg, preview, chat
 }
 
 @MainActor
@@ -327,6 +327,17 @@ final class EditorViewModel: ObservableObject {
             UserDefaults.standard.set(showWYSIWYGPane, forKey: Self.defaultsKey(.wysiwyg))
         }
     }
+    /// Chat-with-book pane. Off by default — Cloud-only feature
+    /// that costs API tokens per query.
+    @Published var showChatPane: Bool {
+        didSet {
+            UserDefaults.standard.set(showChatPane, forKey: Self.defaultsKey(.chat))
+        }
+    }
+    /// Per-book chat session. Lazy: created the first time the
+    /// chat pane is shown so opening an EPUB stays cheap. Reset
+    /// when the book is reloaded from disk.
+    @Published private(set) var chatViewModel: BookChatViewModel?
 
     /// Absolute URL of the book's stylesheet inside the unpacked
     /// working directory. The WYSIWYG pane uses this to render
@@ -347,9 +358,13 @@ final class EditorViewModel: ObservableObject {
         if let v = UserDefaults.standard.object(forKey: defaultsKey(pane)) as? Bool {
             return v
         }
-        // The WYSIWYG pane is opt-in (extra column eats horizontal
-        // space); the others are on by default.
-        return pane != .wysiwyg
+        // WYSIWYG and Chat are opt-in (extra column eats horizontal
+        // space; chat additionally costs API tokens). The others
+        // are on by default.
+        switch pane {
+        case .wysiwyg, .chat: return false
+        case .pdf, .source, .preview: return true
+        }
     }
 
     func isPaneVisible(_ pane: EditorPane) -> Bool {
@@ -358,6 +373,7 @@ final class EditorViewModel: ObservableObject {
         case .source:  return showSourcePane
         case .wysiwyg: return showWYSIWYGPane
         case .preview: return showPreviewPane
+        case .chat:    return showChatPane
         }
     }
 
@@ -367,7 +383,19 @@ final class EditorViewModel: ObservableObject {
         case .source:  showSourcePane.toggle()
         case .wysiwyg: showWYSIWYGPane.toggle()
         case .preview: showPreviewPane.toggle()
+        case .chat:
+            showChatPane.toggle()
+            if showChatPane { ensureChatViewModel() }
         }
+    }
+
+    /// Build the chat view-model on first show. Recreated when
+    /// `reloadBookFromDisk` runs so the chat sees the freshest
+    /// chapter texts (and the keyword index re-builds against
+    /// them).
+    private func ensureChatViewModel() {
+        guard chatViewModel == nil, let book = book else { return }
+        chatViewModel = BookChatViewModel(book: book)
     }
 
     init(epubURL: URL) {
@@ -375,6 +403,7 @@ final class EditorViewModel: ObservableObject {
         self.showSourcePane = Self.defaultPaneVisibility(.source)
         self.showWYSIWYGPane = Self.defaultPaneVisibility(.wysiwyg)
         self.showPreviewPane = Self.defaultPaneVisibility(.preview)
+        self.showChatPane = Self.defaultPaneVisibility(.chat)
         Task { await self.load(epubURL: epubURL) }
     }
 
@@ -2227,6 +2256,10 @@ final class EditorViewModel: ObservableObject {
         oldBook.disownWorkingDirectory()
         self.book = fresh
         self.fileTree = FileNode.walk(fresh.workingDirectory, spineOrder: fresh.spineURLOrder)
+        // Keep the chat transcript across saves; just retire the
+        // stale keyword index so the next query rebuilds against
+        // the freshest text.
+        chatViewModel?.bookDidReload(fresh)
     }
 
     /// Sync every dirty source-pane buffer into the corresponding

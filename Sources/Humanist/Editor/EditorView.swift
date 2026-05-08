@@ -45,6 +45,7 @@ struct EditorView: View {
     private var showSource:  Bool { vm.showSourcePane }
     private var showWYSIWYG: Bool { vm.showWYSIWYGPane }
     private var showPreview: Bool { vm.showPreviewPane }
+    private var showChat:    Bool { vm.showChatPane }
     @State private var wysiwygCommand: WYSIWYGCommand?
 
     var body: some View {
@@ -272,11 +273,11 @@ struct EditorView: View {
 
     /// Build the pane layout from the current visibility flags.
     /// HSplitView accepts up to 10 conditionally-included children
-    /// via @ViewBuilder; we exploit that so adding a 4th pane
-    /// doesn't blow up the case matrix.
+    /// via @ViewBuilder; we exploit that so adding panes doesn't
+    /// blow up the case matrix.
     @ViewBuilder
     private func editorPanes(workingDir: URL) -> some View {
-        let visibleCount = [showPDF, showSource, showWYSIWYG, showPreview]
+        let visibleCount = [showPDF, showSource, showWYSIWYG, showPreview, showChat]
             .filter { $0 }.count
         if visibleCount == 0 {
             allPanesHiddenState
@@ -297,6 +298,9 @@ struct EditorView: View {
                 if showPreview {
                     previewPane(workingDir: workingDir).frame(minWidth: minWidth)
                 }
+                if showChat {
+                    chatPane.frame(minWidth: minWidth)
+                }
             }
         }
     }
@@ -307,6 +311,7 @@ struct EditorView: View {
         else if showSource { sourcePane }
         else if showWYSIWYG { wysiwygPane }
         else if showPreview { previewPane(workingDir: workingDir) }
+        else if showChat { chatPane }
     }
 
     @ViewBuilder
@@ -393,6 +398,59 @@ struct EditorView: View {
             sourceContent
             validationStrip
         }
+    }
+
+    @ViewBuilder
+    private var chatPane: some View {
+        VStack(spacing: 0) {
+            paneHeader("Chat", systemImage: "bubble.left.and.text.bubble.right")
+            if let chat = vm.chatViewModel {
+                ChatPaneView(
+                    vm: chat,
+                    onCitationTap: { citation in
+                        selectChapter(byResourceID: citation.resourceID)
+                    }
+                )
+            } else {
+                VStack(spacing: 8) {
+                    Text("Loading chat…")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    /// Resolve a citation's manifest id to the matching FileNode
+    /// in the sidebar and select it. The citation pane uses
+    /// resource IDs (stable across saves) rather than file URLs
+    /// (which would shift if Humanist ever renamed chapter files).
+    private func selectChapter(byResourceID resourceID: String) {
+        guard let book = vm.book,
+              let resource = book.resourcesByID[resourceID]
+        else { return }
+        let url = book.absoluteURL(for: resource)
+        guard let tree = vm.fileTree,
+              let node = Self.findNode(in: tree, matching: url)
+        else { return }
+        vm.select(node)
+    }
+
+    /// Recursive depth-first search for a leaf FileNode whose URL
+    /// matches `target` after canonicalization. Mirrors the
+    /// EditorViewModel's internal helpers without exposing them.
+    private static func findNode(in node: FileNode, matching target: URL) -> FileNode? {
+        let want = target.canonicalForFile.standardizedFileURL.path
+        if node.children == nil {
+            let have = node.id.canonicalForFile.standardizedFileURL.path
+            return have == want ? node : nil
+        }
+        for child in node.children ?? [] {
+            if let hit = findNode(in: child, matching: target) {
+                return hit
+            }
+        }
+        return nil
     }
 
     @ViewBuilder
@@ -591,6 +649,11 @@ struct EditorView: View {
                 Label("Show WYSIWYG", systemImage: "text.alignleft")
             }
             .help("Toggle the WYSIWYG editor pane (⌘4)")
+
+            Toggle(isOn: paneBinding(.chat)) {
+                Label("Show Chat", systemImage: "bubble.left.and.text.bubble.right")
+            }
+            .help("Toggle the chat-with-book pane (⌘5)")
         }
         ToolbarItem(placement: .primaryAction) {
             Button {
