@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import EPUB
 
 /// Sidebar file tree for the editor. SwiftUI's `OutlineGroup` uses
@@ -19,6 +20,10 @@ struct BookBrowser: View {
                     OutlineGroup(node, children: \.children) { item in
                         rowLabel(item)
                             .tag(item)
+                            .modifier(ChapterDragDropModifier(
+                                node: item,
+                                viewModel: viewModel
+                            ))
                     }
                 }
             }
@@ -86,6 +91,58 @@ struct BookBrowser: View {
         case "css":                    return .pink
         case "png", "jpg", "jpeg", "gif", "svg", "webp": return .green
         default:                       return .secondary
+        }
+    }
+}
+
+/// Transferable payload for sidebar chapter drags. Carries the
+/// chapter's URL so the drop site can resolve it back to a Resource
+/// via `book.resource(at:)`. Codable + JSON content type so the
+/// drag/drop pair round-trips through SwiftUI's transferable
+/// machinery without us needing custom data converters.
+private struct ChapterDragPayload: Codable, Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .humanistChapterDrag)
+    }
+}
+
+private extension UTType {
+    /// Internal-only UTI for chapter drags. Not registered in
+    /// Info.plist because the drags never leave the app — SwiftUI
+    /// treats unknown UTIs as opaque transfer-representation
+    /// envelopes when the `Transferable` type drives them.
+    static let humanistChapterDrag = UTType(
+        exportedAs: "com.tcarmody.humanist.chapter-drag"
+    )
+}
+
+/// Per-row drag/drop wiring. Only chapter rows (resources in the
+/// spine) participate. Non-spine rows render as-is, no drag handle
+/// and no drop response — drops onto a CSS file or image silently
+/// no-op.
+private struct ChapterDragDropModifier: ViewModifier {
+    let node: FileNode
+    let viewModel: EditorViewModel?
+
+    func body(content: Content) -> some View {
+        if let vm = viewModel,
+           !node.isDirectory,
+           let book = vm.book,
+           let resource = book.resource(at: node.id),
+           book.spine.contains(resource.id)
+        {
+            content
+                .draggable(ChapterDragPayload(url: node.id))
+                .dropDestination(for: ChapterDragPayload.self) { items, _ in
+                    guard let item = items.first else { return false }
+                    guard item.url != node.id else { return false }
+                    vm.moveChapter(at: item.url, before: node.id)
+                    return true
+                }
+        } else {
+            content
         }
     }
 }

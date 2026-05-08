@@ -2112,6 +2112,34 @@ final class EditorViewModel: ObservableObject {
         return s.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
+    /// Sidebar drag-and-drop reorder: take the chapter at
+    /// `sourceURL` and insert it immediately before the chapter at
+    /// `targetURL`. Both must be spine entries; non-spine drops
+    /// (or drops onto the same chapter) are no-ops.
+    ///
+    /// "Insert before" matches the sidebar's visual semantic: the
+    /// row the user dropped onto stays where it is, and the
+    /// dragged row appears above it. Dropping onto your own row,
+    /// or onto the row immediately above you (no-op move), gets
+    /// short-circuited by `EPUBBook.moveInSpine(id:toIndex:)`.
+    func moveChapter(at sourceURL: URL, before targetURL: URL) {
+        guard let book = book else { return }
+        guard let source = book.resource(at: sourceURL),
+              let target = book.resource(at: targetURL)
+        else { return }
+        guard let targetIdx = book.spine.firstIndex(of: target.id) else { return }
+        flushSourceTextToBuffer()
+        flushDirtyBuffersToBook()
+        book.moveInSpine(id: source.id, toIndex: targetIdx)
+        do {
+            try EPUBBookSaver().save(book)
+            previewVersion += 1
+            isDirty = true
+        } catch {
+            chapterOperationError = error.localizedDescription
+        }
+    }
+
     /// Move the chapter referenced by `url` one position in the
     /// spine. Used by both the menu-bar and sidebar context-menu
     /// commands.

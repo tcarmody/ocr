@@ -403,6 +403,29 @@ public final class EPUBBook: @unchecked Sendable {
         syncManifestOrderToSpine()
     }
 
+    /// Move a spine entry to an arbitrary target slot. `toIndex` is
+    /// the post-removal target — same convention as SwiftUI's
+    /// `Array.move(fromOffsets:toOffset:)` and `List.onMove`. So
+    /// "move chapter at index 5 to before chapter at index 2" is
+    /// `moveInSpine(id: spine[5], toIndex: 2)`. "Move to the end"
+    /// is `toIndex: spine.count`. Out-of-range / identity moves are
+    /// no-ops. Used by drag-and-drop reorder in the sidebar.
+    public func moveInSpine(id: String, toIndex: Int) {
+        guard let from = spine.firstIndex(of: id) else { return }
+        guard toIndex >= 0, toIndex <= spine.count else { return }
+        // Identity move: e.g. dropping chapter onto itself, or
+        // inserting at exactly its current spot. Don't churn
+        // structural-dirty flags for nothing.
+        if toIndex == from || toIndex == from + 1 { return }
+        let removed = spine.remove(at: from)
+        // Adjust insertion point if it was after the removal
+        // position — `toIndex` was computed against the array
+        // length pre-remove.
+        let adjusted = toIndex > from ? toIndex - 1 : toIndex
+        spine.insert(removed, at: adjusted)
+        syncManifestOrderToSpine()
+    }
+
     /// Reorder `resourceOrder` so spine entries appear in spine
     /// order, with each non-spine entry pinned to its current
     /// position relative to its neighboring spine entries. Used

@@ -422,6 +422,67 @@ final class EPUBBookTests: XCTestCase {
         )
     }
 
+    // MARK: - moveInSpine(id:toIndex:) — drag-and-drop reorder
+
+    func test_moveInSpine_toIndex_moves_to_arbitrary_slot() throws {
+        try buildMinimalEPUB(chapterCount: 4)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        // Move ch04 to position 1 (just after ch01) — same as
+        // dropping ch04 onto ch02.
+        book.moveInSpine(id: "ch04", toIndex: 1)
+        XCTAssertEqual(book.spine, ["ch01", "ch04", "ch02", "ch03"])
+    }
+
+    func test_moveInSpine_toIndex_handles_forward_move() throws {
+        try buildMinimalEPUB(chapterCount: 4)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        // Move ch01 to position 3 (just before ch04). Same convention
+        // as SwiftUI's onMove(fromOffsets:toOffset:): the toIndex is
+        // the **post-removal** insertion point.
+        book.moveInSpine(id: "ch01", toIndex: 3)
+        XCTAssertEqual(book.spine, ["ch02", "ch03", "ch01", "ch04"])
+    }
+
+    func test_moveInSpine_toIndex_to_end() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "ch01", toIndex: 3)
+        XCTAssertEqual(book.spine, ["ch02", "ch03", "ch01"])
+    }
+
+    func test_moveInSpine_toIndex_identity_is_noop() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "ch02", toIndex: 1)
+        XCTAssertEqual(book.spine, ["ch01", "ch02", "ch03"])
+        book.moveInSpine(id: "ch02", toIndex: 2)  // "after itself"
+        XCTAssertEqual(book.spine, ["ch01", "ch02", "ch03"])
+    }
+
+    func test_moveInSpine_toIndex_out_of_range_is_noop() throws {
+        try buildMinimalEPUB(chapterCount: 3)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.moveInSpine(id: "ch01", toIndex: 99)
+        XCTAssertEqual(book.spine, ["ch01", "ch02", "ch03"])
+        book.moveInSpine(id: "ch01", toIndex: -1)
+        XCTAssertEqual(book.spine, ["ch01", "ch02", "ch03"])
+    }
+
     func test_moveInSpine_round_trips_through_save() throws {
         try buildMinimalEPUB(chapterCount: 3)
         let book = try EPUBBookLoader().load(
