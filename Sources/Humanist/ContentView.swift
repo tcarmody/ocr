@@ -253,14 +253,15 @@ struct ContentView: View {
                         Spotlight-indexed. Off by default; output is \
                         several MB per book.
                         """)
-                Toggle(".txt + .md", isOn: $queue.emitSiblingTextOutputs)
+                Toggle(".txt + .md + .html", isOn: $queue.emitSiblingTextOutputs)
                     .toggleStyle(.checkbox)
                     .help("""
-                        Write `<basename>.txt` and `<basename>.md` \
-                        next to the EPUB on conversion. Useful for \
-                        piping into search / archival / RAG pipelines \
-                        without unzipping the EPUB. Cheap (text files \
-                        are small); on by default.
+                        Write `<basename>.txt`, `<basename>.md`, and \
+                        a self-contained `<basename>.html` next to \
+                        the EPUB on conversion. Useful for piping into \
+                        search / archival / RAG pipelines and for \
+                        sharing the book without an EPUB reader. \
+                        Cheap (text files are small); on by default.
                         """)
                 Toggle("Save log", isOn: $queue.emitDebugLog)
                     .toggleStyle(.checkbox)

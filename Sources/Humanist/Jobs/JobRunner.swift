@@ -258,6 +258,11 @@ final class JobRunner: ObservableObject {
                     forSource: job.sourceURL,
                     suffix: job.options.outputSuffix
                 ).md,
+            siblingHTMLURLOverride: ConversionOutputResolver
+                .siblingTextOverrides(
+                    forSource: job.sourceURL,
+                    suffix: job.options.outputSuffix
+                ).html,
             // Tier 9 / V-PDF-Searchable: forwards both the toggle
             // and the configured-output-folder routing.
             emitSearchablePDF: job.options.emitSearchablePDF,
@@ -347,6 +352,9 @@ final class JobRunner: ObservableObject {
         let mdURL = ConversionOutputResolver
             .siblingTextOverrides(forSource: sourceURL, suffix: job.options.outputSuffix).md
             ?? outputURL.deletingPathExtension().appendingPathExtension("md")
+        let htmlURL = ConversionOutputResolver
+            .siblingTextOverrides(forSource: sourceURL, suffix: job.options.outputSuffix).html
+            ?? outputURL.deletingPathExtension().appendingPathExtension("html")
         do {
             let book = try await Task.detached(priority: .userInitiated) {
                 try DocumentIngest().ingest(from: sourceURL, language: language)
@@ -362,7 +370,7 @@ final class JobRunner: ObservableObject {
                     to: outputURL
                 )
                 if emitSiblings {
-                    for url in [txtURL, mdURL] {
+                    for url in [txtURL, mdURL, htmlURL] {
                         let parent = url.deletingLastPathComponent()
                         if !FileManager.default.fileExists(atPath: parent.path) {
                             try? FileManager.default.createDirectory(
@@ -372,8 +380,10 @@ final class JobRunner: ObservableObject {
                     }
                     let txt = PlainTextWriter.render(book)
                     let md = MarkdownWriter.render(book)
+                    let html = HTMLWriter.render(book)
                     try? txt.write(to: txtURL, atomically: true, encoding: .utf8)
                     try? md.write(to: mdURL, atomically: true, encoding: .utf8)
+                    try? html.write(to: htmlURL, atomically: true, encoding: .utf8)
                 }
             }.value
             store.update(jobID) { mutable in

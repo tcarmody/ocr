@@ -138,6 +138,9 @@ public actor PDFToEPUBPipeline {
         /// Same as `siblingTextURLOverride`, for the markdown
         /// sibling output.
         public var siblingMarkdownURLOverride: URL?
+        /// Same as `siblingTextURLOverride`, for the HTML sibling
+        /// output (`<basename>.html`). Self-contained single file.
+        public var siblingHTMLURLOverride: URL?
         /// Tier 9 / V-PDF-Searchable. When true, the conversion
         /// also emits a searchable-PDF copy of the source PDF
         /// alongside the EPUB — same visual content as the input,
@@ -180,6 +183,7 @@ public actor PDFToEPUBPipeline {
             forceOCRPageRanges: [ClosedRange<Int>] = [],
             siblingTextURLOverride: URL? = nil,
             siblingMarkdownURLOverride: URL? = nil,
+            siblingHTMLURLOverride: URL? = nil,
             emitSearchablePDF: Bool = false,
             searchablePDFURLOverride: URL? = nil,
             debugStagingURLOverride: URL? = nil
@@ -203,6 +207,7 @@ public actor PDFToEPUBPipeline {
             self.forceOCRPageRanges = forceOCRPageRanges
             self.siblingTextURLOverride = siblingTextURLOverride
             self.siblingMarkdownURLOverride = siblingMarkdownURLOverride
+            self.siblingHTMLURLOverride = siblingHTMLURLOverride
             self.emitSearchablePDF = emitSearchablePDF
             self.searchablePDFURLOverride = searchablePDFURLOverride
             self.debugStagingURLOverride = debugStagingURLOverride
@@ -1981,7 +1986,9 @@ public actor PDFToEPUBPipeline {
                 ?? outputURL.deletingPathExtension().appendingPathExtension("txt")
             let mdURL = options.siblingMarkdownURLOverride
                 ?? outputURL.deletingPathExtension().appendingPathExtension("md")
-            for url in [txtURL, mdURL] {
+            let htmlURL = options.siblingHTMLURLOverride
+                ?? outputURL.deletingPathExtension().appendingPathExtension("html")
+            for url in [txtURL, mdURL, htmlURL] {
                 let parent = url.deletingLastPathComponent()
                 if !FileManager.default.fileExists(atPath: parent.path) {
                     try? FileManager.default.createDirectory(
@@ -1991,8 +1998,10 @@ public actor PDFToEPUBPipeline {
             }
             let txt = PlainTextWriter.render(book)
             let md = MarkdownWriter.render(book)
+            let html = HTMLWriter.render(book)
             try? txt.write(to: txtURL, atomically: true, encoding: .utf8)
             try? md.write(to: mdURL, atomically: true, encoding: .utf8)
+            try? html.write(to: htmlURL, atomically: true, encoding: .utf8)
         }
 
         // Tier 9 / V-PDF-Searchable: write a searchable copy of the
