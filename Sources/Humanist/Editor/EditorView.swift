@@ -575,6 +575,11 @@ struct EditorView: View {
                 Label("Show Preview", systemImage: "eye")
             }
             .help("Toggle the rendered preview pane (⌘3)")
+
+            Toggle(isOn: paneBinding(.wysiwyg)) {
+                Label("Show WYSIWYG", systemImage: "text.alignleft")
+            }
+            .help("Toggle the WYSIWYG editor pane (⌘4)")
         }
         ToolbarItem(placement: .primaryAction) {
             Button {
