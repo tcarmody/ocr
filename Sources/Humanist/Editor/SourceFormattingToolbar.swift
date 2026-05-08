@@ -62,21 +62,9 @@ struct SourceFormattingToolbar: View {
                 vm.formatWrap(opening: "<h3>", closing: "</h3>")
             }
             .keyboardShortcut("3", modifiers: [.command, .option])
-
-            iconButton("Heading 4", systemImage: "4.square") {
-                vm.formatWrap(opening: "<h4>", closing: "</h4>")
-            }
-            .keyboardShortcut("4", modifiers: [.command, .option])
-
-            iconButton("Heading 5", systemImage: "5.square") {
-                vm.formatWrap(opening: "<h5>", closing: "</h5>")
-            }
-            .keyboardShortcut("5", modifiers: [.command, .option])
-
-            iconButton("Heading 6", systemImage: "6.square") {
-                vm.formatWrap(opening: "<h6>", closing: "</h6>")
-            }
-            .keyboardShortcut("6", modifiers: [.command, .option])
+            // H4–H6 stay reachable via Format → Heading and the
+            // ⌥⌘4/5/6 shortcuts; the toolbar tops out at H3 to
+            // keep the ribbon scannable.
 
             verticalDivider
 

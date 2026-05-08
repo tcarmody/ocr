@@ -41,9 +41,8 @@ struct WYSIWYGFormattingToolbar: View {
             iconButton("Heading 1", systemImage: "1.square") { send(.heading(1)) }
             iconButton("Heading 2", systemImage: "2.square") { send(.heading(2)) }
             iconButton("Heading 3", systemImage: "3.square") { send(.heading(3)) }
-            iconButton("Heading 4", systemImage: "4.square") { send(.heading(4)) }
-            iconButton("Heading 5", systemImage: "5.square") { send(.heading(5)) }
-            iconButton("Heading 6", systemImage: "6.square") { send(.heading(6)) }
+            // H4–H6 are intentionally absent here — reachable via
+            // the Format menu's Heading submenu.
 
             verticalDivider
 
