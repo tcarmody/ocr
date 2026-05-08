@@ -1,4 +1,10 @@
 import Foundation
+import os
+
+private let streamLog = Logger(
+    subsystem: "com.tcarmody.Humanist",
+    category: "AnthropicStream"
+)
 
 /// One event yielded from a streaming `messages` request. The SSE
 /// stream emits more event types than these, but the chat path
@@ -62,6 +68,12 @@ extension AnthropicAPIClient {
             return
         }
 
+        streamLog.debug("sending streaming request: \(urlRequest.url?.absoluteString ?? "?")")
+        if let body = urlRequest.httpBody,
+           let bodyString = String(data: body, encoding: .utf8) {
+            streamLog.debug("body: \(bodyString, privacy: .public)")
+        }
+
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
@@ -78,6 +90,7 @@ extension AnthropicAPIClient {
             continuation.finish(throwing: AnthropicAPIError.decode("non-HTTP response"))
             return
         }
+        streamLog.debug("status: \(http.statusCode), content-type: \(http.value(forHTTPHeaderField: "Content-Type") ?? "?", privacy: .public)")
         guard (200..<300).contains(http.statusCode) else {
             // Drain the body for the error message; the SSE parser
             // would otherwise stall waiting for events that never
@@ -104,6 +117,7 @@ extension AnthropicAPIClient {
         var currentDataLines: [String] = []
         do {
             for try await line in bytes.lines {
+                streamLog.debug("line: \(line, privacy: .public)")
                 if line.isEmpty {
                     if let event = currentEvent {
                         let payload = currentDataLines.joined(separator: "\n")
