@@ -22,6 +22,18 @@ resolve_signing_identity() {
     if [[ -n "$CODESIGN_IDENTITY_RESOLVED" ]]; then
         return
     fi
+    # Force ad-hoc when explicitly requested. Useful when the
+    # local Apple Development cert is OCSP-revoked: macOS rejects
+    # binaries signed with revoked certs as malware (they have the
+    # exact signature of "compromised developer account") but
+    # accepts ad-hoc-signed binaries on the same machine without
+    # quarantine. Run with `HUMANIST_ADHOC_SIGN=1 ./Scripts/run-app.sh`.
+    if [[ "${HUMANIST_ADHOC_SIGN:-0}" == "1" ]] || [[ "$DEFAULT_CODESIGN_IDENTITY" == "-" ]]; then
+        CODESIGN_IDENTITY_RESOLVED="-"
+        log "Ad-hoc signing (HUMANIST_ADHOC_SIGN set)."
+        return
+    fi
+
     # Resolve to a SHA-1 hash, never a name — multiple certs may share a name
     # (e.g. one valid + several revoked), and codesign refuses ambiguous names.
     local listing
