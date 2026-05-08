@@ -132,18 +132,16 @@ struct ConversionOptions: Codable, Equatable {
     /// for which the user has no API key. Previously named
     /// `useHighAccuracyOCR`; renamed to make the engine explicit.
     var useSuryaOCR: Bool
-    /// Cloud-enhanced cascade: Vision tries first, regions whose
-    /// quality score falls below the threshold escalate **straight
-    /// to Sonnet** — Surya OCR and Tesseract are skipped from the
-    /// OCR role. Surya **layout** still runs (cheap, fast, and
-    /// load-bearing for the structural extractors — figures,
-    /// tables, footnotes). Only meaningful when the conversion
-    /// is in Cloud mode and an API key is configured.
-    ///
-    /// On the Phase 4 spike (polytonic Greek), Sonnet hit 11.3%
-    /// CER vs the local cascade's 15.1% — this toggle exposes
-    /// that quality on demand.
-    var useCloudEnhancedOCR: Bool
+    /// "Claude OCR ($$$)" toggle in the launcher. Drives the
+    /// end-to-end page-OCR path: one Sonnet call per page returns
+    /// structured XHTML in, `[Block]` out. Bypasses the Vision /
+    /// Surya / Tesseract cascade entirely; Surya layout still runs
+    /// for figure + table extraction. Only fires when the
+    /// conversion is in Cloud mode and an API key is configured —
+    /// otherwise inert (the toggle is allowed to be on regardless).
+    /// Persisted under the legacy key `useCloudEnhancedOCR` so
+    /// existing queued jobs still load (see `CodingKeys`).
+    var useClaudePageOCR: Bool
     /// Skip the embedded-text trust path and re-OCR every page.
     /// Per-job because some PDFs ship with bad embedded text
     /// layers (broken `ToUnicode`, mojibake) that the trust scorer
@@ -155,7 +153,7 @@ struct ConversionOptions: Codable, Equatable {
     /// conversion. Forces `cloudFeatures` to all-off and clears the
     /// API-key provider in the runner — no Claude calls happen
     /// regardless of the user's global processing-mode / cloud
-    /// toggles. `useCloudEnhancedOCR` is also coerced off, since it
+    /// toggles. `useClaudePageOCR` is also coerced off, since it
     /// only fires on Cloud mode + key. Useful for one-off privacy-
     /// sensitive conversions without flipping global settings.
     var privateMode: Bool
@@ -200,7 +198,7 @@ struct ConversionOptions: Codable, Equatable {
     init(
         languages: [String] = ["en"],
         useSuryaOCR: Bool = false,
-        useCloudEnhancedOCR: Bool = false,
+        useClaudePageOCR: Bool = false,
         forceOCR: Bool = false,
         privateMode: Bool = false,
         emitDebugLog: Bool = false,
@@ -211,7 +209,7 @@ struct ConversionOptions: Codable, Equatable {
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
-        self.useCloudEnhancedOCR = useCloudEnhancedOCR
+        self.useClaudePageOCR = useClaudePageOCR
         self.forceOCR = forceOCR
         self.privateMode = privateMode
         self.emitDebugLog = emitDebugLog
@@ -221,15 +219,15 @@ struct ConversionOptions: Codable, Equatable {
         self.emitSearchablePDF = emitSearchablePDF
     }
 
-    /// Codable: decodes both the new `useSuryaOCR` key and the
-    /// legacy `useHighAccuracyOCR` key so persisted jobs from the
-    /// pre-rename versions still load. `useCloudEnhancedOCR` is
-    /// new — defaults to false on legacy decode.
+    /// Codable: decodes both the new `useSuryaOCR` / `useClaudePageOCR`
+    /// keys and the legacy `useHighAccuracyOCR` / `useCloudEnhancedOCR`
+    /// keys so persisted jobs from pre-rename versions still load.
     private enum CodingKeys: String, CodingKey {
         case languages
         case useSuryaOCR
-        case useHighAccuracyOCR  // legacy alias
-        case useCloudEnhancedOCR
+        case useHighAccuracyOCR  // legacy alias for useSuryaOCR
+        case useClaudePageOCR
+        case useCloudEnhancedOCR  // legacy alias for useClaudePageOCR
         case forceOCR
         case privateMode
         case emitDebugLog
@@ -248,9 +246,15 @@ struct ConversionOptions: Codable, Equatable {
                 Bool.self, forKey: .useHighAccuracyOCR
             ) ?? false
         }
-        self.useCloudEnhancedOCR = try c.decodeIfPresent(
-            Bool.self, forKey: .useCloudEnhancedOCR
-        ) ?? false
+        if let claude = try c.decodeIfPresent(
+            Bool.self, forKey: .useClaudePageOCR
+        ) {
+            self.useClaudePageOCR = claude
+        } else {
+            self.useClaudePageOCR = try c.decodeIfPresent(
+                Bool.self, forKey: .useCloudEnhancedOCR
+            ) ?? false
+        }
         self.forceOCR = try c.decodeIfPresent(Bool.self, forKey: .forceOCR) ?? false
         self.privateMode = try c.decodeIfPresent(
             Bool.self, forKey: .privateMode
@@ -276,13 +280,13 @@ struct ConversionOptions: Codable, Equatable {
         ) ?? false
     }
 
-    /// Encode under the new keys only — the legacy alias is for
+    /// Encode under the new keys only — the legacy aliases are for
     /// reads, not writes.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(languages, forKey: .languages)
         try c.encode(useSuryaOCR, forKey: .useSuryaOCR)
-        try c.encode(useCloudEnhancedOCR, forKey: .useCloudEnhancedOCR)
+        try c.encode(useClaudePageOCR, forKey: .useClaudePageOCR)
         try c.encode(forceOCR, forKey: .forceOCR)
         try c.encode(privateMode, forKey: .privateMode)
         try c.encode(emitDebugLog, forKey: .emitDebugLog)

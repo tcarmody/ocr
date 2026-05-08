@@ -197,23 +197,21 @@ final class JobRunner: ObservableObject {
         // this conversion regardless of global Settings. Empty
         // `CloudFeatures` makes every `make*ClaudeX` factory return
         // nil; the nil-returning key provider is belt-and-suspenders
-        // (factories also gate on a non-empty key). `useCloudEnhancedOCR`
+        // (factories also gate on a non-empty key). `useClaudePageOCR`
         // is coerced off since it only fires under Cloud mode + key.
         let privateOn = job.options.privateMode
         let cloudFeatures: AISettings.CloudFeatures =
             privateOn ? AISettings.CloudFeatures() : aiSettings.cloudFeatures
-        // Phase 3: the user-visible "Claude OCR ($$$)" toggle now
-        // drives the end-to-end page-OCR path (one Sonnet call per
-        // page, structured XHTML in, [Block] out). The legacy
-        // cascade-Sonnet shortcut path (Vision → Sonnet escalation
-        // for low-quality regions only) is no longer reachable from
-        // the UI — pass `useCloudEnhancedOCR: false` to the pipeline
-        // so the cascade doesn't fire even when cloud features are
-        // enabled. The cascade implementation stays available for
-        // SpikeRunner / dev measurement; users get the simpler,
-        // higher-quality page-OCR experience.
+        // The user-visible "Claude OCR ($$$)" toggle drives the
+        // end-to-end page-OCR path (one Sonnet call per page,
+        // structured XHTML in, [Block] out). The legacy cascade-
+        // Sonnet shortcut path (`useCloudEnhancedOCR` on the
+        // pipeline Options struct) is no longer reachable from the
+        // UI — pass `false` so the cascade doesn't fire even when
+        // cloud features are enabled. The cascade implementation
+        // stays in the pipeline for SpikeRunner / dev measurement.
         let claudePageOCR = !privateOn && (
-            job.options.useCloudEnhancedOCR
+            job.options.useClaudePageOCR
             || UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
         )
         let cloudEnhancedOCR = false

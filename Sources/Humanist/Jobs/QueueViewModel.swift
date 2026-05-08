@@ -47,15 +47,15 @@ final class QueueViewModel: ObservableObject {
     /// — renamed to make the engine explicit now that there's also
     /// a Cloud-enhanced toggle.
     @Published var useSuryaOCR: Bool = false
-    /// "Cloud-enhanced OCR (Sonnet)" toggle. Vision is the primary
-    /// OCR engine; regions whose quality score falls below the
-    /// threshold escalate straight to Sonnet, skipping Surya OCR
-    /// and Tesseract. Surya layout still runs for figures / tables /
-    /// footnotes. Only fires when the conversion is in Cloud mode
+    /// "Claude OCR ($$$)" toggle. Drives the end-to-end page-OCR
+    /// path: one Sonnet call per page in, structured XHTML →
+    /// `[Block]` out. Bypasses the Vision / Surya / Tesseract
+    /// cascade entirely; Surya layout still runs for figures /
+    /// tables. Only fires when the conversion is in Cloud mode
     /// with a configured API key — the toggle is allowed to be on
     /// in any mode but produces no Sonnet calls when those gates
     /// aren't met.
-    @Published var useCloudEnhancedOCR: Bool = false
+    @Published var useClaudePageOCR: Bool = false
     /// Force-OCR override for new conversions in this session.
     /// Promoted from Settings to a launcher toggle since it's
     /// inherently per-conversion (some PDFs need it; most don't).
@@ -185,7 +185,7 @@ final class QueueViewModel: ObservableObject {
             options: ConversionOptions(
                 languages: selectedLanguages.map { $0.rawValue },
                 useSuryaOCR: useSuryaOCR,
-                useCloudEnhancedOCR: useCloudEnhancedOCR,
+                useClaudePageOCR: useClaudePageOCR,
                 forceOCR: forceOCR,
                 privateMode: privateMode,
                 emitDebugLog: emitDebugLog,
@@ -203,7 +203,7 @@ final class QueueViewModel: ObservableObject {
         // estimate. Same gates the runner applies — the user toggle
         // OR the hidden UserDefault dev knob.
         let pageOCROn = !privateOn && (
-            useCloudEnhancedOCR
+            useClaudePageOCR
             || UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
         )
         Task.detached(priority: .userInitiated) { [store, weak runner] in
@@ -278,7 +278,7 @@ final class QueueViewModel: ObservableObject {
             options: ConversionOptions(
                 languages: selectedLanguages.map { $0.rawValue },
                 useSuryaOCR: false,
-                useCloudEnhancedOCR: false,
+                useClaudePageOCR: false,
                 forceOCR: false,
                 privateMode: privateMode,
                 emitDebugLog: false,

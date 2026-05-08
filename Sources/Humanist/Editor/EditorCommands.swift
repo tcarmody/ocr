@@ -8,6 +8,55 @@ import UniformTypeIdentifiers
 /// disable themselves rather than disappearing — keeps the menu shape
 /// stable and discoverable.
 
+// MARK: - RouterButton helper
+
+/// Menu Button observing `EditorCommandRouter.shared`, disabled when
+/// the router's `enabled` predicate is false. Centralizes the
+/// `@ObservedObject + Button + .keyboardShortcut + .disabled` shape
+/// every router-driven menu item shared. `enabled` and `action` both
+/// receive the router so callers stay one-liners.
+struct RouterButton: View {
+    @ObservedObject private var router = EditorCommandRouter.shared
+    let title: String
+    let shortcut: KeyEquivalent?
+    let modifiers: EventModifiers
+    let enabled: @MainActor (EditorCommandRouter) -> Bool
+    let action: @MainActor (EditorCommandRouter) -> Void
+
+    init(
+        _ title: String,
+        shortcut: KeyEquivalent? = nil,
+        modifiers: EventModifiers = .command,
+        enabled: @escaping @MainActor (EditorCommandRouter) -> Bool = { $0.canFind },
+        action: @escaping @MainActor (EditorCommandRouter) -> Void
+    ) {
+        self.title = title
+        self.shortcut = shortcut
+        self.modifiers = modifiers
+        self.enabled = enabled
+        self.action = action
+    }
+
+    @MainActor
+    var body: some View {
+        Button(title) { action(router) }
+            .modifier(OptionalShortcut(shortcut: shortcut, modifiers: modifiers))
+            .disabled(!enabled(router))
+    }
+}
+
+private struct OptionalShortcut: ViewModifier {
+    let shortcut: KeyEquivalent?
+    let modifiers: EventModifiers
+    @ViewBuilder func body(content: Content) -> some View {
+        if let shortcut {
+            content.keyboardShortcut(shortcut, modifiers: modifiers)
+        } else {
+            content
+        }
+    }
+}
+
 // MARK: - File menu items (Save, Save As, Close)
 
 /// Save / Save As route through `EditorCommandRouter`, a singleton
@@ -20,22 +69,19 @@ import UniformTypeIdentifiers
 /// the source of truth, which always tracks the focused window.
 
 struct EditorSaveCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-
     var body: some View {
-        Button("Save") { router.save() }
-            .keyboardShortcut("s", modifiers: .command)
-            .disabled(!router.canSave)
+        RouterButton(
+            "Save", shortcut: "s", enabled: { $0.canSave }
+        ) { $0.save() }
     }
 }
 
 struct EditorSaveAsCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-
     var body: some View {
-        Button("Save As…") { router.saveAs() }
-            .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(!router.canSaveAs)
+        RouterButton(
+            "Save As…", shortcut: "s",
+            modifiers: [.command, .shift], enabled: { $0.canSaveAs }
+        ) { $0.saveAs() }
     }
 }
 
@@ -63,18 +109,9 @@ struct EditorFormatMenu: Commands {
 
 private struct FormatInlineCommands: View {
     var body: some View {
-        EditorWrapCommand(
-            title: "Bold", opening: "<strong>", closing: "</strong>",
-            shortcut: "b", modifiers: .command
-        )
-        EditorWrapCommand(
-            title: "Italic", opening: "<em>", closing: "</em>",
-            shortcut: "i", modifiers: .command
-        )
-        EditorWrapCommand(
-            title: "Inline Code", opening: "<code>", closing: "</code>",
-            shortcut: nil, modifiers: []
-        )
+        wrapButton("Bold", open: "<strong>", close: "</strong>", shortcut: "b")
+        wrapButton("Italic", open: "<em>", close: "</em>", shortcut: "i")
+        wrapButton("Inline Code", open: "<code>", close: "</code>")
     }
 }
 
@@ -82,79 +119,51 @@ private struct FormatStructureMenus: View {
     var body: some View {
         Menu("Heading") {
             ForEach(1...6, id: \.self) { level in
-                EditorWrapCommand(
-                    title: "Heading \(level)",
-                    opening: "<h\(level)>", closing: "</h\(level)>",
+                wrapButton(
+                    "Heading \(level)",
+                    open: "<h\(level)>", close: "</h\(level)>",
                     shortcut: KeyEquivalent(Character("\(level)")),
                     modifiers: [.command, .option]
                 )
             }
         }
         Menu("Casing") {
-            EditorTransformCommand(title: "UPPER CASE",     kind: .upper)
-            EditorTransformCommand(title: "lower case",     kind: .lower)
-            EditorTransformCommand(title: "Title Case",     kind: .title)
-            EditorTransformCommand(title: "Sentence case",  kind: .sentence)
+            transformButton("UPPER CASE",    kind: .upper)
+            transformButton("lower case",    kind: .lower)
+            transformButton("Title Case",    kind: .title)
+            transformButton("Sentence case", kind: .sentence)
         }
     }
 }
 
 private struct FormatNormalizationCommands: View {
     var body: some View {
-        EditorRemoveFormattingCommand()
-        EditorSmartQuotesCommand()
-    }
-}
-
-private struct EditorWrapCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    let title: String
-    let opening: String
-    let closing: String
-    let shortcut: KeyEquivalent?
-    let modifiers: EventModifiers
-
-    var body: some View {
-        let button = Button(title) {
-            router.formatWrap(opening: opening, closing: closing)
-        }
-        .disabled(!router.canFind)
-        if let shortcut {
-            button.keyboardShortcut(shortcut, modifiers: modifiers)
-        } else {
-            button
+        RouterButton(
+            "Remove Formatting", shortcut: "\\",
+            modifiers: [.command, .shift]
+        ) { $0.formatRemoveFormatting() }
+        RouterButton("Convert Quotes to Smart Quotes") {
+            $0.formatSmartQuotes()
         }
     }
 }
 
-private struct EditorTransformCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    let title: String
-    let kind: EditorViewModel.FormatRequest.TransformKind
-
-    var body: some View {
-        Button(title) { router.formatTransform(kind) }
-            .disabled(!router.canFind)
+@ViewBuilder
+private func wrapButton(
+    _ title: String, open: String, close: String,
+    shortcut: KeyEquivalent? = nil,
+    modifiers: EventModifiers = .command
+) -> some View {
+    RouterButton(title, shortcut: shortcut, modifiers: modifiers) {
+        $0.formatWrap(opening: open, closing: close)
     }
 }
 
-private struct EditorRemoveFormattingCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Remove Formatting") { router.formatRemoveFormatting() }
-            .keyboardShortcut("\\", modifiers: [.command, .shift])
-            .disabled(!router.canFind)
-    }
-}
-
-private struct EditorSmartQuotesCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Convert Quotes to Smart Quotes") {
-            router.formatSmartQuotes()
-        }
-        .disabled(!router.canFind)
-    }
+@ViewBuilder
+private func transformButton(
+    _ title: String, kind: EditorViewModel.FormatRequest.TransformKind
+) -> some View {
+    RouterButton(title) { $0.formatTransform(kind) }
 }
 
 // MARK: - Insert menu (Phase 5a)
@@ -165,40 +174,20 @@ private struct EditorSmartQuotesCommand: View {
 struct EditorInsertMenu: Commands {
     var body: some Commands {
         CommandMenu("Insert") {
-            EditorSpecialCharacterCommand()
+            RouterButton(
+                "Special Character…", shortcut: "t",
+                modifiers: [.command, .option]
+            ) { $0.showSpecialCharacterPicker() }
             Divider()
-            EditorClosingTagCommand()
-            EditorFootnoteCommand()
+            RouterButton(
+                "Closing Tag", shortcut: ".",
+                modifiers: [.command, .shift]
+            ) { $0.insertClosingTag() }
+            RouterButton(
+                "Footnote", shortcut: "f",
+                modifiers: [.command, .shift, .option]
+            ) { $0.insertFootnote() }
         }
-    }
-}
-
-private struct EditorSpecialCharacterCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Special Character…") {
-            router.showSpecialCharacterPicker()
-        }
-        .keyboardShortcut("t", modifiers: [.command, .option])
-        .disabled(!router.canFind)
-    }
-}
-
-private struct EditorClosingTagCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Closing Tag") { router.insertClosingTag() }
-            .keyboardShortcut(".", modifiers: [.command, .shift])
-            .disabled(!router.canFind)
-    }
-}
-
-private struct EditorFootnoteCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Footnote") { router.insertFootnote() }
-            .keyboardShortcut("f", modifiers: [.command, .shift, .option])
-            .disabled(!router.canFind)
     }
 }
 
@@ -220,8 +209,11 @@ struct EditorToolsMenu: Commands {
 
 private struct ToolsMenuValidationCommands: View {
     var body: some View {
-        EditorValidateEPUBCommand()
-        EditorCustomizeStyleCommand()
+        RouterButton(
+            "Validate EPUB…", shortcut: "v",
+            modifiers: [.command, .shift, .option]
+        ) { $0.validateEPUB() }
+        RouterButton("Customize Style…") { $0.showStyleSheet() }
     }
 }
 
@@ -239,26 +231,6 @@ private struct ToolsMenuReOCRCommands: View {
 private struct EditorCompareEPUBsCommand: View {
     var body: some View {
         Button("Compare EPUBs…") { ToolsPrompts.runDiffEPUBs() }
-    }
-}
-
-private struct EditorValidateEPUBCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Validate EPUB…") { router.validateEPUB() }
-            .keyboardShortcut("v", modifiers: [.command, .shift, .option])
-            .disabled(!router.canFind)
-    }
-}
-
-/// R-Custom-Styles. Opens the per-book style sheet on the active
-/// editor. Disabled when no editor is focused — same predicate as
-/// every other Tools-menu item.
-private struct EditorCustomizeStyleCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Customize Style…") { router.showStyleSheet() }
-            .disabled(!router.canFind)
     }
 }
 
@@ -586,7 +558,7 @@ private struct EditorReOCRAllPagesMenu: View {
         Menu("Re-OCR All Pages With") {
             ForEach(ReOCREngineKind.allCases) { kind in
                 Button(label(for: kind)) {
-                    vm?.confirmBulkReOCR(engine: kind)
+                    vm?.bulkReOCR.confirm(engine: kind)
                 }
                 .disabled(vm == nil || !kind.isAvailable)
             }
@@ -595,7 +567,7 @@ private struct EditorReOCRAllPagesMenu: View {
             vm == nil
             || vm?.sourcePDFURL == nil
             || vm?.pageMap == nil
-            || vm?.bulkReOCRProgress != nil
+            || vm?.bulkReOCR.progress != nil
         )
     }
 

@@ -268,135 +268,218 @@ public actor PDFToEPUBPipeline {
         }
     }
 
-    /// Build the Cloud-mode OCR engine for one conversion, or nil
-    /// when Cloud mode is off, the hard-region-OCR feature toggle
-    /// is off, or no API key is configured. Returning nil from any
-    /// of those conditions makes `RegionCascade` skip Stage 3
-    /// entirely — `.cloud` mode without a key behaves like
-    /// `.privateLocal`, which is the right "fail open" posture.
+    /// Build a Cloud-mode engine when (1) `processingMode == .cloud`,
+    /// (2) the named feature flag is on, and (3) an API key is
+    /// configured. Returns nil otherwise — the pipeline degrades to
+    /// local-only silently, which is the right "fail open" posture
+    /// for `.cloud` mode without a key. The key is captured once per
+    /// conversion via `anthropicAPIKeyProvider`; a rotation mid-run
+    /// lands on the next call to `convert`.
+    static func makeClaudeEngine<Engine>(
+        options: Options, budget: ClaudeCallBudget,
+        feature: KeyPath<AISettings.CloudFeatures, Bool>,
+        construct: (AnthropicAPIClient, ClaudeCallBudget) -> Engine
+    ) -> Engine? {
+        guard options.processingMode == .cloud,
+              options.cloudFeatures[keyPath: feature],
+              let key = options.anthropicAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        return construct(AnthropicAPIClient(apiKeyProvider: { key }), budget)
+    }
+
     static func makeClaudeOCREngine(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeOCREngine? {
-        guard options.processingMode == .cloud else { return nil }
-        guard options.cloudFeatures.hardRegionOCR else { return nil }
-        // Capture the key once per conversion. Rotation mid-conversion
-        // is rare; if it happens, this conversion uses the key it
-        // started with. The next conversion picks up the rotated key.
-        guard let key = options.anthropicAPIKeyProvider(),
-              !key.isEmpty else { return nil }
-        let client = AnthropicAPIClient(apiKeyProvider: { key })
-        return ClaudeOCREngine(client: client, budget: budget)
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.hardRegionOCR
+        ) { ClaudeOCREngine(client: $0, budget: $1) }
     }
 
-    /// Build the Cloud-mode post-OCR cleanup processor for one
-    /// conversion. Same gating shape as `makeClaudeOCREngine` —
-    /// `.cloud` mode + `postOCRCleanup` feature toggle + an API key
-    /// must all be present, otherwise `nil` and the pipeline skips
-    /// the cleanup pass entirely.
     static func makeClaudePostProcessor(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudePostProcessor? {
-        guard options.processingMode == .cloud else { return nil }
-        guard options.cloudFeatures.postOCRCleanup else { return nil }
-        guard let key = options.anthropicAPIKeyProvider(),
-              !key.isEmpty else { return nil }
-        let client = AnthropicAPIClient(apiKeyProvider: { key })
-        return ClaudePostProcessor(client: client, budget: budget)
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.postOCRCleanup
+        ) { ClaudePostProcessor(client: $0, budget: $1) }
     }
 
-    /// Build the Cloud-mode TOC parser for one conversion.
-    /// Same gating shape as the OCR engine and post-processor.
     static func makeClaudeTOCParser(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeTOCParser? {
-        guard options.processingMode == .cloud else { return nil }
-        guard options.cloudFeatures.tocParsing else { return nil }
-        guard let key = options.anthropicAPIKeyProvider(),
-              !key.isEmpty else { return nil }
-        let client = AnthropicAPIClient(apiKeyProvider: { key })
-        return ClaudeTOCParser(client: client, budget: budget)
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.tocParsing
+        ) { ClaudeTOCParser(client: $0, budget: $1) }
     }
 
-    /// Build the Cloud-mode coherence analyzer for one conversion.
-    /// One Haiku call over a digest of every chapter; returns
-    /// rewrites the pipeline applies as guarded global find/
-    /// replaces. Same gating shape as the other Cloud helpers.
     static func makeClaudeCoherenceAnalyzer(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeCoherenceAnalyzer? {
-        guard options.processingMode == .cloud else { return nil }
-        guard options.cloudFeatures.coherencePass else { return nil }
-        guard let key = options.anthropicAPIKeyProvider(),
-              !key.isEmpty else { return nil }
-        let client = AnthropicAPIClient(apiKeyProvider: { key })
-        return ClaudeCoherenceAnalyzer(client: client, budget: budget)
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.coherencePass
+        ) { ClaudeCoherenceAnalyzer(client: $0, budget: $1) }
     }
 
-    /// Build the Cloud-mode metadata extractor for one conversion.
-    /// One Haiku call over the front-matter text to extract title
-    /// / author / year / publisher / ISBN into OPF metadata.
-    /// Same gating shape as the other Cloud helpers.
     static func makeClaudeMetadataExtractor(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeMetadataExtractor? {
-        guard options.processingMode == .cloud else { return nil }
-        guard options.cloudFeatures.metadataExtraction else { return nil }
-        guard let key = options.anthropicAPIKeyProvider(),
-              !key.isEmpty else { return nil }
-        let client = AnthropicAPIClient(apiKeyProvider: { key })
-        return ClaudeMetadataExtractor(client: client, budget: budget)
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.metadataExtraction
+        ) { ClaudeMetadataExtractor(client: $0, budget: $1) }
     }
 
-    /// Build the Cloud-mode chapter classifier for one conversion.
-    /// Same gating shape as the other Cloud helpers.
     static func makeClaudeChapterClassifier(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeChapterClassifier? {
-        guard options.processingMode == .cloud else { return nil }
-        guard options.cloudFeatures.semanticClassification else { return nil }
-        guard let key = options.anthropicAPIKeyProvider(),
-              !key.isEmpty else { return nil }
-        let client = AnthropicAPIClient(apiKeyProvider: { key })
-        return ClaudeChapterClassifier(client: client, budget: budget)
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.semanticClassification
+        ) { ClaudeChapterClassifier(client: $0, budget: $1) }
     }
 
-    /// Build the Cloud-mode table extractor for one conversion.
-    /// Same gating shape as the other Cloud helpers — `.cloud` mode
-    /// + `tableExtraction` feature toggle + an API key. When non-nil,
-    /// the per-page loop tries Claude first on each `.table` region
-    /// and falls back to the Surya path on nil (degenerate output,
-    /// network or budget failure).
     static func makeClaudeTableExtractor(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeTableExtractor? {
-        guard options.processingMode == .cloud else { return nil }
-        guard options.cloudFeatures.tableExtraction else { return nil }
-        guard let key = options.anthropicAPIKeyProvider(),
-              !key.isEmpty else { return nil }
-        let client = AnthropicAPIClient(apiKeyProvider: { key })
-        return ClaudeTableExtractor(client: client, budget: budget)
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.tableExtraction
+        ) { ClaudeTableExtractor(client: $0, budget: $1) }
     }
 
-    /// Build the experimental "Claude does the page" engine. Returns
-    /// nil unless the user opted in via `useClaudePageOCR`, the
-    /// cascade's hard-region-OCR Cloud feature is enabled, the run is
-    /// in Cloud mode, and an API key is configured. When non-nil, the
-    /// per-page loop below skips Vision / cascade / region-aware
-    /// reflow and uses Sonnet to produce structured XHTML directly.
+    /// Build the "Claude does the page" engine. Layered on top of the
+    /// generic factory: same `.cloud` + key + `hardRegionOCR` gates
+    /// (reusing that feature flag for billing/budget purposes), plus
+    /// the user's explicit `useClaudePageOCR` opt-in. When non-nil the
+    /// per-page loop skips Vision / cascade / region-aware reflow and
+    /// uses Sonnet to produce structured XHTML directly. `captureSink`
+    /// receives the raw Sonnet response per page (or sentinel marker
+    /// for refusal / empty / API error) when the caller wants to dump
+    /// them in the conversion's debug log; nil disables capture.
     static func makeClaudePageOCREngine(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: ClaudeCallBudget,
+        captureSink: ClaudePageOCREngine.CaptureSink? = nil
     ) -> ClaudePageOCREngine? {
         guard options.useClaudePageOCR else { return nil }
-        guard options.processingMode == .cloud else { return nil }
-        // Reuse the hard-region-OCR feature gate — same billing
-        // surface, same per-book budget. We don't add a new
-        // CloudFeatures bit until Phase 3 promotes this path to the
-        // user-visible toggle.
-        guard options.cloudFeatures.hardRegionOCR else { return nil }
-        guard let key = options.anthropicAPIKeyProvider(),
-              !key.isEmpty else { return nil }
-        let client = AnthropicAPIClient(apiKeyProvider: { key })
-        return ClaudePageOCREngine(client: client, budget: budget)
+        return makeClaudeEngine(
+            options: options, budget: budget, feature: \.hardRegionOCR
+        ) { ClaudePageOCREngine(
+            client: $0, budget: $1, captureSink: captureSink
+        ) }
+    }
+
+    /// Per-conversion capture store for `ClaudePageOCREngine` debug
+    /// dumps. Created in `convert(...)` only when `emitDebugLog` is
+    /// on; passed to the engine factory via its `captureSink`. Pages
+    /// run concurrently (TaskGroup or batch dispatch), so writes are
+    /// serialized by an `NSLock` — same shape the static accumulator
+    /// it replaces used.
+    final class CapturedResponseStore: @unchecked Sendable {
+        private var entries: [ClaudePageOCREngine.CapturedResponse] = []
+        private let lock = NSLock()
+
+        func record(_ entry: ClaudePageOCREngine.CapturedResponse) {
+            lock.lock(); defer { lock.unlock() }
+            entries.append(entry)
+        }
+
+        func snapshot() -> [ClaudePageOCREngine.CapturedResponse] {
+            lock.lock(); defer { lock.unlock() }
+            return entries
+        }
+    }
+
+    /// Bundle of every Cloud-mode engine a conversion might need,
+    /// each independently nil when its gate fails. Built once per
+    /// `convert(...)` and shared across pages + post-loop stages.
+    struct ClaudeEngines {
+        let budget: ClaudeCallBudget
+        let ocr: ClaudeOCREngine?
+        let postProcessor: ClaudePostProcessor?
+        let tocParser: ClaudeTOCParser?
+        let tableExtractor: ClaudeTableExtractor?
+        let pageEngine: ClaudePageOCREngine?
+
+        static func make(
+            options: Options,
+            captures: CapturedResponseStore?
+        ) -> ClaudeEngines {
+            let budget = ClaudeCallBudget(cap: options.perBookCallCap)
+            return ClaudeEngines(
+                budget: budget,
+                ocr: makeClaudeOCREngine(options: options, budget: budget),
+                postProcessor: makeClaudePostProcessor(options: options, budget: budget),
+                tocParser: makeClaudeTOCParser(options: options, budget: budget),
+                tableExtractor: makeClaudeTableExtractor(options: options, budget: budget),
+                pageEngine: makeClaudePageOCREngine(
+                    options: options, budget: budget,
+                    captureSink: captures.map { store in { store.record($0) } }
+                )
+            )
+        }
+    }
+
+    /// Resolved staging directory for one conversion + the
+    /// `ResumeManager` that owns its checkpoints. Encapsulates the
+    /// debug-vs-resume-vs-override directory choice and the manifest
+    /// validation that decides whether prior checkpoints carry over.
+    struct StagingPlan {
+        let directory: URL
+        let manager: ResumeManager
+        let alreadyDonePages: Set<Int>
+
+        /// Resolve the staging dir + initialize the resume manager.
+        /// Wipes the dir if its manifest doesn't match the current
+        /// run (different source file, page count, schema, or mode);
+        /// returns the page indices whose checkpoints from a prior
+        /// run can be skipped on this one.
+        static func resolve(
+            pdfURL: URL, outputURL: URL,
+            options: Options, totalPages: Int
+        ) throws -> StagingPlan {
+            let directory: URL
+            if options.emitDebugLog,
+               let override = options.debugStagingURLOverride {
+                directory = override
+            } else if options.emitDebugLog {
+                directory = outputURL.deletingPathExtension()
+                    .appendingPathExtension("humanist-debug")
+            } else {
+                directory = pdfURL.deletingPathExtension()
+                    .appendingPathExtension("humanist-staging")
+            }
+            try? FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+            let manager = ResumeManager(stagingDir: directory)
+            let sourceFingerprint = ResumeManager.fingerprint(of: pdfURL) ?? ""
+            let existing = manager.readManifest()
+            let currentMode: String = options.useClaudePageOCR
+                ? StagingManifest.Mode.pageOCR
+                : StagingManifest.Mode.cascade
+            let resumeAvailable: Bool
+            if let m = existing,
+               m.sourceFingerprint == sourceFingerprint,
+               m.totalPages == totalPages,
+               m.schemaVersion == 1,
+               m.effectiveMode == currentMode {
+                resumeAvailable = true
+            } else {
+                if existing != nil {
+                    try? FileManager.default.removeItem(at: directory)
+                    try? FileManager.default.createDirectory(
+                        at: directory, withIntermediateDirectories: true
+                    )
+                }
+                try? manager.writeManifest(StagingManifest(
+                    sourceFingerprint: sourceFingerprint,
+                    totalPages: totalPages,
+                    mode: currentMode
+                ))
+                resumeAvailable = false
+            }
+            return StagingPlan(
+                directory: directory,
+                manager: manager,
+                alreadyDonePages: resumeAvailable ? manager.completedPages() : []
+            )
+        }
     }
 
     /// Output of `applyPostOCRCleanup`: the (possibly-rewritten)
@@ -945,9 +1028,11 @@ public actor PDFToEPUBPipeline {
         progress: ProgressHandler? = nil
     ) async throws -> ConversionStats {
         let conversionStart = Date()
-        // Reset cross-conversion debug accumulators so the
-        // emitDebugLog dump only captures THIS conversion's data.
-        ClaudePageOCREngine.resetCapturedResponses()
+        // Per-conversion capture store. Only allocated when
+        // `emitDebugLog` is on so production conversions don't pay
+        // the (admittedly trivial) per-page lock+append cost.
+        let claudePageCaptures: CapturedResponseStore? =
+            options.emitDebugLog ? CapturedResponseStore() : nil
         // Mutable so we can periodically reload to drain PDFKit's
         // internal page cache. PDFKit `PDFDocument` lazily caches
         // rendered page representations; on a 600-page book that
@@ -987,73 +1072,25 @@ public actor PDFToEPUBPipeline {
         // skips pages that already finished. Cleaned up on
         // **successful** completion only.
         //
-        // When debug logging is on, the directory's name shifts to
-        // `<basename>.humanist-debug/` so the user can locate the
-        // logs more easily; both shapes work identically as
-        // resume-staging dirs.
-        // Staging-dir resolution:
-        //  * emitDebugLog + debugStagingURLOverride → use the
-        //    override (configured-output-folder feature routes here
-        //    so logs land in <root>/Logs/<basename>.humanist-debug/).
+        // Staging-dir resolution + resume-manifest validation.
+        //  * emitDebugLog + debugStagingURLOverride → use the override
+        //    (configured-output-folder feature routes here so logs
+        //    land in <root>/Logs/<basename>.humanist-debug/).
         //  * emitDebugLog only → next to the EPUB output, named
-        //    `<basename>.humanist-debug` (the inspect-friendly path).
+        //    `<basename>.humanist-debug` (inspect-friendly).
         //  * default → next to the source PDF, named
-        //    `<basename>.humanist-staging` (resume-friendly: a re-run
-        //    of the same source finds the same checkpoints).
-        let stagingDir: URL
-        if options.emitDebugLog, let override = options.debugStagingURLOverride {
-            stagingDir = override
-        } else if options.emitDebugLog {
-            stagingDir = outputURL.deletingPathExtension()
-                .appendingPathExtension("humanist-debug")
-        } else {
-            stagingDir = pdfURL.deletingPathExtension()
-                .appendingPathExtension("humanist-staging")
-        }
-        try? FileManager.default.createDirectory(
-            at: stagingDir, withIntermediateDirectories: true
+        //    `<basename>.humanist-staging` (resume-friendly: re-runs
+        //    of the same source find the same checkpoints).
+        // Manifest mismatch (different source, page count, schema, or
+        // mode) wipes the dir and starts fresh — mixing cascade- and
+        // page-ocr-shaped checkpoints would produce a chimera EPUB.
+        let stagingPlan = try StagingPlan.resolve(
+            pdfURL: pdfURL, outputURL: outputURL,
+            options: options, totalPages: pdf.pageCount
         )
-
-        // Resume manager: validate the staging dir's manifest
-        // matches the source PDF; if it doesn't (different file),
-        // wipe the dir and start fresh. Otherwise the per-page
-        // loop below skips pages with existing checkpoints.
-        let resumeManager = ResumeManager(stagingDir: stagingDir)
-        let sourceFingerprint = ResumeManager.fingerprint(of: pdfURL) ?? ""
-        let existingManifest = resumeManager.readManifest()
-        // Compute the *current* run's mode so we can compare against
-        // the manifest. Mode mismatch invalidates the staging dir —
-        // mixing cascade-shaped checkpoints (observations) with
-        // page-ocr-shaped ones (blocks) would produce a chimera EPUB.
-        let currentMode: String = options.useClaudePageOCR
-            ? StagingManifest.Mode.pageOCR
-            : StagingManifest.Mode.cascade
-        let resumeAvailable: Bool
-        if let m = existingManifest,
-           m.sourceFingerprint == sourceFingerprint,
-           m.totalPages == pdf.pageCount,
-           m.schemaVersion == 1,
-           m.effectiveMode == currentMode {
-            resumeAvailable = true
-        } else {
-            // Mismatch (or no prior manifest) → start fresh.
-            // Rebuild the staging dir from scratch so stale
-            // checkpoints don't leak in.
-            if existingManifest != nil {
-                try? FileManager.default.removeItem(at: stagingDir)
-                try? FileManager.default.createDirectory(
-                    at: stagingDir, withIntermediateDirectories: true
-                )
-            }
-            try? resumeManager.writeManifest(StagingManifest(
-                sourceFingerprint: sourceFingerprint,
-                totalPages: pdf.pageCount,
-                mode: currentMode
-            ))
-            resumeAvailable = false
-        }
-        let alreadyDonePages = resumeAvailable
-            ? resumeManager.completedPages() : Set<Int>()
+        let stagingDir = stagingPlan.directory
+        let resumeManager = stagingPlan.manager
+        let alreadyDonePages = stagingPlan.alreadyDonePages
 
         // Pass 1 — for each page:
         //   a. Extract the embedded text layer (cheap; PDFKit access).
@@ -1091,34 +1128,19 @@ public actor PDFToEPUBPipeline {
         var tableExtractionsByKey: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:]
 
         // Cloud-mode engines, constructed once per conversion and
-        // shared across pages. Nil unless `processingMode == .cloud`
-        // AND the relevant per-feature toggle is on AND an API key
-        // is configured. The cascade falls back to local-only when
-        // any of those conditions fail.
-        let claudeBudget = ClaudeCallBudget(cap: options.perBookCallCap)
-        let claudeOCREngine: ClaudeOCREngine? = Self.makeClaudeOCREngine(
-            options: options, budget: claudeBudget
+        // shared across pages. Each one is independently nil unless
+        // `processingMode == .cloud`, its feature flag is on, and an
+        // API key is configured. The cascade + post-loop stages fall
+        // back to local-only when any of those conditions fail.
+        let claudeEngines = ClaudeEngines.make(
+            options: options, captures: claudePageCaptures
         )
-        let claudePostProcessor: ClaudePostProcessor? = Self.makeClaudePostProcessor(
-            options: options, budget: claudeBudget
-        )
-        let claudeTOCParser: ClaudeTOCParser? = Self.makeClaudeTOCParser(
-            options: options, budget: claudeBudget
-        )
-        // Cloud Phase 5: Sonnet table-structure extractor. When
-        // non-nil, the `.table` dispatch below tries Claude first
-        // and falls back to the Surya path on nil (declined,
-        // budget exhausted, parse failure).
-        let claudeTableExtractor: ClaudeTableExtractor? = Self.makeClaudeTableExtractor(
-            options: options, budget: claudeBudget
-        )
-        // Phase 2 hidden flag: end-to-end "Claude does the page".
-        // When non-nil, the per-page loop below skips Vision / cascade
-        // / region-aware reflow and uses Sonnet to produce structured
-        // XHTML directly — see `makeClaudePageOCREngine` for gating.
-        let claudePageEngine: ClaudePageOCREngine? = Self.makeClaudePageOCREngine(
-            options: options, budget: claudeBudget
-        )
+        let claudeBudget = claudeEngines.budget
+        let claudeOCREngine = claudeEngines.ocr
+        let claudePostProcessor = claudeEngines.postProcessor
+        let claudeTOCParser = claudeEngines.tocParser
+        let claudeTableExtractor = claudeEngines.tableExtractor
+        let claudePageEngine = claudeEngines.pageEngine
 
         // Dictionary-match cleanup runs unconditionally — it's
         // free, fast, and gated on language-supported tokens
@@ -1803,8 +1825,7 @@ public actor PDFToEPUBPipeline {
             // diagnostic (tells the user the engine never ran or
             // every page short-circuited before recording).
             if options.emitDebugLog {
-                let pageResponses = ClaudePageOCREngine
-                    .snapshotCapturedResponses()
+                let pageResponses = claudePageCaptures?.snapshot() ?? []
                 let dumpURL = stagingDir.appendingPathComponent(
                     "claude-pages.txt"
                 )
@@ -1836,200 +1857,30 @@ public actor PDFToEPUBPipeline {
             )
         }
 
-        // Dictionary-match cleanup. Runs **after** reflow so the
-        // corrector sees fully-joined paragraphs — line-end
-        // hyphenation (`approxi-\nmation` → `approximation`) and
-        // cross-page paragraph continuations are already resolved
-        // by the time we tokenize. Running before reflow caused
-        // the corrector to "fix" word fragments like `approxi`
-        // into plausible-but-wrong neighbors before the reflow
-        // could see them as halves of a single word.
-        //
-        // Conservative policy stays the same: Latin-script only,
-        // Levenshtein-1 candidates only, casing preserved, skip
-        // anything that looks like a proper noun.
-        let dehyphenatedBlocks = Self.applyDictionaryToBlocks(
-            reflowed.blocks,
-            corrector: dictionaryCorrector
+        let assembled = await Self.assembleBook(
+            reflowed: reflowed,
+            parsedTOC: await parsedTOCTask?.value,
+            dictionaryCorrector: dictionaryCorrector,
+            options: options,
+            budget: claudeBudget,
+            title: title,
+            language: language
         )
-
-        // Tier 9 typography pass: decompose Latin ligatures
-        // (ﬁ → fi, etc.), strip soft hyphens, collapse `--` to
-        // em-dashes, and convert `\d+-\d+` numeric ranges to
-        // en-dashes. Pure deterministic text rewrites — runs
-        // after dictionary cleanup so the dictionary sees the
-        // pre-normalized form (some dictionary entries match
-        // ligature characters as-is).
-        let typographicallyCleanBlocks = TypographyNormalizer.normalize(dehyphenatedBlocks)
-
-        // Phase 1 of structured-document detection: split the flat
-        // block stream into chapters at every level-1 heading.
-        // Footnotes, page anchors, and figure assets are distributed
-        // to the chapter they belong to so EPUB readers see a real
-        // multi-chapter navigation tree.
-        let rawChapters = ChapterSplitter.split(
-            blocks: typographicallyCleanBlocks,
-            footnotes: reflowed.footnotes,
-            pageAnchors: reflowed.pageAnchors,
-            figureAssets: reflowed.figureAssets,
-            bookFallbackTitle: title
-        )
-        // If TOC parsing was enabled and Haiku produced a result,
-        // override chapter titles where the TOC entry's display
-        // page maps to the chapter's first PDF page (after
-        // learning the offset). Falls through to the heuristic
-        // titles when the parser returned nil or no offset
-        // matched.
-        let parsedTOC: ParsedTOC? = await parsedTOCTask?.value
-        let chapters: [Chapter]
-        let appliedTOC: ParsedTOC?
-        if let toc = parsedTOC {
-            let outcome = TOCTitleApplier.apply(toc: toc, chapters: rawChapters)
-            chapters = outcome.chapters
-            appliedTOC = ParsedTOC(
-                entries: toc.entries,
-                inferredOffset: outcome.inferredOffset
-            )
-        } else {
-            chapters = rawChapters
-            appliedTOC = nil
-        }
-        // Cloud Phase 6d: semantic chapter classification. Per
-        // chapter, ask Haiku for one EPUB Structural Semantics
-        // Vocabulary token. Runs in parallel via TaskGroup with a
-        // small concurrency cap so we don't hammer the API on
-        // 30-chapter books. Failures (refusal, network, unknown
-        // label) leave the chapter unlabeled — `chapter` is the
-        // safe default but we'd rather emit nothing.
-        let classifier = Self.makeClaudeChapterClassifier(
-            options: options, budget: claudeBudget
-        )
-        let classifiedChapters: [Chapter]
-        if let classifier {
-            classifiedChapters = await Self.classifyChapters(
-                chapters: chapters, classifier: classifier
-            )
-        } else {
-            classifiedChapters = chapters
-        }
-
-        // Tier 9 / Q-Coherence: one Haiku call over a digest of
-        // every chapter to identify recurring OCR errors (names
-        // with stripped diacritics, ligature artifacts that
-        // survived the typography pass). Each suggestion is
-        // guardrailed (length ratio, ≥ 3 occurrences in the
-        // document, no-collision with `right`) before applying.
-        // Runs before metadata extraction so the extractor sees
-        // the corrected text.
-        let coherenceAnalyzer = Self.makeClaudeCoherenceAnalyzer(
-            options: options, budget: claudeBudget
-        )
-        let coherenceCleanedChapters: [Chapter]
-        if let coherenceAnalyzer {
-            coherenceCleanedChapters = await coherenceAnalyzer.analyzeAndApply(
-                chapters: classifiedChapters
-            )
-        } else {
-            coherenceCleanedChapters = classifiedChapters
-        }
-
-        // Tier 9 / Q-Metadata: one Haiku call over the front
-        // matter to extract title / author / year / publisher /
-        // ISBN. Updates the corresponding `Book` fields when the
-        // extractor returns values. Falls through silently when
-        // disabled / declined / parse-failed.
-        let extractor = Self.makeClaudeMetadataExtractor(
-            options: options, budget: claudeBudget
-        )
-        let extracted: ClaudeMetadataExtractor.Result?
-        if let extractor {
-            let frontMatter = ClaudeMetadataExtractor.sampleFrontMatter(
-                from: coherenceCleanedChapters
-            )
-            extracted = await extractor.extract(frontMatterText: frontMatter)
-        } else {
-            extracted = nil
-        }
-
-        let book = Book(
-            title: extracted?.title ?? title,
-            author: extracted?.author,
-            language: language,
-            chapters: coherenceCleanedChapters,
-            year: extracted?.year,
-            publisher: extracted?.publisher,
-            isbn: extracted?.isbn
-        )
+        let book = assembled.book
+        let appliedTOC = assembled.appliedTOC
 
         let trail = correctionTrailEntries.isEmpty
             ? nil
             : CorrectionTrail(entries: correctionTrailEntries)
-        try EPUBBuilder().write(
+        try Self.writeOutputs(
             book: book,
             correctionTrail: trail,
-            parsedTOC: appliedTOC,
-            sourcePDFURL: pdfURL,
-            to: outputURL
+            appliedTOC: appliedTOC,
+            pageResults: pageResults,
+            pdfURL: pdfURL,
+            outputURL: outputURL,
+            options: options
         )
-
-        // Tier 9 / V-Outputs: emit `.txt` + `.md` siblings next
-        // to the EPUB. Best-effort — failures don't fail the
-        // conversion (the canonical output is the EPUB; siblings
-        // are convenience).
-        if options.emitSiblingTextOutputs {
-            // Sibling URLs default to next-to-EPUB; user-configured
-            // output folder routes them into per-format subfolders
-            // by setting the overrides. Make sure the destination
-            // directory exists either way (mkdir -p) since the
-            // user could pick a fresh root with no subfolders yet.
-            let txtURL = options.siblingTextURLOverride
-                ?? outputURL.deletingPathExtension().appendingPathExtension("txt")
-            let mdURL = options.siblingMarkdownURLOverride
-                ?? outputURL.deletingPathExtension().appendingPathExtension("md")
-            let htmlURL = options.siblingHTMLURLOverride
-                ?? outputURL.deletingPathExtension().appendingPathExtension("html")
-            for url in [txtURL, mdURL, htmlURL] {
-                let parent = url.deletingLastPathComponent()
-                if !FileManager.default.fileExists(atPath: parent.path) {
-                    try? FileManager.default.createDirectory(
-                        at: parent, withIntermediateDirectories: true
-                    )
-                }
-            }
-            let txt = PlainTextWriter.render(book)
-            let md = MarkdownWriter.render(book)
-            let html = HTMLWriter.render(book)
-            try? txt.write(to: txtURL, atomically: true, encoding: .utf8)
-            try? md.write(to: mdURL, atomically: true, encoding: .utf8)
-            try? html.write(to: htmlURL, atomically: true, encoding: .utf8)
-        }
-
-        // Tier 9 / V-PDF-Searchable: write a searchable copy of the
-        // source PDF using the OCR observations the pipeline already
-        // computed. Best-effort — failures are logged via the result
-        // but don't fail the conversion (the canonical output is
-        // still the EPUB).
-        if options.emitSearchablePDF {
-            let pdfURLOut = options.searchablePDFURLOverride
-                ?? outputURL.deletingPathExtension()
-                    .appendingPathExtension("searchable.pdf")
-            let pages = pageResults.map {
-                SearchablePDFWriter.PageData(
-                    pageIndex: $0.pageIndex,
-                    observations: $0.observations
-                )
-            }
-            do {
-                try SearchablePDFWriter().write(
-                    sourcePDFURL: pdfURL,
-                    pages: pages,
-                    to: pdfURLOut
-                )
-            } catch {
-                // Non-fatal — keep going; the EPUB and txt/md
-                // siblings are already on disk.
-            }
-        }
 
         // Conversion succeeded — staging dir's purpose is served.
         // Skip cleanup when debug logging is on so the user can
@@ -2064,6 +1915,205 @@ public actor PDFToEPUBPipeline {
             claudeCallCount: claudeCallCount,
             claudeUsageByModel: claudeUsage
         )
+    }
+
+    /// Assembled book ready for the output stage: the `Book` itself
+    /// plus the TOC that survived the title-applier (with its
+    /// inferred PDF-page offset stamped in, when one was learned).
+    struct AssembledBook {
+        let book: Book
+        let appliedTOC: ParsedTOC?
+    }
+
+    /// Take a reflowed block stream and produce a `Book` ready to
+    /// hand to `writeOutputs`. Runs (in order):
+    ///   1. dictionary-match cleanup
+    ///   2. typography normalization (ligatures, soft hyphens,
+    ///      em/en-dash collapse)
+    ///   3. `ChapterSplitter` → multi-chapter Book IR
+    ///   4. printed-TOC title override (when Haiku parsed one)
+    ///   5. semantic chapter classification (`epub:type`)
+    ///   6. Q-Coherence pass (recurring OCR-error rewrites)
+    ///   7. front-matter metadata extraction (title / author /
+    ///      year / publisher / ISBN)
+    ///
+    /// Each Cloud-mode step short-circuits to the local-only
+    /// fallback when its engine is nil (mode/feature/key gate).
+    static func assembleBook(
+        reflowed: ReflowOutput,
+        parsedTOC: ParsedTOC?,
+        dictionaryCorrector: DictionaryCorrector,
+        options: Options,
+        budget: ClaudeCallBudget,
+        title: String,
+        language: BCP47
+    ) async -> AssembledBook {
+        // 1 + 2: dictionary cleanup, then typography pass.
+        // Dictionary runs first so it sees pre-normalized forms
+        // (some dictionary entries match ligature characters as-is);
+        // both run **after** reflow so cross-line / cross-page word
+        // joins are already resolved before either touches a token.
+        let dehyphenated = applyDictionaryToBlocks(
+            reflowed.blocks, corrector: dictionaryCorrector
+        )
+        let cleanBlocks = TypographyNormalizer.normalize(dehyphenated)
+
+        // 3: split into chapters at the dominant heading level.
+        // Footnotes, page anchors, and figure assets get distributed
+        // to whichever chapter they fall inside.
+        let rawChapters = ChapterSplitter.split(
+            blocks: cleanBlocks,
+            footnotes: reflowed.footnotes,
+            pageAnchors: reflowed.pageAnchors,
+            figureAssets: reflowed.figureAssets,
+            bookFallbackTitle: title
+        )
+
+        // 4: TOC title override. Falls through to heuristic titles
+        // when no TOC was parsed or no offset matched.
+        let chapters: [Chapter]
+        let appliedTOC: ParsedTOC?
+        if let toc = parsedTOC {
+            let outcome = TOCTitleApplier.apply(toc: toc, chapters: rawChapters)
+            chapters = outcome.chapters
+            appliedTOC = ParsedTOC(
+                entries: toc.entries,
+                inferredOffset: outcome.inferredOffset
+            )
+        } else {
+            chapters = rawChapters
+            appliedTOC = nil
+        }
+
+        // 5: semantic classification (capped concurrency so a
+        // 30-chapter book doesn't fan out 30 simultaneous Haiku
+        // calls).
+        let classifiedChapters: [Chapter]
+        if let classifier = makeClaudeChapterClassifier(
+            options: options, budget: budget
+        ) {
+            classifiedChapters = await classifyChapters(
+                chapters: chapters, classifier: classifier
+            )
+        } else {
+            classifiedChapters = chapters
+        }
+
+        // 6: Q-Coherence pass — one Haiku call over a digest of
+        // every chapter, returning guarded global rewrites. Runs
+        // before metadata extraction so the extractor sees the
+        // corrected text.
+        let coherenceCleaned: [Chapter]
+        if let analyzer = makeClaudeCoherenceAnalyzer(
+            options: options, budget: budget
+        ) {
+            coherenceCleaned = await analyzer.analyzeAndApply(
+                chapters: classifiedChapters
+            )
+        } else {
+            coherenceCleaned = classifiedChapters
+        }
+
+        // 7: front-matter metadata. Updates the corresponding
+        // `Book` fields when the extractor returns values.
+        let extracted: ClaudeMetadataExtractor.Result?
+        if let extractor = makeClaudeMetadataExtractor(
+            options: options, budget: budget
+        ) {
+            let frontMatter = ClaudeMetadataExtractor.sampleFrontMatter(
+                from: coherenceCleaned
+            )
+            extracted = await extractor.extract(frontMatterText: frontMatter)
+        } else {
+            extracted = nil
+        }
+
+        let book = Book(
+            title: extracted?.title ?? title,
+            author: extracted?.author,
+            language: language,
+            chapters: coherenceCleaned,
+            year: extracted?.year,
+            publisher: extracted?.publisher,
+            isbn: extracted?.isbn
+        )
+        return AssembledBook(book: book, appliedTOC: appliedTOC)
+    }
+
+    /// Write the conversion's three on-disk artifacts: the EPUB
+    /// (canonical output), the optional `.txt` / `.md` / `.html`
+    /// siblings, and the optional searchable-PDF copy. The EPUB
+    /// write is the only one that throws; sibling + searchable-PDF
+    /// failures are swallowed (they're convenience outputs and the
+    /// canonical EPUB is already on disk).
+    static func writeOutputs(
+        book: Book,
+        correctionTrail: CorrectionTrail?,
+        appliedTOC: ParsedTOC?,
+        pageResults: [PageObservations],
+        pdfURL: URL,
+        outputURL: URL,
+        options: Options
+    ) throws {
+        try EPUBBuilder().write(
+            book: book,
+            correctionTrail: correctionTrail,
+            parsedTOC: appliedTOC,
+            sourcePDFURL: pdfURL,
+            to: outputURL
+        )
+
+        // Tier 9 / V-Outputs: emit `.txt` + `.md` + `.html` siblings
+        // next to the EPUB. Best-effort. Sibling URLs default to
+        // next-to-EPUB; the configured-output-folder feature routes
+        // them into per-format subfolders by setting the overrides.
+        // mkdir -p the parents either way since the user could pick
+        // a fresh root with no subfolders yet.
+        if options.emitSiblingTextOutputs {
+            let txtURL = options.siblingTextURLOverride
+                ?? outputURL.deletingPathExtension().appendingPathExtension("txt")
+            let mdURL = options.siblingMarkdownURLOverride
+                ?? outputURL.deletingPathExtension().appendingPathExtension("md")
+            let htmlURL = options.siblingHTMLURLOverride
+                ?? outputURL.deletingPathExtension().appendingPathExtension("html")
+            for url in [txtURL, mdURL, htmlURL] {
+                let parent = url.deletingLastPathComponent()
+                if !FileManager.default.fileExists(atPath: parent.path) {
+                    try? FileManager.default.createDirectory(
+                        at: parent, withIntermediateDirectories: true
+                    )
+                }
+            }
+            try? PlainTextWriter.render(book).write(
+                to: txtURL, atomically: true, encoding: .utf8
+            )
+            try? MarkdownWriter.render(book).write(
+                to: mdURL, atomically: true, encoding: .utf8
+            )
+            try? HTMLWriter.render(book).write(
+                to: htmlURL, atomically: true, encoding: .utf8
+            )
+        }
+
+        // Tier 9 / V-PDF-Searchable: write a searchable copy of the
+        // source PDF using the OCR observations the pipeline already
+        // computed. Failures are non-fatal.
+        if options.emitSearchablePDF {
+            let pdfURLOut = options.searchablePDFURLOverride
+                ?? outputURL.deletingPathExtension()
+                    .appendingPathExtension("searchable.pdf")
+            let pages = pageResults.map {
+                SearchablePDFWriter.PageData(
+                    pageIndex: $0.pageIndex,
+                    observations: $0.observations
+                )
+            }
+            try? SearchablePDFWriter().write(
+                sourcePDFURL: pdfURL,
+                pages: pages,
+                to: pdfURLOut
+            )
+        }
     }
 
     /// Result of `reflow` — body block stream + chapter-level
@@ -2167,19 +2217,6 @@ public actor PDFToEPUBPipeline {
                 footnotes: footnotes,
                 to: debugLogURL
             )
-            // Cloud-mode page-OCR captures the raw Sonnet response
-            // per page; dump them to a sibling file for diagnosing
-            // "blank XHTML between page anchors" mysteries — when
-            // every page parses to empty blocks, the raw responses
-            // tell us whether Sonnet is misbehaving (returning
-            // refusals, wrong shape) or our parser is dropping
-            // valid content silently.
-            let pageResponses = ClaudePageOCREngine.snapshotCapturedResponses()
-            if !pageResponses.isEmpty {
-                let dumpURL = debugLogURL.deletingLastPathComponent()
-                    .appendingPathComponent("claude-pages.txt")
-                try? writeClaudePageResponses(pageResponses, to: dumpURL)
-            }
         }
         return ReflowOutput(
             blocks: merged,

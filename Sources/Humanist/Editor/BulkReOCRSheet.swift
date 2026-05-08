@@ -3,9 +3,9 @@ import SwiftUI
 /// Confirmation sheet for "Re-OCR All Pages With <engine>".
 /// Pre-flight info — page count, engine, edit-loss warning — and a
 /// "Re-OCR All Pages" / "Cancel" pair. Routes to
-/// `EditorViewModel.runBulkReOCR(engine:)` on confirm.
+/// `BulkReOCRCoordinator.run(engine:)` on confirm.
 struct BulkReOCRConfirmationSheet: View {
-    let confirmation: EditorViewModel.BulkReOCRConfirmation
+    let confirmation: BulkReOCRCoordinator.Confirmation
     let onConfirm: () -> Void
     let onCancel: () -> Void
 
@@ -44,7 +44,7 @@ struct BulkReOCRConfirmationSheet: View {
 /// being processed, any per-page failures, and either a Cancel
 /// button (during the run) or a Done button (after).
 struct BulkReOCRProgressSheet: View {
-    let progress: EditorViewModel.BulkReOCRProgress
+    let progress: BulkReOCRCoordinator.Progress
     let onCancel: () -> Void
     let onDone: () -> Void
 

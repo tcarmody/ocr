@@ -34,6 +34,11 @@ public struct ClaudePageOCREngine: Sendable {
     public let budget: ClaudeCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
+    /// Optional per-page response sink. Each call to `recognize` /
+    /// `parseBatchMessage` reports the raw XHTML (or sentinel marker
+    /// like `[REFUSED]`) here. Drives the pipeline's debug-log dump.
+    /// nil → no captures (production path with `emitDebugLog: false`).
+    public var captureSink: CaptureSink?
 
     /// Build a page engine with a sensible default model + token cap.
     /// 8192 max output covers dense academic pages (typical body
@@ -44,12 +49,14 @@ public struct ClaudePageOCREngine: Sendable {
         client: AnthropicAPIClient,
         budget: ClaudeCallBudget,
         model: AnthropicModel = .sonnet4_6,
-        maxOutputTokens: Int = 8192
+        maxOutputTokens: Int = 8192,
+        captureSink: CaptureSink? = nil
     ) {
         self.client = client
         self.budget = budget
         self.model = model
         self.maxOutputTokens = maxOutputTokens
+        self.captureSink = captureSink
     }
 
     public enum PageOCRError: Error, LocalizedError {
@@ -69,51 +76,25 @@ public struct ClaudePageOCREngine: Sendable {
     }
 
     /// One captured Sonnet response — the raw XHTML and whether the
-    /// parser produced any blocks. Surfaced via the static
-    /// `lastResponses` accumulator so the pipeline can dump them to
-    /// the debug log when the user enables "Emit debug log."
+    /// parser produced any blocks. The pipeline collects these (when
+    /// `emitDebugLog` is on) and dumps them to a sibling file for
+    /// diagnosing "blank XHTML between page anchors" mysteries.
     public struct CapturedResponse: Sendable {
         public let pageIndex: Int
         public let rawXHTML: String
         public let parsedBlocksEmpty: Bool
     }
 
-    /// Per-page raw responses accumulated during the latest
-    /// conversion. Reset via `resetCapturedResponses()` at the start
-    /// of each conversion; read from the pipeline at conversion end
-    /// for debug-log dumping. Tagged `nonisolated(unsafe)` because
-    /// captures + reads happen on different actor contexts but never
-    /// concurrently for the same conversion. Single-conversion-at-
-    /// a-time is the runtime invariant here.
-    nonisolated(unsafe) static var lastResponses: [CapturedResponse] = []
-    private static let lastResponsesLock = NSLock()
+    /// Synchronous, thread-safe capture sink. The engine calls this
+    /// from both `async` (`recognize`) and `sync` (`parseBatchMessage`)
+    /// paths, including from concurrent page TaskGroup tasks, so the
+    /// implementation is responsible for its own locking.
+    public typealias CaptureSink = @Sendable (CapturedResponse) -> Void
 
-    public static func resetCapturedResponses() {
-        lastResponsesLock.lock()
-        defer { lastResponsesLock.unlock() }
-        lastResponses = []
-    }
-
-    public static func snapshotCapturedResponses() -> [CapturedResponse] {
-        lastResponsesLock.lock()
-        defer { lastResponsesLock.unlock() }
-        return lastResponses
-    }
-
-    static func recordRawResponse(
-        pageIndex: Int, raw: String, parseEmpty: Bool
-    ) async {
-        recordRawResponseSync(
-            pageIndex: pageIndex, raw: raw, parseEmpty: parseEmpty
-        )
-    }
-
-    static func recordRawResponseSync(
+    private func capture(
         pageIndex: Int, raw: String, parseEmpty: Bool
     ) {
-        lastResponsesLock.lock()
-        defer { lastResponsesLock.unlock() }
-        lastResponses.append(CapturedResponse(
+        captureSink?(CapturedResponse(
             pageIndex: pageIndex,
             rawXHTML: raw,
             parsedBlocksEmpty: parseEmpty
@@ -143,14 +124,14 @@ public struct ClaudePageOCREngine: Sendable {
         do {
             response = try await client.send(request)
         } catch let apiError as AnthropicAPIError {
-            await Self.recordRawResponse(
+            capture(
                 pageIndex: pageIndex,
                 raw: "[API ERROR: \(apiError.localizedDescription)]",
                 parseEmpty: true
             )
             throw PageOCRError.underlying(apiError)
         } catch {
-            await Self.recordRawResponse(
+            capture(
                 pageIndex: pageIndex,
                 raw: "[SEND FAILED: \(error)]",
                 parseEmpty: true
@@ -160,22 +141,19 @@ public struct ClaudePageOCREngine: Sendable {
 
         await budget.recordUsage(response.usage, for: model)
         if response.didRefuse {
-            await Self.recordRawResponse(
-                pageIndex: pageIndex, raw: "[REFUSED]", parseEmpty: true
-            )
+            capture(pageIndex: pageIndex, raw: "[REFUSED]", parseEmpty: true)
             throw PageOCRError.emptyResponse
         }
         guard let xhtml = response.primaryText, !xhtml.isEmpty else {
-            await Self.recordRawResponse(
-                pageIndex: pageIndex, raw: "[EMPTY]", parseEmpty: true
-            )
+            capture(pageIndex: pageIndex, raw: "[EMPTY]", parseEmpty: true)
             throw PageOCRError.emptyResponse
         }
 
         let parser = ClaudePageXHTMLParser()
         let result = parser.parse(xhtml, pageIndex: pageIndex)
-        await Self.recordRawResponse(
-            pageIndex: pageIndex, raw: xhtml, parseEmpty: result.blocks.isEmpty
+        capture(
+            pageIndex: pageIndex, raw: xhtml,
+            parseEmpty: result.blocks.isEmpty
         )
         return result
     }
@@ -204,21 +182,18 @@ public struct ClaudePageOCREngine: Sendable {
         _ response: AnthropicMessageResponse, pageIndex: Int
     ) -> ClaudePageResult? {
         if response.didRefuse {
-            Self.recordRawResponseSync(
-                pageIndex: pageIndex, raw: "[REFUSED]", parseEmpty: true
-            )
+            capture(pageIndex: pageIndex, raw: "[REFUSED]", parseEmpty: true)
             return nil
         }
         guard let xhtml = response.primaryText, !xhtml.isEmpty else {
-            Self.recordRawResponseSync(
-                pageIndex: pageIndex, raw: "[EMPTY]", parseEmpty: true
-            )
+            capture(pageIndex: pageIndex, raw: "[EMPTY]", parseEmpty: true)
             return nil
         }
         let parser = ClaudePageXHTMLParser()
         let result = parser.parse(xhtml, pageIndex: pageIndex)
-        Self.recordRawResponseSync(
-            pageIndex: pageIndex, raw: xhtml, parseEmpty: result.blocks.isEmpty
+        capture(
+            pageIndex: pageIndex, raw: xhtml,
+            parseEmpty: result.blocks.isEmpty
         )
         return result
     }

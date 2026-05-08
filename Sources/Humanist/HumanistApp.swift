@@ -262,74 +262,32 @@ struct EditorFindCommands: Commands {
 
 private struct FindMenuSearchCommands: View {
     var body: some View {
-        EditorFindCommand()
-        EditorFindNextCommand()
-        EditorFindPrevCommand()
-        EditorReplaceCommand()
-        EditorFindInFilesCommand()
-    }
-}
-
-private struct EditorFindInFilesCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Find in All Files…") { router.showFindInFilesSheet() }
-            .keyboardShortcut("f", modifiers: [.command, .shift])
-            .disabled(!router.canFind)
+        RouterButton("Find…", shortcut: "f") { $0.openFind() }
+        RouterButton("Find Next", shortcut: "g") { $0.findNext() }
+        RouterButton(
+            "Find Previous", shortcut: "g", modifiers: [.command, .shift]
+        ) { $0.findPrev() }
+        RouterButton(
+            "Find and Replace…", shortcut: "f", modifiers: [.command, .option]
+        ) { $0.openReplace() }
+        RouterButton(
+            "Find in All Files…", shortcut: "f", modifiers: [.command, .shift]
+        ) { $0.showFindInFilesSheet() }
     }
 }
 
 private struct EditorGotoLineCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
     var body: some View {
-        Button("Go to Line…") { router.showGotoLineSheet() }
-            .keyboardShortcut("l", modifiers: .command)
-            .disabled(!router.canFind)
+        RouterButton("Go to Line…", shortcut: "l") { $0.showGotoLineSheet() }
     }
 }
 
 private struct EditorSpellCheckCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
     var body: some View {
-        Button("Check Document Spelling…") { router.openSpellCheck() }
-            .keyboardShortcut(";", modifiers: [.command, .shift])
-            .disabled(!router.canFind)
-    }
-}
-
-private struct EditorFindCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Find…") { router.openFind() }
-            .keyboardShortcut("f", modifiers: .command)
-            .disabled(!router.canFind)
-    }
-}
-
-private struct EditorFindNextCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Find Next") { router.findNext() }
-            .keyboardShortcut("g", modifiers: .command)
-            .disabled(!router.canFind)
-    }
-}
-
-private struct EditorFindPrevCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Find Previous") { router.findPrev() }
-            .keyboardShortcut("g", modifiers: [.command, .shift])
-            .disabled(!router.canFind)
-    }
-}
-
-private struct EditorReplaceCommand: View {
-    @ObservedObject private var router = EditorCommandRouter.shared
-    var body: some View {
-        Button("Find and Replace…") { router.openReplace() }
-            .keyboardShortcut("f", modifiers: [.command, .option])
-            .disabled(!router.canFind)
+        RouterButton(
+            "Check Document Spelling…", shortcut: ";",
+            modifiers: [.command, .shift]
+        ) { $0.openSpellCheck() }
     }
 }
 
@@ -445,50 +403,33 @@ private struct ConvertCommand: View {
     }
 }
 
-/// Window > Show Full Queue (⇧⌘Q). Opens the dedicated full-queue
-/// window (single instance — opening when already open just
-/// brings it to the front). Placed in the standard `.windowList`
-/// position so it sits alongside the OS-provided window-list
-/// items in the Window menu.
-private struct ShowFullQueueCommand: Commands {
+/// Window menu — Show Queue (⇧⌘Q) + Show Library (⇧⌘L). Both open
+/// single-instance scenes; opening when already open just brings to
+/// front. Placed in the standard `.windowList` position so they sit
+/// alongside the OS-provided window-list items.
+struct ShowWindowCommands: Commands {
     var body: some Commands {
         CommandGroup(before: .windowList) {
-            ShowFullQueueButton()
-            Divider()
-        }
-    }
-}
-
-private struct ShowFullQueueButton: View {
-    @Environment(\.openWindow) private var openWindow
-    var body: some View {
-        Button("Show Queue") {
-            openWindow(id: "queue")
-        }
-        .keyboardShortcut("q", modifiers: [.command, .shift])
-    }
-}
-
-/// Window > Show Library (⇧⌘L). Opens the dedicated library
-/// window listing every EPUB the user has converted in this
-/// app. Single instance — opening when already open just brings
-/// it to the front.
-private struct ShowLibraryCommand: Commands {
-    var body: some Commands {
-        CommandGroup(before: .windowList) {
+            ShowQueueButton()
             ShowLibraryButton()
             Divider()
         }
     }
 }
 
-/// Combines `ShowFullQueueCommand` + `ShowLibraryCommand` into a
-/// single `Commands` slot so the top-level `.commands { … }` block
-/// stays under SwiftUI's @CommandsBuilder 10-component cap.
-struct ShowWindowCommands: Commands {
-    var body: some Commands {
-        ShowFullQueueCommand()
-        ShowLibraryCommand()
+private struct ShowQueueButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Show Queue") { openWindow(id: "queue") }
+            .keyboardShortcut("q", modifiers: [.command, .shift])
+    }
+}
+
+private struct ShowLibraryButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Show Library") { openWindow(id: "library") }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
     }
 }
 
@@ -503,16 +444,6 @@ struct HelpMenuCommands: Commands {
                 )
             }
         }
-    }
-}
-
-private struct ShowLibraryButton: View {
-    @Environment(\.openWindow) private var openWindow
-    var body: some View {
-        Button("Show Library") {
-            openWindow(id: "library")
-        }
-        .keyboardShortcut("l", modifiers: [.command, .shift])
     }
 }
 

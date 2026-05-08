@@ -221,7 +221,7 @@ struct ContentView: View {
                 Toggle("Force OCR", isOn: $queue.forceOCR)
                     .toggleStyle(.checkbox)
                     .help("Skip the PDF's embedded text layer and run OCR on every page. Use when the embedded text is the output of a previous bad OCR pass.")
-                Toggle("Claude OCR ($$$)", isOn: $queue.useCloudEnhancedOCR)
+                Toggle("Claude OCR ($$$)", isOn: $queue.useClaudePageOCR)
                     .toggleStyle(.checkbox)
                     .help("""
                         Sonnet OCRs each page end-to-end. Replaces the \
