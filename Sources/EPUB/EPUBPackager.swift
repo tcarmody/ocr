@@ -32,7 +32,7 @@ public struct EPUBPackager {
         case firstEntryMustBeMimetype
         case mimetypeMustBeUncompressed
         case mimetypeContentMismatch
-        case archiveCreationFailed
+        case archiveCreationFailed(detail: String)
         case writeFailed(String)
 
         public var errorDescription: String? {
@@ -40,7 +40,7 @@ public struct EPUBPackager {
             case .firstEntryMustBeMimetype:    return "First entry must be 'mimetype'"
             case .mimetypeMustBeUncompressed:  return "'mimetype' must be stored uncompressed"
             case .mimetypeContentMismatch:     return "'mimetype' must contain exactly 'application/epub+zip'"
-            case .archiveCreationFailed:       return "Could not create EPUB archive"
+            case .archiveCreationFailed(let d): return "Could not create EPUB archive: \(d)"
             case .writeFailed(let s):          return "Write failed: \(s)"
             }
         }
@@ -79,7 +79,13 @@ public struct EPUBPackager {
         do {
             archive = try Archive(url: outputURL, accessMode: .create)
         } catch {
-            throw PackagingError.archiveCreationFailed
+            // Surface the underlying error + the actual path so a
+            // permissions / sandboxed-folder / iCloud issue is
+            // diagnosable from the user-facing message instead of
+            // hiding behind a generic "Could not create EPUB archive."
+            throw PackagingError.archiveCreationFailed(
+                detail: "\(outputURL.path) — \(error)"
+            )
         }
 
         for entry in entries {
