@@ -52,14 +52,38 @@ enum HumanistThemeID: String, CaseIterable, Identifiable {
     }
 }
 
+/// Single source of truth for the user's chosen theme. SwiftUI's
+/// `@AppStorage` propagates within one window's view hierarchy
+/// reliably but is *not* reliable across multi-window scenes on
+/// macOS — switching the theme in Settings would update some
+/// windows immediately and leave others on the previous palette
+/// until they redrew for unrelated reasons. The shared store
+/// fixes that: every chrome-wrapped window observes it via
+/// `@EnvironmentObject`, so a single mutation broadcasts.
+@MainActor
+final class HumanistThemeStore: ObservableObject {
+    static let storageKey = "humanist.theme"
+
+    @Published var themeID: HumanistThemeID {
+        didSet {
+            UserDefaults.standard.set(themeID.rawValue, forKey: Self.storageKey)
+        }
+    }
+
+    init() {
+        let raw = UserDefaults.standard.string(forKey: Self.storageKey) ?? ""
+        self.themeID = HumanistThemeID(rawValue: raw) ?? .system
+    }
+}
+
 /// Palette accessors. Static properties resolve dynamically each
-/// time AppKit asks for a color, so changes to `humanist.theme` in
-/// UserDefaults propagate as soon as the next redraw happens. The
-/// `humanistChrome()` modifier observes the key via `@AppStorage`
-/// and forces that redraw.
+/// time AppKit asks for a color, so the next redraw picks up the
+/// current theme. `HumanistChromeModifier` triggers that redraw
+/// across every window when the shared `HumanistThemeStore`
+/// publishes a change.
 enum HumanistTheme {
     static var current: HumanistThemeID {
-        let raw = UserDefaults.standard.string(forKey: "humanist.theme") ?? ""
+        let raw = UserDefaults.standard.string(forKey: HumanistThemeStore.storageKey) ?? ""
         return HumanistThemeID(rawValue: raw) ?? .system
     }
 
@@ -209,10 +233,10 @@ extension View {
 }
 
 private struct HumanistChromeModifier: ViewModifier {
-    @AppStorage("humanist.theme") private var themeRaw: String = HumanistThemeID.system.rawValue
+    @EnvironmentObject private var store: HumanistThemeStore
 
     func body(content: Content) -> some View {
-        let theme = HumanistThemeID(rawValue: themeRaw) ?? .system
+        let theme = store.themeID
         // System theme uses native macOS chrome — don't paint over
         // the window background, just keep the default tint cascade.
         let base = content.tint(HumanistTheme.accent)

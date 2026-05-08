@@ -13,6 +13,7 @@ struct HumanistApp: App {
     @StateObject private var queueVM: QueueViewModel
     @StateObject private var library = LibraryStore()
     @StateObject private var coverCache = CoverImageCache()
+    @StateObject private var themeStore = HumanistThemeStore()
 
     init() {
         let store = JobStore()
@@ -73,6 +74,7 @@ struct HumanistApp: App {
                 .environmentObject(jobStore)
                 .environmentObject(jobRunner)
                 .environmentObject(library)
+                .environmentObject(themeStore)
                 .frame(minWidth: 620, minHeight: 520)
                 .humanistChrome()
                 .onAppear {
@@ -106,6 +108,7 @@ struct HumanistApp: App {
             QueueWindowView()
                 .environmentObject(jobStore)
                 .environmentObject(jobRunner)
+                .environmentObject(themeStore)
                 .humanistChrome()
         }
         .commandsRemoved()  // no per-window menu items beyond what the launcher already attaches
@@ -117,6 +120,7 @@ struct HumanistApp: App {
             LibraryWindowView()
                 .environmentObject(library)
                 .environmentObject(coverCache)
+                .environmentObject(themeStore)
                 .humanistChrome()
         }
         .commandsRemoved()
@@ -129,6 +133,7 @@ struct HumanistApp: App {
         // brings the window forward.
         Window("Compare EPUBs", id: "epub-diff") {
             EPUBDiffWindow()
+                .environmentObject(themeStore)
                 .humanistChrome()
         }
         .commandsRemoved()
@@ -140,6 +145,7 @@ struct HumanistApp: App {
             if let url {
                 EditorView(epubURL: url)
                     .frame(minWidth: 900, minHeight: 600)
+                    .environmentObject(themeStore)
                     .humanistChrome()
             } else {
                 Text("No EPUB loaded.")
@@ -154,6 +160,7 @@ struct HumanistApp: App {
         WindowGroup("Original", id: "source-viewer", for: URL.self) { $url in
             if let url {
                 SourceViewerView(sourceURL: url)
+                    .environmentObject(themeStore)
                     .humanistChrome()
             } else {
                 Text("No document loaded.")
@@ -175,6 +182,7 @@ struct HumanistApp: App {
                 AppearanceSettingsView()
                     .tabItem { Label("Appearance", systemImage: "paintpalette") }
             }
+            .environmentObject(themeStore)
             .frame(width: 540, height: 520)
         }
     }

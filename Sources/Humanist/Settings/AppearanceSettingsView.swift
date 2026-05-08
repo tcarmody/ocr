@@ -5,21 +5,13 @@ import SwiftUI
 /// Selection writes to `humanist.theme`; every window's
 /// `humanistChrome()` re-renders on the change.
 struct AppearanceSettingsView: View {
-    @AppStorage("humanist.theme") private var themeRaw: String =
-        HumanistThemeID.system.rawValue
-
-    private var selection: Binding<HumanistThemeID> {
-        Binding(
-            get: { HumanistThemeID(rawValue: themeRaw) ?? .system },
-            set: { themeRaw = $0.rawValue }
-        )
-    }
+    @EnvironmentObject private var store: HumanistThemeStore
 
     var body: some View {
         Form {
             Section("Theme") {
                 ForEach(HumanistThemeID.allCases) { theme in
-                    ThemeRow(theme: theme, selection: selection)
+                    ThemeRow(theme: theme, selection: $store.themeID)
                 }
             }
         }
