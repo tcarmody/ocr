@@ -77,6 +77,8 @@ public struct TesseractOCREngine: OCREngine {
         let text: String
         let conf: Float        // 0–100 from tesseract
         let bbox: CGRect       // pixel coords, top-left origin
+        let isItalic: Bool
+        let isBold: Bool
         var lineIdx: Int = 0
     }
 
@@ -129,7 +131,34 @@ public struct TesseractOCREngine: OCREngine {
                 x: Int(x1), y: Int(y1),
                 width: Int(x2 - x1), height: Int(y2 - y1)
             )
-            words.append(WordHit(text: text, conf: conf, bbox: bbox))
+
+            // Per-word font attributes. The C API takes pointers
+            // to BOOLs (typedef'd Int32 here); we don't care about
+            // underlined/monospace/serif/smallcaps/pointsize/font_id
+            // for now, but the function still requires the out
+            // pointers. `_ = fontName` — the const char* is owned
+            // by Tesseract; don't free it.
+            var isBoldRaw: Int32 = 0
+            var isItalicRaw: Int32 = 0
+            var isUnderlinedRaw: Int32 = 0
+            var isMonospaceRaw: Int32 = 0
+            var isSerifRaw: Int32 = 0
+            var isSmallcapsRaw: Int32 = 0
+            var pointsize: Int32 = 0
+            var fontId: Int32 = 0
+            _ = TessResultIteratorWordFontAttributes(
+                resultIter,
+                &isBoldRaw, &isItalicRaw,
+                &isUnderlinedRaw, &isMonospaceRaw,
+                &isSerifRaw, &isSmallcapsRaw,
+                &pointsize, &fontId
+            )
+
+            words.append(WordHit(
+                text: text, conf: conf, bbox: bbox,
+                isItalic: isItalicRaw != 0,
+                isBold: isBoldRaw != 0
+            ))
         } while TessPageIteratorNext(pageIter, level) != 0
 
         let lineWords = assignLineIndices(words)
@@ -165,11 +194,25 @@ public struct TesseractOCREngine: OCREngine {
                 ? 0
                 : valid.map { Double($0.conf) / 100.0 }.reduce(0, +) / Double(valid.count)
 
+            // Aggregate font attributes per line — strict consensus.
+            // A whole-line italic (foreign quote, epigraph caption)
+            // gets flagged; a single italicized word in the middle
+            // of body text doesn't lift the entire line. Mid-line
+            // emphasis is lossy at this granularity; the eventual
+            // fix is per-style-span observations, but consensus
+            // gives us the high-volume cases (Latin / Greek
+            // interpolations, italicized epigraphs) without
+            // changing the observation shape.
+            let isItalicLine = sorted.allSatisfy { $0.isItalic }
+            let isBoldLine = sorted.allSatisfy { $0.isBold }
+
             observations.append(TextObservation(
                 text: text,
                 confidence: meanConf,
                 box: CGRect(x: nx, y: ny, width: nw, height: nh),
-                source: .tesseract
+                source: .tesseract,
+                isItalic: isItalicLine,
+                isBold: isBoldLine
             ))
         }
 

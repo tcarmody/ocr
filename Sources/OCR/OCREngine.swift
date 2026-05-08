@@ -42,17 +42,32 @@ public struct TextObservation: Sendable, Equatable, Codable {
     public var confidence: Double  // 0...1
     public var box: CGRect
     public var source: ObservationSource
+    /// Italic detection from the originating engine. Tesseract sets
+    /// this when every word in the line is reported as italic by
+    /// `TessResultIteratorWordFontAttributes`. Vision can't detect
+    /// italics (the API doesn't expose font traits); Vision-sourced
+    /// observations leave it false. Reflow propagates the flag into
+    /// `InlineRun.isItalic` when every observation in a paragraph
+    /// agrees.
+    public var isItalic: Bool
+    /// Bold detection. Same posture as `isItalic` — set only by
+    /// engines that surface per-word font traits.
+    public var isBold: Bool
 
     public init(
         text: String,
         confidence: Double,
         box: CGRect,
-        source: ObservationSource = .vision
+        source: ObservationSource = .vision,
+        isItalic: Bool = false,
+        isBold: Bool = false
     ) {
         self.text = text
         self.confidence = confidence
         self.box = box
         self.source = source
+        self.isItalic = isItalic
+        self.isBold = isBold
     }
 }
 

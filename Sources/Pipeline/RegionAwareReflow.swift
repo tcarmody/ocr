@@ -622,6 +622,7 @@ enum RegionAwareReflow {
                 blocks.append(blockForRegion(
                     kind: region.kind,
                     text: text,
+                    observations: sorted,
                     pageFootnotes: pageFootnotes
                 ))
             }
@@ -632,30 +633,51 @@ enum RegionAwareReflow {
     private static func blockForRegion(
         kind: LayoutRegion.Kind,
         text: String,
+        observations: [TextObservation],
         pageFootnotes: [FootnoteLinker.Parsed]
     ) -> Block {
+        // Strict consensus on emphasis: every observation in the
+        // region must agree before the run inherits the flag.
+        // Avoids false-positive bolding/italicizing of an entire
+        // paragraph when one Tesseract word came back styled
+        // (Tesseract's font-trait detection is per-word, so a
+        // single mis-detection would otherwise propagate up).
+        let italic = !observations.isEmpty && observations.allSatisfy(\.isItalic)
+        let bold = !observations.isEmpty && observations.allSatisfy(\.isBold)
         switch kind {
         // Headings shouldn't carry footnote references — keep them as
         // a single plain run to avoid linker false positives in title
         // text like a chapter number.
-        case .title:         return .heading(level: 1, runs: [InlineRun(text)])
-        case .sectionHeader: return .heading(level: 2, runs: [InlineRun(text)])
+        case .title:
+            return .heading(level: 1, runs: [
+                InlineRun(text, isItalic: italic, isBold: bold)
+            ])
+        case .sectionHeader:
+            return .heading(level: 2, runs: [
+                InlineRun(text, isItalic: italic, isBold: bold)
+            ])
         // listItem keeps its inline marker ("1.", "2.", "•") because
         // Surya doesn't strip it; the EPUB renders this as a paragraph
         // beginning with the marker — fine for now, real <ol>/<ul>
         // markup is a later refinement.
         case .listItem:
             return .paragraph(runs: FootnoteLinker.splice(
-                text: text, footnotes: pageFootnotes
+                text: text,
+                footnotes: pageFootnotes,
+                isItalic: italic, isBold: bold
             ))
         case .caption:
             return .paragraph(runs: FootnoteLinker.splice(
-                text: text, footnotes: pageFootnotes
+                text: text,
+                footnotes: pageFootnotes,
+                isItalic: italic, isBold: bold
             ))
         case .text, .pageHeader, .pageFooter, .footnote,
              .picture, .table, .formula, .other:
             return .paragraph(runs: FootnoteLinker.splice(
-                text: text, footnotes: pageFootnotes
+                text: text,
+                footnotes: pageFootnotes,
+                isItalic: italic, isBold: bold
             ))
         }
     }

@@ -103,8 +103,24 @@ struct ParagraphReflow {
         if !current.isEmpty { paragraphs.append(current) }
 
         return paragraphs.map { lines in
-            .paragraph(runs: [InlineRun(joinLines(lines))])
+            .paragraph(runs: [Self.makeInlineRun(joinLines(lines), from: lines)])
         }
+    }
+
+    /// Build an `InlineRun` for a paragraph, propagating italic /
+    /// bold from the observations when **all** observations agree.
+    /// Strict consensus avoids accidentally bolding/italicizing a
+    /// whole paragraph because one Tesseract word came back styled;
+    /// the cost is mid-paragraph emphasis is lost (a single
+    /// italicized phrase in body text doesn't lift the run).
+    /// Per-style-span granularity is the eventual fix; this is the
+    /// safe-by-default v1.
+    static func makeInlineRun(
+        _ text: String, from lines: [TextObservation]
+    ) -> InlineRun {
+        let italic = !lines.isEmpty && lines.allSatisfy(\.isItalic)
+        let bold = !lines.isEmpty && lines.allSatisfy(\.isBold)
+        return InlineRun(text, isItalic: italic, isBold: bold)
     }
 
     /// Same as `reflowColumn` but emits `(Block, bbox)` per
@@ -155,7 +171,9 @@ struct ParagraphReflow {
         if !current.isEmpty { paragraphs.append(current) }
 
         return paragraphs.map { obs in
-            let block = Block.paragraph(runs: [InlineRun(joinLines(obs))])
+            let block = Block.paragraph(
+                runs: [Self.makeInlineRun(joinLines(obs), from: obs)]
+            )
             let union = obs.dropFirst().reduce(obs[0].box) { $0.union($1.box) }
             return (block, union)
         }

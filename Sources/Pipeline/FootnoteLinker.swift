@@ -76,10 +76,12 @@ enum FootnoteLinker {
     /// pages with footnotes — most paragraphs don't reference one).
     static func splice(
         text: String,
-        footnotes: [Parsed]
+        footnotes: [Parsed],
+        isItalic: Bool = false,
+        isBold: Bool = false
     ) -> [InlineRun] {
         guard !footnotes.isEmpty, !text.isEmpty else {
-            return [InlineRun(text)]
+            return [InlineRun(text, isItalic: isItalic, isBold: isBold)]
         }
         // Match longer markers first so "11" wins over "1" when both
         // exist on a page.
@@ -106,8 +108,14 @@ enum FootnoteLinker {
             }
             guard let m = nextMatch else { break }
             if cursor < m.range.lowerBound {
-                runs.append(InlineRun(String(text[cursor..<m.range.lowerBound])))
+                runs.append(InlineRun(
+                    String(text[cursor..<m.range.lowerBound]),
+                    isItalic: isItalic, isBold: isBold
+                ))
             }
+            // The noteref marker itself doesn't inherit emphasis —
+            // the marker is structural, not part of the surrounding
+            // body's typographic style.
             runs.append(InlineRun(
                 String(text[m.range]),
                 noterefId: m.fn.id
@@ -115,9 +123,14 @@ enum FootnoteLinker {
             cursor = m.range.upperBound
         }
         if cursor < text.endIndex {
-            runs.append(InlineRun(String(text[cursor..<text.endIndex])))
+            runs.append(InlineRun(
+                String(text[cursor..<text.endIndex]),
+                isItalic: isItalic, isBold: isBold
+            ))
         }
-        return runs.isEmpty ? [InlineRun(text)] : runs
+        return runs.isEmpty
+            ? [InlineRun(text, isItalic: isItalic, isBold: isBold)]
+            : runs
     }
 
     /// Build chapter-level Footnote values from per-page Parsed lists.
