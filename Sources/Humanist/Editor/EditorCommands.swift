@@ -314,7 +314,7 @@ struct EditorViewMenu: Commands {
             Divider()
             EditorReloadPreviewCommand()
             Divider()
-            EditorPDFViewCommands()
+            ViewMenuPDFCommands()
             Divider()
             ViewMenuAlignmentCommands()
         }
@@ -334,6 +334,16 @@ private struct ViewMenuAlignmentCommands: View {
         EditorAlignFromSourceCommand()
         EditorAlignFromPDFCommand()
         EditorAlignFromPreviewCommand()
+    }
+}
+
+private struct ViewMenuPDFCommands: View {
+    var body: some View {
+        EditorPDFZoomInCommand()
+        EditorPDFZoomOutCommand()
+        EditorPDFFitPageCommand()
+        EditorPDFPrevPageCommand()
+        EditorPDFNextPageCommand()
     }
 }
 
@@ -463,29 +473,55 @@ private struct ShowCorrectionTrailCommand: View {
 }
 
 /// View > Source PDF ▸ — zoom + page navigation for the embedded
-/// PDF pane navigation commands — zoom + page nav. Flat (not
-/// submenu-wrapped) so each command is a direct top-level item in
-/// the View menu. Earlier shape wrapped them in a "Source PDF"
-/// submenu, which buried them one click deeper than necessary.
-private struct EditorPDFViewCommands: View {
+/// PDF pane navigation commands — zoom + page nav. Each command
+/// gets its own struct rather than being inlined as a Button in a
+/// shared body. Pane toggles follow the same pattern and they
+/// work; an earlier "all 5 buttons in one struct's body" shape
+/// rendered as nothing in the View menu, presumably because
+/// SwiftUI's CommandMenu treats a sub-View's multi-Button body
+/// differently from a sub-View that returns a single Button.
+private struct EditorPDFZoomInCommand: View {
     @FocusedObject private var vm: EditorViewModel?
-
     var body: some View {
         Button("Zoom In Source PDF") { vm?.pdfZoomIn() }
             .keyboardShortcut("=", modifiers: .command)
             .disabled(vm?.canNavigatePDF != true)
+    }
+}
+
+private struct EditorPDFZoomOutCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
         Button("Zoom Out Source PDF") { vm?.pdfZoomOut() }
             .keyboardShortcut("-", modifiers: .command)
             .disabled(vm?.canNavigatePDF != true)
+    }
+}
+
+private struct EditorPDFFitPageCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
         Button("Fit Source PDF Page") { vm?.pdfFitPage() }
             .keyboardShortcut("0", modifiers: .command)
             .disabled(vm?.canNavigatePDF != true)
-        // ⇧⌘← / ⇧⌘→ rather than ⌘←/⌘→ so we don't fight
-        // CodeMirror's beginning-/end-of-line bindings when the
-        // user's cursor is in the source pane.
+    }
+}
+
+/// ⇧⌘← rather than ⌘← so we don't fight CodeMirror's
+/// beginning-of-line binding when the user's cursor is in the
+/// source pane.
+private struct EditorPDFPrevPageCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
         Button("Previous Source PDF Page") { vm?.pdfPrevPage() }
             .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
             .disabled(vm?.canNavigatePDF != true)
+    }
+}
+
+private struct EditorPDFNextPageCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
         Button("Next Source PDF Page") { vm?.pdfNextPage() }
             .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
             .disabled(vm?.canNavigatePDF != true)
