@@ -206,14 +206,19 @@ public final class EPUBBook: @unchecked Sendable {
         resourceOrder.compactMap { resourcesByID[$0] }
     }
 
-    /// Map of canonical on-disk URL → spine index, suitable for
+    /// Map of canonical on-disk path → spine index, suitable for
     /// passing to `FileNode.walk(_:spineOrder:)` so the sidebar shows
     /// chapters in reading order rather than alphabetical order.
-    public var spineURLOrder: [URL: Int] {
-        var out: [URL: Int] = [:]
+    /// Keyed by path string — URL hashing isn't enough because two
+    /// equivalent file URLs can hash differently depending on how
+    /// they were constructed (resolved/standardized form etc.).
+    public var spineURLOrder: [String: Int] {
+        var out: [String: Int] = [:]
         for (idx, resourceID) in spine.enumerated() {
             guard let resource = resourcesByID[resourceID] else { continue }
-            out[absoluteURL(for: resource).canonicalForFile] = idx
+            let path = absoluteURL(for: resource)
+                .canonicalForFile.standardizedFileURL.path
+            out[path] = idx
         }
         return out
     }

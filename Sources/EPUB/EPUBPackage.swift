@@ -117,7 +117,7 @@ public struct FileNode: Identifiable, Sendable, Hashable {
     /// siblings so chapters cluster at the top.
     public static func walk(
         _ url: URL,
-        spineOrder: [URL: Int]? = nil
+        spineOrder: [String: Int]? = nil
     ) -> FileNode {
         let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
         let name = url.lastPathComponent
@@ -131,8 +131,8 @@ public struct FileNode: Identifiable, Sendable, Hashable {
         let nodes = contents.map { walk($0, spineOrder: spineOrder) }
         let sorted = nodes.sorted { a, b in
             if a.isDirectory != b.isDirectory { return a.isDirectory && !b.isDirectory }
-            let aIdx = spineOrder?[a.id]
-            let bIdx = spineOrder?[b.id]
+            let aIdx = spineOrder?[a.id.canonicalForFile.standardizedFileURL.path]
+            let bIdx = spineOrder?[b.id.canonicalForFile.standardizedFileURL.path]
             switch (aIdx, bIdx) {
             case let (l?, r?): return l < r
             case (_?, nil):    return true   // spine before non-spine
