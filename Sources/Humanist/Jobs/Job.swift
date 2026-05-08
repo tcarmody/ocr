@@ -191,6 +191,11 @@ struct ConversionOptions: Codable, Equatable {
     /// EPUBs can A/B them. Empty string = original behavior
     /// (basename only).
     var outputSuffix: String
+    /// Tier 9 / V-PDF-Searchable. When true, the conversion writes
+    /// a searchable copy of the source PDF (`<basename>.searchable.pdf`)
+    /// alongside the EPUB. Off by default — searchable PDFs are
+    /// several MB per book and most users only need the EPUB.
+    var emitSearchablePDF: Bool
 
     init(
         languages: [String] = ["en"],
@@ -201,7 +206,8 @@ struct ConversionOptions: Codable, Equatable {
         emitDebugLog: Bool = false,
         emitSiblingTextOutputs: Bool = true,
         forceOCRPageRangesString: String = "",
-        outputSuffix: String = ""
+        outputSuffix: String = "",
+        emitSearchablePDF: Bool = false
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
@@ -212,6 +218,7 @@ struct ConversionOptions: Codable, Equatable {
         self.emitSiblingTextOutputs = emitSiblingTextOutputs
         self.forceOCRPageRangesString = forceOCRPageRangesString
         self.outputSuffix = outputSuffix
+        self.emitSearchablePDF = emitSearchablePDF
     }
 
     /// Codable: decodes both the new `useSuryaOCR` key and the
@@ -229,6 +236,7 @@ struct ConversionOptions: Codable, Equatable {
         case emitSiblingTextOutputs
         case forceOCRPageRangesString
         case outputSuffix
+        case emitSearchablePDF
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -261,6 +269,11 @@ struct ConversionOptions: Codable, Equatable {
         self.outputSuffix = try c.decodeIfPresent(
             String.self, forKey: .outputSuffix
         ) ?? ""
+        // Default-off for legacy decode: existing users opt in to
+        // searchable-PDF output explicitly.
+        self.emitSearchablePDF = try c.decodeIfPresent(
+            Bool.self, forKey: .emitSearchablePDF
+        ) ?? false
     }
 
     /// Encode under the new keys only — the legacy alias is for
@@ -276,6 +289,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(emitSiblingTextOutputs, forKey: .emitSiblingTextOutputs)
         try c.encode(forceOCRPageRangesString, forKey: .forceOCRPageRangesString)
         try c.encode(outputSuffix, forKey: .outputSuffix)
+        try c.encode(emitSearchablePDF, forKey: .emitSearchablePDF)
     }
 }
 

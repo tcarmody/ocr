@@ -138,6 +138,18 @@ public actor PDFToEPUBPipeline {
         /// Same as `siblingTextURLOverride`, for the markdown
         /// sibling output.
         public var siblingMarkdownURLOverride: URL?
+        /// Tier 9 / V-PDF-Searchable. When true, the conversion
+        /// also emits a searchable-PDF copy of the source PDF
+        /// alongside the EPUB — same visual content as the input,
+        /// with invisible OCR text per page so the result is
+        /// searchable / selectable in any PDF viewer. Off by
+        /// default: searchable PDFs are several MB per book and
+        /// most users only need the EPUB.
+        public var emitSearchablePDF: Bool
+        /// Optional override for the searchable-PDF output URL.
+        /// When non-nil, the searchable PDF lands here; otherwise
+        /// it goes next to the EPUB as `<basename>.searchable.pdf`.
+        public var searchablePDFURLOverride: URL?
         /// Optional override for the debug-mode staging directory.
         /// The pipeline default puts the staging dir next to the
         /// EPUB (when `emitDebugLog` is on) or next to the source
@@ -168,6 +180,8 @@ public actor PDFToEPUBPipeline {
             forceOCRPageRanges: [ClosedRange<Int>] = [],
             siblingTextURLOverride: URL? = nil,
             siblingMarkdownURLOverride: URL? = nil,
+            emitSearchablePDF: Bool = false,
+            searchablePDFURLOverride: URL? = nil,
             debugStagingURLOverride: URL? = nil
         ) {
             self.dpi = dpi
@@ -189,6 +203,8 @@ public actor PDFToEPUBPipeline {
             self.forceOCRPageRanges = forceOCRPageRanges
             self.siblingTextURLOverride = siblingTextURLOverride
             self.siblingMarkdownURLOverride = siblingMarkdownURLOverride
+            self.emitSearchablePDF = emitSearchablePDF
+            self.searchablePDFURLOverride = searchablePDFURLOverride
             self.debugStagingURLOverride = debugStagingURLOverride
         }
 
@@ -1977,6 +1993,33 @@ public actor PDFToEPUBPipeline {
             let md = MarkdownWriter.render(book)
             try? txt.write(to: txtURL, atomically: true, encoding: .utf8)
             try? md.write(to: mdURL, atomically: true, encoding: .utf8)
+        }
+
+        // Tier 9 / V-PDF-Searchable: write a searchable copy of the
+        // source PDF using the OCR observations the pipeline already
+        // computed. Best-effort — failures are logged via the result
+        // but don't fail the conversion (the canonical output is
+        // still the EPUB).
+        if options.emitSearchablePDF {
+            let pdfURLOut = options.searchablePDFURLOverride
+                ?? outputURL.deletingPathExtension()
+                    .appendingPathExtension("searchable.pdf")
+            let pages = pageResults.map {
+                SearchablePDFWriter.PageData(
+                    pageIndex: $0.pageIndex,
+                    observations: $0.observations
+                )
+            }
+            do {
+                try SearchablePDFWriter().write(
+                    sourcePDFURL: pdfURL,
+                    pages: pages,
+                    to: pdfURLOut
+                )
+            } catch {
+                // Non-fatal — keep going; the EPUB and txt/md
+                // siblings are already on disk.
+            }
         }
 
         // Conversion succeeded — staging dir's purpose is served.

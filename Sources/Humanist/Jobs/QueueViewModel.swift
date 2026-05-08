@@ -93,6 +93,11 @@ final class QueueViewModel: ObservableObject {
     /// via Tools → Compare EPUBs. Empty = original behavior.
     /// Snapshotted into ConversionOptions at queue-add.
     @Published var outputSuffix: String = ""
+    /// Tier 9 / V-PDF-Searchable. When on, the conversion writes a
+    /// searchable copy of the source PDF (`<basename>.searchable.pdf`)
+    /// next to the EPUB. Off by default — most users only need the
+    /// EPUB and the file is several MB per book.
+    @Published var emitSearchablePDF: Bool = false
 
     let store: JobStore
     let runner: JobRunner
@@ -178,7 +183,8 @@ final class QueueViewModel: ObservableObject {
                 emitDebugLog: emitDebugLog,
                 emitSiblingTextOutputs: emitSiblingTextOutputs,
                 forceOCRPageRangesString: forceOCRPageRangesString,
-                outputSuffix: outputSuffix
+                outputSuffix: outputSuffix,
+                emitSearchablePDF: emitSearchablePDF
             ),
             status: .profiling
         )

@@ -249,6 +249,14 @@ final class JobRunner: ObservableObject {
                     forSource: job.sourceURL,
                     suffix: job.options.outputSuffix
                 ).md,
+            // Tier 9 / V-PDF-Searchable: forwards both the toggle
+            // and the configured-output-folder routing.
+            emitSearchablePDF: job.options.emitSearchablePDF,
+            searchablePDFURLOverride: ConversionOutputResolver
+                .searchablePDFOutputURL(
+                    forSource: job.sourceURL,
+                    suffix: job.options.outputSuffix
+                ),
             // Same idea for the debug staging dir → <root>/Logs/.
             // Only honored when emitDebugLog is on; otherwise the
             // pipeline keeps the resume-friendly next-to-source-PDF

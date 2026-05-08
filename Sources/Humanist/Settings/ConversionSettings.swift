@@ -94,6 +94,22 @@ public enum ConversionOutputResolver {
         return (txt, md)
     }
 
+    /// Build the searchable-PDF sibling URL for a source PDF when
+    /// the user has an output root configured. Lands next to the
+    /// EPUB in the `Books` subfolder so paired outputs sort
+    /// together. Returns nil when there's no root — pipeline keeps
+    /// the side-by-side default.
+    public static func searchablePDFOutputURL(
+        forSource sourcePDF: URL, suffix: String = ""
+    ) -> URL? {
+        let stem = stemmedName(forSource: sourcePDF, suffix: suffix)
+        guard let root = currentRoot() else { return nil }
+        return root
+            .appendingPathComponent(ConversionOutputSubfolder.books, isDirectory: true)
+            .appendingPathComponent(stem)
+            .appendingPathExtension("searchable.pdf")
+    }
+
     /// Override for the debug-mode staging directory for a source
     /// PDF. The pipeline normally stashes per-page artifacts in
     /// `<source>.humanist-debug/` next to the EPUB output (when

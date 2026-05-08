@@ -262,6 +262,16 @@ struct ContentView: View {
                         without unzipping the EPUB. Cheap (text files \
                         are small); on by default.
                         """)
+                Toggle("Searchable PDF", isOn: $queue.emitSearchablePDF)
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Write `<basename>.searchable.pdf` next to the \
+                        EPUB — visually identical to the source PDF, \
+                        with invisible OCR text per page so the result \
+                        is fully Cmd+F searchable / selectable / \
+                        Spotlight-indexed. Off by default; output is \
+                        several MB per book.
+                        """)
                 Spacer()
                 tesseractStatusBadge
             }
