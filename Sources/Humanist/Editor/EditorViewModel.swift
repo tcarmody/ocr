@@ -395,7 +395,7 @@ final class EditorViewModel: ObservableObject {
     /// them).
     private func ensureChatViewModel() {
         guard chatViewModel == nil, let book = book else { return }
-        chatViewModel = BookChatViewModel(book: book)
+        chatViewModel = BookChatViewModel(book: book, epubURL: book.sourceURL)
     }
 
     init(epubURL: URL) {

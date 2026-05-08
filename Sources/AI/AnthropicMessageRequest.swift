@@ -18,6 +18,10 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
     public var stopSequences: [String]?
     public var cacheControl: CacheControl?
     public var outputConfig: OutputConfig?
+    /// Set true on streaming endpoints (`stream: true` triggers SSE
+    /// response framing). The synchronous `send(_:)` path leaves this
+    /// nil; `sendStream(_:)` flips it to true before encoding.
+    public var stream: Bool?
 
     public init(
         model: AnthropicModel,
@@ -27,7 +31,8 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         thinking: ThinkingConfig? = nil,
         stopSequences: [String]? = nil,
         cacheControl: CacheControl? = nil,
-        outputConfig: OutputConfig? = nil
+        outputConfig: OutputConfig? = nil,
+        stream: Bool? = nil
     ) {
         self.model = model
         self.maxTokens = maxTokens
@@ -37,6 +42,7 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         self.stopSequences = stopSequences
         self.cacheControl = cacheControl
         self.outputConfig = outputConfig
+        self.stream = stream
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -48,6 +54,7 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         case stopSequences = "stop_sequences"
         case cacheControl = "cache_control"
         case outputConfig = "output_config"
+        case stream
     }
 }
 

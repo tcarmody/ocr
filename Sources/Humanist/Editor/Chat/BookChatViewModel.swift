@@ -25,11 +25,17 @@ final class BookChatViewModel: ObservableObject {
     private let bookTitle: String
     private let client: AnthropicAPIClient
     private let model: AnthropicModel
+    private let transcriptStore: ChatTranscriptStore
+    private let epubURL: URL
+    /// Outstanding stream task. Cancelled when the user closes the
+    /// pane mid-stream or sends a follow-up too fast.
+    private var streamTask: Task<Void, Never>?
     private static let maxRetrievedChapters = 4
     private static let maxChapterChars = 8_000
 
-    init(book: EPUBBook) {
+    init(book: EPUBBook, epubURL: URL) {
         self.book = book
+        self.epubURL = epubURL
         self.bookTitle = book.metadata.title?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nonEmpty ?? book.sourceURL
@@ -40,21 +46,31 @@ final class BookChatViewModel: ObservableObject {
             apiKeyProvider: { keyStore.read() }
         )
         self.model = .sonnet4_6
+        self.transcriptStore = ChatTranscriptStore()
+        // Restore prior transcript synchronously so the pane
+        // doesn't flash empty before the load completes.
+        self.messages = transcriptStore.read(for: epubURL)
+    }
+
+    deinit {
+        // Use a non-isolated cancel — the task will see the cancel
+        // on its next yield. Final transcript was persisted on
+        // the last `appendAndPersist`.
+        streamTask?.cancel()
     }
 
     /// Submit `input` as the next user turn. No-op on empty / while
     /// already thinking. Builds the index if needed, runs retrieval,
-    /// fires the request, appends both the user and assistant
-    /// messages on completion.
+    /// fires a streaming request, appends an assistant message that
+    /// fills in incrementally as deltas arrive.
     func send() async {
         let query = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, !isThinking else { return }
         input = ""
         errorMessage = nil
+
         let userMessage = BookChatMessage(role: .user, text: query)
-        messages.append(userMessage)
-        isThinking = true
-        defer { isThinking = false }
+        appendAndPersist(userMessage)
 
         if index == nil {
             index = buildIndex()
@@ -73,33 +89,119 @@ final class BookChatViewModel: ObservableObject {
             ],
             thinking: .disabled
         )
-        do {
-            let response = try await client.send(request)
-            let raw = response.firstText() ?? ""
-            let cited = parseCitations(in: raw, allowedHits: hits)
-            messages.append(BookChatMessage(
-                role: .assistant,
-                text: cited.cleaned,
-                citations: cited.citations
-            ))
-        } catch let error as AnthropicAPIError {
-            messages.append(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
-        } catch {
-            messages.append(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+
+        // Append a placeholder assistant message; fill in via
+        // text-delta yields. Index it by id so we can mutate the
+        // right row when the array shifts.
+        let placeholder = BookChatMessage(role: .assistant, text: "")
+        appendAndPersist(placeholder)
+        let placeholderID = placeholder.id
+        isThinking = true
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.consumeStream(
+                request: request,
+                placeholderID: placeholderID,
+                allowedHits: hits
+            )
         }
+        // Track the task so close-mid-stream / quick follow-ups can
+        // cancel cleanly. (Cancellation propagates to the SSE
+        // reader via `AsyncThrowingStream.onTermination`.)
+        streamTask?.cancel()
+        streamTask = task
+    }
+
+    /// Read text deltas off the stream into the placeholder message
+    /// in place. On stream end, run citation parsing over the
+    /// finalized text. Errors land as a replacement assistant
+    /// message body so the user knows the request failed.
+    private func consumeStream(
+        request: AnthropicMessageRequest,
+        placeholderID: UUID,
+        allowedHits: [BookKeywordIndex.Hit]
+    ) async {
+        defer {
+            isThinking = false
+            streamTask = nil
+        }
+        var rawAccumulated = ""
+        do {
+            for try await event in client.sendStream(request) {
+                try Task.checkCancellation()
+                switch event {
+                case .textDelta(let text):
+                    rawAccumulated += text
+                    // Live-update the placeholder so the UI
+                    // streams. Don't persist on every chunk — that
+                    // would hammer disk on a long answer; the
+                    // post-stream finalize call writes the final
+                    // text.
+                    updateMessage(id: placeholderID) { msg in
+                        msg.text = rawAccumulated
+                    }
+                case .messageStop:
+                    break
+                }
+            }
+        } catch is CancellationError {
+            updateMessage(id: placeholderID) { msg in
+                if msg.text.isEmpty {
+                    msg.text = "(cancelled)"
+                }
+            }
+            persist()
+            return
+        } catch let error as AnthropicAPIError {
+            updateMessage(id: placeholderID) { msg in
+                msg.text = "Couldn't answer that — \(error.localizedDescription)."
+            }
+            persist()
+            return
+        } catch {
+            updateMessage(id: placeholderID) { msg in
+                msg.text = "Couldn't answer that — \(error.localizedDescription)."
+            }
+            persist()
+            return
+        }
+        // Stream finished cleanly — parse citations against the
+        // final body, replace inline `[chapter:N]` markers with
+        // their human-readable equivalents, attach citation chips.
+        let cited = parseCitations(in: rawAccumulated, allowedHits: allowedHits)
+        updateMessage(id: placeholderID) { msg in
+            msg.text = cited.cleaned
+            msg.citations = cited.citations
+        }
+        persist()
+    }
+
+    /// Mutate the message with `id` in place. No-op when the id
+    /// has already been removed (e.g. user hit Clear mid-stream).
+    private func updateMessage(
+        id: UUID, mutate: (inout BookChatMessage) -> Void
+    ) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&messages[idx])
+    }
+
+    private func appendAndPersist(_ message: BookChatMessage) {
+        messages.append(message)
+        persist()
+    }
+
+    private func persist() {
+        transcriptStore.write(messages, for: epubURL)
     }
 
     /// Wipe the transcript. Doesn't touch the keyword index — the
     /// index is per-book, not per-session.
     func clear() {
+        streamTask?.cancel()
         messages.removeAll()
         errorMessage = nil
+        transcriptStore.clear(for: epubURL)
     }
 
     /// Called by the editor when the book reloads from disk (after

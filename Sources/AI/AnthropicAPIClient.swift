@@ -57,7 +57,9 @@ public actor AnthropicAPIClient {
 
     public let config: Config
     private let transport: any AnthropicTransport
-    private let apiKeyProvider: @Sendable () -> String?
+    /// Internal so the streaming extension (in AnthropicStream.swift,
+    /// same module) can read it without a same-file workaround.
+    let apiKeyProvider: @Sendable () -> String?
     /// Test seam — when non-nil, replaces `Task.sleep` with a mock
     /// so retry-backoff tests don't actually wait. Production code
     /// uses `Task.sleep(nanoseconds:)`.
