@@ -47,9 +47,30 @@ public struct EPUBPackager {
     }
 
     /// Validate then write entries to `outputURL` as a valid EPUB ZIP.
-    /// Overwrites any existing file at `outputURL`.
+    /// Overwrites any existing file at `outputURL`. Creates the
+    /// parent directory if needed — `Archive(create:)` fails when
+    /// the parent doesn't exist, and the configured-output-folder
+    /// feature routes writes into per-format subdirs (`Books/`)
+    /// that may not exist yet.
     public func write(_ entries: [Entry], to outputURL: URL) throws {
         try Self.validate(entries: entries)
+
+        // mkdir -p the destination folder. `Archive(create:)` returns
+        // a non-specific error when the parent is missing; surface
+        // the directory-creation failure as `writeFailed` instead so
+        // the user sees the actual permission / path issue.
+        let parent = outputURL.deletingLastPathComponent()
+        if !FileManager.default.fileExists(atPath: parent.path) {
+            do {
+                try FileManager.default.createDirectory(
+                    at: parent, withIntermediateDirectories: true
+                )
+            } catch {
+                throw PackagingError.writeFailed(
+                    "createDirectory(\(parent.path)): \(error)"
+                )
+            }
+        }
 
         // Remove any existing file so Archive(create:) starts clean.
         try? FileManager.default.removeItem(at: outputURL)
