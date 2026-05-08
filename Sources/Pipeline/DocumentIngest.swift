@@ -326,7 +326,7 @@ public struct DocumentIngest {
     /// each to a `Block`. Heading detection: paragraph-style
     /// `headerLevel` > 0. Inline emphasis: per-character `.font`
     /// symbolic traits (`.italic`, `.bold`).
-    func blocksFromAttributedString(_ attr: NSAttributedString) -> [Block] {
+    public func blocksFromAttributedString(_ attr: NSAttributedString) -> [Block] {
         var blocks: [Block] = []
         let str = attr.string as NSString
         let fullRange = NSRange(location: 0, length: str.length)

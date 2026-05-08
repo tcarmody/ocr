@@ -2401,6 +2401,15 @@ final class EditorViewModel: ObservableObject {
             try? self.reloadBookFromDisk()
             self.isDirty = false
             self.saveState = .idle
+            // Keep linked exports in sync. Best-effort: only
+            // regenerates sibling files that already exist (next to
+            // the EPUB or in the configured output folder), so the
+            // user's "no siblings" preference is preserved.
+            if let updated = self.book {
+                await SiblingRegenerator.regenerateExisting(
+                    for: updated, epubURL: outURL
+                )
+            }
         } catch {
             self.saveState = .failed(error.localizedDescription)
         }
