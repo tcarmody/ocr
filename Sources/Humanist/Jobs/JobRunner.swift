@@ -236,16 +236,28 @@ final class JobRunner: ObservableObject {
             // When the user has configured an output folder, route
             // the sibling outputs into per-format subfolders. Nil
             // overrides keep the original side-by-side behavior.
+            // The suffix is forwarded so each variant lands in its
+            // own filenames (`<basename> claude.txt` vs
+            // `<basename> local.txt` etc.).
             siblingTextURLOverride: ConversionOutputResolver
-                .siblingTextOverrides(forSource: job.sourceURL).txt,
+                .siblingTextOverrides(
+                    forSource: job.sourceURL,
+                    suffix: job.options.outputSuffix
+                ).txt,
             siblingMarkdownURLOverride: ConversionOutputResolver
-                .siblingTextOverrides(forSource: job.sourceURL).md,
+                .siblingTextOverrides(
+                    forSource: job.sourceURL,
+                    suffix: job.options.outputSuffix
+                ).md,
             // Same idea for the debug staging dir → <root>/Logs/.
             // Only honored when emitDebugLog is on; otherwise the
             // pipeline keeps the resume-friendly next-to-source-PDF
             // location.
             debugStagingURLOverride: ConversionOutputResolver
-                .debugStagingURL(forSource: job.sourceURL)
+                .debugStagingURL(
+                    forSource: job.sourceURL,
+                    suffix: job.options.outputSuffix
+                )
         )
         let storeRef = store
         let jobID = job.id

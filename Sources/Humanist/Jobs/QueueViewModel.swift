@@ -85,6 +85,14 @@ final class QueueViewModel: ObservableObject {
     /// embedded-text trust path and force OCR. Empty = no per-page
     /// override. Snapshotted into ConversionOptions at queue-add.
     @Published var forceOCRPageRangesString: String = ""
+    /// Optional output filename suffix. When non-empty, every
+    /// output (EPUB, sibling .txt / .md, debug staging dir) gets
+    /// "<basename> <suffix>" instead of just "<basename>". Lets
+    /// the user run the same source PDF through different settings
+    /// and have both outputs land side-by-side for A/B comparison
+    /// via Tools → Compare EPUBs. Empty = original behavior.
+    /// Snapshotted into ConversionOptions at queue-add.
+    @Published var outputSuffix: String = ""
 
     let store: JobStore
     let runner: JobRunner
@@ -155,7 +163,9 @@ final class QueueViewModel: ObservableObject {
     /// the job up. The runner skips `.profiling` jobs, so there's no
     /// race between profile and processing.
     func addPDF(_ url: URL) {
-        let outputURL = ConversionOutputResolver.epubOutputURL(forSource: url)
+        let outputURL = ConversionOutputResolver.epubOutputURL(
+            forSource: url, suffix: outputSuffix
+        )
         let job = Job(
             sourceURL: url,
             outputURL: outputURL,
@@ -167,7 +177,8 @@ final class QueueViewModel: ObservableObject {
                 privateMode: privateMode,
                 emitDebugLog: emitDebugLog,
                 emitSiblingTextOutputs: emitSiblingTextOutputs,
-                forceOCRPageRangesString: forceOCRPageRangesString
+                forceOCRPageRangesString: forceOCRPageRangesString,
+                outputSuffix: outputSuffix
             ),
             status: .profiling
         )

@@ -51,37 +51,45 @@ public enum ConversionOutputResolver {
     }
 
     /// Build the EPUB output URL for a source PDF, honoring the
-    /// configured output root if any. Falls back to side-by-side
-    /// when no root is set.
-    public static func epubOutputURL(forSource sourcePDF: URL) -> URL {
-        let basename = sourcePDF.deletingPathExtension().lastPathComponent
+    /// configured output root and the optional `suffix`. Falls
+    /// back to side-by-side when no root is set. `suffix` is
+    /// appended to the basename with a leading space when
+    /// non-empty (`<basename> <suffix>.epub`); empty preserves
+    /// the original `<basename>.epub` shape.
+    public static func epubOutputURL(
+        forSource sourcePDF: URL, suffix: String = ""
+    ) -> URL {
+        let stem = stemmedName(forSource: sourcePDF, suffix: suffix)
         if let root = currentRoot() {
             let dir = root.appendingPathComponent(
                 ConversionOutputSubfolder.books, isDirectory: true
             )
-            return dir.appendingPathComponent(basename)
+            return dir.appendingPathComponent(stem)
                 .appendingPathExtension("epub")
         }
-        return sourcePDF.deletingPathExtension()
+        return sourcePDF.deletingLastPathComponent()
+            .appendingPathComponent(stem)
             .appendingPathExtension("epub")
     }
 
     /// Compute (txt, md) sibling URL overrides for a source PDF
-    /// when the user has an output root configured. Returns
-    /// `(nil, nil)` when there's no root — callers leave the
-    /// pipeline's default side-by-side behavior in place.
+    /// when the user has an output root configured. `suffix`
+    /// applies the same "<basename> <suffix>" convention to the
+    /// sibling filenames so they group with the matching EPUB.
+    /// Returns `(nil, nil)` when there's no root — callers leave
+    /// the pipeline's default side-by-side behavior in place.
     public static func siblingTextOverrides(
-        forSource sourcePDF: URL
+        forSource sourcePDF: URL, suffix: String = ""
     ) -> (txt: URL?, md: URL?) {
-        let basename = sourcePDF.deletingPathExtension().lastPathComponent
+        let stem = stemmedName(forSource: sourcePDF, suffix: suffix)
         guard let root = currentRoot() else { return (nil, nil) }
         let txt = root
             .appendingPathComponent(ConversionOutputSubfolder.textFiles, isDirectory: true)
-            .appendingPathComponent(basename)
+            .appendingPathComponent(stem)
             .appendingPathExtension("txt")
         let md = root
             .appendingPathComponent(ConversionOutputSubfolder.markdown, isDirectory: true)
-            .appendingPathComponent(basename)
+            .appendingPathComponent(stem)
             .appendingPathExtension("md")
         return (txt, md)
     }
@@ -91,15 +99,37 @@ public enum ConversionOutputResolver {
     /// `<source>.humanist-debug/` next to the EPUB output (when
     /// `emitDebugLog` is on); when the user has configured an
     /// output root, route it under `<root>/Logs/` instead so the
-    /// Settings layout preview's "Logs/" promise is real.
+    /// Settings layout preview's "Logs/" promise is real. `suffix`
+    /// applies the same "<basename> <suffix>" convention to the
+    /// debug dir's name so each variant's logs land in their own
+    /// directory rather than overwriting each other.
     /// Returns nil when no root is configured — pipeline keeps the
     /// original next-to-EPUB behavior.
-    public static func debugStagingURL(forSource sourcePDF: URL) -> URL? {
-        let basename = sourcePDF.deletingPathExtension().lastPathComponent
+    public static func debugStagingURL(
+        forSource sourcePDF: URL, suffix: String = ""
+    ) -> URL? {
+        let stem = stemmedName(forSource: sourcePDF, suffix: suffix)
         guard let root = currentRoot() else { return nil }
         return root
             .appendingPathComponent(ConversionOutputSubfolder.logs, isDirectory: true)
-            .appendingPathComponent(basename)
+            .appendingPathComponent(stem)
             .appendingPathExtension("humanist-debug")
+    }
+
+    /// `<basename>` or `<basename> <suffix>` depending on whether
+    /// `suffix` is empty. Trims and rejects path-traversal inputs.
+    private static func stemmedName(
+        forSource sourcePDF: URL, suffix: String
+    ) -> String {
+        let basename = sourcePDF.deletingPathExtension().lastPathComponent
+        let trimmed = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return basename }
+        // Strip path-meta characters defensively. The UI can't
+        // reasonably catch every weird string the user might
+        // paste; keep the output-filename derivation safe.
+        let cleaned = trimmed.replacingOccurrences(
+            of: "[/:\\\\]+", with: "-", options: .regularExpression
+        )
+        return "\(basename) \(cleaned)"
     }
 }

@@ -183,6 +183,23 @@ struct ContentView: View {
                         "Force OCR" toggle overrides every page; this \
                         field overrides only the listed pages.
                         """)
+                Text("Output suffix:")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                TextField("e.g. claude or local",
+                          text: $queue.outputSuffix)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout)
+                    .frame(maxWidth: 160)
+                    .help("""
+                        Append this suffix to the output filenames so \
+                        the same source PDF can produce multiple \
+                        variants side-by-side. With "claude" set: \
+                        "<book> claude.epub" / ".txt" / ".md". Empty \
+                        keeps the default "<book>.epub". Pair with \
+                        Tools → Compare EPUBs for A/B-ing OCR \
+                        methods or settings.
+                        """)
                 Spacer()
             }
             HStack(spacing: 14) {
