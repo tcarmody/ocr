@@ -282,6 +282,14 @@ private func renderEnvelope(bodyContents: String, cssURL: URL?) -> String {
     } else {
         cssLink = ""
     }
+    // The editing helpers live in <head> and bind on
+    // DOMContentLoaded. Putting the <script> inside <body> would
+    // make `document.body.innerHTML` (the value we ship back to
+    // the buffer on every edit) include the script tag itself —
+    // a closed loop that pollutes the user's chapter source on
+    // the first keystroke. Even script tags placed *after*
+    // </body> get parsed back into the body by the HTML parser,
+    // so head is the only safe home.
     return """
     <!DOCTYPE html>
     <html>
@@ -310,78 +318,89 @@ private func renderEnvelope(bodyContents: String, cssURL: URL?) -> String {
         a { color: -apple-system-blue; }
         :focus-visible { outline: 2px solid -apple-system-blue; outline-offset: 2px; }
       </style>
+      <script>
+      (function() {
+        function postEdit() {
+          // Defensive: clone the body and strip any <script> /
+          // <style> / <link> nodes before serializing. The editor
+          // helpers should only ever live in <head>, but if
+          // something ever leaks into body the safest answer is
+          // not to bake it into the chapter source.
+          const clone = document.body.cloneNode(true);
+          for (const node of clone.querySelectorAll('script, style, link')) {
+            node.remove();
+          }
+          const body = clone.innerHTML;
+          window.webkit.messageHandlers.wysiwyg.postMessage({
+            type: 'edit',
+            body: body,
+          });
+        }
+        let pending = false;
+        function scheduleEdit() {
+          if (pending) return;
+          pending = true;
+          // Coalesce multi-keystroke runs into a single round-trip.
+          setTimeout(() => { pending = false; postEdit(); }, 250);
+        }
+        window.humanistExec = function(cmd, value) {
+          document.execCommand(cmd, false, value);
+          document.body.focus();
+          postEdit();
+        };
+        window.humanistWrap = function(tagName) {
+          const sel = window.getSelection();
+          if (!sel || !sel.rangeCount) return;
+          const range = sel.getRangeAt(0);
+          if (range.collapsed) return;
+          const wrapper = document.createElement(tagName);
+          wrapper.appendChild(range.extractContents());
+          range.insertNode(wrapper);
+          sel.removeAllRanges();
+          const after = document.createRange();
+          after.selectNodeContents(wrapper);
+          sel.addRange(after);
+          postEdit();
+        };
+        window.humanistWrapLang = function(code) {
+          const sel = window.getSelection();
+          if (!sel || !sel.rangeCount) return;
+          const range = sel.getRangeAt(0);
+          if (range.collapsed) return;
+          const wrapper = document.createElement('span');
+          wrapper.setAttribute('lang', code);
+          wrapper.setAttribute('xml:lang', code);
+          wrapper.appendChild(range.extractContents());
+          range.insertNode(wrapper);
+          postEdit();
+        };
+        window.humanistSmartQuotes = function() {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          for (const n of nodes) {
+            let t = n.nodeValue;
+            // Convert straight " and ' to curly equivalents. Order
+            // matters: opening goes first to use the (boundary,quote)
+            // pattern, then a global pass turns the leftover quotes
+            // into closing forms.
+            t = t.replace(/(^|[\\s\\(\\[\\{<—])"/g, '$1“');
+            t = t.replace(/"/g, '”');
+            t = t.replace(/(^|[\\s\\(\\[\\{<—])'/g, '$1‘');
+            t = t.replace(/'/g, '’');
+            n.nodeValue = t;
+          }
+          postEdit();
+        };
+        document.addEventListener('DOMContentLoaded', () => {
+          document.body.addEventListener('input', scheduleEdit);
+        });
+      })();
+      </script>
     </head>
     <body contenteditable="true" spellcheck="true">
     \(bodyContents)
     </body>
-    <script>
-    (function() {
-      function postEdit() {
-        const body = document.body.innerHTML;
-        window.webkit.messageHandlers.wysiwyg.postMessage({
-          type: 'edit',
-          body: body,
-        });
-      }
-      let pending = false;
-      function scheduleEdit() {
-        if (pending) return;
-        pending = true;
-        // Coalesce multi-keystroke runs into a single round-trip.
-        setTimeout(() => { pending = false; postEdit(); }, 250);
-      }
-      document.body.addEventListener('input', scheduleEdit);
-      window.humanistExec = function(cmd, value) {
-        document.execCommand(cmd, false, value);
-        document.body.focus();
-        postEdit();
-      };
-      window.humanistWrap = function(tagName) {
-        const sel = window.getSelection();
-        if (!sel || !sel.rangeCount) return;
-        const range = sel.getRangeAt(0);
-        if (range.collapsed) return;
-        const wrapper = document.createElement(tagName);
-        wrapper.appendChild(range.extractContents());
-        range.insertNode(wrapper);
-        sel.removeAllRanges();
-        const after = document.createRange();
-        after.selectNodeContents(wrapper);
-        sel.addRange(after);
-        postEdit();
-      };
-      window.humanistWrapLang = function(code) {
-        const sel = window.getSelection();
-        if (!sel || !sel.rangeCount) return;
-        const range = sel.getRangeAt(0);
-        if (range.collapsed) return;
-        const wrapper = document.createElement('span');
-        wrapper.setAttribute('lang', code);
-        wrapper.setAttribute('xml:lang', code);
-        wrapper.appendChild(range.extractContents());
-        range.insertNode(wrapper);
-        postEdit();
-      };
-      window.humanistSmartQuotes = function() {
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        const nodes = [];
-        while (walker.nextNode()) nodes.push(walker.currentNode);
-        for (const n of nodes) {
-          let t = n.nodeValue;
-          // Convert straight " and ' to curly equivalents. Order
-          // matters: opening goes first to use the (boundary,quote)
-          // pattern, then a global pass turns the leftover quotes
-          // into closing forms.
-          t = t.replace(/(^|[\\s\\(\\[\\{<—])"/g, '$1“');
-          t = t.replace(/"/g, '”');
-          t = t.replace(/(^|[\\s\\(\\[\\{<—])'/g, '$1‘');
-          t = t.replace(/'/g, '’');
-          n.nodeValue = t;
-        }
-        postEdit();
-      };
-    })();
-    </script>
     </html>
     """
 }
