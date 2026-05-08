@@ -1234,7 +1234,7 @@ final class EditorViewModel: ObservableObject {
         let existing: String?
         if let buffered = buffers[cssURL] {
             existing = buffered
-        } else if let onDisk = try? String(contentsOf: cssURL) {
+        } else if let onDisk = try? String(contentsOf: cssURL, encoding: .utf8) {
             existing = onDisk
         } else {
             return false
@@ -1258,7 +1258,7 @@ final class EditorViewModel: ObservableObject {
         let cssURL = book.workingDirectory
             .appendingPathComponent("OEBPS/css/book.css")
             .canonicalForFile
-        guard let css = try? String(contentsOf: cssURL) else {
+        guard let css = try? String(contentsOf: cssURL, encoding: .utf8) else {
             bookStyle = .default
             return
         }

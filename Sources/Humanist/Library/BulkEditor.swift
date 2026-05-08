@@ -99,7 +99,7 @@ public struct BulkEditor {
                 replacement: replacement,
                 caseSensitive: caseSensitive,
                 regex: regex,
-                contentProvider: { try? String(contentsOf: $0) }
+                contentProvider: { try? String(contentsOf: $0, encoding: .utf8) }
             )
         } catch {
             return Result(

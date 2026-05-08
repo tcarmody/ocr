@@ -1,9 +1,9 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "Humanist",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     products: [
         .executable(name: "Humanist", targets: ["Humanist"]),
         .library(name: "Document", targets: ["Document"]),
@@ -121,5 +121,9 @@ let package = Package(
             dependencies: ["Humanist"],
             path: "Tests/HumanistTests"
         ),
-    ]
+    ],
+    // Tools-version 6.2 (required for `.v26`) defaults to Swift 6
+    // strict concurrency; the codebase was written under Swift 5
+    // and migrating is out of scope for the platform bump.
+    swiftLanguageModes: [.v5]
 )
