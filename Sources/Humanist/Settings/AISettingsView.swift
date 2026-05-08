@@ -9,6 +9,13 @@ import AI
 /// in Phase 1 they're persisted but not yet read by the pipeline.
 struct AISettingsView: View {
     @StateObject private var vm = AISettingsViewModel()
+    /// Stable key name — read from `BookChatViewModel` too. Default
+    /// is Haiku (toggle off); flipping on switches chat to Sonnet.
+    @AppStorage("humanist.chat.useSonnet") private var chatUseSonnet = false
+
+    private var chatUseSonnetBinding: Binding<Bool> {
+        $chatUseSonnet
+    }
 
     var body: some View {
         Form {
@@ -60,6 +67,17 @@ struct AISettingsView: View {
                     Toggle("Parse printed TOC (Haiku)",
                            isOn: $vm.settings.cloudFeatures.tocParsing)
                     Text("Each toggle gates a separate Claude-backed feature. Costs are roughly $0.01–$2 per book depending on which are enabled.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Section("Book Chat") {
+                    Toggle(
+                        "Use Sonnet for chat answers (3× cost vs Haiku)",
+                        isOn: chatUseSonnetBinding
+                    )
+                    Text("Default is Haiku 4.5 — fast, cheap, plenty good for \"where does X discuss Y\" questions. Switch to Sonnet for harder comparative / synthesis queries. ≈ $0.06/query on Haiku, ≈ $0.19/query on Sonnet at the current 60 KB-per-chapter context size.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

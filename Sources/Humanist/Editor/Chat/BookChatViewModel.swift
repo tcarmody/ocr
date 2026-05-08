@@ -24,9 +24,18 @@ final class BookChatViewModel: ObservableObject {
     private(set) var book: EPUBBook
     private let bookTitle: String
     private let client: AnthropicAPIClient
-    private let model: AnthropicModel
     private let transcriptStore: ChatTranscriptStore
     private let epubURL: URL
+
+    /// Resolved per-send so a Settings change between queries
+    /// applies on the next send. Default is Haiku 4.5 (~3× cheaper);
+    /// flip `humanist.chat.useSonnet` in Settings → AI for
+    /// comparative / synthesis-heavy questions.
+    private var model: AnthropicModel {
+        UserDefaults.standard.bool(forKey: "humanist.chat.useSonnet")
+            ? .sonnet4_6
+            : .haiku4_5
+    }
     /// Outstanding stream task. Cancelled when the user closes the
     /// pane mid-stream or sends a follow-up too fast.
     private var streamTask: Task<Void, Never>?
@@ -53,7 +62,6 @@ final class BookChatViewModel: ObservableObject {
         self.client = AnthropicAPIClient(
             apiKeyProvider: { keyStore.read() }
         )
-        self.model = .sonnet4_6
         self.transcriptStore = ChatTranscriptStore()
         // Restore prior transcript synchronously so the pane
         // doesn't flash empty before the load completes.
