@@ -18,7 +18,7 @@ import UniformTypeIdentifiers
 /// One of the three central panes in the editor window. Used by the
 /// VM and menu commands to address pane visibility uniformly.
 enum EditorPane: String, CaseIterable {
-    case pdf, source, preview
+    case pdf, source, wysiwyg, preview
 }
 
 @MainActor
@@ -319,6 +319,25 @@ final class EditorViewModel: ObservableObject {
             UserDefaults.standard.set(showPreviewPane, forKey: Self.defaultsKey(.preview))
         }
     }
+    /// Rich WYSIWYG pane. Off by default — the source + preview
+    /// combo is the well-trod editing path; users opt into the
+    /// WYSIWYG view explicitly.
+    @Published var showWYSIWYGPane: Bool {
+        didSet {
+            UserDefaults.standard.set(showWYSIWYGPane, forKey: Self.defaultsKey(.wysiwyg))
+        }
+    }
+
+    /// Absolute URL of the book's stylesheet inside the unpacked
+    /// working directory. The WYSIWYG pane uses this to render
+    /// chapter content with the same typography the EPUB reader
+    /// will use. Returns nil before the book is loaded.
+    var bookCSSURL: URL? {
+        guard let book = book else { return nil }
+        let url = book.workingDirectory
+            .appendingPathComponent("OEBPS/css/book.css")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
 
     private static func defaultsKey(_ pane: EditorPane) -> String {
         "humanist.editor.show.\(pane.rawValue)"
@@ -328,13 +347,16 @@ final class EditorViewModel: ObservableObject {
         if let v = UserDefaults.standard.object(forKey: defaultsKey(pane)) as? Bool {
             return v
         }
-        return true  // all panes on by default
+        // The WYSIWYG pane is opt-in (extra column eats horizontal
+        // space); the others are on by default.
+        return pane != .wysiwyg
     }
 
     func isPaneVisible(_ pane: EditorPane) -> Bool {
         switch pane {
         case .pdf:     return showPDFPane
         case .source:  return showSourcePane
+        case .wysiwyg: return showWYSIWYGPane
         case .preview: return showPreviewPane
         }
     }
@@ -343,6 +365,7 @@ final class EditorViewModel: ObservableObject {
         switch pane {
         case .pdf:     showPDFPane.toggle()
         case .source:  showSourcePane.toggle()
+        case .wysiwyg: showWYSIWYGPane.toggle()
         case .preview: showPreviewPane.toggle()
         }
     }
@@ -350,6 +373,7 @@ final class EditorViewModel: ObservableObject {
     init(epubURL: URL) {
         self.showPDFPane = Self.defaultPaneVisibility(.pdf)
         self.showSourcePane = Self.defaultPaneVisibility(.source)
+        self.showWYSIWYGPane = Self.defaultPaneVisibility(.wysiwyg)
         self.showPreviewPane = Self.defaultPaneVisibility(.preview)
         Task { await self.load(epubURL: epubURL) }
     }

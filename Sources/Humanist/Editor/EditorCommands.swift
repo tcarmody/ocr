@@ -325,6 +325,7 @@ private struct ViewMenuPaneToggles: View {
         EditorPaneToggle(pane: .pdf)
         EditorPaneToggle(pane: .source)
         EditorPaneToggle(pane: .preview)
+        EditorPaneToggle(pane: .wysiwyg)
     }
 }
 
@@ -656,6 +657,7 @@ private struct EditorPaneToggle: View {
         switch pane {
         case .pdf:     return "\(action) Original"
         case .source:  return "\(action) Source"
+        case .wysiwyg: return "\(action) WYSIWYG"
         case .preview: return "\(action) Preview"
         }
     }
@@ -665,6 +667,7 @@ private struct EditorPaneToggle: View {
         case .pdf:     return "1"
         case .source:  return "2"
         case .preview: return "3"
+        case .wysiwyg: return "4"
         }
     }
 }

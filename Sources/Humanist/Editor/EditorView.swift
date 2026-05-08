@@ -37,7 +37,9 @@ struct EditorView: View {
 
     private var showPDF:     Bool { vm.showPDFPane }
     private var showSource:  Bool { vm.showSourcePane }
+    private var showWYSIWYG: Bool { vm.showWYSIWYGPane }
     private var showPreview: Bool { vm.showPreviewPane }
+    @State private var wysiwygCommand: WYSIWYGCommand?
 
     var body: some View {
         Group {
@@ -262,43 +264,43 @@ struct EditorView: View {
 
     // MARK: - panes
 
-    /// Pick the right `HSplitView` shape for the current visibility
-    /// triple. Switching is verbose but the alternative — a single
-    /// HSplitView with conditional EmptyView children — gives every
-    /// hidden pane real layout space.
+    /// Build the pane layout from the current visibility flags.
+    /// HSplitView accepts up to 10 conditionally-included children
+    /// via @ViewBuilder; we exploit that so adding a 4th pane
+    /// doesn't blow up the case matrix.
     @ViewBuilder
     private func editorPanes(workingDir: URL) -> some View {
-        switch (showPDF, showSource, showPreview) {
-        case (true, true, true):
-            HSplitView {
-                pdfPane.frame(minWidth: 240)
-                sourcePane.frame(minWidth: 240)
-                previewPane(workingDir: workingDir).frame(minWidth: 240)
-            }
-        case (true, true, false):
-            HSplitView {
-                pdfPane.frame(minWidth: 280)
-                sourcePane.frame(minWidth: 280)
-            }
-        case (true, false, true):
-            HSplitView {
-                pdfPane.frame(minWidth: 280)
-                previewPane(workingDir: workingDir).frame(minWidth: 280)
-            }
-        case (false, true, true):
-            HSplitView {
-                sourcePane.frame(minWidth: 280)
-                previewPane(workingDir: workingDir).frame(minWidth: 280)
-            }
-        case (true, false, false):
-            pdfPane
-        case (false, true, false):
-            sourcePane
-        case (false, false, true):
-            previewPane(workingDir: workingDir)
-        case (false, false, false):
+        let visibleCount = [showPDF, showSource, showWYSIWYG, showPreview]
+            .filter { $0 }.count
+        if visibleCount == 0 {
             allPanesHiddenState
+        } else if visibleCount == 1 {
+            singlePane(workingDir: workingDir)
+        } else {
+            let minWidth: CGFloat = visibleCount >= 3 ? 220 : 280
+            HSplitView {
+                if showPDF {
+                    pdfPane.frame(minWidth: minWidth)
+                }
+                if showSource {
+                    sourcePane.frame(minWidth: minWidth)
+                }
+                if showWYSIWYG {
+                    wysiwygPane.frame(minWidth: minWidth)
+                }
+                if showPreview {
+                    previewPane(workingDir: workingDir).frame(minWidth: minWidth)
+                }
+            }
         }
+    }
+
+    @ViewBuilder
+    private func singlePane(workingDir: URL) -> some View {
+        if showPDF { pdfPane }
+        else if showSource { sourcePane }
+        else if showWYSIWYG { wysiwygPane }
+        else if showPreview { previewPane(workingDir: workingDir) }
     }
 
     @ViewBuilder
@@ -384,6 +386,38 @@ struct EditorView: View {
             }
             sourceContent
             validationStrip
+        }
+    }
+
+    @ViewBuilder
+    private var wysiwygPane: some View {
+        VStack(spacing: 0) {
+            paneHeader("WYSIWYG", systemImage: "text.alignleft")
+            if let file = vm.selectedFile,
+               vm.canEditSelectedFile,
+               file.id.pathExtension.lowercased().hasPrefix("xhtml")
+                || file.id.pathExtension.lowercased() == "html"
+                || file.id.pathExtension.lowercased() == "htm" {
+                WYSIWYGFormattingToolbar(commandRequest: $wysiwygCommand)
+                WYSIWYGView(
+                    xhtml: $vm.sourceText,
+                    resetID: AnyHashable(file.id),
+                    cssURL: vm.bookCSSURL,
+                    commandRequest: $wysiwygCommand
+                )
+            } else if vm.selectedFile != nil {
+                VStack {
+                    Text("WYSIWYG editing applies only to chapter XHTML.")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack {
+                    Text("Select a chapter to edit visually.")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
