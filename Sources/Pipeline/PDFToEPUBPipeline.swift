@@ -924,6 +924,9 @@ public actor PDFToEPUBPipeline {
         progress: ProgressHandler? = nil
     ) async throws -> ConversionStats {
         let conversionStart = Date()
+        // Reset cross-conversion debug accumulators so the
+        // emitDebugLog dump only captures THIS conversion's data.
+        ClaudePageOCREngine.resetCapturedResponses()
         // Mutable so we can periodically reload to drain PDFKit's
         // internal page cache. PDFKit `PDFDocument` lazily caches
         // rendered page representations; on a 600-page book that
@@ -2092,6 +2095,19 @@ public actor PDFToEPUBPipeline {
                 footnotes: footnotes,
                 to: debugLogURL
             )
+            // Cloud-mode page-OCR captures the raw Sonnet response
+            // per page; dump them to a sibling file for diagnosing
+            // "blank XHTML between page anchors" mysteries — when
+            // every page parses to empty blocks, the raw responses
+            // tell us whether Sonnet is misbehaving (returning
+            // refusals, wrong shape) or our parser is dropping
+            // valid content silently.
+            let pageResponses = ClaudePageOCREngine.snapshotCapturedResponses()
+            if !pageResponses.isEmpty {
+                let dumpURL = debugLogURL.deletingLastPathComponent()
+                    .appendingPathComponent("claude-pages.txt")
+                try? writeClaudePageResponses(pageResponses, to: dumpURL)
+            }
         }
         return ReflowOutput(
             blocks: merged,
@@ -2662,6 +2678,32 @@ public actor PDFToEPUBPipeline {
         ) else { return }
         CGImageDestinationAddImage(dest, image, nil)
         _ = CGImageDestinationFinalize(dest)
+    }
+
+    /// Dump the per-page Sonnet response captures to a debug file.
+    /// Each page section reads:
+    ///   `--- page N (parsed-empty: yes/no) ---`
+    ///   followed by the raw XHTML Sonnet returned (or `[REFUSED]` /
+    ///   `[EMPTY]` markers when nothing came back). Useful for
+    ///   diagnosing pages that produced no content in the EPUB —
+    ///   the parsed-empty flag pinpoints whether the parser dropped
+    ///   valid content or Sonnet returned nothing usable.
+    private static func writeClaudePageResponses(
+        _ responses: [ClaudePageOCREngine.CapturedResponse],
+        to url: URL
+    ) throws {
+        var out = "Claude page-OCR raw responses\n"
+        out += "==============================\n"
+        out += "pages captured: \(responses.count)\n"
+        out += "parsed-empty: \(responses.filter(\.parsedBlocksEmpty).count)\n\n"
+        for r in responses.sorted(by: { $0.pageIndex < $1.pageIndex }) {
+            let emptyTag = r.parsedBlocksEmpty ? " (parsed-empty: yes)" : ""
+            out += "--- page \(r.pageIndex)\(emptyTag) ---\n"
+            out += r.rawXHTML
+            if !r.rawXHTML.hasSuffix("\n") { out += "\n" }
+            out += "\n"
+        }
+        try out.write(to: url, atomically: true, encoding: .utf8)
     }
 
     private static func writeDebugLog(
