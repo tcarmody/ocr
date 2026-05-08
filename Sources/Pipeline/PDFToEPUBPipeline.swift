@@ -1775,17 +1775,20 @@ public actor PDFToEPUBPipeline {
             // emission; dump the captured Sonnet responses here so
             // the user can inspect what the model returned per page
             // even when the assembly never touches RegionAwareReflow.
+            // ALWAYS write the file when emitDebugLog is on, even
+            // when the captures array is empty — an empty file with
+            // a "no responses captured" banner is itself a
+            // diagnostic (tells the user the engine never ran or
+            // every page short-circuited before recording).
             if options.emitDebugLog {
                 let pageResponses = ClaudePageOCREngine
                     .snapshotCapturedResponses()
-                if !pageResponses.isEmpty {
-                    let dumpURL = stagingDir.appendingPathComponent(
-                        "claude-pages.txt"
-                    )
-                    try? Self.writeClaudePageResponses(
-                        pageResponses, to: dumpURL
-                    )
-                }
+                let dumpURL = stagingDir.appendingPathComponent(
+                    "claude-pages.txt"
+                )
+                try? Self.writeClaudePageResponses(
+                    pageResponses, to: dumpURL
+                )
             }
         } else if options.emitDebugLog {
             // Log lives in the same `humanist-debug/` folder as the

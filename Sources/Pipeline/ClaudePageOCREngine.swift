@@ -143,7 +143,19 @@ public struct ClaudePageOCREngine: Sendable {
         do {
             response = try await client.send(request)
         } catch let apiError as AnthropicAPIError {
+            await Self.recordRawResponse(
+                pageIndex: pageIndex,
+                raw: "[API ERROR: \(apiError.localizedDescription)]",
+                parseEmpty: true
+            )
             throw PageOCRError.underlying(apiError)
+        } catch {
+            await Self.recordRawResponse(
+                pageIndex: pageIndex,
+                raw: "[SEND FAILED: \(error)]",
+                parseEmpty: true
+            )
+            throw PageOCRError.underlying(error)
         }
 
         await budget.recordUsage(response.usage, for: model)
