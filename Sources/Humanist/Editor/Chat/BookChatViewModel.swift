@@ -31,7 +31,15 @@ final class BookChatViewModel: ObservableObject {
     /// pane mid-stream or sends a follow-up too fast.
     private var streamTask: Task<Void, Never>?
     private static let maxRetrievedChapters = 4
-    private static let maxChapterChars = 8_000
+    /// Per-chapter character cap on the context Claude sees. The
+    /// previous 8 KB cap was hiding answers in long essays — when
+    /// the user asked about Baudelaire in Foucault's *What Is
+    /// Enlightenment?* the chapter was retrieved but the relevant
+    /// passage sat past 8 KB into the body. Sonnet's window is
+    /// generous (≈200K tokens); 60 KB × 4 chapters ≈ 60K input
+    /// tokens stays well inside both the model's window and a
+    /// reasonable per-query cost (~$0.18).
+    private static let maxChapterChars = 60_000
 
     init(book: EPUBBook, epubURL: URL) {
         self.book = book
@@ -296,14 +304,27 @@ final class BookChatViewModel: ObservableObject {
                 title: title ?? "Chapter \(idx + 1)",
                 resourceID: resource.id
             )
-            // Replace the inline marker with a parenthesized
-            // shorthand so the prose still reads — the citation
-            // chip below the message carries the click target.
+            // Strip the inline marker entirely — the citation
+            // chips below the message body carry the click
+            // target. Inlining "(see TITLE)" looked terrible
+            // when Claude cited the same chapter twice in a row
+            // ("…(see X)(see X)…").
             let nsRange = match.range(at: 0)
             if let r = Range(nsRange, in: cleaned) {
-                cleaned.replaceSubrange(r, with: "(see \(title ?? "Chapter \(idx + 1)"))")
+                cleaned.removeSubrange(r)
             }
         }
+        // Tidy: collapse whitespace runs left behind by removed
+        // markers (e.g. "Foucault writes  about Baudelaire"
+        // collapses to a single space).
+        cleaned = cleaned.replacingOccurrences(
+            of: " {2,}", with: " ", options: .regularExpression
+        )
+        // Trim spaces immediately before punctuation that the
+        // marker may have separated from its sentence.
+        cleaned = cleaned.replacingOccurrences(
+            of: " ([.,;:!?])", with: "$1", options: .regularExpression
+        )
         let citations = Array(seen.values)
             .sorted { $0.chapterIndex < $1.chapterIndex }
         return CitationParse(cleaned: cleaned, citations: citations)
