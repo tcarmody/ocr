@@ -18,6 +18,7 @@ public struct EPUBBuilder {
         book: Book,
         correctionTrail: CorrectionTrail? = nil,
         parsedTOC: ParsedTOC? = nil,
+        sourcePDFURL: URL? = nil,
         to outputURL: URL
     ) throws {
         // Layout inside the ZIP:
@@ -190,6 +191,28 @@ public struct EPUBBuilder {
             if let data = try? encoder.encode(toc) {
                 entries.append(EPUBPackager.Entry(
                     path: ParsedTOC.pathInsideEPUB,
+                    data: data
+                ))
+            }
+        }
+
+        // 4e. Humanist sidecar — captures the source PDF's absolute
+        // path so the editor's `resolveSourcePDF` finds it even
+        // when the EPUB is moved away from the source. Without
+        // this, opening an EPUB written to a configured output
+        // folder would fail to auto-attach the PDF (the legacy
+        // sibling-PDF lookup only works when source + EPUB share
+        // a directory). Skipped when no source PDF is supplied
+        // (e.g. unit tests build EPUBs without a source).
+        if let sourcePDFURL {
+            let sidecar = HumanistSidecar(
+                sourcePDFPath: sourcePDFURL.canonicalForFile.path
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(sidecar) {
+                entries.append(EPUBPackager.Entry(
+                    path: HumanistSidecar.pathInsideEPUB,
                     data: data
                 ))
             }

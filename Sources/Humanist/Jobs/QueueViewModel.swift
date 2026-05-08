@@ -140,9 +140,11 @@ final class QueueViewModel: ObservableObject {
 
     // MARK: - enqueue
 
-    /// Add a single PDF to the queue. Output goes next to the source
-    /// (`book.pdf` → `book.epub`); existing files at that path will be
-    /// overwritten when the job runs.
+    /// Add a single PDF to the queue. Output goes either next to
+    /// the source (`book.pdf` → `book.epub` — the original behavior)
+    /// or under the user-configured output folder
+    /// (`<root>/Books/book.epub`); existing files at that path will
+    /// be overwritten when the job runs.
     ///
     /// Enqueues immediately in `.profiling` state, then runs
     /// `DocumentProfiler` in a background `Task` to detect the
@@ -153,7 +155,7 @@ final class QueueViewModel: ObservableObject {
     /// the job up. The runner skips `.profiling` jobs, so there's no
     /// race between profile and processing.
     func addPDF(_ url: URL) {
-        let outputURL = url.deletingPathExtension().appendingPathExtension("epub")
+        let outputURL = ConversionOutputResolver.epubOutputURL(forSource: url)
         let job = Job(
             sourceURL: url,
             outputURL: outputURL,

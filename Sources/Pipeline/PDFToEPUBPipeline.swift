@@ -128,6 +128,16 @@ public actor PDFToEPUBPipeline {
         /// born-digital front matter (pages 1-20) + scanned
         /// appendix (pages 200-end), or any mix of trust-quality.
         public var forceOCRPageRanges: [ClosedRange<Int>]
+        /// Optional override for the plain-text sibling output URL.
+        /// When non-nil, the txt is written here instead of next to
+        /// the EPUB. The launcher uses this to route outputs into
+        /// the user's configured per-format subfolders (e.g.
+        /// `<root>/Text Files/<basename>.txt`); pipeline itself
+        /// doesn't know about the layout convention.
+        public var siblingTextURLOverride: URL?
+        /// Same as `siblingTextURLOverride`, for the markdown
+        /// sibling output.
+        public var siblingMarkdownURLOverride: URL?
 
         public init(
             dpi: CGFloat = 400,
@@ -146,7 +156,9 @@ public actor PDFToEPUBPipeline {
             disableLocalCascadeEscalation: Bool = false,
             useClaudePageOCR: Bool = false,
             emitSiblingTextOutputs: Bool = true,
-            forceOCRPageRanges: [ClosedRange<Int>] = []
+            forceOCRPageRanges: [ClosedRange<Int>] = [],
+            siblingTextURLOverride: URL? = nil,
+            siblingMarkdownURLOverride: URL? = nil
         ) {
             self.dpi = dpi
             self.dpiForScans = dpiForScans
@@ -165,6 +177,8 @@ public actor PDFToEPUBPipeline {
             self.useClaudePageOCR = useClaudePageOCR
             self.emitSiblingTextOutputs = emitSiblingTextOutputs
             self.forceOCRPageRanges = forceOCRPageRanges
+            self.siblingTextURLOverride = siblingTextURLOverride
+            self.siblingMarkdownURLOverride = siblingMarkdownURLOverride
         }
 
         /// True when `pageIndex` should bypass the embedded-text
@@ -1885,6 +1899,7 @@ public actor PDFToEPUBPipeline {
             book: book,
             correctionTrail: trail,
             parsedTOC: appliedTOC,
+            sourcePDFURL: pdfURL,
             to: outputURL
         )
 
@@ -1893,10 +1908,23 @@ public actor PDFToEPUBPipeline {
         // conversion (the canonical output is the EPUB; siblings
         // are convenience).
         if options.emitSiblingTextOutputs {
-            let txtURL = outputURL.deletingPathExtension()
-                .appendingPathExtension("txt")
-            let mdURL = outputURL.deletingPathExtension()
-                .appendingPathExtension("md")
+            // Sibling URLs default to next-to-EPUB; user-configured
+            // output folder routes them into per-format subfolders
+            // by setting the overrides. Make sure the destination
+            // directory exists either way (mkdir -p) since the
+            // user could pick a fresh root with no subfolders yet.
+            let txtURL = options.siblingTextURLOverride
+                ?? outputURL.deletingPathExtension().appendingPathExtension("txt")
+            let mdURL = options.siblingMarkdownURLOverride
+                ?? outputURL.deletingPathExtension().appendingPathExtension("md")
+            for url in [txtURL, mdURL] {
+                let parent = url.deletingLastPathComponent()
+                if !FileManager.default.fileExists(atPath: parent.path) {
+                    try? FileManager.default.createDirectory(
+                        at: parent, withIntermediateDirectories: true
+                    )
+                }
+            }
             let txt = PlainTextWriter.render(book)
             let md = MarkdownWriter.render(book)
             try? txt.write(to: txtURL, atomically: true, encoding: .utf8)

@@ -232,7 +232,14 @@ final class JobRunner: ObservableObject {
             emitSiblingTextOutputs: job.options.emitSiblingTextOutputs,
             forceOCRPageRanges: PageRangeParser.parse(
                 job.options.forceOCRPageRangesString
-            )
+            ),
+            // When the user has configured an output folder, route
+            // the sibling outputs into per-format subfolders. Nil
+            // overrides keep the original side-by-side behavior.
+            siblingTextURLOverride: ConversionOutputResolver
+                .siblingTextOverrides(forSource: job.sourceURL).txt,
+            siblingMarkdownURLOverride: ConversionOutputResolver
+                .siblingTextOverrides(forSource: job.sourceURL).md
         )
         let storeRef = store
         let jobID = job.id

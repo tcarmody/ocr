@@ -157,6 +157,8 @@ struct HumanistApp: App {
             TabView {
                 EditorSettingsView()
                     .tabItem { Label("Editor", systemImage: "text.cursor") }
+                ConversionSettingsView()
+                    .tabItem { Label("Conversion", systemImage: "folder") }
                 AISettingsView()
                     .tabItem { Label("AI", systemImage: "sparkles") }
             }
