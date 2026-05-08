@@ -403,7 +403,18 @@ struct EditorView: View {
     @ViewBuilder
     private var chatPane: some View {
         VStack(spacing: 0) {
-            paneHeader("Chat", systemImage: "bubble.left.and.text.bubble.right")
+            paneHeader("Chat", systemImage: "bubble.left.and.text.bubble.right") {
+                if let chat = vm.chatViewModel, !chat.messages.isEmpty {
+                    Button {
+                        chat.clear()
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Clear this chat (deletes the persisted transcript)")
+                }
+            }
             if let chat = vm.chatViewModel {
                 ChatPaneView(
                     vm: chat,
