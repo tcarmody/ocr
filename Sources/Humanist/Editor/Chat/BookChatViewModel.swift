@@ -90,100 +90,52 @@ final class BookChatViewModel: ObservableObject {
             thinking: .disabled
         )
 
-        // Append a placeholder assistant message; fill in via
-        // text-delta yields. Index it by id so we can mutate the
-        // right row when the array shifts.
-        let placeholder = BookChatMessage(role: .assistant, text: "")
-        appendAndPersist(placeholder)
-        let placeholderID = placeholder.id
+        // Streaming via SSE was returning empty bodies in the
+        // current macOS / Anthropic-API combo (under debugging).
+        // Use the synchronous path for now so the chat works
+        // end-to-end; we'll re-enable streaming once
+        // AnthropicStream is sorted out. Infrastructure stays
+        // in place — sendStream / SSE parsing are intact.
         isThinking = true
-
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.consumeStream(
-                request: request,
-                placeholderID: placeholderID,
-                allowedHits: hits
-            )
+            await self.runSyncSend(request: request, allowedHits: hits)
         }
-        // Track the task so close-mid-stream / quick follow-ups can
-        // cancel cleanly. (Cancellation propagates to the SSE
-        // reader via `AsyncThrowingStream.onTermination`.)
         streamTask?.cancel()
         streamTask = task
     }
 
-    /// Read text deltas off the stream into the placeholder message
-    /// in place. On stream end, run citation parsing over the
-    /// finalized text. Errors land as a replacement assistant
-    /// message body so the user knows the request failed.
-    private func consumeStream(
+    private func runSyncSend(
         request: AnthropicMessageRequest,
-        placeholderID: UUID,
         allowedHits: [BookKeywordIndex.Hit]
     ) async {
         defer {
             isThinking = false
             streamTask = nil
         }
-        var rawAccumulated = ""
         do {
-            for try await event in client.sendStream(request) {
-                try Task.checkCancellation()
-                switch event {
-                case .textDelta(let text):
-                    rawAccumulated += text
-                    // Live-update the placeholder so the UI
-                    // streams. Don't persist on every chunk — that
-                    // would hammer disk on a long answer; the
-                    // post-stream finalize call writes the final
-                    // text.
-                    updateMessage(id: placeholderID) { msg in
-                        msg.text = rawAccumulated
-                    }
-                case .messageStop:
-                    break
-                }
-            }
+            let response = try await client.send(request)
+            try Task.checkCancellation()
+            let raw = response.firstText() ?? ""
+            let cited = parseCitations(in: raw, allowedHits: allowedHits)
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: cited.cleaned,
+                citations: cited.citations
+            ))
         } catch is CancellationError {
-            updateMessage(id: placeholderID) { msg in
-                if msg.text.isEmpty {
-                    msg.text = "(cancelled)"
-                }
-            }
-            persist()
             return
         } catch let error as AnthropicAPIError {
-            updateMessage(id: placeholderID) { msg in
-                msg.text = "Couldn't answer that — \(error.localizedDescription)."
-            }
-            persist()
-            return
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: "Couldn't answer that — \(error.localizedDescription)."
+            ))
         } catch {
-            updateMessage(id: placeholderID) { msg in
-                msg.text = "Couldn't answer that — \(error.localizedDescription)."
-            }
-            persist()
-            return
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: "Couldn't answer that — \(error.localizedDescription)."
+            ))
         }
-        // Stream finished cleanly — parse citations against the
-        // final body, replace inline `[chapter:N]` markers with
-        // their human-readable equivalents, attach citation chips.
-        let cited = parseCitations(in: rawAccumulated, allowedHits: allowedHits)
-        updateMessage(id: placeholderID) { msg in
-            msg.text = cited.cleaned
-            msg.citations = cited.citations
-        }
-        persist()
-    }
-
-    /// Mutate the message with `id` in place. No-op when the id
-    /// has already been removed (e.g. user hit Clear mid-stream).
-    private func updateMessage(
-        id: UUID, mutate: (inout BookChatMessage) -> Void
-    ) {
-        guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
-        mutate(&messages[idx])
     }
 
     private func appendAndPersist(_ message: BookChatMessage) {
