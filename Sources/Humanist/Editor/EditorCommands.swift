@@ -302,12 +302,18 @@ private struct DocumentMenuChapterCommands: View {
     }
 }
 
-/// Top-level "View" menu — pane visibility toggles, preview
-/// reload, alignment commands. The natural macOS home for "what's
-/// shown on screen and where it's focused."
+/// Adds editor-specific items to the **system** View menu — pane
+/// visibility toggles, preview reload, alignment commands. Uses
+/// `CommandGroup(after: .sidebar)` rather than `CommandMenu("View")`
+/// so our items merge into the existing macOS View menu (which
+/// already holds Show Toolbar, Enter Full Screen, etc.) instead of
+/// producing a second "View" menu next to it. The earlier
+/// `CommandMenu("View")` shape did exactly that — two View menus —
+/// which broke the system convention.
 struct EditorViewMenu: Commands {
     var body: some Commands {
-        CommandMenu("View") {
+        CommandGroup(after: .sidebar) {
+            Divider()
             ViewMenuPaneToggles()
             Divider()
             EditorReloadPreviewCommand()
