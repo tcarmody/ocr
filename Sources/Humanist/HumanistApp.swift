@@ -12,6 +12,7 @@ struct HumanistApp: App {
     @StateObject private var jobRunner: JobRunner
     @StateObject private var queueVM: QueueViewModel
     @StateObject private var library = LibraryStore()
+    @StateObject private var coverCache = CoverImageCache()
 
     init() {
         let store = JobStore()
@@ -113,6 +114,7 @@ struct HumanistApp: App {
         Window("Humanist Library", id: "library") {
             LibraryWindowView()
                 .environmentObject(library)
+                .environmentObject(coverCache)
         }
         .commandsRemoved()
 

@@ -4,14 +4,11 @@ import AppKit
 /// R-Library. Browser window listing every EPUB the user has
 /// converted in this app. Sortable columns; language filter;
 /// click → open in editor; right-click → Reveal in Finder /
-/// Remove from Library.
-///
-/// Thumbnails (cover-image extraction from each EPUB) are deferred
-/// — for v1 the row carries title + language + dates only, which
-/// is what the user needs to find the book they want. Adding
-/// thumbnails later is a non-breaking enhancement.
+/// Remove from Library. Each row carries a thumbnail of the EPUB's
+/// cover image, decoded lazily and cached in `CoverImageCache`.
 struct LibraryWindowView: View {
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var coverCache: CoverImageCache
     @Environment(\.openWindow) private var openWindow
 
     @State private var sortOrder: [KeyPathComparator<LibraryEntry>] = [
@@ -127,11 +124,15 @@ struct LibraryWindowView: View {
               selection: $selection,
               sortOrder: $sortOrder) {
             TableColumn("Title", value: \.title) { entry in
-                Text(entry.title)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(entry.epubURL.path)
+                HStack(spacing: 8) {
+                    coverThumbnail(for: entry)
+                    Text(entry.title)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(entry.epubURL.path)
+                }
             }
+            .width(min: 200, ideal: 320)
 
             TableColumn("Languages") { (entry: LibraryEntry) in
                 Text(entry.languages.map(languageLabel).joined(separator: ", "))
@@ -166,6 +167,31 @@ struct LibraryWindowView: View {
     }
 
     @ViewBuilder
+    private func coverThumbnail(for entry: LibraryEntry) -> some View {
+        // 28×40 pt = 2:3 paperback aspect at table-row scale. The
+        // cache's decoded thumbnail is sized for retina display so
+        // this just resamples down without re-decoding the original
+        // (potentially multi-MB) cover.
+        Group {
+            if let img = coverCache.image(for: entry.epubURL) {
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.12))
+                    .overlay(
+                        Image(systemName: "book.closed")
+                            .foregroundStyle(.tertiary)
+                            .imageScale(.small)
+                    )
+            }
+        }
+        .frame(width: 28, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 2))
+    }
+
+    @ViewBuilder
     private func actionButtons(for entry: LibraryEntry) -> some View {
         HStack(spacing: 4) {
             Button("Open") {
@@ -187,6 +213,7 @@ struct LibraryWindowView: View {
         }
         Divider()
         Button("Remove from Library", role: .destructive) {
+            coverCache.invalidate(entry.epubURL)
             library.remove(entry.id)
         }
     }
