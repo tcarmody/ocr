@@ -305,7 +305,7 @@ struct EditorView: View {
     private var pdfPane: some View {
         if let controller = vm.pdfController {
             VStack(spacing: 0) {
-                paneHeader("Source PDF", systemImage: "doc.richtext.fill") {
+                paneHeader("Original", systemImage: "doc.richtext.fill") {
                     pdfPaneToolbar
                 }
                 PDFKitView(pdfView: controller.pdfView)
@@ -316,8 +316,8 @@ struct EditorView: View {
                 Image(systemName: "doc.text.magnifyingglass")
                     .font(.system(size: 36))
                     .foregroundStyle(.secondary)
-                Text("No source PDF attached").foregroundStyle(.secondary)
-                Button("Attach Source PDF…") { attachSourcePDF() }
+                Text("No original document attached").foregroundStyle(.secondary)
+                Button("Attach Original…") { attachSourcePDF() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .windowBackgroundColor))
@@ -554,22 +554,22 @@ struct EditorView: View {
         ToolbarItem(placement: .primaryAction) {
             Menu {
                 if vm.sourcePDFURL == nil {
-                    Button("Attach Source PDF…") { attachSourcePDF() }
+                    Button("Attach Original…") { attachSourcePDF() }
                 } else {
-                    Button("Change Source PDF…") { attachSourcePDF() }
-                    Button("Open Source PDF in New Window") { openSourcePDFWindow() }
+                    Button("Change Original…") { attachSourcePDF() }
+                    Button("Show Original in New Window") { openSourcePDFWindow() }
                     Divider()
-                    Button("Detach Source PDF", role: .destructive) {
+                    Button("Detach Original", role: .destructive) {
                         vm.detachSourcePDF()
                     }
                 }
             } label: {
                 Label(
-                    vm.sourcePDFURL?.lastPathComponent ?? "Source PDF",
+                    vm.sourcePDFURL?.lastPathComponent ?? "Original",
                     systemImage: "doc.text.magnifyingglass"
                 )
             }
-            .help("Manage the source PDF associated with this EPUB")
+            .help("Manage the original document associated with this EPUB")
         }
         ToolbarItem(placement: .primaryAction) {
             Button {
@@ -603,7 +603,7 @@ struct EditorView: View {
 
     private func openSourcePDFWindow() {
         guard let url = vm.sourcePDFURL else { return }
-        openWindow(id: "pdf-viewer", value: url)
+        openWindow(id: "source-viewer", value: url)
     }
 
     private func paneBinding(_ pane: EditorPane) -> Binding<Bool> {

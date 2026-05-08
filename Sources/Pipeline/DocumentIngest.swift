@@ -151,7 +151,7 @@ public struct DocumentIngest {
     /// (blank-line separated), `**bold**` / `*italic*` inline. Not a
     /// full CommonMark implementation — covers the commonly-used
     /// subset and keeps dependencies out of the package.
-    func parseMarkdown(_ text: String) -> [Block] {
+    public func parseMarkdown(_ text: String) -> [Block] {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
         let lines = normalized.components(separatedBy: "\n")
         var blocks: [Block] = []

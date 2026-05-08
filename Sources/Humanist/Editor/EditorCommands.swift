@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// Editor-window commands surfaced in the menu bar. Each one reads the
 /// focused window's `EditorViewModel` via `@FocusedValue` so it acts on
@@ -481,7 +482,7 @@ private struct ShowCorrectionTrailCommand: View {
 private struct EditorPDFZoomInCommand: View {
     @FocusedObject private var vm: EditorViewModel?
     var body: some View {
-        Button("Zoom In Source PDF") { vm?.pdfZoomIn() }
+        Button("Zoom In Original") { vm?.pdfZoomIn() }
             .keyboardShortcut("=", modifiers: .command)
             .disabled(vm?.canNavigatePDF != true)
     }
@@ -490,7 +491,7 @@ private struct EditorPDFZoomInCommand: View {
 private struct EditorPDFZoomOutCommand: View {
     @FocusedObject private var vm: EditorViewModel?
     var body: some View {
-        Button("Zoom Out Source PDF") { vm?.pdfZoomOut() }
+        Button("Zoom Out Original") { vm?.pdfZoomOut() }
             .keyboardShortcut("-", modifiers: .command)
             .disabled(vm?.canNavigatePDF != true)
     }
@@ -499,7 +500,7 @@ private struct EditorPDFZoomOutCommand: View {
 private struct EditorPDFFitPageCommand: View {
     @FocusedObject private var vm: EditorViewModel?
     var body: some View {
-        Button("Fit Source PDF Page") { vm?.pdfFitPage() }
+        Button("Fit Original Page") { vm?.pdfFitPage() }
             .keyboardShortcut("0", modifiers: .command)
             .disabled(vm?.canNavigatePDF != true)
     }
@@ -511,7 +512,7 @@ private struct EditorPDFFitPageCommand: View {
 private struct EditorPDFPrevPageCommand: View {
     @FocusedObject private var vm: EditorViewModel?
     var body: some View {
-        Button("Previous Source PDF Page") { vm?.pdfPrevPage() }
+        Button("Previous Original Page") { vm?.pdfPrevPage() }
             .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
             .disabled(vm?.canNavigatePDF != true)
     }
@@ -520,7 +521,7 @@ private struct EditorPDFPrevPageCommand: View {
 private struct EditorPDFNextPageCommand: View {
     @FocusedObject private var vm: EditorViewModel?
     var body: some View {
-        Button("Next Source PDF Page") { vm?.pdfNextPage() }
+        Button("Next Original Page") { vm?.pdfNextPage() }
             .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
             .disabled(vm?.canNavigatePDF != true)
     }
@@ -653,7 +654,7 @@ private struct EditorPaneToggle: View {
         let visible = vm?.isPaneVisible(pane) ?? false
         let action = visible ? "Hide" : "Show"
         switch pane {
-        case .pdf:     return "\(action) Source PDF"
+        case .pdf:     return "\(action) Original"
         case .source:  return "\(action) Source"
         case .preview: return "\(action) Preview"
         }
@@ -672,10 +673,17 @@ private struct EditorAttachPDFCommand: View {
     @FocusedObject private var vm: EditorViewModel?
 
     var body: some View {
-        Button(vm?.sourcePDFURL == nil ? "Attach Source PDF…" : "Change Source PDF…") {
+        Button(vm?.sourcePDFURL == nil ? "Attach Original…" : "Change Original…") {
             guard let vm else { return }
             let panel = NSOpenPanel()
-            panel.allowedContentTypes = [.pdf]
+            // Accept any format the source viewer can render. PDF
+            // additionally enables Re-OCR commands; the others just
+            // get a "Show Original" pane.
+            let exts = ["pdf", "html", "htm", "rtf", "rtfd",
+                        "docx", "doc", "odt", "md", "markdown", "txt"]
+            panel.allowedContentTypes = exts.compactMap {
+                UTType(filenameExtension: $0)
+            }
             panel.allowsMultipleSelection = false
             panel.canChooseDirectories = false
             panel.canChooseFiles = true

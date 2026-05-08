@@ -141,13 +141,16 @@ struct HumanistApp: App {
             }
         }
 
-        // PDF viewer window: opened by File > Open on a PDF, or by the
-        // editor's "Open Source PDF…" command. Same URL → same window.
-        WindowGroup("PDF", id: "pdf-viewer", for: URL.self) { $url in
+        // Source viewer window: opened by File > Open on a PDF, or by
+        // the editor's "Show Original" command. Same URL → same
+        // window. Dispatches by extension so PDFs use PDFKit and
+        // other formats render via WebView / NSTextView as
+        // appropriate.
+        WindowGroup("Original", id: "source-viewer", for: URL.self) { $url in
             if let url {
-                PDFViewerView(pdfURL: url)
+                SourceViewerView(sourceURL: url)
             } else {
-                Text("No PDF loaded.")
+                Text("No document loaded.")
             }
         }
 
@@ -380,14 +383,16 @@ enum OpenRouter {
 
     static func open(_ url: URL, openWindow: OpenWindowAction) {
         RecentsStore.add(url)
-        switch url.pathExtension.lowercased() {
+        let ext = url.pathExtension.lowercased()
+        switch ext {
         case "epub":
             library?.recordOpen(url)
             openWindow(id: "editor", value: url)
-        case "pdf":
-            openWindow(id: "pdf-viewer", value: url)
         default:
-            break
+            // PDF + every other format the SourceViewer can render
+            // (HTML / DOCX / RTF / MD / TXT / ODT / DOC) goes through
+            // the unified source-viewer scene.
+            openWindow(id: "source-viewer", value: url)
         }
     }
 }

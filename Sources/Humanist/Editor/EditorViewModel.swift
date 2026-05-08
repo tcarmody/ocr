@@ -1690,7 +1690,16 @@ final class EditorViewModel: ObservableObject {
 
     private func setSourcePDF(_ url: URL?) {
         sourcePDFURL = url
-        pdfController = url.map { PDFViewerController(pdfURL: $0) }
+        // Only build the PDFKit controller when the source is
+        // actually a PDF. For other formats (HTML / DOCX / RTF /
+        // etc.) the embedded "Source PDF" pane stays inert and the
+        // user opens the document via "Show Original in New Window"
+        // — the standalone SourceViewer dispatches by extension.
+        if let url, url.pathExtension.lowercased() == "pdf" {
+            pdfController = PDFViewerController(pdfURL: url)
+        } else {
+            pdfController = nil
+        }
         // The previous controller's observer is now dangling — re-bind
         // page-change notifications to the new pdfView (or detach if
         // the user removed the source PDF altogether).

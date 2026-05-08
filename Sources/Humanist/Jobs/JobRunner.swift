@@ -352,7 +352,15 @@ final class JobRunner: ObservableObject {
                 try DocumentIngest().ingest(from: sourceURL, language: language)
             }.value
             try await Task.detached(priority: .userInitiated) {
-                try EPUBBuilder().write(book: book, to: outputURL)
+                // Pass the source URL through so the Humanist sidecar
+                // captures it inside the EPUB. The editor's "Show
+                // Original" command reads the sidecar to find the
+                // file regardless of how the EPUB has been moved.
+                try EPUBBuilder().write(
+                    book: book,
+                    sourcePDFURL: sourceURL,
+                    to: outputURL
+                )
                 if emitSiblings {
                     for url in [txtURL, mdURL] {
                         let parent = url.deletingLastPathComponent()
