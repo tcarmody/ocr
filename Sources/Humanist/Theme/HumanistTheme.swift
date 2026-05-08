@@ -57,11 +57,19 @@ enum HumanistThemeID: String, CaseIterable, Identifiable {
 /// reliably but is *not* reliable across multi-window scenes on
 /// macOS — switching the theme in Settings would update some
 /// windows immediately and leave others on the previous palette
-/// until they redrew for unrelated reasons. The shared store
-/// fixes that: every chrome-wrapped window observes it via
-/// `@EnvironmentObject`, so a single mutation broadcasts.
+/// until they redrew for unrelated reasons.
+///
+/// Exposed as a shared singleton so the chrome modifier and the
+/// settings picker both observe the same instance via
+/// `@ObservedObject`. We deliberately avoided `@EnvironmentObject`
+/// here: the chrome modifier sits at the top of every window's
+/// view chain, where the env propagated *up* from inner
+/// `.environmentObject` calls isn't visible — the env would have
+/// to be set as the outermost modifier on every scene, easy to
+/// get wrong, and the lookup failure crashes at runtime.
 @MainActor
 final class HumanistThemeStore: ObservableObject {
+    static let shared = HumanistThemeStore()
     static let storageKey = "humanist.theme"
 
     @Published var themeID: HumanistThemeID {
@@ -233,7 +241,7 @@ extension View {
 }
 
 private struct HumanistChromeModifier: ViewModifier {
-    @EnvironmentObject private var store: HumanistThemeStore
+    @ObservedObject private var store = HumanistThemeStore.shared
 
     func body(content: Content) -> some View {
         let theme = store.themeID

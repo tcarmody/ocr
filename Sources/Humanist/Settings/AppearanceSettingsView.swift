@@ -5,7 +5,7 @@ import SwiftUI
 /// Selection writes to `humanist.theme`; every window's
 /// `humanistChrome()` re-renders on the change.
 struct AppearanceSettingsView: View {
-    @EnvironmentObject private var store: HumanistThemeStore
+    @ObservedObject private var store = HumanistThemeStore.shared
 
     var body: some View {
         Form {
