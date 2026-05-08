@@ -302,9 +302,11 @@ final class QueueViewModel: ObservableObject {
         }
     }
 
-    /// Add anything dropped — PDFs go straight in, folders get walked.
-    /// Returns the count actually enqueued so the drop callback can
-    /// decide whether to play a "nothing matched" beep (currently no-op).
+    /// Add anything dropped (or selected via the file picker) — PDFs
+    /// and the supported non-PDF text inputs go straight in, folders
+    /// get walked. Returns the count actually enqueued so the drop
+    /// callback can decide whether to play a "nothing matched" beep
+    /// (currently no-op).
     @discardableResult
     func addDropped(_ urls: [URL]) -> Int {
         var added = 0
@@ -314,7 +316,11 @@ final class QueueViewModel: ObservableObject {
                 let before = store.jobs.count
                 addFolder(url)
                 added += store.jobs.count - before
-            } else if url.pathExtension.lowercased() == "pdf" {
+            } else if url.pathExtension.lowercased() == "pdf"
+                       || DocumentIngest.isSupported(url) {
+                // `addPDF` self-dispatches: PDFs go through the OCR
+                // path, supported text inputs branch to the
+                // DocumentIngest path.
                 addPDF(url)
                 added += 1
             }
@@ -342,24 +348,22 @@ final class QueueViewModel: ObservableObject {
 
     func chooseFiles() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.pdf, .plainText, .rtf] + textInputUTTypes
+        // Resolve every accepted extension via UTType.init(filenameExtension:)
+        // so the picker treats `.md` (no system-assigned UTType in
+        // some installs) the same way it treats `.txt`. Falling back
+        // to the static UTType constants directly worked for `.pdf`
+        // / `.txt` / `.rtf` but silently rejected `.md` files at
+        // selection time.
+        let extensions = ["pdf"] + DocumentIngest.supportedExtensions
+        panel.allowedContentTypes = extensions.compactMap {
+            UTType(filenameExtension: $0)
+        }
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         if panel.runModal() == .OK {
             addDropped(panel.urls)
         }
-    }
-
-    /// UTTypes for the non-PDF text inputs the launcher accepts.
-    /// Markdown isn't a system-defined type, so we declare it by
-    /// filename extension — the resolver returns the dynamic type
-    /// macOS assigns to `.md` files.
-    private var textInputUTTypes: [UTType] {
-        [
-            UTType(filenameExtension: "md"),
-            UTType(filenameExtension: "markdown"),
-        ].compactMap { $0 }
     }
 }
 

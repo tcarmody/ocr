@@ -843,10 +843,10 @@ private struct DropZone: View {
                     Image(systemName: "doc.text.image")
                         .font(.system(size: 44, weight: .light))
                         .foregroundStyle(isTargeted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
-                    Text(isTargeted ? "Release to add to queue" : "Drop PDFs or a folder of PDFs")
+                    Text(isTargeted ? "Release to add to queue" : "Drop documents or a folder")
                         .font(.title3)
                         .foregroundStyle(.secondary)
-                    Text("Folders enumerate every PDF inside, recursively.")
+                    Text("PDF, TXT, MD, RTF — folders enumerate every PDF inside, recursively.")
                         .font(.callout)
                         .foregroundStyle(.tertiary)
                 }
