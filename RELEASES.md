@@ -80,16 +80,18 @@ If your testers want the CLI too:
 
 ```sh
 swift build --product humanist-cli -c release
-
-# Resolve the binary path dynamically. Scripts/build-app.sh uses
-# `swift build -c release --arch arm64` (arch-explicit), which lands
-# outputs at .build/arm64-apple-macosx/release/ rather than the bare
-# .build/release/ symlink. `--show-bin-path` works either way.
 BIN="$(swift build --show-bin-path -c release)/humanist-cli"
-
-codesign --force --sign - "$BIN"   # ad-hoc
+codesign --force --sign - "$BIN"
 ditto -c -k --keepParent "$BIN" humanist-cli.zip
 ```
+
+`swift build --show-bin-path -c release` resolves the binary's
+directory dynamically. `Scripts/build-app.sh` uses
+`swift build -c release --arch arm64` (arch-explicit), which lands
+outputs under `.build/arm64-apple-macosx/release/` rather than the
+bare `.build/release/` symlink — `--show-bin-path` returns the
+right directory either way. `codesign --force --sign -` is the
+ad-hoc sign you want for tester distribution.
 
 CLI binary is ~6 MB. The ad-hoc sign suppresses the
 "unsigned-binary" Terminal warning on first run; testers may still
@@ -604,20 +606,19 @@ unchanged; the differences kick in at packaging time.
 
 ```sh
 swift build --product humanist-cli -c release
-
-# Resolve the binary path dynamically. `Scripts/build-app.sh` uses
-# arch-explicit `--arch arm64` builds, which land outputs under
-# `.build/arm64-apple-macosx/release/` instead of the bare
-# `.build/release/`. `--show-bin-path` returns the right directory
-# regardless of which mode produced the binary.
 BIN="$(swift build --show-bin-path -c release)/humanist-cli"
-
 codesign --force \
     --options runtime \
     --timestamp \
     --sign "$HUMANIST_SIGNING_IDENTITY" \
     "$BIN"
 ```
+
+`swift build --show-bin-path -c release` resolves the binary's
+directory regardless of whether the most recent build was
+arch-explicit (`Scripts/build-app.sh` uses `--arch arm64`, which
+lands under `.build/arm64-apple-macosx/release/` rather than the
+bare `.build/release/`).
 
 No `--entitlements` flag — CLIs don't need a sandbox profile and
 the entitlements file is for the `.app` bundle. The hardened-runtime
