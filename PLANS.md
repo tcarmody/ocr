@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-09)
+## Status snapshot (as of 2026-05-10)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -360,6 +360,52 @@ conversion via the `ConversionStats` struct returned from
   controls all three. Lands in `HTML/` when an output folder is
   configured.
 
+**Done — Distribution prep (Phase 10 partial)**:
+- **Setup wizards for external dependencies** (commits `4e5163c`,
+  `f91258d`, `bbea813`): rather than bundling Python + PyTorch +
+  Surya weights (~1.8 GB), the .app ships at ~14 MB and walks the
+  user through installing dependencies on first launch. Three
+  wizards mirror the same three-step flow:
+  - **Surya** (`SuryaSetupSheet`) — `uv tool install surya-ocr`,
+    ~1 GB. Banner on the launcher when not installed; pipeline
+    falls back to Vision-only OCR.
+  - **Tesseract** (`TesseractSetupSheet`) — `brew install tesseract
+    tesseract-lang`, ~150 MB. Contextual badge that only surfaces
+    when the user's language selection would benefit.
+  - **Ollama + Gemma 4 26B MoE** (`OllamaSetupSheet`) — local chat
+    backend, ~18 GB. Optional; chat defaults to Cloud (Haiku).
+  Each wizard offers a Skip option that's always honored.
+- **Pinned Developer ID signing** (commit `8abae61`):
+  `Scripts/build-app.sh` now pins to a specific Developer ID hash
+  rather than relying on `security find-identity` heuristics that
+  break with multiple matching certs. Hardened-runtime + timestamp
+  + deep flags added so the build is notarization-ready when a
+  proper Developer ID Application cert is available.
+- **`humanist-cli` executable** (commit `468b4d6`): full CLI
+  exposing `convert`, `compare`, `validate` subcommands. Same
+  Pipeline / EPUB / AI engines as the app; ~5.9 MB binary; uses
+  `swift-argument-parser`. All input formats (PDF / TXT / MD /
+  RTF / HTML / DOCX / DOC / ODT) and all output formats (epub,
+  md, txt, html, docx, searchable-pdf) supported via `-f`.
+  Per-feature Cloud toggles individually disableable. JSON
+  output mode for CI. Reads API key from `$ANTHROPIC_API_KEY`.
+  See `Sources/HumanistCLI/README.md` for the full surface.
+- **`RELEASES.md`** (commit `e920612`): operational walkthrough
+  for cert generation, hardened-runtime signing, `notarytool`
+  workflow, DMG assembly, GitHub Releases, optional Sparkle
+  auto-updates, and the clean-Mac smoke test.
+
+**Done — Local chat backend**:
+- **Ollama + Gemma 4 26B MoE** (commit `bbea813`): chat-with-book
+  pane gains a third backend alongside Cloud Haiku/Sonnet.
+  `OllamaClient` (HTTP, non-streaming, 300 s timeout) hits
+  `localhost:11434/api/chat`; `ChatBackend` enum drives Settings →
+  AI picker. No API key, no per-token cost, no network egress.
+  Default model `gemma4:26b` (~18 GB, ~20 GB RAM, ~25 tok/s on
+  Apple Silicon, 256K context). The "Book Chat" Settings section
+  moved outside the cloud-only conditional so a Private-mode user
+  can configure local chat without flipping their global mode.
+
 **Done — Cloud Phase 5**:
 - **`ClaudeTableExtractor`**: Sonnet-driven table structure behind
   a new `TableExtractor` protocol. `SuryaTableExtractor` adopts
@@ -378,7 +424,11 @@ conversion via the `ConversionStats` struct returned from
   by the Private Mode toggle that already ships per-job override.
 
 **Original-plan items still outstanding**:
-- Phase 10 — Polish + distribution (Sparkle, DMG, bundled Python)
+- Phase 10 — Distribution polish. Setup wizards (Surya / Tesseract /
+  Ollama) ship in lieu of bundled runtimes, and the build script is
+  notarization-ready, but the actual Developer ID cert + DMG
+  hosting + Sparkle auto-updates are still pending. See `RELEASES.md`
+  for the full operational walkthrough.
 
 **Original-plan items deferred indefinitely**:
 - Phase 9 — RTL / non-Latin classical scripts (Hebrew, Syriac,
@@ -2497,26 +2547,32 @@ use; distribution is lower priority than correctness.
 - **Library**: dedicated browser window (⇧⌘L) listing every
   converted EPUB with sortable columns + language filter +
   cross-book bulk find/replace.
+- **Tier 9 / Round 5 fully shipped**: V-PDF-Searchable, V-Refresh,
+  V-Outputs (DOCX), O-Diff side-by-side viewer.
+- **`humanist-cli`**: convert / compare / validate from the shell;
+  same engines as the .app, scriptable for CI and automation.
+- **Local chat backend** (Ollama + Gemma 4 26B MoE): chat-with-book
+  runs entirely on-device, no API key required.
+- **Setup wizards** for Surya / Tesseract / Ollama replace bundled
+  runtimes; .app bundle stays at ~14 MB.
+- **P-Vision-Concurrency**: Vision OCR + Surya layout run in
+  parallel via `async let`, ~30% per-page speedup when Surya
+  is installed.
 
 **Next, in roughly this order:**
 
-1. **Tier 9 — Remaining Round 5 items** (2 of 4 still pending):
-   - **V-Outputs (DOCX)** — binary Word output (~3 days).
-   - **O-Diff** — conversion diff tool (~3 days).
-   Rounds 1–4 are fully shipped; V-PDF-Searchable and V-Refresh
-   from Round 5 also shipped. Only DOCX output and the diff
-   tool remain.
-2. **Defer Phase 10 (distribution)** until the user actually
-   wants to share or onboard another machine. The app is signed
-   and runs locally; that's enough for personal use.
+1. **Distribution polish** — see `RELEASES.md`. Need a Developer
+   ID Application certificate (Apple Developer Program, $99/yr),
+   then notarization → DMG → GitHub Releases. ~3 days of work
+   gated on the cert.
+2. **P-Greek-Quality** — ground-truth measurement of Tesseract
+   polytonic-Greek CER. Pure measurement task; only needs
+   implementation work if CER comes back > 5%.
 3. **Stretch / speculative items in Tier 8** if a specific need
-   surfaces — Apple Foundation Models polish (when macOS 26+ is
-   the realistic minimum), custom footnote styles, audio output
-   via `AVSpeechSynthesizer`.
+   surfaces — Apple Foundation Models polish for chapter
+   classification (macOS 26 ships them on-device), custom
+   footnote styles, audio output via `AVSpeechSynthesizer`.
 
 Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely
 — corpus doesn't justify the bidi-rendering and per-script
-accuracy lifts. The originally planned hybrid Cloud feature set,
-launcher quality-of-life, editor polish, library + bulk-edit
-features, non-PDF inputs, file tools, theme system, and the
-remaining Tier 9 rounds are all done.
+accuracy lifts.

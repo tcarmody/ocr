@@ -44,9 +44,10 @@ Every conversion produces:
 | `<basename>.txt` | Plain-text sibling — flat paragraphs, footnotes in a per-chapter Notes section |
 | `<basename>.md` | Markdown sibling — headings, GFM tables, `[^N]:` footnote definitions |
 | `<basename>.html` | Self-contained HTML5 sibling — inline CSS, opens in any browser without unzipping |
+| `<basename>.docx` | Microsoft Word OOXML — opens in Word, Pages, Google Docs |
 | `<basename>.searchable.pdf` | Source PDF with an invisible OCR text overlay — Cmd+F searchable, no visual change |
 
-All siblings are regenerated whenever you save the EPUB in the editor. An optional **configurable output folder** (Settings → Conversion) routes each format into its own subfolder (`Books/`, `Text Files/`, `Markdown/`, `HTML/`).
+The launcher splits sibling outputs into two toggles: **`.txt + .md`** (cheap, on by default) and **`.html + .docx`** (heavier, off by default). All siblings are regenerated whenever you save the EPUB in the editor. An optional **configurable output folder** (Settings → Conversion) routes each format into its own subfolder (`Books/`, `Text Files/`, `Markdown/`, `HTML/`, `Word Documents/`).
 
 ## Editor
 
@@ -58,7 +59,7 @@ Every produced EPUB opens in a five-pane editor:
 | Source | ⌘2 | XHTML markup in CodeMirror — formatting toolbar, find/replace, spell check |
 | Preview | ⌘3 | Live rendered EPUB preview, auto-updates on save |
 | WYSIWYG | ⌘4 | Contenteditable WebView rendered with the book's own CSS — formatting toolbar, syncs with Source on save |
-| Chat | ⌘5 | Chat-with-book — BM25 retrieval picks relevant chapters as context; Haiku or Sonnet answers with clickable chapter citations; streaming; transcript persists across sessions |
+| Chat | ⌘5 | Chat-with-book — BM25 retrieval picks relevant chapters as context; the configured backend answers with clickable chapter citations; transcript persists across sessions. Backends: **Cloud (Haiku)**, **Cloud (Sonnet)**, or **Local (Ollama)** for fully on-device chat (default Gemma 4 26B MoE) |
 
 **Source pane** features:
 - Formatting toolbar: Bold, Italic, Code, Sup/Sub, H1–H3, Blockquote, Lists, HR, Link, Language tag, Smart Quotes
@@ -92,6 +93,34 @@ A **File Tools** menu provides four file-system utilities that work without open
 - **EPUB Join** — merge N EPUBs, each source under its own subdirectory
 - **EPUB Split** — split one EPUB into chapter-range parts
 
+## Command-line interface
+
+A second executable target — `humanist-cli` — exposes the same Pipeline and EPUB modules as a scriptable shell tool. Same engines, same conversion quality, no GUI surface.
+
+```sh
+swift build --product humanist-cli -c release
+cp .build/release/humanist-cli ~/.local/bin/
+
+humanist-cli convert paper.pdf                     # default → paper.epub
+humanist-cli convert paper.pdf -f md               # markdown only
+humanist-cli convert book.pdf -f epub,md,html,docx -o ./out
+humanist-cli convert paper.docx -f md              # DOCX → MD, bypasses OCR
+humanist-cli compare old.epub new.epub             # paragraph-level diff
+humanist-cli validate book.epub                    # epubcheck wrapper
+```
+
+Per-feature Cloud toggles are individual (`--no-claude-tables`, `--no-coherence-pass`, etc.); `--private` forces all off. API key reads from `$ANTHROPIC_API_KEY`. JSON output mode (`--json`) for CI / scripts. Full reference at [Sources/HumanistCLI/README.md](Sources/HumanistCLI/README.md).
+
+## Setup wizards
+
+External dependencies are installed by the user on first launch via in-app wizards rather than bundled in the .app — keeps the bundle tiny (~14 MB), keeps notarization simple, and lets users opt out of any dependency they don't need:
+
+- **Surya** (~1 GB) — layout analysis. Without it the cascade falls back to Vision-only OCR with no region classification. Banner appears on the launcher when not installed; wizard at *Welcome → Set up Surya…* uses `uv tool install surya-ocr`.
+- **Tesseract** (~150 MB) — classical-script OCR (polytonic Greek, Latin, Hebrew). The "Tesseract not installed" badge is contextual — only shows when your language selection would benefit. Wizard installs via `brew install tesseract tesseract-lang`.
+- **Ollama + Gemma 4 26B MoE** (~18 GB) — local chat backend. Optional; the chat pane defaults to Cloud (Haiku). Wizard at *Settings → AI → Set Up Local Chat…* walks through `ollama pull gemma4:26b`.
+
+Each wizard mirrors the same three-step flow: install the package manager (Homebrew / uv / Ollama), install the dependency, verify. Live streamed install output, contextual error messages, and a "Skip" option that's always honored.
+
 ## Privacy posture
 
 **Private mode is the default.** Everything runs locally — Vision, Surya, Tesseract — and no data leaves your machine. Cloud features only run when you enable them in Settings (⌘,) and provide an Anthropic API key. Per-feature toggles let you opt in one at a time; a per-book call cap bounds the worst-case cost.
@@ -120,15 +149,16 @@ Typical cost is pennies to a few dollars per book depending on which features ar
 ocr/
 ├── Package.swift
 ├── Sources/
-│   ├── Humanist/                       SwiftUI app — launcher, editor, settings, library, file tools
+│   ├── Humanist/                       SwiftUI app — launcher, editor, settings, library, file tools, setup wizards
 │   │   └── Editor/Chat/                Chat-with-book view model + BM25 keyword index
+│   ├── HumanistCLI/                    `humanist-cli` executable — convert/compare/validate from the shell
 │   ├── Document/                       Canonical IR — Book / Chapter / Block / InlineRun / Footnote
 │   ├── PDFIngest/                      PDFKit rendering, embedded-text scoring, two-up detection, language profiler
 │   ├── OCR/                            OCREngine protocol — Vision, Tesseract, embedded-text gap-filler
 │   ├── Layout/                         Surya sidecar bridge + region classification
-│   ├── Pipeline/                       Orchestration: source → cascade → reflow → chapters → EPUB + siblings
-│   ├── EPUB/                           Book IR → EPUB 3 zipfile; XHTML / nav / OPF writers; in-memory editor model
-│   └── AI/                             Anthropic API client, Batches API client, models, settings, key store
+│   ├── Pipeline/                       Orchestration: source → cascade → reflow → chapters → EPUB + siblings + DOCX
+│   ├── EPUB/                           Book IR → EPUB 3 zipfile; XHTML / nav / OPF writers; in-memory editor model; differ + validator
+│   └── AI/                             Anthropic API client, Batches API client, Ollama client, models, settings, key store
 ├── Tests/                              ~400 tests across all modules
 ├── Resources/
 │   └── codemirror/                     Vendored CodeMirror 5 for the editor's source pane
@@ -158,8 +188,11 @@ Standard EPUB readers ignore unknown `META-INF` files, so these round-trip throu
 
 ## Plans
 
-[PLANS.md](PLANS.md) tracks remaining work. Most of the originally-planned feature set is shipped. Active items:
+[PLANS.md](PLANS.md) tracks remaining work. The core conversion pipeline, editor, library, and the full Tier 9 conversion-quality push are all shipped. Active items are mostly distribution prep:
 
-- **V-Outputs (DOCX)** — binary Word output alongside the existing txt/md/html siblings
-- **O-Diff** — side-by-side conversion diff tool (Cloud vs Private, different settings)
-- **Phase 10 (distribution)** — bundled Python + Tesseract, notarized DMG, Sparkle updates; deferred until there's a reason to distribute beyond the current machine
+- **Code-signing + notarization** — see [RELEASES.md](RELEASES.md) for the full DMG / Developer ID / `notarytool` workflow.
+- **Phase 10 distribution** — DMG hosting, optional Sparkle auto-updates. Deferred until there's a reason to ship beyond the current setup.
+- **P-Greek-Quality** — measure Tesseract polytonic-Greek CER against hand-corrected ground truth.
+- **Stretch (Tier 8)** — Apple Foundation Models on macOS 26+ for chapter classification, custom footnote styles, EPUB 3 audio overlays.
+
+Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely.
