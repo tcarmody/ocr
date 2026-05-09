@@ -794,16 +794,20 @@ private struct ModeStrip: View {
 
     @ViewBuilder
     private var modeBadge: some View {
-        switch settings.processingMode {
-        case .privateLocal:
-            Label("Private", systemImage: "lock.shield")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-        case .cloud:
-            Label("Cloud", systemImage: "cloud")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.tint)
+        Button { openSettings() } label: {
+            switch settings.processingMode {
+            case .privateLocal:
+                Label("Private", systemImage: "lock.shield")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+            case .cloud:
+                Label("Cloud", systemImage: "cloud")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.tint)
+            }
         }
+        .buttonStyle(.borderless)
+        .help("Processing mode — click to open Settings (⌘,)")
     }
 
     @ViewBuilder
