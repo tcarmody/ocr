@@ -306,28 +306,42 @@ gh release create v1.0.0 dist/Humanist-1.0.0.dmg \
 ### Highlights
 - (1–3 user-visible bullets)
 
-### Setup
-First launch will offer to install **Surya** (layout analysis,
-~1 GB) and **Tesseract** (classical-script OCR, ~150 MB) via their
-respective setup wizards. Both are optional — without them
-conversions fall back to Apple Vision.
+### Install (GUI)
+Download `Humanist-1.0.0.dmg`, mount, drag to Applications. First
+launch offers to install **Surya** (layout analysis, ~1 GB) and
+**Tesseract** (classical-script OCR, ~150 MB) via in-app setup
+wizards. Both are optional — without them conversions fall back to
+Apple Vision OCR.
+
+### Install (CLI)
+```sh
+curl -L https://github.com/USER/ocr/releases/download/v1.0.0/humanist-cli-1.0.0-arm64.tar.gz | tar xz
+sudo mv humanist-cli /usr/local/bin/
+humanist-cli --version
+```
+
+Or via Homebrew tap (if configured):
+```sh
+brew tap USER/humanist
+brew install humanist-cli
+```
 
 ### Requires
-macOS 26 (Tahoe) or later. Apple Silicon recommended; Intel Macs
-work but have not been tested in this release.
+macOS 26 (Tahoe) or later. Apple Silicon only.
 
 ### SHA-256
-`<sha256 of the DMG>`
+- DMG: `<sha256 of the DMG>`
+- CLI tarball: `<sha256 of the .tar.gz>`
 ```
 
-Hash the DMG before publishing:
+Hash both artifacts before publishing:
 
 ```sh
-shasum -a 256 dist/Humanist-1.0.0.dmg
+shasum -a 256 dist/Humanist-1.0.0.dmg dist/humanist-cli-1.0.0-arm64.tar.gz
 ```
 
-Paste the digest into the release notes so users can verify their
-download.
+Paste both digests into the release notes so users can verify
+either download.
 
 ---
 
@@ -422,6 +436,196 @@ secondhand summary.
 
 ---
 
+## 11. Distributing the CLI
+
+The CLI is much simpler to ship than the .app: a single ~6 MB Mach-O,
+no resources to bundle, no `.app` structure, no DMG. Sections 1–5
+above (Developer ID cert + `notarytool` credential setup) apply
+unchanged; the differences kick in at packaging time.
+
+### Build and sign
+
+```sh
+swift build --product humanist-cli -c release
+
+codesign --force \
+    --options runtime \
+    --timestamp \
+    --sign "$HUMANIST_SIGNING_IDENTITY" \
+    .build/release/humanist-cli
+```
+
+No `--entitlements` flag — CLIs don't need a sandbox profile and
+the entitlements file is for the `.app` bundle. The hardened-runtime
++ timestamp flags are still required for notarization.
+
+### Notarize
+
+`notarytool` accepts a zip; CLIs can't be submitted as a bare binary.
+
+```sh
+ditto -c -k --keepParent .build/release/humanist-cli humanist-cli.zip
+
+xcrun notarytool submit humanist-cli.zip \
+    --keychain-profile humanist-notary \
+    --wait
+```
+
+**Important difference from the `.app`:** you cannot `stapler staple`
+a CLI binary. Stapling only works on `.app` / `.pkg` / `.dmg`
+containers. For a notarized CLI, Gatekeeper verifies the
+notarization online on first run instead of from an attached ticket.
+This means:
+
+- First-run requires internet access.
+- Subsequent runs cache the verdict.
+- Terminal-launched binaries get less Gatekeeper scrutiny than
+  double-clicked apps regardless, so the notarization is mostly a
+  trust signal for users who care to check rather than a hard
+  blocker.
+
+If you want a stapleable container, wrap the CLI in a `.pkg`
+installer instead — `productbuild` builds one, you can `stapler
+staple` it, and `pkg` installers are the convention for command-line
+tools shipped through enterprise channels. For personal /
+small-team distribution this is overkill; the zipped binary plus
+online notarization works fine.
+
+### Package for distribution
+
+Tarball is the convention for CLI tools:
+
+```sh
+mkdir -p dist
+cp .build/release/humanist-cli dist/
+cp Sources/HumanistCLI/README.md dist/README.md
+cp LICENSE dist/ 2>/dev/null || true
+
+VERSION="1.0.0"
+TARBALL="dist/humanist-cli-${VERSION}-arm64.tar.gz"
+( cd dist && tar -czf "$(basename "$TARBALL")" humanist-cli README.md LICENSE 2>/dev/null )
+shasum -a 256 "$TARBALL"
+```
+
+Note the `arm64` in the filename. Humanist is Apple-Silicon only,
+and the CLI binary is single-arch by default. If you ever produce
+a universal binary (`swift build --arch arm64 --arch x86_64`),
+rename to `universal2` to match Apple's convention.
+
+### Distribute
+
+Two channels are worth offering:
+
+**GitHub Releases (simplest, always available)**
+
+Users download the tarball directly:
+
+```sh
+gh release create v1.0.0 \
+    dist/Humanist-1.0.0.dmg \
+    dist/humanist-cli-1.0.0-arm64.tar.gz \
+    --title "Humanist 1.0.0" \
+    --notes-file release-notes.md
+```
+
+The release notes should include a one-liner install:
+
+```sh
+curl -L https://github.com/USER/ocr/releases/download/v1.0.0/humanist-cli-1.0.0-arm64.tar.gz | tar xz
+sudo mv humanist-cli /usr/local/bin/
+humanist-cli --version
+```
+
+**Homebrew tap (richer UX for users who already use brew)**
+
+For users on Homebrew, a tap formula lets them
+`brew install <tap>/humanist-cli`. Two-step setup:
+
+1. Create a separate repo named `homebrew-humanist` (the
+   `homebrew-` prefix is required by `brew tap`).
+2. Add `Formula/humanist-cli.rb`:
+
+```ruby
+class HumanistCli < Formula
+  desc "Convert academic PDFs to EPUB / Markdown / HTML / DOCX / searchable PDF"
+  homepage "https://github.com/USER/ocr"
+  url "https://github.com/USER/ocr/releases/download/v1.0.0/humanist-cli-1.0.0-arm64.tar.gz"
+  sha256 "<paste shasum -a 256 output>"
+  version "1.0.0"
+  license "MIT"  # or whatever applies
+
+  depends_on arch: :arm64
+  depends_on macos: :tahoe   # macOS 26+
+
+  # Optional dependencies — the CLI auto-detects them at runtime.
+  # Listing here gives users `brew install --with-tesseract` style
+  # guidance via the caveats block below.
+  # depends_on "tesseract" => :optional
+  # depends_on "epubcheck" => :optional
+
+  def install
+    bin.install "humanist-cli"
+  end
+
+  def caveats
+    <<~EOS
+      humanist-cli works out of the box with Apple Vision OCR.
+      For full functionality, install the optional dependencies:
+        brew install tesseract tesseract-lang   # classical-script OCR
+        brew install epubcheck                  # `humanist-cli validate`
+        uv tool install surya-ocr               # layout analysis
+    EOS
+  end
+
+  test do
+    system "#{bin}/humanist-cli", "--version"
+  end
+end
+```
+
+3. Users install:
+
+```sh
+brew tap USER/humanist
+brew install humanist-cli
+```
+
+Per release: bump `url` + `sha256` + `version` in the formula and
+push to the tap repo. Brew handles upgrade detection automatically.
+
+### Send-to-a-friend path (no Developer ID required)
+
+For one-off sharing — a colleague, a CI machine you control, your
+own second laptop — ad-hoc signing works fine:
+
+```sh
+swift build --product humanist-cli -c release
+codesign --force --sign - .build/release/humanist-cli
+ditto -c -k --keepParent .build/release/humanist-cli humanist-cli.zip
+```
+
+Recipient unzips, runs from Terminal. macOS may prompt once on
+first run; once approved, it runs without warnings. No
+notarization required because Terminal-launched binaries are not
+double-clicked apps and Gatekeeper applies a softer policy.
+
+This is the "share with a small group of testers" path mirrored
+from the `.app` story above. Identical trade-off: works fine for
+people you can talk to, not the right path for public
+distribution.
+
+### Per-release CLI checklist
+
+- [ ] `swift build --product humanist-cli -c release` succeeds.
+- [ ] `codesign --verify` passes against `Developer ID Application`.
+- [ ] `notarytool submit` returns `Accepted`.
+- [ ] Tarball assembled with binary + README + LICENSE.
+- [ ] SHA-256 computed and recorded.
+- [ ] If using a Homebrew tap: formula updated with new url +
+      sha256 + version, pushed to the tap repo.
+- [ ] Smoke test on a clean Mac:
+      `curl -L <release-url> | tar xz && ./humanist-cli convert sample.pdf -f md`
+
 ## Summary checklist for shipping a release
 
 For each version, in order:
@@ -438,10 +642,20 @@ For each version, in order:
 - [ ] `stapler staple` the .app.
 - [ ] `Scripts/build-dmg.sh <version>` (signs + notarizes + staples
       the DMG).
-- [ ] Compute and record the SHA-256.
+- [ ] `swift build --product humanist-cli -c release` and sign the
+      CLI binary with the same Developer ID.
+- [ ] Notarize the CLI zip via `notarytool submit`.
+- [ ] Tarball the CLI (`humanist-cli`, `README.md`, `LICENSE`) per
+      §11.
+- [ ] Compute and record SHA-256 for both the DMG and the CLI tarball.
 - [ ] `git tag` and push.
-- [ ] `gh release create` with the DMG and notes.
-- [ ] Smoke test on a clean Mac via the GitHub Releases URL.
+- [ ] `gh release create` with both the DMG and the CLI tarball
+      attached, plus release notes that include both install
+      one-liners.
+- [ ] If using a Homebrew tap: bump the `humanist-cli` formula's
+      `url` + `sha256` + `version`.
+- [ ] Smoke test on a clean Mac: install the .app from the DMG,
+      install the CLI from `curl | tar xz` (or `brew install`).
 - [ ] Announce.
 
 ---
