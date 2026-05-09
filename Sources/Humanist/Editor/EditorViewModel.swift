@@ -1045,6 +1045,45 @@ final class EditorViewModel: ObservableObject {
     /// `showSpecialCharacterPicker`.
     @Published var showGotoLineSheet: Bool = false
 
+    /// Drives the Insert > Footnote Manager sheet.
+    @Published var showFootnoteManager: Bool = false
+
+    /// Drives the Document > Chapter Manager sheet.
+    @Published var showChapterManager: Bool = false
+
+    /// Incremented by `equalizePanes()` so `EditorView` knows to
+    /// resize all visible panes to equal widths.
+    @Published private(set) var equalizePanesSignal: Int = 0
+
+    func equalizePanes() { equalizePanesSignal += 1 }
+
+    /// Bumped after every successful `save()`. `WYSIWYGView` watches
+    /// this and reloads its WebView if the body text changed since the
+    /// last time the WYSIWYG was loaded — keeps the two panes in sync
+    /// after Source-pane edits are saved.
+    @Published private(set) var wysiwygReloadToken: Int = 0
+
+    /// Read a chapter's text from the in-memory buffer (if modified)
+    /// or from disk. Returns nil when the file can't be read.
+    func readChapterText(_ url: URL) -> String? {
+        let canonical = url.canonicalForFile
+        if let buf = buffers[canonical] { return buf }
+        return try? String(contentsOf: canonical, encoding: .utf8)
+    }
+
+    /// Write modified text for a chapter back into the buffer so
+    /// Save will flush it. Also updates `sourceText` when the
+    /// chapter is currently selected.
+    func writeChapterText(_ text: String, to url: URL) {
+        let canonical = url.canonicalForFile
+        buffers[canonical] = text
+        dirtyURLs.insert(canonical)
+        isDirty = true
+        if selectedFile?.id.canonicalForFile == canonical {
+            sourceText = text
+        }
+    }
+
     // MARK: - Custom styles (R-Custom-Styles)
 
     /// Drives the Tools > Customize Style sheet. Same view-flag
@@ -2249,6 +2288,7 @@ final class EditorViewModel: ObservableObject {
             try? self.reloadBookFromDisk()
             self.isDirty = false
             self.saveState = .idle
+            self.wysiwygReloadToken &+= 1
             // Keep linked exports in sync. Best-effort: only
             // regenerates sibling files that already exist (next to
             // the EPUB or in the configured output folder), so the

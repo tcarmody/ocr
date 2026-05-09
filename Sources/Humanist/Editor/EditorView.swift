@@ -46,7 +46,7 @@ struct EditorView: View {
     private var showWYSIWYG: Bool { vm.showWYSIWYGPane }
     private var showPreview: Bool { vm.showPreviewPane }
     private var showChat:    Bool { vm.showChatPane }
-    @State private var wysiwygCommand: WYSIWYGCommand?
+    @State private var wysiwygCommand: WYSIWYGCommandRequest?
 
     var body: some View {
         Group {
@@ -76,7 +76,13 @@ struct EditorView: View {
                     .navigationTitle(book.displayTitle)
                     .navigationSubtitle(saveStatusSubtitle)
                     .toolbar { toolbarContent }
-                    .background(WindowDirtyBridge(isDirty: vm.isDirty))
+                    .background(
+                        WindowSaveGuard(
+                            isDirty: vm.isDirty,
+                            bookTitle: book.displayTitle,
+                            onSave: { await vm.save() }
+                        )
+                    )
                     // Two routing channels for menu-bar commands:
                     //   * `.focusedObject` — read by `@FocusedObject`
                     //     in EditorCommands' Document menu (pane
@@ -163,6 +169,12 @@ struct EditorView: View {
                                 )
                             )
                         }
+                    }
+                    .sheet(isPresented: $vm.showFootnoteManager) {
+                        FootnoteManagerSheet(vm: vm)
+                    }
+                    .sheet(isPresented: $vm.showChapterManager) {
+                        ChapterManagerSheet(vm: vm)
                     }
                     // Phase 5a: Insert > Special Character picker
                     // sheet. Driven by the EditorViewModel flag the
@@ -284,22 +296,59 @@ struct EditorView: View {
         } else if visibleCount == 1 {
             singlePane(workingDir: workingDir)
         } else {
+            // "First visible" pane: no leading accent and hosts the
+            // PaneEqualizerBridge that walks up to the NSSplitView.
+            let firstVisible: EditorPane = showPDF ? .pdf
+                : showSource ? .source
+                : showWYSIWYG ? .wysiwyg
+                : showPreview ? .preview
+                : .chat
             let minWidth: CGFloat = visibleCount >= 3 ? 220 : 280
             HSplitView {
                 if showPDF {
-                    pdfPane.frame(minWidth: minWidth)
+                    pdfPane
+                        .frame(minWidth: minWidth)
+                        .paneDecorations(
+                            isFirst: firstVisible == .pdf,
+                            equalizeSignal: vm.equalizePanesSignal,
+                            onEqualize: { vm.equalizePanes() }
+                        )
                 }
                 if showSource {
-                    sourcePane.frame(minWidth: minWidth)
+                    sourcePane
+                        .frame(minWidth: minWidth)
+                        .paneDecorations(
+                            isFirst: firstVisible == .source,
+                            equalizeSignal: vm.equalizePanesSignal,
+                            onEqualize: { vm.equalizePanes() }
+                        )
                 }
                 if showWYSIWYG {
-                    wysiwygPane.frame(minWidth: minWidth)
+                    wysiwygPane
+                        .frame(minWidth: minWidth)
+                        .paneDecorations(
+                            isFirst: firstVisible == .wysiwyg,
+                            equalizeSignal: vm.equalizePanesSignal,
+                            onEqualize: { vm.equalizePanes() }
+                        )
                 }
                 if showPreview {
-                    previewPane(workingDir: workingDir).frame(minWidth: minWidth)
+                    previewPane(workingDir: workingDir)
+                        .frame(minWidth: minWidth)
+                        .paneDecorations(
+                            isFirst: firstVisible == .preview,
+                            equalizeSignal: vm.equalizePanesSignal,
+                            onEqualize: { vm.equalizePanes() }
+                        )
                 }
                 if showChat {
-                    chatPane.frame(minWidth: minWidth)
+                    chatPane
+                        .frame(minWidth: minWidth)
+                        .paneDecorations(
+                            isFirst: firstVisible == .chat,
+                            equalizeSignal: vm.equalizePanesSignal,
+                            onEqualize: { vm.equalizePanes() }
+                        )
                 }
             }
         }
@@ -479,6 +528,7 @@ struct EditorView: View {
                     resetID: AnyHashable(file.id),
                     cssURL: vm.bookCSSURL,
                     commandRequest: $wysiwygCommand,
+                    reloadAfterSaveToken: vm.wysiwygReloadToken,
                     appearance: WYSIWYGAppearance(
                         fontFamily: EditorFontFamily(rawValue: wysiwygFontFamily) ?? .serif,
                         fontSize: wysiwygFontSize,
@@ -749,20 +799,177 @@ struct EditorView: View {
     }
 }
 
-/// Tiny NSViewRepresentable that, when mounted, finds its hosting
-/// NSWindow and toggles `isDocumentEdited`. macOS shows a dot in the
-/// red close button when this is true. Pure side-effect view — has
-/// no visible representation.
-private struct WindowDirtyBridge: NSViewRepresentable {
-    let isDirty: Bool
+// MARK: - Pane decoration helpers
+
+private extension View {
+    /// Apply the two pane decorations:
+    ///  1. A 2 pt leading accent line that makes the NSSplitView
+    ///     divider visually thicker (non-first panes only).
+    ///  2. A hidden PaneEqualizerBridge that walks up to the
+    ///     NSSplitView and equalizes pane widths when signalled
+    ///     (first pane only, so there's exactly one bridge per split).
+    func paneDecorations(
+        isFirst: Bool,
+        equalizeSignal: Int,
+        onEqualize: @escaping () -> Void
+    ) -> some View {
+        self
+            .overlay(alignment: .leading) {
+                if !isFirst {
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor).opacity(0.8))
+                        .frame(width: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .background {
+                if isFirst {
+                    PaneEqualizerBridge(equalizeSignal: equalizeSignal)
+                }
+            }
+            .contextMenu {
+                Button("Equalize Panes") { onEqualize() }
+            }
+    }
+}
+
+/// Hidden NSViewRepresentable placed in the first visible pane's
+/// background. When `equalizeSignal` changes it finds the enclosing
+/// NSSplitView and distributes all subview widths equally.
+private struct PaneEqualizerBridge: NSViewRepresentable {
+    let equalizeSignal: Int
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let v = NSView()
-        DispatchQueue.main.async { v.window?.isDocumentEdited = isDirty }
+        v.frame = .zero
         return v
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { nsView.window?.isDocumentEdited = isDirty }
+        let coord = context.coordinator
+        guard equalizeSignal != coord.lastSignal else { return }
+        coord.lastSignal = equalizeSignal
+        // Defer so the view hierarchy is fully laid out before we
+        // read its frame dimensions.
+        DispatchQueue.main.async {
+            guard let splitView = Self.enclosingSplitView(of: nsView) else { return }
+            Self.equalize(splitView)
+        }
+    }
+
+    /// Walk up the AppKit hierarchy to find the first NSSplitView
+    /// ancestor. Because the PaneEqualizerBridge lives inside a pane
+    /// that is a direct NSHostingView child of the HSplitView's
+    /// NSSplitView, this returns the content NSSplitView, not the
+    /// outer NavigationSplitView.
+    private static func enclosingSplitView(of view: NSView) -> NSSplitView? {
+        var current: NSView? = view.superview
+        while let v = current {
+            if let sv = v as? NSSplitView { return sv }
+            current = v.superview
+        }
+        return nil
+    }
+
+    private static func equalize(_ sv: NSSplitView) {
+        let n = sv.subviews.count
+        guard n > 1 else { return }
+        let total = sv.bounds.width - sv.dividerThickness * CGFloat(n - 1)
+        let each = total / CGFloat(n)
+        for i in 0..<(n - 1) {
+            let pos = each * CGFloat(i + 1) + sv.dividerThickness * CGFloat(i)
+            sv.setPosition(pos, ofDividerAt: i)
+        }
+    }
+
+    final class Coordinator {
+        var lastSignal: Int = -1
+    }
+}
+
+/// Sets `isDocumentEdited` on the hosting window (shows the dot in
+/// the red close button) and intercepts window-close when there are
+/// unsaved changes. Prompts: Save / Discard / Cancel.
+private struct WindowSaveGuard: NSViewRepresentable {
+    let isDirty: Bool
+    let bookTitle: String
+    let onSave: () async -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> _SaveGuardNSView {
+        let v = _SaveGuardNSView()
+        v.onWindowAttached = { window in
+            context.coordinator.attach(to: window)
+        }
+        return v
+    }
+
+    func updateNSView(_ nsView: _SaveGuardNSView, context: Context) {
+        context.coordinator.parent = self
+        DispatchQueue.main.async {
+            nsView.window?.isDocumentEdited = self.isDirty
+            if let window = nsView.window {
+                context.coordinator.attach(to: window)
+            }
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var parent: WindowSaveGuard
+        private weak var attachedWindow: NSWindow?
+        /// Set before programmatically closing so `windowShouldClose`
+        /// doesn't show the alert a second time.
+        private var closingProgrammatically = false
+
+        init(parent: WindowSaveGuard) { self.parent = parent }
+
+        func attach(to window: NSWindow) {
+            guard attachedWindow !== window else { return }
+            attachedWindow = window
+            window.delegate = self
+        }
+
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            guard parent.isDirty && !closingProgrammatically else { return true }
+
+            let alert = NSAlert()
+            alert.messageText = "Save \u{201C}\(parent.bookTitle)\u{201D} before closing?"
+            alert.informativeText = "Your changes will be lost if you don't save them."
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Discard Changes")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: // Save → async save then close
+                Task { @MainActor [weak self, weak sender] in
+                    guard let self, let sender else { return }
+                    await self.parent.onSave()
+                    self.closingProgrammatically = true
+                    sender.close()
+                }
+                return false
+            case .alertSecondButtonReturn: // Discard → close immediately
+                return true
+            default: // Cancel
+                return false
+            }
+        }
+    }
+}
+
+/// NSView subclass that calls back when it moves into a window.
+/// Needed because at `makeNSView` time the view isn't yet in a
+/// window — `viewDidMoveToWindow` fires after insertion.
+final class _SaveGuardNSView: NSView {
+    var onWindowAttached: ((NSWindow) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window { onWindowAttached?(window) }
     }
 }

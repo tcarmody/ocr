@@ -31,9 +31,17 @@ struct WYSIWYGView: NSViewRepresentable {
     /// rendered view inlines a `<base>` and a `<link>` so the
     /// book's typography matches what the EPUB reader shows.
     let cssURL: URL?
-    /// Outbound formatting commands from the toolbar. The
-    /// coordinator drains these on every update.
-    @Binding var commandRequest: WYSIWYGCommand?
+    /// Outbound formatting commands from the toolbar. Each request
+    /// carries a UUID nonce so the coordinator can detect re-renders
+    /// and skip re-applying a command it has already handled.
+    @Binding var commandRequest: WYSIWYGCommandRequest?
+    /// Bumped by `EditorViewModel` after a successful save. When this
+    /// changes and the body text stored in the coordinator differs from
+    /// the current `xhtml`, the WebView reloads so Source-pane edits
+    /// are reflected here. No-ops when the WYSIWYG is itself the
+    /// source of the latest changes (i.e. `lastObservedBodyHTML` already
+    /// matches `xhtml`).
+    let reloadAfterSaveToken: Int
     /// User-tweakable look. Bundle of font + size + theme — when
     /// these change, the coordinator reapplies them via a tiny JS
     /// hook without reloading the page (no cursor jump).
@@ -69,10 +77,26 @@ struct WYSIWYGView: NSViewRepresentable {
             context.coordinator.lastAppearance = appearance
             context.coordinator.applyAppearance()
         }
-        if let cmd = commandRequest {
-            coord.applyCommand(cmd)
+        if let req = commandRequest {
+            if req.id != coord.lastAppliedCommandID {
+                coord.lastAppliedCommandID = req.id
+                coord.applyCommand(req.command)
+            }
             DispatchQueue.main.async {
                 self.commandRequest = nil
+            }
+        }
+
+        // Post-save sync: if a save just completed and the body text in
+        // `xhtml` differs from what the WYSIWYG last loaded, reload so
+        // Source-pane edits become visible here. Skip when the WYSIWYG
+        // itself was the source of the latest changes (body already
+        // matches `lastObservedBodyHTML`).
+        if reloadAfterSaveToken != coord.lastSeenSaveToken {
+            coord.lastSeenSaveToken = reloadAfterSaveToken
+            let currentBody = WYSIWYGHTML.extractBody(from: xhtml)
+            if currentBody != coord.lastLoadedBodyHTML {
+                coord.loadInitial()
             }
         }
     }
@@ -94,6 +118,18 @@ struct WYSIWYGView: NSViewRepresentable {
         /// toolbar still works on a freshly-mounted pane.
         var isReady: Bool = false
         var pendingJS: [String] = []
+        /// UUID of the last command request we applied. Guards against
+        /// re-applying the same click when SwiftUI re-renders
+        /// `updateNSView` before the async `commandRequest = nil` fires.
+        var lastAppliedCommandID: UUID?
+        /// Body HTML of the XHTML that was most recently loaded into
+        /// the WebView (either via `loadInitial` or produced by the
+        /// WYSIWYG itself via `postEdit`). Used to decide whether a
+        /// post-save reload is needed.
+        var lastLoadedBodyHTML: String = ""
+        /// Last `reloadAfterSaveToken` we acted on. Compared in
+        /// `updateNSView` to detect a new save completion.
+        var lastSeenSaveToken: Int = -1
 
         init(parent: WYSIWYGView) {
             self.parent = parent
@@ -104,8 +140,10 @@ struct WYSIWYGView: NSViewRepresentable {
 
         func loadInitial() {
             isReady = false
+            let bodyContents = WYSIWYGHTML.extractBody(from: parent.xhtml)
+            lastLoadedBodyHTML = bodyContents
             let html = renderEnvelope(
-                bodyContents: WYSIWYGHTML.extractBody(from: parent.xhtml),
+                bodyContents: bodyContents,
                 cssURL: parent.cssURL,
                 appearance: parent.appearance
             )
@@ -147,6 +185,10 @@ struct WYSIWYGView: NSViewRepresentable {
             case "edit":
                 if let body = dict["body"] as? String {
                     lastObservedBodyHTML = body
+                    // Keep lastLoadedBodyHTML in sync with WYSIWYG edits
+                    // so a save triggered right after a WYSIWYG edit
+                    // doesn't incorrectly treat the content as stale.
+                    lastLoadedBodyHTML = body
                     let updated = WYSIWYGHTML.replaceBody(
                         in: parent.xhtml, with: body
                     )
@@ -214,6 +256,20 @@ struct WYSIWYGAppearance: Equatable {
     var fontFamily: EditorFontFamily
     var fontSize: Double
     var theme: EditorThemeMode
+}
+
+/// A toolbar button press wrapped with a UUID nonce so each click is
+/// a unique value. Without the nonce, rapid button presses (or
+/// SwiftUI re-renders triggered by the edit round-trip) can re-apply
+/// the same command because `commandRequest = nil` is deferred.
+struct WYSIWYGCommandRequest: Equatable {
+    let command: WYSIWYGCommand
+    let id: UUID
+
+    init(_ command: WYSIWYGCommand) {
+        self.command = command
+        self.id = UUID()
+    }
 }
 
 /// Toolbar-driven action a `WYSIWYGView` can dispatch into the

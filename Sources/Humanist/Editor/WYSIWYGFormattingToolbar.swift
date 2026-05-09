@@ -6,7 +6,7 @@ import AppKit
 /// in a buffer, each button dispatches a `WYSIWYGCommand` that the
 /// underlying WebView executes against its current selection.
 struct WYSIWYGFormattingToolbar: View {
-    @Binding var commandRequest: WYSIWYGCommand?
+    @Binding var commandRequest: WYSIWYGCommandRequest?
     @State private var showingLinkPopover = false
     @State private var showingLanguagePopover = false
     @State private var linkURL = ""
@@ -188,6 +188,6 @@ struct WYSIWYGFormattingToolbar: View {
     }
 
     private func send(_ command: WYSIWYGCommand) {
-        commandRequest = command
+        commandRequest = WYSIWYGCommandRequest(command)
     }
 }

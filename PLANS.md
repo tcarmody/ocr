@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-06)
+## Status snapshot (as of 2026-05-09)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -176,6 +176,30 @@ conversion via the `ConversionStats` struct returned from
 - OCR toggles renamed: "Claude OCR" + "Surya OCR" (commit
   `3d8e4c3`); Claude OCR labeled with cost indicator (commit
   `766bcfe`).
+- Italic/bold preserved through run reconstruction: per-word
+  font attributes from Tesseract (`WordFontAttributes`), Vision
+  italic/bold flags, and typographic heading-cue heuristics all
+  flow through to `InlineRun.isItalic` / `isBold` in the final
+  output XHTML (commits `e74aa21`, `7aa35a6`, `f761e6a`).
+- Page-OCR robustness: downsize pages to fit Anthropic's 5 MB /
+  8000 px limits before sending (commit `37c6286`); fall back to
+  local Vision OCR when Sonnet refuses or errors on a page
+  (commit `4dc1e45`).
+- **V-PDF-Searchable** (commit `30a9486`): "Searchable PDF"
+  toggle in the launcher emits `<basename>.searchable.pdf`
+  alongside the EPUB — source PDF re-rendered with an invisible
+  OCR text overlay per observation. No extra OCR cost (reuses
+  the pipeline's `TextObservation` arrays). Routes to the
+  configured output folder's `Books/` subfolder when set.
+- **V-Refresh — Re-OCR All Pages** (commits `991b1bb`,
+  `0025c5b`): Document menu → "Re-OCR All Pages With ▸ {engine}"
+  walks every page-map entry, re-renders the matching PDF page,
+  reflows via the standard pipeline, and splices the result
+  between `hu-page-N` anchors using `PageContentReplacer` (a
+  Swift port of the CodeMirror splice logic). v2 preserves
+  manual edits made in the XHTML between re-OCR pages — partial
+  runs keep forward progress. Disabled without an attached source
+  PDF + page-map sidecar.
 
 **Done — UX cleanups**:
 - Force OCR toggle bypassing the embedded-text trust path (commit
@@ -202,6 +226,35 @@ conversion via the `ConversionStats` struct returned from
   browser still aligns once.
 - Launcher window: status strip, compact options row, adaptive
   drop zone (commit `56bf252`).
+- **App-wide theme system** (commits `a13ebaa`, `85c431d`,
+  `c034c6c`): five named palettes — System, Parchment, Scholarly,
+  Nocturne, Studio — switchable from Settings → Appearance.
+  `HumanistThemeStore` singleton propagates palette changes
+  across all windows at draw time via dynamic `NSColor` values;
+  each theme defines its own light + dark variant.
+- **Configurable output folder** (commit `911eb7d`): Settings →
+  Conversion tab lets the user pick a root folder; conversions
+  route artifacts into per-format subfolders (`Books/`, `Text
+  Files/`, `Markdown/`, `HTML/`). `ConversionOutputResolver`
+  computes target URLs; the pipeline receives per-format override
+  URLs so it stays folder-agnostic. `EPUBBuilder` embeds the
+  source PDF's absolute path in the Humanist sidecar so the
+  editor finds it even after moving the EPUB.
+- **Non-PDF input formats** (commits `7353d33`, `0ed2b72`):
+  drop a `.txt`, `.md`, `.rtf`, `.html`, `.doc`, `.docx`, or
+  `.odt` onto the launcher and it converts to EPUB via
+  `DocumentIngest` — no OCR, no Surya, no Claude. Headings, bold,
+  italic survive via `NSAttributedString` paragraph styles and
+  font traits. Lists, tables, and images flatten to prose in v1.
+  Sibling `.txt` / `.md` / `.html` still emit; library catalog
+  and output-folder routing apply identically to the PDF path.
+- **File Tools menu** (commit `6afa73a`): four file-system
+  utilities (no editor window required) — PDF Join, PDF Split,
+  EPUB Join, EPUB Split. PDF operations use PDFKit + the existing
+  `PageRangeParser` syntax. EPUB Join merges N EPUBs under
+  per-book subdirectories (source #1 metadata wins; title
+  overrideable). EPUB Split writes one EPUB per chapter range,
+  copying only images referenced by each part.
 
 **Done — Editor enhancements**:
 - Source editor formatting toolbar above the CodeMirror pane
@@ -219,6 +272,93 @@ conversion via the `ConversionStats` struct returned from
 - Find in All Files — cross-chapter search + replace +
   go-to-source (commit `baea472`).
 - Validate EPUB — `epubcheck` wrapper (commit `7179c11`).
+- **Save-on-close dialog**: `WindowSaveGuard` replaces the old
+  `WindowDirtyBridge`; intercepts `windowShouldClose` and
+  presents Save / Discard Changes / Cancel when the document is
+  dirty. Save is async — fires the save pipeline then
+  programmatically closes the window on success.
+- **WYSIWYG formatting oscillation fix**: toolbar commands
+  wrapped in `WYSIWYGCommandRequest` carrying a UUID nonce. The
+  coordinator tracks `lastAppliedCommandID` and skips re-applying
+  the same click if `updateNSView` fires again before the async
+  `commandRequest = nil` lands — previously caused toggle-based
+  commands (blockquote, bold, superscript) to fire twice and
+  oscillate.
+- **Source → WYSIWYG sync on save**: `EditorViewModel` emits
+  `wysiwygReloadToken` after every successful save. `WYSIWYGView`
+  compares it against `lastSeenSaveToken` and reloads if the
+  body text in `xhtml` differs from `lastLoadedBodyHTML`. Fixes
+  the bug where source-pane edits would be silently overwritten
+  the next time the user typed in the WYSIWYG pane.
+- **Pane divider visibility**: a 2 pt `separatorColor` accent
+  overlaid on the leading edge of every non-first pane makes the
+  NSSplitView dividers visually distinct.
+- **Equalize Panes**: View menu command (and right-click context
+  menu on any pane header) calls `PaneEqualizerBridge`, which
+  walks up to the `NSSplitView` and calls
+  `setPosition(_:ofDividerAt:)` for each divider to distribute
+  all visible panes equally.
+- **Footnote Manager** (Insert › Footnote Manager…): two-tab
+  sheet. "Existing" tab lists `<aside epub:type="footnote">`
+  elements already in the chapter. "Scan" tab detects unlinked
+  `<sup>N</sup>` callsites matched against end-of-chapter
+  numbered paragraphs; per-pair "Apply" buttons rewrite both
+  callsite (wraps in a noteref anchor) and definition (wraps in
+  an aside) into valid EPUB 3 footnote markup.
+- **Chapter Manager** (Document › Chapter Manager…): panel
+  listing all spine chapters in reading order with filename,
+  inferred title, `epub:type` picker (20 standard values), and
+  Up / Down reorder buttons. Editing `epub:type` writes directly
+  to the chapter's XHTML buffer via `writeChapterText(_:to:)`.
+  Clicking a title jumps to that chapter in the editor.
+- **WYSIWYG editor pane** (commits `5418a38`, `275820d`,
+  `8fc0498`, `32668d4`, `6af5d14`): fourth editor pane (⌘4)
+  backed by a `WKWebView` with `contenteditable`, rendering the
+  chapter via the book's own CSS. Formatting toolbar mirrors the
+  source pane's button set; `document.execCommand` handles
+  bold/italic/headings/blockquote/lists; custom DOM passes handle
+  inline `<code>`, language spans, and smart quotes. Edits
+  debounce 250 ms then push the serialized body back into
+  `vm.sourceText`; void elements and `<b>`/`<i>` are sanitized
+  to XHTML/`<strong>`/`<em>` on the way out. Appearance settings
+  (font family/size/theme) from Settings propagate live via CSS
+  variables without a page reload.
+- **Chat-with-book pane** (commits `b26a09c`, `fee27ee`,
+  `3d273df`): fifth editor pane (⌘5, Cloud-only). BM25 keyword
+  retrieval picks the top 4 chapters as context for each query;
+  Haiku (default) or Sonnet (Settings toggle) answers with
+  inline `[chapter:N]` citations that render as clickable chips
+  below each message. Streaming responses via SSE. Per-EPUB
+  transcript persisted to `META-INF/com.humanist.chat.json` so
+  conversations survive close/reopen. Clear button in the pane
+  header deletes the transcript.
+- **Drag-and-drop chapter reorder** in the sidebar (commit
+  `3ae82ec`): drag any spine chapter onto another row to move it
+  to that slot. `EPUBBook.moveInSpine(id:toIndex:)` handles
+  arbitrary-position moves (vs. the existing ±1 `direction:`
+  API). Non-spine items don't participate.
+- **Rename Chapter with link rewriting** (commit `35f45cd`):
+  right-click a chapter → "Rename Chapter…" prompts for a new
+  filename stem. `LinkRewriter` walks every other text resource
+  and rewrites `href`/`src` attributes resolving to the old path
+  (same-directory, cross-directory, and fragment-bearing links
+  all handled). `EPUBBookSaver` moves the file + rewrites
+  siblings atomically. Editor remaps its URL-keyed buffer state
+  to the new path on completion. 22 unit tests.
+- **Sibling regeneration on save** (commit `7913828`):
+  `SiblingRegenerator` rewrites existing `.txt` / `.md` / `.html`
+  siblings whenever the editor saves the EPUB — keeps
+  non-EPUB consumers of the book in sync with the latest
+  post-edit source. Best-effort; only regenerates siblings that
+  already exist next to the EPUB (or in the configured output
+  folder), so the user's "no siblings" preference is preserved.
+- **HTML sibling output** (commit `1a89bd5`): `HTMLWriter` emits
+  `<basename>.html` alongside `.txt` and `.md` for every
+  conversion — a single self-contained HTML5 document (inline
+  CSS, no external assets) with one `<section>` per chapter.
+  The launcher's toggle now reads ".txt + .md + .html" and
+  controls all three. Lands in `HTML/` when an output folder is
+  configured.
 
 **Done — Cloud Phase 5**:
 - **`ClaudeTableExtractor`**: Sonnet-driven table structure behind
@@ -1590,9 +1730,12 @@ duplicating; original `addedAt` is preserved. Files that no
 longer exist on disk are pruned on next load (same posture as
 `RecentsStore`).
 
-Cover-image thumbnails are deferred — for v1, title + language
-+ dates is enough to find a book; thumbnails are a non-breaking
-enhancement.
+Cover-image thumbnails shipped (commit `f71318e`). `CoverExtractor`
+reads only the OPF + cover-image entry from the EPUB ZIP (no full
+unpack); decodes lazily at 240 px max via ImageIO and caches in
+`CoverImageCache` for the app session. Handles both EPUB 3
+(`properties="cover-image"`) and EPUB 2 (`<meta name="cover">`).
+Each Library row shows the thumbnail next to the title.
 
 8 new LibraryStoreTests: record-conversion, dedup-by-URL with
 addedAt preservation, recordOpen no-op for unknown URLs, JSON
@@ -1904,6 +2047,15 @@ PDFs; the rest can layer in per-script if a corpus demands it.
 
 ### V-PDF-Searchable — Searchable-PDF re-export
 
+**Status**: shipped (commit `30a9486`). "Searchable PDF" toggle
+in the launcher options emits `<basename>.searchable.pdf`
+alongside the EPUB. Source PDF is re-rendered page-by-page with
+an invisible OCR text overlay per `TextObservation`; no extra
+OCR cost. Font sizing is calibrated so each line's natural width
+matches the observation box, avoiding PDFKit's per-character
+word-split heuristic. Routes to the configured output folder's
+`Books/` subfolder when set.
+
 Same OCR + layout pipeline, output is a clean OCR'd PDF with a
 searchable text layer instead of (or alongside) the EPUB. Adds
 a "make this scan searchable" workflow that doesn't engage
@@ -1915,10 +2067,13 @@ positioning OCR'd text under the rendered glyphs at the right
 coordinates. Existing `TextObservation.box` in normalized
 coords + page DPI gets us there.
 
-### V-Outputs — Plain-text + Markdown + DOCX siblings
+### V-Outputs — Plain-text + Markdown + HTML + DOCX siblings
 
-**Status**: txt + md shipped (Tier 9 / Round 4). DOCX deferred
-to Round 5.
+**Status**: txt + md + html shipped (Tier 9 / Round 4 + commit
+`1a89bd5`). DOCX output still deferred to Round 5. Note: DOCX
+as an *input* format (DOCX → EPUB) shipped separately via
+`DocumentIngest` (commit `0ed2b72`) — that's a different
+feature.
 
 `PlainTextWriter` and `MarkdownWriter` both walk a `Book` →
 `String`. PlainText: title + author header, chapter titles
@@ -1928,19 +2083,22 @@ section per chapter. Markdown: `# title`, `*by author*`,
 `*year · publisher*`, `## chapter`, `### sub-section`,
 `![alt](images/...)` for figures, GitHub-flavored table
 syntax with pipe-escaping, `[^N]: ...` footnote definitions.
+`HTMLWriter` emits a single self-contained HTML5 document with
+inline CSS, one `<section>` per chapter; opens in any browser
+without unzipping the EPUB.
 
-Pipeline emits both as siblings of the EPUB on conversion via
-`<basename>.txt` and `<basename>.md`. Best-effort writes
-(failures don't fail the conversion). New
-`emitSiblingTextOutputs` flag on `ConversionOptions` +
-`PDFToEPUBPipeline.Options` (default true; UI toggle ".txt +
-.md" in the launcher options row). Existing persisted jobs
-decode as default-on.
+Pipeline emits all three as siblings of the EPUB on conversion.
+Best-effort writes (failures don't fail the conversion). The
+launcher's `emitSiblingTextOutputs` toggle now reads ".txt +
+.md + .html" and controls all three. Sibling files are
+regenerated on every editor save (`SiblingRegenerator`) so
+external consumers stay current. Lands in per-format subfolders
+when a configured output folder is set.
 
-23 new tests across both writers covering header rendering,
-chapter / paragraph / heading / figure / table / footnote /
-anchor handling, pipe-escaping in table cells, and metadata
-line rendering.
+23 new tests across the text + markdown writers covering header
+rendering, chapter / paragraph / heading / figure / table /
+footnote / anchor handling, pipe-escaping in table cells, and
+metadata line rendering.
 
 ### V-Trust-PerPage — Per-page embedded-text trust
 
@@ -1977,6 +2135,17 @@ ranges match only listed pages, additive composition with
 global).
 
 ### V-Refresh — EPUB refresh (re-OCR)
+
+**Status**: shipped — v1 (commit `991b1bb`) + v2 (commit
+`0025c5b`). Document menu → "Re-OCR All Pages With ▸ {engine}"
+walks every entry in the page map, re-renders each PDF page,
+reflows via the standard pipeline, and splices the result
+between `hu-page-N` anchors using `PageContentReplacer`. v2
+preserves manual XHTML edits between re-OCR pages — a partial
+or cancelled bulk run leaves forward progress that can be kept.
+Disabled without an attached source PDF + page-map sidecar
+(older or non-Humanist EPUBs). Separate from the single-page
+"Re-OCR Current Page" path already in the Tools menu.
 
 Open an existing EPUB, re-run OCR with new settings. Useful
 when the user has a poorly-converted EPUB from elsewhere or
@@ -2245,10 +2414,10 @@ Substantial new flows; ship in whatever order matches actual
 demand. Conversion diff is the meta-tool — useful for
 validating Rounds 1-4 didn't regress anything.
 
-11. **V-PDF-Searchable** (searchable-PDF re-export) — 3 days
-12. **V-Outputs (DOCX)** (binary Word output) — 3 days
-13. **O-Diff** (conversion diff tool) — 3 days
-14. **V-Refresh** (EPUB refresh / re-OCR) — 3 days
+11. ~~**V-PDF-Searchable**~~ shipped (commit `30a9486`).
+12. **V-Outputs (DOCX)** (binary Word output) — 3 days — still pending.
+13. **O-Diff** (conversion diff tool) — 3 days — still pending.
+14. ~~**V-Refresh**~~ shipped (commits `991b1bb`, `0025c5b`).
 
 **Total**: ~26 days of work across 14 commits / features. Ships
 in roughly 3-4 person-weeks of focused effort if pursued
@@ -2285,9 +2454,28 @@ use; distribution is lower priority than correctness.
 - **Private Mode toggle**: per-conversion Cloud override that
   guarantees zero Claude traffic.
 - **Editor**: format/insert/edit menus, Special Character, Goto
-  Line, Split / Merge / Regenerate TOC, Find in All Files,
-  Validate EPUB (epubcheck), spellcheck, smart quotes,
-  formatting toolbar, **Customize Style** (per-book font/size/theme).
+  Line, Split / Merge / Rename / Regenerate TOC, drag-and-drop
+  chapter reorder in sidebar, Find in All Files, Validate EPUB
+  (epubcheck), spellcheck, smart quotes, formatting toolbar,
+  **Customize Style** (per-book font/size/theme), **WYSIWYG
+  editor pane** (⌘4, contenteditable WebView with formatting
+  toolbar + CSS rendering), **chat-with-book pane** (⌘5, BM25
+  retrieval + Haiku/Sonnet + streaming + citation chips +
+  persistent transcript), **save-on-close dialog**,
+  **WYSIWYG oscillation fix**, **source-to-WYSIWYG sync on
+  save**, **visible pane dividers + Equalize Panes**.
+- **Sibling outputs**: `.txt` + `.md` + `.html` emitted on
+  every conversion and regenerated on every editor save;
+  **Searchable PDF** sibling (invisible OCR overlay); all routed
+  to per-format subfolders when a **configurable output folder**
+  is set in Settings.
+- **Non-PDF inputs**: TXT / MD / RTF / HTML / DOCX / ODT → EPUB
+  via `DocumentIngest`; headings, bold, italic preserved.
+- **File Tools menu**: PDF Join/Split + EPUB Join/Split, no
+  editor window required.
+- **App theme system**: five named palettes (System, Parchment,
+  Scholarly, Nocturne, Studio) in Settings → Appearance.
+- **Library**: cover thumbnails per row; bulk find/replace.
 - **Launcher quality-of-life**: pause/resume queue, drag-reorder
   queued jobs, finished-jobs History disclosure, dedicated full-
   queue window (⇧⌘Q).
@@ -2297,11 +2485,12 @@ use; distribution is lower priority than correctness.
 
 **Next, in roughly this order:**
 
-1. **Tier 9 — Conversion-quality push** (15 ideas across
-   effective / versatile / efficient / observability axes,
-   organized into 5 shipping rounds; ~26 days of work). Round 1
-   (quick wins: warm sidecar, cache audit, typography pass) is
-   the lowest-effort highest-leverage starting point.
+1. **Tier 9 — Remaining Round 5 items** (2 of 4 still pending):
+   - **V-Outputs (DOCX)** — binary Word output (~3 days).
+   - **O-Diff** — conversion diff tool (~3 days).
+   Rounds 1–4 are fully shipped; V-PDF-Searchable and V-Refresh
+   from Round 5 also shipped. Only DOCX output and the diff
+   tool remain.
 2. **Defer Phase 10 (distribution)** until the user actually
    wants to share or onboard another machine. The app is signed
    and runs locally; that's enough for personal use.
@@ -2313,5 +2502,6 @@ use; distribution is lower priority than correctness.
 Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely
 — corpus doesn't justify the bidi-rendering and per-script
 accuracy lifts. The originally planned hybrid Cloud feature set,
-launcher quality-of-life, editor polish, and library + bulk-edit
-features are all done.
+launcher quality-of-life, editor polish, library + bulk-edit
+features, non-PDF inputs, file tools, theme system, and the
+remaining Tier 9 rounds are all done.

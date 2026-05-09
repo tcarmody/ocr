@@ -181,6 +181,21 @@ final class EditorCommandRouter: ObservableObject {
         vm.showGotoLineSheet = true
     }
 
+    /// Equalize all visible panes to the same width.
+    func equalizePanes() { activeEditor()?.equalizePanes() }
+
+    /// Open the Footnote Manager sheet on the active editor.
+    func showFootnoteManager() {
+        guard let vm = activeEditor() else { return }
+        vm.showFootnoteManager = true
+    }
+
+    /// Open the Chapter Manager sheet on the active editor.
+    func showChapterManager() {
+        guard let vm = activeEditor() else { return }
+        vm.showChapterManager = true
+    }
+
     /// Toggle the Find in Files sheet. If results from a prior
     /// invocation are still in the viewmodel, they're left in place
     /// — reopening the sheet picks up where the user left off.

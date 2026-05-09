@@ -187,6 +187,7 @@ struct EditorInsertMenu: Commands {
                 "Footnote", shortcut: "f",
                 modifiers: [.command, .shift, .option]
             ) { $0.insertFootnote() }
+            RouterButton("Footnote Manager…") { $0.showFootnoteManager() }
         }
     }
 }
@@ -265,6 +266,16 @@ private struct DocumentMenuChapterCommands: View {
         EditorMoveChapterUpCommand()
         EditorMoveChapterDownCommand()
         EditorRegenerateTOCCommand()
+        Divider()
+        EditorChapterManagerCommand()
+    }
+}
+
+private struct EditorChapterManagerCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Chapter Manager…") { vm?.showChapterManager = true }
+            .disabled(vm == nil)
     }
 }
 
@@ -299,6 +310,16 @@ private struct ViewMenuPaneToggles: View {
         EditorPaneToggle(pane: .preview)
         EditorPaneToggle(pane: .wysiwyg)
         EditorPaneToggle(pane: .chat)
+        Divider()
+        EditorEqualizePanesCommand()
+    }
+}
+
+private struct EditorEqualizePanesCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Equalize Panes") { vm?.equalizePanes() }
+            .disabled(vm == nil)
     }
 }
 
