@@ -48,20 +48,59 @@ struct SuryaSetupSheet: View {
             }
             footer
         }
-        .frame(width: 520, height: 520)
+        .frame(width: 540, height: 620)
         .onChange(of: recheckNonce) { _, _ in recheck() }
     }
 
     // MARK: - Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Set Up Surya")
                 .font(.title2.bold())
-            Text("Surya provides document layout analysis — region classification that drives heading detection, footnote extraction, figure placement, and table structure. Without it, Humanist converts with Apple Vision OCR only (functional, but with less structure).")
+            Text("Surya is an open-source document layout model that analyses each page before OCR, classifying regions as headings, body text, footnotes, figures, and tables. That classification drives the structure of the output EPUB — chapter splits, footnote linking, figure extraction, and table recognition all depend on it.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Text("Without Surya, Humanist falls back to Apple Vision OCR only: you still get readable text, but without region-level structure detection.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 16) {
+                stat(systemImage: "arrow.down.circle",
+                     label: "Download",
+                     value: "~1 GB",
+                     detail: "PyTorch + model weights")
+                stat(systemImage: "memorychip",
+                     label: "RAM",
+                     value: "~3–4 GB",
+                     detail: "while converting")
+                stat(systemImage: "cpu",
+                     label: "Compute",
+                     value: "CPU + MPS",
+                     detail: "Apple Silicon GPU used when available")
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private func stat(
+        systemImage: String, label: String, value: String, detail: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.callout.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 
