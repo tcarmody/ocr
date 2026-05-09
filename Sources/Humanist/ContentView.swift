@@ -32,6 +32,11 @@ struct ContentView: View {
     /// (regardless of whether the user clicked "Got it" or "Open
     /// Settings"), so subsequent launches skip it.
     @AppStorage(WelcomeSheet.welcomeShownKey) private var welcomeShown: Bool = false
+    /// Per-user preference for whether the Advanced options
+    /// (Force OCR pages, Output suffix) are expanded. Defaults
+    /// collapsed so the launcher's default view stays uncluttered.
+    @AppStorage("humanist.launcher.advancedExpanded")
+    private var advancedExpanded: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -175,46 +180,6 @@ struct ContentView: View {
     @ViewBuilder
     private var optionsBlock: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Spacer()
-                Text("Force OCR pages:")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                TextField("e.g. 1-20, 150-160",
-                          text: $queue.forceOCRPageRangesString)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.callout)
-                    .frame(maxWidth: 200)
-                    .help("""
-                        Re-OCR these specific pages even when their \
-                        embedded text would otherwise pass the trust \
-                        scorer. 1-based, comma-separated, with N-M \
-                        ranges (e.g. "1-20, 150-160"). Useful for \
-                        mixed-quality books — born-digital front \
-                        matter + scanned appendix, or any pages where \
-                        the embedded text is bad OCR. The global \
-                        "Force OCR" toggle overrides every page; this \
-                        field overrides only the listed pages.
-                        """)
-                Text("Output suffix:")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                TextField("e.g. claude or local",
-                          text: $queue.outputSuffix)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.callout)
-                    .frame(maxWidth: 160)
-                    .help("""
-                        Append this suffix to the output filenames so \
-                        the same source PDF can produce multiple \
-                        variants side-by-side. With "claude" set: \
-                        "<book> claude.epub" / ".txt" / ".md". Empty \
-                        keeps the default "<book>.epub". Pair with \
-                        Tools → Compare EPUBs for A/B-ing OCR \
-                        methods or settings.
-                        """)
-                Spacer()
-            }
             // Row 1 — language + engine badge
             HStack(spacing: 14) {
                 Spacer(minLength: 0)
@@ -308,8 +273,66 @@ struct ContentView: View {
                 Spacer(minLength: 0)
             }
             .font(.callout)
+
+            // Advanced — collapsed by default. Holds per-page Force OCR
+            // override and the output-suffix field that A/B users need.
+            advancedDisclosure
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Collapsed by default. Holds the niche per-page Force OCR
+    /// override and the output-suffix field most users never touch.
+    @ViewBuilder
+    private var advancedDisclosure: some View {
+        DisclosureGroup(isExpanded: $advancedExpanded) {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                Text("Force OCR pages:")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                TextField("e.g. 1-20, 150-160",
+                          text: $queue.forceOCRPageRangesString)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout)
+                    .frame(maxWidth: 200)
+                    .help("""
+                        Re-OCR these specific pages even when their \
+                        embedded text would otherwise pass the trust \
+                        scorer. 1-based, comma-separated, with N-M \
+                        ranges (e.g. "1-20, 150-160"). Useful for \
+                        mixed-quality books — born-digital front \
+                        matter + scanned appendix, or any pages where \
+                        the embedded text is bad OCR. The global \
+                        "Force OCR" toggle overrides every page; this \
+                        field overrides only the listed pages.
+                        """)
+                Text("Output suffix:")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                TextField("e.g. claude or local",
+                          text: $queue.outputSuffix)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout)
+                    .frame(maxWidth: 160)
+                    .help("""
+                        Append this suffix to the output filenames so \
+                        the same source PDF can produce multiple \
+                        variants side-by-side. With "claude" set: \
+                        "<book> claude.epub" / ".txt" / ".md". Empty \
+                        keeps the default "<book>.epub". Pair with \
+                        Tools → Compare EPUBs for A/B-ing OCR \
+                        methods or settings.
+                        """)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("Advanced")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 4)
     }
 
     @ViewBuilder
