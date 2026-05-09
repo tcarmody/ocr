@@ -1808,8 +1808,12 @@ JobRunner concurrency change (currently single-job).
 
 ## P-Vision-Concurrency — Overlap Vision OCR with Surya layout
 
-**Status**: per-page work is serial: render → Vision → Surya layout →
-cascade.
+**Status**: shipped. Vision OCR and Surya layout now run concurrently
+via `async let` in the cascade per-page loop. `pageBounds` hoisted
+from post-OCR to pre-concurrent (it's pure image geometry). The
+`analyzeLayoutWithRetry` guard on `layoutAnalyzer == nil` is already
+internal, so no outer `if` needed. ~30% per-page speedup when Surya
+is installed (Surya is the long pole at ~1-2 s vs Vision's ~0.5 s).
 
 ### Goal
 

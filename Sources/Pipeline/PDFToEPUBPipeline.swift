@@ -1396,11 +1396,35 @@ public actor PDFToEPUBPipeline {
                     for: hints.languages,
                     preferSurya: options.useHighAccuracyOCR
                 )
-                let (result, ocrErrorTrail) = try await ocrPageWithFallback(
+                // pageBounds is pure image geometry — hoist it before
+                // the concurrent block so analyzeLayoutWithRetry can
+                // use it without depending on the OCR result.
+                let initialPageBounds = CGSize(
+                    width: image.width, height: image.height
+                )
+
+                // P-Vision-Concurrency: run Vision OCR and Surya layout
+                // concurrently. Both read from the already-rendered
+                // CGImage / saved PNG and produce independent outputs.
+                // analyzeLayoutWithRetry is a no-op when layoutAnalyzer
+                // is nil, so the guard is handled inside that method.
+                async let ocrTask = ocrPageWithFallback(
                     image: image, pdf: pdf, pageIndex: i,
                     initialDPI: options.dpi,
                     primaryEngine: pageEngine, hints: hints
                 )
+                async let layoutTask = analyzeLayoutWithRetry(
+                    pdf: pdf,
+                    pageIndex: i,
+                    initialDPI: options.dpi,
+                    initialPNGURL: pngURL,
+                    initialPageBounds: initialPageBounds,
+                    stagingDir: stagingDir
+                )
+
+                let (result, ocrErrorTrail) = try await ocrTask
+                let layoutOutcome = await layoutTask
+
                 if let trail = ocrErrorTrail {
                     ocrErrors[i] = trail
                 }
@@ -1408,25 +1432,12 @@ public actor PDFToEPUBPipeline {
                     visionObservations: result.observations,
                     embeddedLines: extracted.lines
                 )
-                pageBounds = CGSize(width: image.width, height: image.height)
+                pageBounds = initialPageBounds
                 confidenceForProgress = result.meanConfidence
 
-                // Phase 4: layout analysis with retry-at-lower-DPI on
-                // sidecar buffer-overflow errors. See
-                // `analyzeLayoutWithRetry` for the strategy.
-                if layoutAnalyzer != nil {
-                    let outcome = await analyzeLayoutWithRetry(
-                        pdf: pdf,
-                        pageIndex: i,
-                        initialDPI: options.dpi,
-                        initialPNGURL: pngURL,
-                        initialPageBounds: pageBounds,
-                        stagingDir: stagingDir
-                    )
-                    layoutForPage = outcome.layout
-                    if let err = outcome.error {
-                        layoutErrors[i] = err
-                    }
+                layoutForPage = layoutOutcome.layout
+                if let err = layoutOutcome.error {
+                    layoutErrors[i] = err
                 }
 
                 // Phase 4.5: per-region cascade. Vision → Surya
