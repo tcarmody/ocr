@@ -874,13 +874,20 @@ private struct PaneEqualizerBridge: NSViewRepresentable {
     }
 
     private static func equalize(_ sv: NSSplitView) {
-        let n = sv.subviews.count
+        // SwiftUI marks toggled-off panes as isHidden rather than
+        // removing them from the subviews array, so count only the
+        // visible ones and place dividers between those.
+        let visible = sv.subviews.filter { !$0.isHidden }
+        let n = visible.count
         guard n > 1 else { return }
         let total = sv.bounds.width - sv.dividerThickness * CGFloat(n - 1)
         let each = total / CGFloat(n)
-        for i in 0..<(n - 1) {
-            let pos = each * CGFloat(i + 1) + sv.dividerThickness * CGFloat(i)
+        var dividerIndex = 0
+        for i in 0..<(sv.subviews.count - 1) {
+            guard !sv.subviews[i].isHidden else { continue }
+            let pos = each * CGFloat(dividerIndex + 1) + sv.dividerThickness * CGFloat(dividerIndex)
             sv.setPosition(pos, ofDividerAt: i)
+            dividerIndex += 1
         }
     }
 
