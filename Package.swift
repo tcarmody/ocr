@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v26)],
     products: [
         .executable(name: "Humanist", targets: ["Humanist"]),
+        .executable(name: "humanist-cli", targets: ["HumanistCLI"]),
         .library(name: "Document", targets: ["Document"]),
         .library(name: "PDFIngest", targets: ["PDFIngest"]),
         .library(name: "OCR", targets: ["OCR"]),
@@ -18,6 +19,9 @@ let package = Package(
         // ZIPFoundation handles the ZIP packaging — most importantly the
         // mimetype-first-and-uncompressed rule that EPUB requires.
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19"),
+        // Apple's official command-line argument parser. Used by the
+        // `humanist-cli` executable target.
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
     ],
     targets: [
         .target(
@@ -91,6 +95,20 @@ let package = Package(
             name: "SpikeRunner",
             dependencies: ["Pipeline", "AI", "EPUB", "ZIPFoundation"],
             path: "Sources/SpikeRunner"
+        ),
+        // Command-line interface to the conversion pipeline.
+        // Same engines as the SwiftUI app, exposed as `humanist-cli`
+        // so conversions can be scripted, run in CI, or used in
+        // shell pipelines. See Sources/HumanistCLI/README for the
+        // full command reference.
+        .executableTarget(
+            name: "HumanistCLI",
+            dependencies: [
+                "Document", "PDFIngest", "OCR", "EPUB", "Layout",
+                "Pipeline", "AI",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            path: "Sources/HumanistCLI"
         ),
         .testTarget(
             name: "EPUBTests",
