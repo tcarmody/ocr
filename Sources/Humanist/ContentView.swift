@@ -215,11 +215,18 @@ struct ContentView: View {
                         """)
                 Spacer()
             }
-            // Row 1 — processing mode toggles
+            // Row 1 — language + engine badge
             HStack(spacing: 14) {
                 Spacer(minLength: 0)
                 languageMenu
-                Divider().frame(height: 18)
+                tesseractStatusBadge
+                Spacer(minLength: 0)
+            }
+            .font(.callout)
+
+            // Row 2 — processing mode toggles
+            HStack(spacing: 14) {
+                Spacer(minLength: 0)
                 Toggle("Private", isOn: $queue.privateMode)
                     .toggleStyle(.checkbox)
                     .help("""
@@ -252,12 +259,11 @@ struct ContentView: View {
                     .help(SuryaConnection.shared == nil
                           ? "Surya is not installed — use \"Set up Surya…\" in the banner above to install it."
                           : "Force Surya OCR on every region of every page. Local-only; works without an API key. Slower than the standard cascade — use when offline and getting poor Vision results.")
-                tesseractStatusBadge
                 Spacer(minLength: 0)
             }
             .font(.callout)
 
-            // Row 2 — output format toggles
+            // Row 3 — output format toggles
             HStack(spacing: 14) {
                 Spacer(minLength: 0)
                 Toggle("Searchable PDF", isOn: $queue.emitSearchablePDF)
