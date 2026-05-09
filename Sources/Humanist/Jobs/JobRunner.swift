@@ -237,15 +237,10 @@ final class JobRunner: ObservableObject {
             anthropicAPIKeyProvider: keyProvider,
             useClaudePageOCR: claudePageOCR,
             emitSiblingTextOutputs: job.options.emitSiblingTextOutputs,
+            emitSiblingDocuments: job.options.emitSiblingDocuments,
             forceOCRPageRanges: PageRangeParser.parse(
                 job.options.forceOCRPageRangesString
             ),
-            // When the user has configured an output folder, route
-            // the sibling outputs into per-format subfolders. Nil
-            // overrides keep the original side-by-side behavior.
-            // The suffix is forwarded so each variant lands in its
-            // own filenames (`<basename> claude.txt` vs
-            // `<basename> local.txt` etc.).
             siblingTextURLOverride: ConversionOutputResolver
                 .siblingTextOverrides(
                     forSource: job.sourceURL,
@@ -257,10 +252,15 @@ final class JobRunner: ObservableObject {
                     suffix: job.options.outputSuffix
                 ).md,
             siblingHTMLURLOverride: ConversionOutputResolver
-                .siblingTextOverrides(
+                .siblingDocumentOverrides(
                     forSource: job.sourceURL,
                     suffix: job.options.outputSuffix
                 ).html,
+            siblingDOCXURLOverride: ConversionOutputResolver
+                .siblingDocumentOverrides(
+                    forSource: job.sourceURL,
+                    suffix: job.options.outputSuffix
+                ).docx,
             // Tier 9 / V-PDF-Searchable: forwards both the toggle
             // and the configured-output-folder routing.
             emitSearchablePDF: job.options.emitSearchablePDF,
@@ -343,45 +343,48 @@ final class JobRunner: ObservableObject {
         )
         let sourceURL = job.sourceURL
         let outputURL = job.outputURL
-        let emitSiblings = job.options.emitSiblingTextOutputs
+        let emitText = job.options.emitSiblingTextOutputs
+        let emitDocs = job.options.emitSiblingDocuments
+        let suffix = job.options.outputSuffix
         let txtURL = ConversionOutputResolver
-            .siblingTextOverrides(forSource: sourceURL, suffix: job.options.outputSuffix).txt
+            .siblingTextOverrides(forSource: sourceURL, suffix: suffix).txt
             ?? outputURL.deletingPathExtension().appendingPathExtension("txt")
         let mdURL = ConversionOutputResolver
-            .siblingTextOverrides(forSource: sourceURL, suffix: job.options.outputSuffix).md
+            .siblingTextOverrides(forSource: sourceURL, suffix: suffix).md
             ?? outputURL.deletingPathExtension().appendingPathExtension("md")
         let htmlURL = ConversionOutputResolver
-            .siblingTextOverrides(forSource: sourceURL, suffix: job.options.outputSuffix).html
+            .siblingDocumentOverrides(forSource: sourceURL, suffix: suffix).html
             ?? outputURL.deletingPathExtension().appendingPathExtension("html")
+        let docxURL = ConversionOutputResolver
+            .siblingDocumentOverrides(forSource: sourceURL, suffix: suffix).docx
+            ?? outputURL.deletingPathExtension().appendingPathExtension("docx")
         do {
             let book = try await Task.detached(priority: .userInitiated) {
                 try DocumentIngest().ingest(from: sourceURL, language: language)
             }.value
             try await Task.detached(priority: .userInitiated) {
-                // Pass the source URL through so the Humanist sidecar
-                // captures it inside the EPUB. The editor's "Show
-                // Original" command reads the sidecar to find the
-                // file regardless of how the EPUB has been moved.
                 try EPUBBuilder().write(
                     book: book,
                     sourcePDFURL: sourceURL,
                     to: outputURL
                 )
-                if emitSiblings {
-                    for url in [txtURL, mdURL, htmlURL] {
-                        let parent = url.deletingLastPathComponent()
-                        if !FileManager.default.fileExists(atPath: parent.path) {
-                            try? FileManager.default.createDirectory(
-                                at: parent, withIntermediateDirectories: true
-                            )
-                        }
+                if emitText {
+                    for url in [txtURL, mdURL] {
+                        try? FileManager.default.createDirectory(
+                            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                        )
                     }
-                    let txt = PlainTextWriter.render(book)
-                    let md = MarkdownWriter.render(book)
-                    let html = HTMLWriter.render(book)
-                    try? txt.write(to: txtURL, atomically: true, encoding: .utf8)
-                    try? md.write(to: mdURL, atomically: true, encoding: .utf8)
-                    try? html.write(to: htmlURL, atomically: true, encoding: .utf8)
+                    try? PlainTextWriter.render(book).write(to: txtURL, atomically: true, encoding: .utf8)
+                    try? MarkdownWriter.render(book).write(to: mdURL, atomically: true, encoding: .utf8)
+                }
+                if emitDocs {
+                    for url in [htmlURL, docxURL] {
+                        try? FileManager.default.createDirectory(
+                            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                        )
+                    }
+                    try? HTMLWriter.render(book).write(to: htmlURL, atomically: true, encoding: .utf8)
+                    try? DOCXWriter.write(book, to: docxURL)
                 }
             }.value
             store.update(jobID) { mutable in

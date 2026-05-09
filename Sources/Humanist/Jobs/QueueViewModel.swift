@@ -77,9 +77,10 @@ final class QueueViewModel: ObservableObject {
     /// leaving 50–100MB of artifacts next to every PDF.
     @Published var emitDebugLog: Bool = false
     /// Tier 9 / V-Outputs. When on (default), the pipeline writes
-    /// `<basename>.txt` and `<basename>.md` siblings next to the
-    /// EPUB on conversion. Off skips both writes.
+    /// Write `.txt` and `.md` siblings. Cheap; default on.
     @Published var emitSiblingTextOutputs: Bool = true
+    /// Write `.html` and `.docx` siblings. Heavier; default off.
+    @Published var emitSiblingDocuments: Bool = false
     /// Tier 9 / V-Trust-PerPage. User-typed page-range string —
     /// 1-based, comma-separated, with `N-M` ranges
     /// (e.g. "1-20, 150-160"). Pages in any range bypass the
@@ -190,6 +191,7 @@ final class QueueViewModel: ObservableObject {
                 privateMode: privateMode,
                 emitDebugLog: emitDebugLog,
                 emitSiblingTextOutputs: emitSiblingTextOutputs,
+                emitSiblingDocuments: emitSiblingDocuments,
                 forceOCRPageRangesString: forceOCRPageRangesString,
                 outputSuffix: outputSuffix,
                 emitSearchablePDF: emitSearchablePDF

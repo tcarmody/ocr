@@ -4,78 +4,65 @@ import Document
 import EPUB
 import Pipeline
 
-/// Re-emit sibling text outputs (`.txt`, `.md`, `.html`) for an
-/// EPUB the user has just edited and saved, so corrections made
-/// in the editor flow back through to the linked exports.
-///
-/// Only writes to paths that already exist on disk — that respects
-/// the user's earlier choices (sibling toggle off at conversion
-/// time, or sibling files manually deleted later). Never creates
-/// new sibling files post-hoc.
+/// Re-emit sibling outputs for an EPUB the user has just edited and
+/// saved, so corrections made in the editor flow back to linked
+/// exports. Only writes to paths that already exist on disk —
+/// respects the user's earlier "emit" choices without re-enabling
+/// something they turned off.
 enum SiblingRegenerator {
 
-    /// Regenerate any siblings that exist for `epubURL`, derived
-    /// from the current in-memory `EPUBBook`. Best-effort — this
-    /// runs after a successful save, so surface failures to the
-    /// log but don't fail the save.
     static func regenerateExisting(for epubBook: EPUBBook, epubURL: URL) async {
         let book = await Task.detached(priority: .userInitiated) {
             extractBook(from: epubBook, fallbackTitle: epubURL
                 .deletingPathExtension().lastPathComponent)
         }.value
-        let txt = PlainTextWriter.render(book)
-        let md = MarkdownWriter.render(book)
+
+        // Build all payloads upfront; only write the ones whose
+        // files already exist on disk.
+        let txt  = PlainTextWriter.render(book)
+        let md   = MarkdownWriter.render(book)
         let html = HTMLWriter.render(book)
-        let payload: [SiblingFormat: String] = [
-            .txt: txt, .md: md, .html: html,
-        ]
+
+        let textPayload: [SiblingFormat: String] = [.txt: txt, .md: md, .html: html]
+
         for candidate in candidateSiblingURLs(for: epubURL) {
-            guard FileManager.default.fileExists(atPath: candidate.url.path) else {
-                continue
+            guard FileManager.default.fileExists(atPath: candidate.url.path) else { continue }
+            if candidate.format == .docx {
+                try? DOCXWriter.write(book, to: candidate.url)
+            } else if let body = textPayload[candidate.format] {
+                try? body.write(to: candidate.url, atomically: true, encoding: .utf8)
             }
-            guard let body = payload[candidate.format] else { continue }
-            try? body.write(to: candidate.url, atomically: true, encoding: .utf8)
         }
     }
 
-    enum SiblingFormat { case txt, md, html }
+    enum SiblingFormat { case txt, md, html, docx }
 
     private struct Candidate {
         let format: SiblingFormat
         let url: URL
     }
 
-    /// All URLs we'll consider regenerating: next to the EPUB and,
-    /// when a configured output folder is set, in its per-format
-    /// subfolders. Both locations get checked because the user may
-    /// have moved the EPUB out of the configured tree, or run
-    /// without a configured tree at all.
     private static func candidateSiblingURLs(for epubURL: URL) -> [Candidate] {
         var out: [Candidate] = []
-        let basename = epubURL.deletingPathExtension().lastPathComponent
+        let base   = epubURL.deletingPathExtension().lastPathComponent
         let parent = epubURL.deletingLastPathComponent()
-        out.append(Candidate(format: .txt, url: parent.appendingPathComponent("\(basename).txt")))
-        out.append(Candidate(format: .md, url: parent.appendingPathComponent("\(basename).md")))
-        out.append(Candidate(format: .html, url: parent.appendingPathComponent("\(basename).html")))
+        out.append(Candidate(format: .txt,  url: parent.appendingPathComponent("\(base).txt")))
+        out.append(Candidate(format: .md,   url: parent.appendingPathComponent("\(base).md")))
+        out.append(Candidate(format: .html, url: parent.appendingPathComponent("\(base).html")))
+        out.append(Candidate(format: .docx, url: parent.appendingPathComponent("\(base).docx")))
         if let root = ConversionOutputResolver.currentRoot() {
-            out.append(Candidate(
-                format: .txt,
-                url: root
-                    .appendingPathComponent(ConversionOutputSubfolder.textFiles, isDirectory: true)
-                    .appendingPathComponent("\(basename).txt")
-            ))
-            out.append(Candidate(
-                format: .md,
-                url: root
-                    .appendingPathComponent(ConversionOutputSubfolder.markdown, isDirectory: true)
-                    .appendingPathComponent("\(basename).md")
-            ))
-            out.append(Candidate(
-                format: .html,
-                url: root
-                    .appendingPathComponent(ConversionOutputSubfolder.html, isDirectory: true)
-                    .appendingPathComponent("\(basename).html")
-            ))
+            out.append(Candidate(format: .txt, url: root
+                .appendingPathComponent(ConversionOutputSubfolder.textFiles, isDirectory: true)
+                .appendingPathComponent("\(base).txt")))
+            out.append(Candidate(format: .md, url: root
+                .appendingPathComponent(ConversionOutputSubfolder.markdown, isDirectory: true)
+                .appendingPathComponent("\(base).md")))
+            out.append(Candidate(format: .html, url: root
+                .appendingPathComponent(ConversionOutputSubfolder.html, isDirectory: true)
+                .appendingPathComponent("\(base).html")))
+            out.append(Candidate(format: .docx, url: root
+                .appendingPathComponent(ConversionOutputSubfolder.docx, isDirectory: true)
+                .appendingPathComponent("\(base).docx")))
         }
         return out
     }

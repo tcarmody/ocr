@@ -115,11 +115,13 @@ public actor PDFToEPUBPipeline {
         /// toggle as the new default behavior.
         public var useClaudePageOCR: Bool
         /// Tier 9 / V-Outputs. When true, the conversion writes
-        /// `<basename>.txt` and `<basename>.md` next to the EPUB.
-        /// Cheap (text files are small), useful for piping into
-        /// search / archival / RAG pipelines without unzipping
-        /// the EPUB. Default true; turn off to skip both writes.
+        /// Write `.txt` and `.md` siblings next to the EPUB.
+        /// Cheap (text files are small). Default true.
         public var emitSiblingTextOutputs: Bool
+        /// Write `.html` and `.docx` siblings next to the EPUB.
+        /// Heavier than the text outputs (DOCX is a binary zip,
+        /// HTML inlines all CSS). Default false.
+        public var emitSiblingDocuments: Bool
         /// Tier 9 / V-Trust-PerPage. Per-page force-OCR override.
         /// Empty array = no per-page force; the global `forceOCR`
         /// flag still applies if set. Each range is a 0-indexed
@@ -138,9 +140,12 @@ public actor PDFToEPUBPipeline {
         /// Same as `siblingTextURLOverride`, for the markdown
         /// sibling output.
         public var siblingMarkdownURLOverride: URL?
-        /// Same as `siblingTextURLOverride`, for the HTML sibling
-        /// output (`<basename>.html`). Self-contained single file.
+        /// Output path override for the HTML sibling
+        /// (`<basename>.html`). Controlled by `emitSiblingDocuments`.
         public var siblingHTMLURLOverride: URL?
+        /// Output path override for the DOCX sibling
+        /// (`<basename>.docx`). Controlled by `emitSiblingDocuments`.
+        public var siblingDOCXURLOverride: URL?
         /// Tier 9 / V-PDF-Searchable. When true, the conversion
         /// also emits a searchable-PDF copy of the source PDF
         /// alongside the EPUB — same visual content as the input,
@@ -180,10 +185,12 @@ public actor PDFToEPUBPipeline {
             disableLocalCascadeEscalation: Bool = false,
             useClaudePageOCR: Bool = false,
             emitSiblingTextOutputs: Bool = true,
+            emitSiblingDocuments: Bool = false,
             forceOCRPageRanges: [ClosedRange<Int>] = [],
             siblingTextURLOverride: URL? = nil,
             siblingMarkdownURLOverride: URL? = nil,
             siblingHTMLURLOverride: URL? = nil,
+            siblingDOCXURLOverride: URL? = nil,
             emitSearchablePDF: Bool = false,
             searchablePDFURLOverride: URL? = nil,
             debugStagingURLOverride: URL? = nil
@@ -204,10 +211,12 @@ public actor PDFToEPUBPipeline {
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
             self.useClaudePageOCR = useClaudePageOCR
             self.emitSiblingTextOutputs = emitSiblingTextOutputs
+            self.emitSiblingDocuments = emitSiblingDocuments
             self.forceOCRPageRanges = forceOCRPageRanges
             self.siblingTextURLOverride = siblingTextURLOverride
             self.siblingMarkdownURLOverride = siblingMarkdownURLOverride
             self.siblingHTMLURLOverride = siblingHTMLURLOverride
+            self.siblingDOCXURLOverride = siblingDOCXURLOverride
             self.emitSearchablePDF = emitSearchablePDF
             self.searchablePDFURLOverride = searchablePDFURLOverride
             self.debugStagingURLOverride = debugStagingURLOverride
@@ -2085,15 +2094,10 @@ public actor PDFToEPUBPipeline {
                 ?? outputURL.deletingPathExtension().appendingPathExtension("txt")
             let mdURL = options.siblingMarkdownURLOverride
                 ?? outputURL.deletingPathExtension().appendingPathExtension("md")
-            let htmlURL = options.siblingHTMLURLOverride
-                ?? outputURL.deletingPathExtension().appendingPathExtension("html")
-            for url in [txtURL, mdURL, htmlURL] {
-                let parent = url.deletingLastPathComponent()
-                if !FileManager.default.fileExists(atPath: parent.path) {
-                    try? FileManager.default.createDirectory(
-                        at: parent, withIntermediateDirectories: true
-                    )
-                }
+            for url in [txtURL, mdURL] {
+                try? FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
             }
             try? PlainTextWriter.render(book).write(
                 to: txtURL, atomically: true, encoding: .utf8
@@ -2101,9 +2105,21 @@ public actor PDFToEPUBPipeline {
             try? MarkdownWriter.render(book).write(
                 to: mdURL, atomically: true, encoding: .utf8
             )
+        }
+        if options.emitSiblingDocuments {
+            let htmlURL = options.siblingHTMLURLOverride
+                ?? outputURL.deletingPathExtension().appendingPathExtension("html")
+            let docxURL = options.siblingDOCXURLOverride
+                ?? outputURL.deletingPathExtension().appendingPathExtension("docx")
+            for url in [htmlURL, docxURL] {
+                try? FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+            }
             try? HTMLWriter.render(book).write(
                 to: htmlURL, atomically: true, encoding: .utf8
             )
+            try? DOCXWriter.write(book, to: docxURL)
         }
 
         // Tier 9 / V-PDF-Searchable: write a searchable copy of the

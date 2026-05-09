@@ -2430,7 +2430,7 @@ demand. Conversion diff is the meta-tool — useful for
 validating Rounds 1-4 didn't regress anything.
 
 11. ~~**V-PDF-Searchable**~~ shipped (commit `30a9486`).
-12. **V-Outputs (DOCX)** (binary Word output) — 3 days — still pending.
+12. ~~**V-Outputs (DOCX)**~~ shipped — `.docx` sibling via `NSAttributedString`/officeOpenXML; split into separate `.html + .docx` toggle from `.txt + .md`.
 13. ~~**O-Diff**~~ shipped — side-by-side chapter diff window.
 14. ~~**V-Refresh**~~ shipped (commits `991b1bb`, `0025c5b`).
 

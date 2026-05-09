@@ -23,6 +23,8 @@ public enum ConversionOutputSubfolder {
     public static let markdown = "Markdown"
     /// Self-contained HTML sibling outputs (V-Outputs).
     public static let html = "HTML"
+    /// Word DOCX sibling outputs (V-Outputs).
+    public static let docx = "Word Documents"
     /// Per-conversion debug staging directories — populated only
     /// when "Emit debug log" is on for the conversion. Without
     /// debug-log enabled, the staging dir stays next to the source
@@ -74,17 +76,14 @@ public enum ConversionOutputResolver {
             .appendingPathExtension("epub")
     }
 
-    /// Compute (txt, md, html) sibling URL overrides for a source
-    /// PDF when the user has an output root configured. `suffix`
-    /// applies the same "<basename> <suffix>" convention to the
-    /// sibling filenames so they group with the matching EPUB.
-    /// Returns `(nil, nil, nil)` when there's no root — callers
-    /// leave the pipeline's default side-by-side behavior in place.
+    /// Compute (txt, md) sibling URL overrides for a source PDF
+    /// when the user has an output root configured.
+    /// Returns `(nil, nil)` when there's no root.
     public static func siblingTextOverrides(
         forSource sourcePDF: URL, suffix: String = ""
-    ) -> (txt: URL?, md: URL?, html: URL?) {
+    ) -> (txt: URL?, md: URL?) {
         let stem = stemmedName(forSource: sourcePDF, suffix: suffix)
-        guard let root = currentRoot() else { return (nil, nil, nil) }
+        guard let root = currentRoot() else { return (nil, nil) }
         let txt = root
             .appendingPathComponent(ConversionOutputSubfolder.textFiles, isDirectory: true)
             .appendingPathComponent(stem)
@@ -93,11 +92,26 @@ public enum ConversionOutputResolver {
             .appendingPathComponent(ConversionOutputSubfolder.markdown, isDirectory: true)
             .appendingPathComponent(stem)
             .appendingPathExtension("md")
+        return (txt, md)
+    }
+
+    /// Compute (html, docx) sibling URL overrides for a source PDF
+    /// when the user has an output root configured.
+    /// Returns `(nil, nil)` when there's no root.
+    public static func siblingDocumentOverrides(
+        forSource sourcePDF: URL, suffix: String = ""
+    ) -> (html: URL?, docx: URL?) {
+        let stem = stemmedName(forSource: sourcePDF, suffix: suffix)
+        guard let root = currentRoot() else { return (nil, nil) }
         let html = root
             .appendingPathComponent(ConversionOutputSubfolder.html, isDirectory: true)
             .appendingPathComponent(stem)
             .appendingPathExtension("html")
-        return (txt, md, html)
+        let docx = root
+            .appendingPathComponent(ConversionOutputSubfolder.docx, isDirectory: true)
+            .appendingPathComponent(stem)
+            .appendingPathExtension("docx")
+        return (html, docx)
     }
 
     /// Build the searchable-PDF sibling URL for a source PDF when

@@ -164,12 +164,12 @@ struct ConversionOptions: Codable, Equatable {
     /// conversion issues, otherwise leaves a directory's worth of
     /// artifacts on disk.
     var emitDebugLog: Bool
-    /// Tier 9 / V-Outputs. When true, write `<basename>.txt` and
-    /// `<basename>.md` next to the EPUB on conversion. Useful for
-    /// piping into search / archival / RAG pipelines without
-    /// unzipping the EPUB. Cheap (text files are small); default
-    /// on. Off skips both writes.
+    /// Write `.txt` and `.md` siblings next to the EPUB. Cheap;
+    /// default on.
     var emitSiblingTextOutputs: Bool
+    /// Write `.html` and `.docx` siblings next to the EPUB. Heavier
+    /// (binary DOCX, large self-contained HTML); default off.
+    var emitSiblingDocuments: Bool
     /// Tier 9 / V-Trust-PerPage. User-typed page-range string —
     /// 1-based, comma-separated, with `N-M` ranges:
     /// "1-20, 150-160". Pages in any range bypass the embedded-
@@ -203,6 +203,7 @@ struct ConversionOptions: Codable, Equatable {
         privateMode: Bool = false,
         emitDebugLog: Bool = false,
         emitSiblingTextOutputs: Bool = true,
+        emitSiblingDocuments: Bool = false,
         forceOCRPageRangesString: String = "",
         outputSuffix: String = "",
         emitSearchablePDF: Bool = false
@@ -214,6 +215,7 @@ struct ConversionOptions: Codable, Equatable {
         self.privateMode = privateMode
         self.emitDebugLog = emitDebugLog
         self.emitSiblingTextOutputs = emitSiblingTextOutputs
+        self.emitSiblingDocuments = emitSiblingDocuments
         self.forceOCRPageRangesString = forceOCRPageRangesString
         self.outputSuffix = outputSuffix
         self.emitSearchablePDF = emitSearchablePDF
@@ -232,6 +234,7 @@ struct ConversionOptions: Codable, Equatable {
         case privateMode
         case emitDebugLog
         case emitSiblingTextOutputs
+        case emitSiblingDocuments
         case forceOCRPageRangesString
         case outputSuffix
         case emitSearchablePDF
@@ -262,11 +265,14 @@ struct ConversionOptions: Codable, Equatable {
         self.emitDebugLog = try c.decodeIfPresent(
             Bool.self, forKey: .emitDebugLog
         ) ?? false
-        // Default-on for legacy decode: existing users get the
-        // sibling .txt / .md files without a re-save.
+        // Default-on for legacy decode: existing users keep txt+md.
         self.emitSiblingTextOutputs = try c.decodeIfPresent(
             Bool.self, forKey: .emitSiblingTextOutputs
         ) ?? true
+        // Default-off: html+docx are opt-in (heavier files).
+        self.emitSiblingDocuments = try c.decodeIfPresent(
+            Bool.self, forKey: .emitSiblingDocuments
+        ) ?? false
         self.forceOCRPageRangesString = try c.decodeIfPresent(
             String.self, forKey: .forceOCRPageRangesString
         ) ?? ""
@@ -291,6 +297,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(privateMode, forKey: .privateMode)
         try c.encode(emitDebugLog, forKey: .emitDebugLog)
         try c.encode(emitSiblingTextOutputs, forKey: .emitSiblingTextOutputs)
+        try c.encode(emitSiblingDocuments, forKey: .emitSiblingDocuments)
         try c.encode(forceOCRPageRangesString, forKey: .forceOCRPageRangesString)
         try c.encode(outputSuffix, forKey: .outputSuffix)
         try c.encode(emitSearchablePDF, forKey: .emitSearchablePDF)
