@@ -1,4 +1,5 @@
 import SwiftUI
+import Layout
 
 /// First-run welcome sheet. Presented automatically when
 /// `@AppStorage(welcomeShownKey)` is false; the user dismisses it
@@ -19,6 +20,7 @@ struct WelcomeSheet: View {
     @Binding var isPresented: Bool
     @AppStorage(welcomeShownKey) private var welcomeShown: Bool = false
     @Environment(\.openSettings) private var openSettings
+    @State private var showingSuryaSetup = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +28,8 @@ struct WelcomeSheet: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header
                     quickStart
+                    Divider()
+                    suryaSection
                     Divider()
                     cloudSection
                     Divider()
@@ -75,6 +79,51 @@ struct WelcomeSheet: View {
                 title: "Output lands next to the source",
                 detail: "book.pdf → book.epub. Open in any EPUB reader (Books, Calibre, Thorium); also opens in Humanist's own editor for review."
             )
+        }
+    }
+
+    @ViewBuilder
+    private var suryaSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("Layout analysis").font(.headline)
+                if SuryaConnection.shared == nil {
+                    Text("not installed")
+                        .font(.caption)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange, in: Capsule())
+                } else {
+                    Text("ready")
+                        .font(.caption)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green, in: Capsule())
+                }
+            }
+            Text("Surya analyses page layout before OCR — classifying regions as headings, body text, footnotes, figures, and tables. This drives chapter structure, footnote linking, and table extraction.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if SuryaConnection.shared == nil {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Surya is not installed. Conversions will use Apple Vision OCR only — functional, but with less structure detection.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button("Set up Surya…") {
+                    showingSuryaSetup = true
+                }
+                .buttonStyle(.borderedProminent)
+                .sheet(isPresented: $showingSuryaSetup) {
+                    SuryaSetupSheet(isPresented: $showingSuryaSetup)
+                }
+            }
         }
     }
 

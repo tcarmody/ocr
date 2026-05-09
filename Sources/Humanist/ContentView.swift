@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import AI
 import Document
+import Layout
 import PDFIngest
 import Pipeline
 
@@ -15,6 +16,7 @@ struct ContentView: View {
     @EnvironmentObject private var runner: JobRunner
     @State private var isTargeted = false
     @State private var showingWelcome = false
+    @State private var showingSuryaSetup = false
     @StateObject private var twoUpProcessor = TwoUpProcessor()
     /// History disclosure state. Defaults collapsed so a long
     /// bulk run doesn't push the active queue off-screen; users
@@ -35,6 +37,10 @@ struct ContentView: View {
         VStack(spacing: 0) {
             ModeStrip()
             Divider()
+            if SuryaConnection.shared == nil {
+                SuryaAbsentBanner { showingSuryaSetup = true }
+                Divider()
+            }
             VStack(spacing: 14) {
                 optionsBlock
                 if store.jobs.isEmpty {
@@ -78,6 +84,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingWelcome) {
             WelcomeSheet(isPresented: $showingWelcome)
+        }
+        .sheet(isPresented: $showingSuryaSetup) {
+            SuryaSetupSheet(isPresented: $showingSuryaSetup)
         }
         .onAppear {
             if !welcomeShown { showingWelcome = true }
@@ -238,12 +247,10 @@ struct ContentView: View {
                         """)
                 Toggle("Surya OCR", isOn: $queue.useSuryaOCR)
                     .toggleStyle(.checkbox)
-                    .help("""
-                        Force Surya OCR on every region of every page. \
-                        Local-only; works without an API key. Slower \
-                        than the standard cascade — use it when you're \
-                        offline and getting poor Vision results.
-                        """)
+                    .disabled(SuryaConnection.shared == nil)
+                    .help(SuryaConnection.shared == nil
+                          ? "Surya is not installed — use \"Set up Surya…\" in the banner above to install it."
+                          : "Force Surya OCR on every region of every page. Local-only; works without an API key. Slower than the standard cascade — use when offline and getting poor Vision results.")
                 Toggle("Searchable PDF", isOn: $queue.emitSearchablePDF)
                     .toggleStyle(.checkbox)
                     .help("""
@@ -713,6 +720,32 @@ private extension Job {
 ///
 /// Refreshes itself off the AISettings store on appear and
 /// whenever the Settings sheet might have closed (`scenePhase`
+/// Shown at the top of the launcher when Surya isn't installed.
+/// Communicates Vision-only mode and offers a direct path to setup.
+private struct SuryaAbsentBanner: View {
+    let onSetup: () -> Void
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Surya not installed — layout analysis disabled")
+                    .font(.callout.weight(.semibold))
+                Text("Conversions will use Apple Vision OCR only. For better structure (headings, footnotes, tables), set up Surya below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Set up Surya…") { onSetup() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.08))
+    }
+}
+
 /// transitions). Keeps the strip honest without subscribing to
 /// every UserDefaults change.
 private struct ModeStrip: View {
