@@ -180,11 +180,14 @@ struct ContentView: View {
     @ViewBuilder
     private var optionsBlock: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Row 1 — language + engine badge
+            // Row 1 — language + engine badge (one visual cluster)
             HStack(spacing: 14) {
                 Spacer(minLength: 0)
-                languageMenu
-                tesseractStatusBadge
+                HStack(spacing: 10) {
+                    languageMenu
+                    Divider().frame(height: 14)
+                    tesseractStatusBadge
+                }
                 Spacer(minLength: 0)
             }
             .font(.callout)
