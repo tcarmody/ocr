@@ -215,6 +215,7 @@ struct ContentView: View {
                         """)
                 Spacer()
             }
+            // Row 1 — processing mode toggles
             HStack(spacing: 14) {
                 languageMenu
                 Divider().frame(height: 18)
@@ -242,8 +243,7 @@ struct ContentView: View {
                         academic prose. Requires Cloud mode + API key \
                         (configure in Settings); inert otherwise. \
                         Costs ≈ $15–25 per book at current Sonnet \
-                        pricing. Note: figures are not yet preserved \
-                        in this path (text-only output) — coming soon.
+                        pricing.
                         """)
                 Toggle("Surya OCR", isOn: $queue.useSuryaOCR)
                     .toggleStyle(.checkbox)
@@ -251,6 +251,13 @@ struct ContentView: View {
                     .help(SuryaConnection.shared == nil
                           ? "Surya is not installed — use \"Set up Surya…\" in the banner above to install it."
                           : "Force Surya OCR on every region of every page. Local-only; works without an API key. Slower than the standard cascade — use when offline and getting poor Vision results.")
+                Spacer()
+                tesseractStatusBadge
+            }
+            .font(.callout)
+
+            // Row 2 — output format toggles
+            HStack(spacing: 14) {
                 Toggle("Searchable PDF", isOn: $queue.emitSearchablePDF)
                     .toggleStyle(.checkbox)
                     .help("""
@@ -291,7 +298,6 @@ struct ContentView: View {
                         diagnosing conversion issues.
                         """)
                 Spacer()
-                tesseractStatusBadge
             }
             .font(.callout)
         }
