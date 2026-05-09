@@ -188,15 +188,15 @@ final class TwoUpProcessor: ObservableObject {
 
     private static func detect(_ url: URL) async -> Bool {
         await Task.detached(priority: .userInitiated) {
-            let verdict = TwoUpDetector.detectIsTwoUp(pdfURL: url)
+            let result = TwoUpDetector.detect(pdfURL: url)
             // Emit per-page signals so Console.app shows exactly why
             // a PDF was (or wasn't) flagged. Filter the subsystem
             // "humanist" + category "twoup" to see them.
-            twoUpLogger.info("two-up detection: \(url.lastPathComponent) verdict=\(verdict ? "TWO-UP" : "single")")
-            for d in TwoUpDetector.lastDiagnostics {
+            twoUpLogger.info("two-up detection: \(url.lastPathComponent) verdict=\(result.verdict ? "TWO-UP" : "single")")
+            for d in result.diagnostics {
                 twoUpLogger.info("  \(d.summary)")
             }
-            return verdict
+            return result.verdict
         }.value
     }
 

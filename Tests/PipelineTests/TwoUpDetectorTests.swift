@@ -99,11 +99,11 @@ final class TwoUpDetectorTests: XCTestCase {
         doc.insert(makeBlankLandscapePage(), at: 1)
         XCTAssertTrue(doc.write(to: tmp))
 
-        _ = TwoUpDetector.detectIsTwoUp(pdfURL: tmp, sampleCount: 4)
-        XCTAssertFalse(TwoUpDetector.lastDiagnostics.isEmpty,
+        let result = TwoUpDetector.detect(pdfURL: tmp, sampleCount: 4)
+        XCTAssertFalse(result.diagnostics.isEmpty,
             "diagnostics should populate after a detect run")
         // Every entry should have a summary that includes the page index.
-        for d in TwoUpDetector.lastDiagnostics {
+        for d in result.diagnostics {
             XCTAssertTrue(d.summary.contains("page "))
         }
     }

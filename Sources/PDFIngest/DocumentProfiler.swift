@@ -33,10 +33,6 @@ public enum DocumentProfiler {
         public let topConfidence: Double      // 0…1
     }
 
-    /// Most-recent per-sample diagnostics from `profile(...)`.
-    /// Cleared at the start of each call.
-    public private(set) static var lastSamples: [Sample] = []
-
     /// Build a `DocumentProfile` for `pdfURL`. Samples up to
     /// `sampleCount` evenly-spaced body pages (skipping the cover);
     /// for each, reads the embedded text and feeds the result to
@@ -50,7 +46,6 @@ public enum DocumentProfiler {
     public static func profile(
         pdfURL: URL, sampleCount: Int = 3
     ) -> DocumentProfile {
-        lastSamples = []
         guard let doc = PDFDocument(url: pdfURL), doc.pageCount > 0 else {
             return DocumentProfile()
         }
@@ -99,7 +94,6 @@ public enum DocumentProfiler {
                 ))
             }
         }
-        lastSamples = samples
 
         // Aggregate. Primary = highest-weighted language; secondary =
         // any other languages with weight ≥ secondaryWeightFloor of

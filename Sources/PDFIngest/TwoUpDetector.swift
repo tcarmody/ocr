@@ -66,36 +66,52 @@ public enum TwoUpDetector {
         }
     }
 
-    /// Most-recent per-page diagnostics from `detectIsTwoUp`. Emptied
-    /// at the start of each call. Read after the call to log or
-    /// inspect what fired.
-    public private(set) static var lastDiagnostics: [Diagnostic] = []
+    /// Outcome of `detect(...)`: the document-level two-up verdict
+    /// plus the per-sample diagnostics. Returning the diagnostics
+    /// alongside the verdict (rather than parking them in a static)
+    /// keeps the detector free of shared mutable state and is
+    /// concurrency-safe for parallel callers.
+    public struct Detection: Sendable {
+        public let verdict: Bool
+        public let diagnostics: [Diagnostic]
+    }
 
-    /// Detect by sampling up to `sampleCount` pages from the document.
-    /// Skips the very first page (often a single-image cover that
-    /// fails the gutter check even when body pages are clearly
-    /// two-up). Majority verdict wins.
-    public static func detectIsTwoUp(
+    /// Document-level detection with full diagnostics. Samples up to
+    /// `sampleCount` pages; skips page 0 (often a single-image cover
+    /// that fails the gutter check even when body pages are clearly
+    /// two-up); majority verdict wins.
+    public static func detect(
         pdfURL: URL, sampleCount: Int = 4
-    ) -> Bool {
-        lastDiagnostics = []
+    ) -> Detection {
         guard let doc = PDFDocument(url: pdfURL), doc.pageCount > 0 else {
-            return false
+            return Detection(verdict: false, diagnostics: [])
         }
         // Skip page 0 (cover); start at page 1 if available.
         let startPage = doc.pageCount > 1 ? 1 : 0
         var twoUpCount = 0
         var checked = 0
+        var diagnostics: [Diagnostic] = []
         for offset in 0..<sampleCount {
             let i = startPage + offset
             guard i < doc.pageCount, let page = doc.page(at: i) else { break }
             checked += 1
             let diag = analyzePage(page, pageIndex: i)
-            lastDiagnostics.append(diag)
+            diagnostics.append(diag)
             if diag.verdict { twoUpCount += 1 }
         }
-        guard checked > 0 else { return false }
-        return Double(twoUpCount) / Double(checked) >= 0.5
+        guard checked > 0 else {
+            return Detection(verdict: false, diagnostics: diagnostics)
+        }
+        let verdict = Double(twoUpCount) / Double(checked) >= 0.5
+        return Detection(verdict: verdict, diagnostics: diagnostics)
+    }
+
+    /// Verdict-only convenience for callers that don't need
+    /// per-sample diagnostics. Forwards to `detect(...)`.
+    public static func detectIsTwoUp(
+        pdfURL: URL, sampleCount: Int = 4
+    ) -> Bool {
+        detect(pdfURL: pdfURL, sampleCount: sampleCount).verdict
     }
 
     /// Per-page test. Used both for document-level sampling and by

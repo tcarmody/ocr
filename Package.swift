@@ -143,7 +143,12 @@ let package = Package(
         ),
     ],
     // Tools-version 6.2 (required for `.v26`) defaults to Swift 6
-    // strict concurrency; the codebase was written under Swift 5
-    // and migrating is out of scope for the platform bump.
+    // strict concurrency. The pipeline is partially clean — small
+    // dead-state singletons in DocumentProfiler / TwoUpDetector were
+    // refactored away — but RegionAwareReflow still has ~8 debug
+    // statics that surface diagnostics through global state, plus
+    // a handful of LoadedPDF capture sites that need `@unchecked
+    // Sendable` defenses. Full Swift 6 migration is a separate
+    // ~half-day project; staying at .v5 keeps those as warnings.
     swiftLanguageModes: [.v5]
 )

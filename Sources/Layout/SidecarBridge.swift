@@ -44,9 +44,6 @@ public actor SidecarBridge {
     private var process: Process?
     private var stdin: FileHandle?
     private var stdout: FileHandle?
-    /// The hello message Surya sends on startup. Cached so callers can
-    /// inspect it (e.g. to confirm MPS is available) without re-spawning.
-    private(set) var helloMessage: [String: Any]?
 
     public init(config: Config) {
         self.config = config
@@ -105,8 +102,10 @@ public actor SidecarBridge {
         self.stdin = inPipe.fileHandleForWriting
         self.stdout = outPipe.fileHandleForReading
 
-        let hello = try readMessage()
-        self.helloMessage = hello
+        // Drain the hello frame Surya sends on startup. Not stored;
+        // callers don't currently inspect it. Throws if the spawn
+        // didn't produce one — that's a bridge-broken signal.
+        _ = try readMessage()
     }
 
     /// Send one request, await one reply.
@@ -125,13 +124,20 @@ public actor SidecarBridge {
     /// duration of the Surya call (~1–4s on Apple Silicon). That's
     /// the right trade — the actor's whole purpose is to serialize
     /// sidecar I/O, and there's only ever one outstanding request.
-    public func send(_ payload: [String: Any]) async throws -> [String: Any] {
+    /// Send a JSON-encoded request frame, await the JSON-encoded reply.
+    /// Both sides are `Data` to keep the wire-level API Sendable across
+    /// actor boundaries; callers do their own typed parse on the reply.
+    public func send(_ payloadJSON: Data) async throws -> Data {
         try await startIfNeeded()
-        let body = try JSONSerialization.data(withJSONObject: payload)
-        try writeFrame(body)
+        try writeFrame(payloadJSON)
         let reply = try readMessage()
-        if let op = reply["op"] as? String, op == "error" {
-            let msg = (reply["message"] as? String) ?? "<no message>"
+        // Surface sidecar-side errors before returning. We need to
+        // peek at the reply for the `op == "error"` envelope, but
+        // we don't expose the parsed dict — caller re-parses for
+        // the structured payload.
+        if let dict = try? JSONSerialization.jsonObject(with: reply) as? [String: Any],
+           let op = dict["op"] as? String, op == "error" {
+            let msg = (dict["message"] as? String) ?? "<no message>"
             throw SidecarError.sidecarErrored(msg)
         }
         return reply
@@ -145,7 +151,6 @@ public actor SidecarBridge {
         stdin = nil
         stdout = nil
         process = nil
-        helloMessage = nil
     }
 
     // MARK: - framing
@@ -179,15 +184,11 @@ public actor SidecarBridge {
         return collected
     }
 
-    private func readMessage() throws -> [String: Any] {
+    private func readMessage() throws -> Data {
         let header = try readExact(4)
         let len = header.withUnsafeBytes { ptr -> UInt32 in
             ptr.load(as: UInt32.self).bigEndian
         }
-        let body = try readExact(Int(len))
-        guard let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-            throw SidecarError.decodeFailed(String(data: body, encoding: .utf8) ?? "<binary>")
-        }
-        return obj
+        return try readExact(Int(len))
     }
 }

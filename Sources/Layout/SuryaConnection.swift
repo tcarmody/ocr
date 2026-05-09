@@ -107,9 +107,24 @@ public actor SuryaConnection {
         public let imageSize: CGSize
     }
 
+    /// Encode `payload` as JSON, send via the bridge, decode the reply
+    /// back to a Swift dict. Local `[String: Any]` use is fine — it
+    /// only crosses the wire as `Data`, which is Sendable. Each call
+    /// site does its own typed parse on the returned dict.
+    private func sendJSON(_ payload: [String: Any]) async throws -> [String: Any] {
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let replyData = try await bridge.send(body)
+        guard let dict = try JSONSerialization.jsonObject(with: replyData) as? [String: Any] else {
+            throw SidecarBridge.SidecarError.decodeFailed(
+                String(data: replyData, encoding: .utf8) ?? "<binary>"
+            )
+        }
+        return dict
+    }
+
     /// Layout analysis — typed regions + reading order.
     public func layout(imageURL: URL, pageBounds: CGSize) async throws -> [LayoutRegion] {
-        let reply = try await bridge.send([
+        let reply = try await sendJSON([
             "op": "layout",
             "image_path": imageURL.path,
         ])
@@ -140,7 +155,7 @@ public actor SuryaConnection {
     /// responsible for grouping into paragraphs (today via region-
     /// aware reflow).
     public func ocr(imageURL: URL, languages: [String], pageBounds: CGSize) async throws -> [RawLine] {
-        let reply = try await bridge.send([
+        let reply = try await sendJSON([
             "op": "ocr",
             "image_path": imageURL.path,
             "languages": languages,
@@ -171,7 +186,7 @@ public actor SuryaConnection {
     /// OCR observations the caller has on the full page, mapped onto
     /// each cell's translated bbox.
     public func table(imageURL: URL) async throws -> RawTableStructure {
-        let reply = try await bridge.send([
+        let reply = try await sendJSON([
             "op": "table",
             "image_path": imageURL.path,
         ])
