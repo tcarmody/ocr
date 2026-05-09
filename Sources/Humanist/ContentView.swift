@@ -195,14 +195,14 @@ struct ContentView: View {
             // Row 2 — processing mode toggles
             HStack(spacing: 14) {
                 Spacer(minLength: 0)
-                Toggle("Private", isOn: $queue.privateMode)
+                Toggle("Force Private", isOn: $queue.privateMode)
                     .toggleStyle(.checkbox)
                     .help("""
-                        Override Settings: disable every cloud feature \
-                        for this conversion. No Claude calls, no cost. \
-                        Forces local-only processing regardless of your \
-                        global Cloud-mode toggles. Coerces Claude OCR \
-                        off; Surya OCR / Force OCR still apply.
+                        Per-job override that disables every cloud feature \
+                        regardless of your global Settings. No Claude \
+                        calls, no cost. Coerces Claude OCR off; Surya OCR \
+                        / Force OCR still apply. Redundant when the \
+                        ModeStrip already shows "Private" — but harmless.
                         """)
                 Toggle("Force OCR", isOn: $queue.forceOCR)
                     .toggleStyle(.checkbox)
