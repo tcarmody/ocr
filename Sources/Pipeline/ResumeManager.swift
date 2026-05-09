@@ -237,7 +237,9 @@ public struct ResumeManager: Sendable {
         _ out: inout [UInt8]
     ) -> Bool {
         out.withUnsafeMutableBufferPointer { outBuf in
-            CC_SHA256(buffer.baseAddress, CC_LONG(buffer.count), outBuf.baseAddress)
+            // CC_SHA256 returns its destination buffer; we want the
+            // side effect (writing into outBuf), not the pointer back.
+            _ = CC_SHA256(buffer.baseAddress, CC_LONG(buffer.count), outBuf.baseAddress)
             return true
         }
     }

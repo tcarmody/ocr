@@ -108,7 +108,9 @@ let package = Package(
                 "Pipeline", "AI",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/HumanistCLI"
+            path: "Sources/HumanistCLI",
+            // README is documentation, not a resource SPM should bundle.
+            exclude: ["README.md"]
         ),
         .testTarget(
             name: "EPUBTests",

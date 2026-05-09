@@ -109,7 +109,6 @@ public enum MarkdownWriter {
         guard columns > 0 else { return }
 
         let firstRowIsHeader = rows[0].contains { $0.isHeader }
-        let headerRowIdx = firstRowIsHeader ? 0 : -1
 
         // Header row (or a synthesized blank one if all cells
         // are data — keeps GitHub-flavored Markdown happy).

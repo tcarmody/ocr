@@ -85,7 +85,7 @@ public struct DictionaryCorrector: Sendable {
 
         // Apply corrections in reverse order so earlier ranges
         // don't shift under us.
-        var working = nsText.mutableCopy() as! NSMutableString
+        let working = nsText.mutableCopy() as! NSMutableString
         for result in results.reversed() {
             guard let correction = correctionFor(
                 range: result.range,

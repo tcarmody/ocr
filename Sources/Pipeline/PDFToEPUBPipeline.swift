@@ -418,7 +418,9 @@ public actor PDFToEPUBPipeline {
                 tableExtractor: makeClaudeTableExtractor(options: options, budget: budget),
                 pageEngine: makeClaudePageOCREngine(
                     options: options, budget: budget,
-                    captureSink: captures.map { store in { store.record($0) } }
+                    captureSink: captures.map { store in
+                        { @Sendable entry in store.record(entry) }
+                    }
                 )
             )
         }
@@ -1417,13 +1419,20 @@ public actor PDFToEPUBPipeline {
                 // CGImage / saved PNG and produce independent outputs.
                 // analyzeLayoutWithRetry is a no-op when layoutAnalyzer
                 // is nil, so the guard is handled inside that method.
+                //
+                // Snapshot `pdf` to an immutable local: it's a `var`
+                // outside the loop because of the periodic-reload
+                // pattern, and `async let` can't capture mutable
+                // bindings. `LoadedPDF` is a class, so the snapshot
+                // and the original reference the same instance.
+                let pdfRef = pdf
                 async let ocrTask = ocrPageWithFallback(
-                    image: image, pdf: pdf, pageIndex: i,
+                    image: image, pdf: pdfRef, pageIndex: i,
                     initialDPI: options.dpi,
                     primaryEngine: pageEngine, hints: hints
                 )
                 async let layoutTask = analyzeLayoutWithRetry(
-                    pdf: pdf,
+                    pdf: pdfRef,
                     pageIndex: i,
                     initialDPI: options.dpi,
                     initialPNGURL: pngURL,

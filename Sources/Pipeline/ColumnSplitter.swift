@@ -143,7 +143,9 @@ struct ColumnSplitter {
         // the column body's Y range collapses to "above" — see class
         // docs.
         guard !spans.isEmpty else { return [left, right] }
-        let columnTopY = candidates.map(\.box.maxY).max() ?? 1
+        // Only the bottom edge matters for the above/below split: anything
+        // above the column or inside its Y range collapses to "above"
+        // (see the comment block above), so columnTopY isn't needed.
         let columnBottomY = candidates.map(\.box.minY).min() ?? 0
         var above: [TextObservation] = []
         var below: [TextObservation] = []
