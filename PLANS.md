@@ -2325,6 +2325,17 @@ in a session.
 
 ### O-Diff — Conversion diff tool
 
+**Status**: shipped. Tools → Compare EPUBs… picks two EPUBs,
+runs `EPUBDiffer` (chapters paired by spine position, paragraphs
+diffed via `CollectionDifference`), and opens a window with:
+a chapter navigator sidebar (change-count badge on each entry);
+a side-by-side detail pane with removals highlighted red and
+additions green, paired 1-to-1 within each run of changes; a
+"Show unchanged" toolbar toggle; and a "Save Report…" button
+that writes a plain unified-diff `.txt` to disk. Per-page CER
+and cost/time comparison are deferred (need ground-truth
+infrastructure and conversion-stats sidecar respectively).
+
 Run two conversions of the same PDF with different settings
 (Cloud vs Private, two different cascade thresholds, two
 different prompts) and surface a side-by-side diff: per-chapter
@@ -2420,7 +2431,7 @@ validating Rounds 1-4 didn't regress anything.
 
 11. ~~**V-PDF-Searchable**~~ shipped (commit `30a9486`).
 12. **V-Outputs (DOCX)** (binary Word output) — 3 days — still pending.
-13. **O-Diff** (conversion diff tool) — 3 days — still pending.
+13. ~~**O-Diff**~~ shipped — side-by-side chapter diff window.
 14. ~~**V-Refresh**~~ shipped (commits `991b1bb`, `0025c5b`).
 
 **Total**: ~26 days of work across 14 commits / features. Ships
