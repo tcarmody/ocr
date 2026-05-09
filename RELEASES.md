@@ -6,11 +6,161 @@ packaged in a DMG, hosted on GitHub Releases. Optional Sparkle
 auto-updates at the end.
 
 The Surya and Tesseract setup wizards (`SuryaSetupSheet` /
-`TesseractSetupSheet`) mean we ship a small bundle (~15 MB) and let
+`TesseractSetupSheet`) mean we ship a small bundle (~14 MB) and let
 users install the heavy dependencies themselves on first launch.
 Notarization is straightforward in this configuration because there
 are essentially no inner Mach-O binaries — just the Swift executable
 and the bundled CodeMirror assets.
+
+This document covers two distribution stages:
+
+- **Pre-flight** (the section right below) — share the current build
+  with a small group of testers without an Apple Developer Program
+  membership. Works today; testers see one Gatekeeper warning that
+  they dismiss with right-click → Open.
+- **Public release** (sections 1–11) — Developer ID + notarization +
+  DMG + GitHub Releases for distribution to people you can't talk to.
+
+---
+
+## Pre-flight: sharing builds with testers (no Developer Program required)
+
+The fastest path to "send the app to a few people" — what's actually
+appropriate while you're still iterating and only handing builds to
+people you know. Skips the entire Developer Program / notarization /
+DMG track.
+
+### What testers will see
+
+The build today is signed with your Apple Development certificate
+(pinned hash in `Scripts/build-app.sh`). For another machine, this
+is functionally equivalent to ad-hoc signing — Apple Development
+isn't a distribution cert, so Gatekeeper treats it the same way it
+treats unsigned binaries:
+
+1. Tester downloads the .zip and unzips (Finder does this on
+   double-click).
+2. They drag `Humanist.app` to `/Applications` (or wherever).
+3. **First double-click** triggers Gatekeeper:
+   *"\"Humanist\" cannot be opened because Apple cannot check it
+   for malicious software."*
+4. They dismiss, then **right-click the app → Open** → click
+   **Open** in the resulting confirmation alert.
+5. macOS remembers the override. Subsequent launches are silent.
+
+The right-click bypass is the only friction. Testers who can follow
+"right-click → Open → Open" can run the app indefinitely.
+
+### Build and zip the .app
+
+```sh
+# Build with the pinned Apple Development cert (the default)
+Scripts/run-app.sh
+
+# Use ditto, not zip(1) — preserves bundle structure, code-signing
+# metadata, and extended attributes that plain zip mangles.
+cd build
+ditto -c -k --keepParent Humanist.app Humanist.zip
+
+# Verify the zip round-trips cleanly
+ditto -x -k Humanist.zip /tmp/zip-check && \
+    codesign --verify --deep --strict /tmp/zip-check/Humanist.app && \
+    echo "OK"
+rm -rf /tmp/zip-check
+```
+
+The zip is ~14 MB. iMessage handles it inline; Drive / Dropbox /
+WeTransfer / iCloud Drive all work for sharing the link. Email
+attachment limits (25 MB on most providers) leave headroom but
+cloud links are friendlier.
+
+### Build and zip the CLI
+
+If your testers want the CLI too:
+
+```sh
+swift build --product humanist-cli -c release
+codesign --force --sign - .build/release/humanist-cli   # ad-hoc
+ditto -c -k --keepParent .build/release/humanist-cli humanist-cli.zip
+```
+
+CLI binary is ~6 MB. The ad-hoc sign suppresses the
+"unsigned-binary" Terminal warning on first run; testers may still
+need to grant permission once via System Settings → Privacy &
+Security → "Allow Anyway" if Gatekeeper escalates.
+
+### Tester quick-start (paste into the email / DM)
+
+````markdown
+# Humanist build — first launch
+
+1. Download `Humanist.zip`, double-click to unzip.
+2. Drag **Humanist.app** to your `/Applications` folder.
+3. **First launch only:** right-click the app → choose **Open** →
+   click **Open** in the dialog. macOS remembers the override
+   afterwards; you can double-click normally from then on.
+4. Walk through the welcome sheet. Optional setup wizards for
+   **Surya** (~1 GB, layout analysis) and **Tesseract** (~150 MB,
+   classical-script OCR) appear if those engines aren't installed —
+   skip either if you don't need them.
+5. Drop a PDF onto the launcher to convert.
+
+For the CLI (optional):
+
+```sh
+unzip humanist-cli.zip
+chmod +x humanist-cli
+sudo mv humanist-cli /usr/local/bin/
+humanist-cli --help
+```
+
+Requires macOS 26 (Tahoe) on Apple Silicon. Bug reports / weird
+output → let me know.
+````
+
+### When something goes wrong on the tester's end
+
+Three failures show up most often. None require rebuilding.
+
+- **"Humanist is damaged and can't be opened. You should move it to
+  the Trash."** — macOS quarantined the bundle on download and
+  Gatekeeper isn't letting them through. Have them run:
+
+  ```sh
+  xattr -d com.apple.quarantine /Applications/Humanist.app
+  ```
+
+  Then double-click. This bypasses the right-click dance entirely.
+
+- **App moves itself to Trash on launch.** OCSP-revoked-cert
+  symptom (per the project memory). Build with
+  `HUMANIST_ADHOC_SIGN=1 Scripts/run-app.sh` and re-send — ad-hoc
+  signing sidesteps the cert-validity check.
+
+- **Setup wizard install hangs.** Surya / Tesseract / Ollama
+  install commands stream output via the wizard's log pane; if
+  that pane stays empty for >30 s the underlying `Process` is
+  probably waiting on a sudo prompt or interactive confirmation
+  that wasn't surfaced. Ask the tester to run the install command
+  manually in Terminal:
+  ```sh
+  uv tool install surya-ocr        # Surya
+  brew install tesseract tesseract-lang  # Tesseract
+  ollama pull gemma4:26b           # Ollama
+  ```
+
+### When to graduate from pre-flight to a real release
+
+Move on to sections 1–11 below when:
+
+- You're sending builds to more than ~10 people.
+- Testers without "right-click → Open" instinct start asking what
+  to do.
+- You want updates to install automatically (Sparkle).
+- You're listing the app somewhere public.
+
+For "second laptop, three friends, a colleague" — pre-flight is
+fine indefinitely.
 
 ---
 
