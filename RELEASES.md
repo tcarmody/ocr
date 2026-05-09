@@ -80,8 +80,15 @@ If your testers want the CLI too:
 
 ```sh
 swift build --product humanist-cli -c release
-codesign --force --sign - .build/release/humanist-cli   # ad-hoc
-ditto -c -k --keepParent .build/release/humanist-cli humanist-cli.zip
+
+# Resolve the binary path dynamically. Scripts/build-app.sh uses
+# `swift build -c release --arch arm64` (arch-explicit), which lands
+# outputs at .build/arm64-apple-macosx/release/ rather than the bare
+# .build/release/ symlink. `--show-bin-path` works either way.
+BIN="$(swift build --show-bin-path -c release)/humanist-cli"
+
+codesign --force --sign - "$BIN"   # ad-hoc
+ditto -c -k --keepParent "$BIN" humanist-cli.zip
 ```
 
 CLI binary is ~6 MB. The ad-hoc sign suppresses the
@@ -598,11 +605,18 @@ unchanged; the differences kick in at packaging time.
 ```sh
 swift build --product humanist-cli -c release
 
+# Resolve the binary path dynamically. `Scripts/build-app.sh` uses
+# arch-explicit `--arch arm64` builds, which land outputs under
+# `.build/arm64-apple-macosx/release/` instead of the bare
+# `.build/release/`. `--show-bin-path` returns the right directory
+# regardless of which mode produced the binary.
+BIN="$(swift build --show-bin-path -c release)/humanist-cli"
+
 codesign --force \
     --options runtime \
     --timestamp \
     --sign "$HUMANIST_SIGNING_IDENTITY" \
-    .build/release/humanist-cli
+    "$BIN"
 ```
 
 No `--entitlements` flag — CLIs don't need a sandbox profile and
@@ -614,7 +628,7 @@ the entitlements file is for the `.app` bundle. The hardened-runtime
 `notarytool` accepts a zip; CLIs can't be submitted as a bare binary.
 
 ```sh
-ditto -c -k --keepParent .build/release/humanist-cli humanist-cli.zip
+ditto -c -k --keepParent "$BIN" humanist-cli.zip
 
 xcrun notarytool submit humanist-cli.zip \
     --keychain-profile humanist-notary \
@@ -647,7 +661,7 @@ Tarball is the convention for CLI tools:
 
 ```sh
 mkdir -p dist
-cp .build/release/humanist-cli dist/
+cp "$BIN" dist/humanist-cli
 cp Sources/HumanistCLI/README.md dist/README.md
 cp LICENSE dist/ 2>/dev/null || true
 

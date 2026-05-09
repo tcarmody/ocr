@@ -52,14 +52,13 @@ public actor OllamaClient {
             stream: false
         )
         let request = try buildRequest(path: "/api/chat", body: body)
-        let (data, response) = try await sendOnce(request, modelHint: model)
+        let (data, _) = try await sendOnce(request, modelHint: model)
         do {
             let envelope = try Self.decoder.decode(ChatResponseBody.self, from: data)
             return envelope.message.content
         } catch {
             throw OllamaError.decode(String(describing: error))
         }
-        _ = response
     }
 
     /// True when the daemon is reachable. Cheap probe — used by the

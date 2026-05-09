@@ -9,14 +9,15 @@ can run in scripts, CI, and shell pipelines.
 
 ```sh
 swift build --product humanist-cli -c release
-# Binary at .build/release/humanist-cli
 ```
 
-Drop the binary anywhere on `$PATH`:
+The release binary lands under `$(swift build --show-bin-path -c release)`. Drop it anywhere on `$PATH`:
 
 ```sh
-cp .build/release/humanist-cli ~/.local/bin/humanist-cli
+cp "$(swift build --show-bin-path -c release)/humanist-cli" ~/.local/bin/humanist-cli
 ```
+
+(Use `--show-bin-path` rather than hardcoding `.build/release/` — when the project has been built once with an arch-explicit flag, e.g. via `Scripts/build-app.sh`, the output lands under `.build/arm64-apple-macosx/release/` and the bare `.build/release/` symlink isn't created.)
 
 ## Subcommands
 

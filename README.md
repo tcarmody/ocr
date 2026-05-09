@@ -99,7 +99,7 @@ A second executable target — `humanist-cli` — exposes the same Pipeline and 
 
 ```sh
 swift build --product humanist-cli -c release
-cp .build/release/humanist-cli ~/.local/bin/
+cp "$(swift build --show-bin-path -c release)/humanist-cli" ~/.local/bin/
 
 humanist-cli convert paper.pdf                     # default → paper.epub
 humanist-cli convert paper.pdf -f md               # markdown only
