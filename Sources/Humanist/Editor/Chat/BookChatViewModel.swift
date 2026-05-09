@@ -24,17 +24,31 @@ final class BookChatViewModel: ObservableObject {
     private(set) var book: EPUBBook
     private let bookTitle: String
     private let client: AnthropicAPIClient
+    private let ollama: OllamaClient
     private let transcriptStore: ChatTranscriptStore
     private let epubURL: URL
 
-    /// Resolved per-send so a Settings change between queries
-    /// applies on the next send. Default is Haiku 4.5 (~3× cheaper);
-    /// flip `humanist.chat.useSonnet` in Settings → AI for
-    /// comparative / synthesis-heavy questions.
-    private var model: AnthropicModel {
-        UserDefaults.standard.bool(forKey: "humanist.chat.useSonnet")
-            ? .sonnet4_6
-            : .haiku4_5
+    /// Selected chat backend. Resolved per-send so a Settings change
+    /// applies on the next query without rebuilding the view model.
+    /// Default is Cloud (Haiku 4.5).
+    private var backend: ChatBackend {
+        if let raw = UserDefaults.standard.string(forKey: "humanist.chat.backend"),
+           let b = ChatBackend(rawValue: raw) {
+            return b
+        }
+        // Legacy fallback: pre-backend-picker users had a "useSonnet"
+        // bool. Honour it so an existing setup doesn't reset on first
+        // launch after this change.
+        return UserDefaults.standard.bool(forKey: "humanist.chat.useSonnet")
+            ? .cloudSonnet : .cloudHaiku
+    }
+
+    /// Local Ollama model tag. Default is the Gemma 4 26B MoE; users
+    /// can override via Settings → AI for a different local model.
+    private var ollamaModel: String {
+        let raw = UserDefaults.standard.string(forKey: "humanist.chat.ollamaModel")
+            ?? ""
+        return raw.isEmpty ? "gemma4:26b" : raw
     }
     /// Outstanding stream task. Cancelled when the user closes the
     /// pane mid-stream or sends a follow-up too fast.
@@ -62,6 +76,7 @@ final class BookChatViewModel: ObservableObject {
         self.client = AnthropicAPIClient(
             apiKeyProvider: { keyStore.read() }
         )
+        self.ollama = OllamaClient()
         self.transcriptStore = ChatTranscriptStore()
         // Restore prior transcript synchronously so the pane
         // doesn't flash empty before the load completes.
@@ -77,8 +92,9 @@ final class BookChatViewModel: ObservableObject {
 
     /// Submit `input` as the next user turn. No-op on empty / while
     /// already thinking. Builds the index if needed, runs retrieval,
-    /// fires a streaming request, appends an assistant message that
-    /// fills in incrementally as deltas arrive.
+    /// dispatches to the configured backend (Cloud Haiku/Sonnet via
+    /// the Anthropic API, or local Ollama), appends the assistant
+    /// reply when the round-trip completes.
     func send() async {
         let query = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, !isThinking else { return }
@@ -93,42 +109,44 @@ final class BookChatViewModel: ObservableObject {
         }
         let hits = index?.search(query: query, topK: Self.maxRetrievedChapters) ?? []
         let context = renderContext(hits: hits)
+        let userPrompt = context + "\n\nQuestion: " + query
 
-        let request = AnthropicMessageRequest(
-            model: model,
-            maxTokens: 1500,
-            system: .cached(systemPrompt, ttl: .oneHour),
-            messages: [
-                Message(role: .user, content: .plain(
-                    context + "\n\nQuestion: " + query
-                ))
-            ],
-            thinking: .disabled
-        )
-
-        // Streaming via SSE was returning empty bodies in the
-        // current macOS / Anthropic-API combo (under debugging).
-        // Use the synchronous path for now so the chat works
-        // end-to-end; we'll re-enable streaming once
-        // AnthropicStream is sorted out. Infrastructure stays
-        // in place — sendStream / SSE parsing are intact.
         isThinking = true
+        let chosenBackend = backend
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.runSyncSend(request: request, allowedHits: hits)
+            switch chosenBackend {
+            case .cloudHaiku, .cloudSonnet:
+                await self.runCloudSend(
+                    userPrompt: userPrompt, allowedHits: hits,
+                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                )
+            case .localOllama:
+                await self.runOllamaSend(userPrompt: userPrompt, allowedHits: hits)
+            }
         }
         streamTask?.cancel()
         streamTask = task
     }
 
-    private func runSyncSend(
-        request: AnthropicMessageRequest,
-        allowedHits: [BookKeywordIndex.Hit]
+    private func runCloudSend(
+        userPrompt: String,
+        allowedHits: [BookKeywordIndex.Hit],
+        model: AnthropicModel
     ) async {
         defer {
             isThinking = false
             streamTask = nil
         }
+        let request = AnthropicMessageRequest(
+            model: model,
+            maxTokens: 1500,
+            system: .cached(systemPrompt, ttl: .oneHour),
+            messages: [
+                Message(role: .user, content: .plain(userPrompt))
+            ],
+            thinking: .disabled
+        )
         do {
             let response = try await client.send(request)
             try Task.checkCancellation()
@@ -142,6 +160,43 @@ final class BookChatViewModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch let error as AnthropicAPIError {
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: "Couldn't answer that — \(error.localizedDescription)."
+            ))
+        } catch {
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: "Couldn't answer that — \(error.localizedDescription)."
+            ))
+        }
+    }
+
+    private func runOllamaSend(
+        userPrompt: String,
+        allowedHits: [BookKeywordIndex.Hit]
+    ) async {
+        defer {
+            isThinking = false
+            streamTask = nil
+        }
+        let model = ollamaModel
+        do {
+            let raw = try await ollama.chat(
+                model: model,
+                system: systemPrompt,
+                userMessage: userPrompt
+            )
+            try Task.checkCancellation()
+            let cited = parseCitations(in: raw, allowedHits: allowedHits)
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: cited.cleaned,
+                citations: cited.citations
+            ))
+        } catch is CancellationError {
+            return
+        } catch let error as OllamaError {
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: "Couldn't answer that — \(error.localizedDescription)."

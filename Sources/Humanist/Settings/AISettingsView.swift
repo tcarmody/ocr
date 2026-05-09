@@ -9,12 +9,21 @@ import AI
 /// in Phase 1 they're persisted but not yet read by the pipeline.
 struct AISettingsView: View {
     @StateObject private var vm = AISettingsViewModel()
-    /// Stable key name — read from `BookChatViewModel` too. Default
-    /// is Haiku (toggle off); flipping on switches chat to Sonnet.
-    @AppStorage("humanist.chat.useSonnet") private var chatUseSonnet = false
+    /// Selected chat backend. Read by `BookChatViewModel` per-send.
+    /// Stored as the `ChatBackend.rawValue` so legacy keys
+    /// (`humanist.chat.useSonnet`) continue to work for users who
+    /// haven't touched this setting.
+    @AppStorage("humanist.chat.backend")
+    private var chatBackendRaw: String = ChatBackend.cloudHaiku.rawValue
+    @AppStorage("humanist.chat.ollamaModel")
+    private var ollamaModel: String = "gemma4:26b"
+    @State private var showingOllamaSetup = false
 
-    private var chatUseSonnetBinding: Binding<Bool> {
-        $chatUseSonnet
+    private var chatBackendBinding: Binding<ChatBackend> {
+        Binding(
+            get: { ChatBackend(rawValue: chatBackendRaw) ?? .cloudHaiku },
+            set: { chatBackendRaw = $0.rawValue }
+        )
     }
 
     var body: some View {
@@ -72,16 +81,6 @@ struct AISettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Section("Book Chat") {
-                    Toggle(
-                        "Use Sonnet for chat answers (3× cost vs Haiku)",
-                        isOn: chatUseSonnetBinding
-                    )
-                    Text("Default is Haiku 4.5 — fast, cheap, plenty good for \"where does X discuss Y\" questions. Switch to Sonnet for harder comparative / synthesis queries. ≈ $0.06/query on Haiku, ≈ $0.19/query on Sonnet at the current 60 KB-per-chapter context size.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
 
                 Section("Cost Cap") {
                     HStack {
@@ -97,6 +96,11 @@ struct AISettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+
+            // Book Chat sits outside the cloud-only conditional —
+            // a user in Private mode can still want a local-Ollama
+            // chat backend without flipping their global setting.
+            bookChatSection
 
             // Force OCR moved out to the launcher window — it's a
             // per-conversion toggle, so it lives next to the other
@@ -116,6 +120,46 @@ struct AISettingsView: View {
     }
 
     // MARK: - Pieces
+
+    @ViewBuilder
+    private var bookChatSection: some View {
+        Section("Book Chat") {
+            Picker("Backend", selection: chatBackendBinding) {
+                ForEach(ChatBackend.allCases) { backend in
+                    Text(backend.displayName).tag(backend)
+                }
+            }
+            switch chatBackendBinding.wrappedValue {
+            case .cloudHaiku:
+                Text("Haiku 4.5 — fast and cheap (~$0.06/query at 60 KB-per-chapter context). Good default for \"where does X discuss Y\" questions.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .cloudSonnet:
+                Text("Sonnet 4.6 — ~3× the cost of Haiku (~$0.19/query) but better at comparative / synthesis questions.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .localOllama:
+                HStack {
+                    Text("Model")
+                    TextField("ollama tag", text: $ollamaModel)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Text("Runs locally via Ollama — no API key, no per-token cost, no network egress. Default \"gemma4:26b\" needs ~20 GB RAM. Smaller alternatives: \"qwen3:14b\" (~9 GB), \"gemma4:e4b\" (~4 GB).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Set Up Local Chat…") { showingOllamaSetup = true }
+                    .sheet(isPresented: $showingOllamaSetup) {
+                        OllamaSetupSheet(
+                            isPresented: $showingOllamaSetup,
+                            modelTag: ollamaModel
+                        )
+                    }
+            }
+        }
+    }
 
     @ViewBuilder
     private var keyEntryRow: some View {
