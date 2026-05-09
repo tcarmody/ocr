@@ -142,7 +142,12 @@ struct HumanistApp: App {
                     .frame(minWidth: 900, minHeight: 600)
                     .humanistChrome()
             } else {
-                Text("No EPUB loaded.")
+                // nil URL means macOS tried to restore an editor window
+                // from a previous session but scene storage couldn't
+                // decode the URL (e.g. the working temp dir was cleaned
+                // up). Dismiss immediately so the launcher stays front
+                // and the user isn't stranded in a broken editor state.
+                _StaleWindowDismisser()
             }
         }
 
@@ -444,6 +449,20 @@ struct HelpMenuCommands: Commands {
                 )
             }
         }
+    }
+}
+
+/// Shown when a `WindowGroup("Editor", for: URL.self)` window is
+/// restored from a previous session but the URL could not be decoded
+/// (e.g. the EPUB's working temp directory was cleaned up at quit).
+/// Dismisses the window on appear so the user isn't stranded in a
+/// blank editor — the launcher window becomes front instead.
+private struct _StaleWindowDismisser: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .onAppear { dismiss() }
     }
 }
 

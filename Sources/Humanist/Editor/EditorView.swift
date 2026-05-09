@@ -928,6 +928,13 @@ private struct WindowSaveGuard: NSViewRepresentable {
     final class Coordinator: NSObject, NSWindowDelegate {
         var parent: WindowSaveGuard
         private weak var attachedWindow: NSWindow?
+        /// SwiftUI's own delegate (if any) — stored before we install
+        /// ourselves so we can forward every message we don't handle.
+        /// This is important: SwiftUI uses the window delegate for
+        /// @SceneStorage writes (including the editor URL). Replacing it
+        /// without forwarding breaks scene-storage persistence, causing
+        /// the editor to reopen with a nil URL on the next launch.
+        private weak var originalDelegate: (any NSWindowDelegate)?
         /// Set before programmatically closing so `windowShouldClose`
         /// doesn't show the alert a second time.
         private var closingProgrammatically = false
@@ -937,11 +944,14 @@ private struct WindowSaveGuard: NSViewRepresentable {
         func attach(to window: NSWindow) {
             guard attachedWindow !== window else { return }
             attachedWindow = window
+            originalDelegate = window.delegate
             window.delegate = self
         }
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
-            guard parent.isDirty && !closingProgrammatically else { return true }
+            guard parent.isDirty && !closingProgrammatically else {
+                return originalDelegate?.windowShouldClose?(sender) ?? true
+            }
 
             let alert = NSAlert()
             alert.messageText = "Save \u{201C}\(parent.bookTitle)\u{201D} before closing?"
@@ -961,10 +971,25 @@ private struct WindowSaveGuard: NSViewRepresentable {
                 }
                 return false
             case .alertSecondButtonReturn: // Discard → close immediately
-                return true
+                return originalDelegate?.windowShouldClose?(sender) ?? true
             default: // Cancel
                 return false
             }
+        }
+
+        // Forward every other NSWindowDelegate message to SwiftUI's
+        // original delegate so scene storage, full-screen transitions,
+        // and key-window tracking all keep working normally.
+        override func responds(to aSelector: Selector!) -> Bool {
+            super.responds(to: aSelector)
+                || (originalDelegate?.responds(to: aSelector) == true)
+        }
+
+        override func forwardingTarget(for aSelector: Selector!) -> Any? {
+            if originalDelegate?.responds(to: aSelector) == true {
+                return originalDelegate
+            }
+            return super.forwardingTarget(for: aSelector)
         }
     }
 }
