@@ -1,5 +1,6 @@
 import SwiftUI
 import Layout
+import OCR
 
 /// First-run welcome sheet. Presented automatically when
 /// `@AppStorage(welcomeShownKey)` is false; the user dismisses it
@@ -21,6 +22,7 @@ struct WelcomeSheet: View {
     @AppStorage(welcomeShownKey) private var welcomeShown: Bool = false
     @Environment(\.openSettings) private var openSettings
     @State private var showingSuryaSetup = false
+    @State private var showingTesseractSetup = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +32,8 @@ struct WelcomeSheet: View {
                     quickStart
                     Divider()
                     suryaSection
+                    Divider()
+                    tesseractSection
                     Divider()
                     cloudSection
                     Divider()
@@ -122,6 +126,48 @@ struct WelcomeSheet: View {
                 .buttonStyle(.borderedProminent)
                 .sheet(isPresented: $showingSuryaSetup) {
                     SuryaSetupSheet(isPresented: $showingSuryaSetup)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tesseractSection: some View {
+        let installed = TesseractOCREngine.detect() != nil
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("Classical OCR (Tesseract)").font(.headline)
+                if installed {
+                    Text("ready")
+                        .font(.caption)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green, in: Capsule())
+                } else {
+                    Text("optional")
+                        .font(.caption)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.gray, in: Capsule())
+                }
+            }
+            Text("Tesseract specializes in classical scripts — polytonic Greek, classical Latin, Hebrew, and other languages where Apple Vision tends to drop diacritics. The cascade calls Tesseract on regions Vision wasn't confident about.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !installed {
+                Text("Without Tesseract, you'll fall back to Apple Vision — fine for modern English material, less accurate on classical or ancient texts.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Set up Tesseract…") {
+                    showingTesseractSetup = true
+                }
+                .buttonStyle(.bordered)
+                .sheet(isPresented: $showingTesseractSetup) {
+                    TesseractSetupSheet(isPresented: $showingTesseractSetup)
                 }
             }
         }

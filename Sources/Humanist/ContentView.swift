@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var isTargeted = false
     @State private var showingWelcome = false
     @State private var showingSuryaSetup = false
+    @State private var showingTesseractSetup = false
     @StateObject private var twoUpProcessor = TwoUpProcessor()
     /// History disclosure state. Defaults collapsed so a long
     /// bulk run doesn't push the active queue off-screen; users
@@ -92,6 +93,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingSuryaSetup) {
             SuryaSetupSheet(isPresented: $showingSuryaSetup)
+        }
+        .sheet(isPresented: $showingTesseractSetup) {
+            TesseractSetupSheet(isPresented: $showingTesseractSetup)
         }
         .onAppear {
             if !welcomeShown { showingWelcome = true }
@@ -423,9 +427,15 @@ struct ContentView: View {
     @ViewBuilder
     private var tesseractStatusBadge: some View {
         if queue.willUseTesseract && !queue.tesseractAvailable {
-            Label("Tesseract not installed", systemImage: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
+            Button {
+                showingTesseractSetup = true
+            } label: {
+                Label("Tesseract not installed", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            .buttonStyle(.borderless)
+            .help("Click to install Tesseract — improves accuracy on classical scripts")
         } else if queue.willUseTesseract {
             Label("Tesseract", systemImage: "checkmark.circle.fill")
                 .font(.caption)
