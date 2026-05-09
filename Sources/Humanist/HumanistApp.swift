@@ -165,22 +165,13 @@ struct HumanistApp: App {
             }
         }
 
-        // Standard macOS Settings (⌘,) scene. TabView so the
-        // Editor and AI panes each get their own surface; future
-        // tabs (default languages, default output location) slot
-        // in alongside.
+        // Standard macOS Settings (⌘,) scene. TabView selection is
+        // bound to @AppStorage so callers (e.g. the launcher's
+        // ModeStrip badge) can pre-select a tab before invoking
+        // `openSettings()` — the next render picks up the new value
+        // whether the window was already open or just spawned.
         Settings {
-            TabView {
-                EditorSettingsView()
-                    .tabItem { Label("Editor", systemImage: "text.cursor") }
-                ConversionSettingsView()
-                    .tabItem { Label("Conversion", systemImage: "folder") }
-                AISettingsView()
-                    .tabItem { Label("AI", systemImage: "sparkles") }
-                AppearanceSettingsView()
-                    .tabItem { Label("Appearance", systemImage: "paintpalette") }
-            }
-            .frame(width: 540, height: 520)
+            SettingsRoot()
         }
     }
 }
@@ -449,6 +440,42 @@ struct HelpMenuCommands: Commands {
                 )
             }
         }
+    }
+}
+
+/// Stable identifiers for the Settings TabView. Stored in @AppStorage
+/// so callers can pre-select a tab before calling `openSettings()` —
+/// e.g. the launcher's ModeStrip badge writes `.ai` so a Cloud-mode
+/// click lands on the AI pane rather than whatever tab was last viewed.
+enum SettingsTab: String {
+    case editor, conversion, ai, appearance
+
+    static let storageKey = "humanist.settings.selectedTab"
+}
+
+private struct SettingsRoot: View {
+    @AppStorage(SettingsTab.storageKey)
+    private var selectedRaw: String = SettingsTab.editor.rawValue
+
+    var body: some View {
+        TabView(selection: Binding(
+            get: { SettingsTab(rawValue: selectedRaw) ?? .editor },
+            set: { selectedRaw = $0.rawValue }
+        )) {
+            EditorSettingsView()
+                .tabItem { Label("Editor", systemImage: "text.cursor") }
+                .tag(SettingsTab.editor)
+            ConversionSettingsView()
+                .tabItem { Label("Conversion", systemImage: "folder") }
+                .tag(SettingsTab.conversion)
+            AISettingsView()
+                .tabItem { Label("AI", systemImage: "sparkles") }
+                .tag(SettingsTab.ai)
+            AppearanceSettingsView()
+                .tabItem { Label("Appearance", systemImage: "paintpalette") }
+                .tag(SettingsTab.appearance)
+        }
+        .frame(width: 540, height: 520)
     }
 }
 

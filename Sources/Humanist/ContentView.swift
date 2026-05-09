@@ -820,7 +820,16 @@ private struct ModeStrip: View {
 
     @ViewBuilder
     private var modeBadge: some View {
-        Button { openSettings() } label: {
+        Button {
+            // Land on the AI pane: the badge is the user's entry point
+            // for "what mode am I in" — that decision lives in AI
+            // Settings, not whatever tab was last viewed.
+            UserDefaults.standard.set(
+                SettingsTab.ai.rawValue,
+                forKey: SettingsTab.storageKey
+            )
+            openSettings()
+        } label: {
             switch settings.processingMode {
             case .privateLocal:
                 Label("Private", systemImage: "lock.shield")
@@ -833,7 +842,7 @@ private struct ModeStrip: View {
             }
         }
         .buttonStyle(.borderless)
-        .help("Processing mode — click to open Settings (⌘,)")
+        .help("Processing mode — click to open AI Settings (⌘,)")
     }
 
     @ViewBuilder
