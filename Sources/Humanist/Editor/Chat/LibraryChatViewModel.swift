@@ -70,7 +70,12 @@ final class LibraryChatViewModel: ObservableObject {
         let raw = UserDefaults.standard.string(
             forKey: "humanist.chat.geminiModel"
         ) ?? ""
-        return raw.isEmpty ? "gemini-embedding-002" : raw
+        // Treat the legacy `-002` default as a synonym for the GA
+        // `-2`; mirrors the BookChatViewModel migration logic.
+        if raw.isEmpty || raw == "gemini-embedding-002" {
+            return "gemini-embedding-2"
+        }
+        return raw
     }
 
     private var geminiOutputDimensionality: Int? {

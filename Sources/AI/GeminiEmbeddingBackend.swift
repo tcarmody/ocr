@@ -26,8 +26,15 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
     /// Build a backend by probing the API to learn the output
     /// dimension. Throws `EmbeddingError.missingAPIKey` when no key
     /// is configured.
+    ///
+    /// Default model is `gemini-embedding-2` — Google's first
+    /// multimodal embedding model, GA on the Generative Language
+    /// API. The older text-only `gemini-embedding-001` is still
+    /// available for users who prefer it. Note the digit-only
+    /// `-2` suffix (no `00` prefix); `gemini-embedding-002` is
+    /// not a published model id and returns 404.
     public static func make(
-        model: String = "gemini-embedding-002",
+        model: String = "gemini-embedding-2",
         outputDimensionality: Int? = nil,
         keyStore: GeminiAPIKeyStore = GeminiAPIKeyStore(),
         baseURL: URL = URL(string: "https://generativelanguage.googleapis.com")!,
@@ -86,11 +93,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             throw EmbeddingError.missingAPIKey(provider: "Google AI Studio (Gemini)")
         }
         let path = "/v1beta/models/\(model):batchEmbedContents"
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent(path),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [URLQueryItem(name: "key", value: key)]
+        let url = baseURL.appendingPathComponent(path)
 
         let body = RequestBody(
             requests: texts.map { text in
@@ -105,9 +108,13 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             }
         )
 
-        var request = URLRequest(url: components.url!, timeoutInterval: requestTimeout)
+        var request = URLRequest(url: url, timeoutInterval: requestTimeout)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Google's docs prefer the `x-goog-api-key` header over
+        // the `?key=` query param — same auth, but the key isn't
+        // logged in URL-level traces.
+        request.addValue(key, forHTTPHeaderField: "x-goog-api-key")
         request.httpBody = try Self.encoder.encode(body)
 
         let data: Data
@@ -156,10 +163,12 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         let taskType: String
         let outputDimensionality: Int?
 
+        // Google's Generative Language API uses camelCase JSON
+        // keys (taskType / outputDimensionality), not snake_case.
+        // The legacy `embedding-001` endpoint accepted both, but
+        // `gemini-embedding-001` only accepts the camelCase form.
         enum CodingKeys: String, CodingKey {
-            case model, content
-            case taskType = "task_type"
-            case outputDimensionality = "output_dimensionality"
+            case model, content, taskType, outputDimensionality
         }
 
         func encode(to encoder: Encoder) throws {
@@ -167,9 +176,8 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             try c.encode(model, forKey: .model)
             try c.encode(content, forKey: .content)
             try c.encode(taskType, forKey: .taskType)
-            // Only emit `output_dimensionality` when set — Gemini
-            // returns the model's full default (3072 for
-            // gemini-embedding-002) when absent.
+            // Only emit `outputDimensionality` when set — Gemini
+            // returns the model's native dimension when absent.
             if let dim = outputDimensionality {
                 try c.encode(dim, forKey: .outputDimensionality)
             }

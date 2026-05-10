@@ -33,7 +33,7 @@ struct AISettingsView: View {
     /// after each save / delete.
     @State private var hasVoyageKey: Bool = false
     @AppStorage("humanist.chat.geminiModel")
-    private var geminiModel: String = "gemini-embedding-002"
+    private var geminiModel: String = "gemini-embedding-2"
     /// Optional Matryoshka output dimensionality. 0 means "full"
     /// (model's native 3072 for `gemini-embedding-002`). Useful
     /// alternatives are 768 and 1536 — quarter / half storage with
@@ -42,6 +42,16 @@ struct AISettingsView: View {
     private var geminiOutputDimensionality: Int = 0
     @State private var pendingGeminiKey: String = ""
     @State private var hasGeminiKey: Bool = false
+    /// Result of the last Voyage / Gemini test connection. Mirrors
+    /// the Anthropic test-result UI in shape: success message in
+    /// green, failure in red, nil hides the row entirely.
+    @State private var voyageTestResult: TestResult?
+    @State private var geminiTestResult: TestResult?
+
+    enum TestResult: Equatable {
+        case success(String)
+        case failure(String)
+    }
     /// Retrieval style for chat-with-book. Read by
     /// `BookChatViewModel` per-send.
     @AppStorage("humanist.chat.retrievalStyle")
@@ -193,6 +203,17 @@ struct AISettingsView: View {
             refreshVoyageKeyState()
             refreshGeminiKeyState()
             loadAliasEditor()
+            // One-time migration: an earlier release defaulted
+            // the Gemini model field to `gemini-embedding-002`,
+            // which isn't a published model id (Google's API
+            // returns 404). Quietly upgrade the persisted value
+            // to the GA `gemini-embedding-2` on next Settings
+            // open. Safe to leave in place — the right side of
+            // the equality is idempotent on already-migrated
+            // values.
+            if geminiModel == "gemini-embedding-002" {
+                geminiModel = "gemini-embedding-2"
+            }
         }
     }
 
@@ -274,6 +295,61 @@ struct AISettingsView: View {
         try? store.delete()
         pendingGeminiKey = ""
         refreshGeminiKeyState()
+    }
+
+    /// Round-trip a one-token embed against Voyage to verify
+    /// the stored key is valid + the daemon is reachable.
+    private func testVoyageConnection() async {
+        guard hasVoyageKey else {
+            voyageTestResult = .failure("No Voyage API key set.")
+            return
+        }
+        do {
+            let backend = try await VoyageEmbeddingBackend.make(
+                model: voyageModel
+            )
+            // VoyageEmbeddingBackend is an actor — read its
+            // identifier / dimension via await, then format on
+            // the main actor.
+            let identifier = await backend.identifier
+            let dimension = await backend.dimension
+            voyageTestResult = .success(
+                "Connected. Model: \(identifier), dim \(dimension)."
+            )
+        } catch let error as EmbeddingError {
+            voyageTestResult = .failure(
+                error.errorDescription ?? "Voyage embed failed."
+            )
+        } catch {
+            voyageTestResult = .failure(error.localizedDescription)
+        }
+    }
+
+    /// Same pattern for Gemini.
+    private func testGeminiConnection() async {
+        guard hasGeminiKey else {
+            geminiTestResult = .failure("No Gemini API key set.")
+            return
+        }
+        do {
+            let backend = try await GeminiEmbeddingBackend.make(
+                model: geminiModel,
+                outputDimensionality: geminiOutputDimensionality > 0
+                    ? geminiOutputDimensionality
+                    : nil
+            )
+            let identifier = await backend.identifier
+            let dimension = await backend.dimension
+            geminiTestResult = .success(
+                "Connected. Model: \(identifier), dim \(dimension)."
+            )
+        } catch let error as EmbeddingError {
+            geminiTestResult = .failure(
+                error.errorDescription ?? "Gemini embed failed."
+            )
+        } catch {
+            geminiTestResult = .failure(error.localizedDescription)
+        }
     }
 
     // MARK: - Pieces
@@ -464,6 +540,18 @@ struct AISettingsView: View {
                     }
                 }
             }
+            HStack {
+                Button("Test Connection") {
+                    Task { await testGeminiConnection() }
+                }
+                .disabled(!hasGeminiKey)
+                Text("Sends a one-token embed request to confirm the key + model are reachable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let result = geminiTestResult {
+                testResultLabel(result)
+            }
             Text("Get a key at aistudio.google.com. Stored in your macOS keychain.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -489,10 +577,36 @@ struct AISettingsView: View {
                     }
                 }
             }
+            HStack {
+                Button("Test Connection") {
+                    Task { await testVoyageConnection() }
+                }
+                .disabled(!hasVoyageKey)
+                Text("Sends a one-token embed request to confirm the key + model are reachable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let result = voyageTestResult {
+                testResultLabel(result)
+            }
             Text("Get a key at voyageai.com. Stored in your macOS keychain — never written to disk in plain text.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func testResultLabel(_ result: TestResult) -> some View {
+        switch result {
+        case .success(let message):
+            Label(message, systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.callout)
+        case .failure(let message):
+            Label(message, systemImage: "xmark.circle.fill")
+                .foregroundStyle(.red)
+                .font(.callout)
         }
     }
 

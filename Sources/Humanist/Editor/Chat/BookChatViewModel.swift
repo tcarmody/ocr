@@ -153,13 +153,23 @@ final class BookChatViewModel: ObservableObject {
         return raw.isEmpty ? "voyage-3" : raw
     }
 
-    /// Gemini embedding model. `gemini-embedding-002` is current-
-    /// best-in-class on multilingual MTEB.
+    /// Gemini embedding model. Default is `gemini-embedding-2` —
+    /// Google's first multimodal embedding model, GA on the
+    /// Generative Language API. The older `gemini-embedding-001`
+    /// is still available for text-only use cases. Note the
+    /// digit-only `-2` (no `00` prefix); `gemini-embedding-002`
+    /// is not a published model id and returns 404 — treat any
+    /// persisted `-002` value as a synonym for the GA `-2` so
+    /// users with the prior bad default don't have to fix it
+    /// manually in Settings.
     private var geminiModel: String {
         let raw = UserDefaults.standard.string(
             forKey: "humanist.chat.geminiModel"
         ) ?? ""
-        return raw.isEmpty ? "gemini-embedding-002" : raw
+        if raw.isEmpty || raw == "gemini-embedding-002" {
+            return "gemini-embedding-2"
+        }
+        return raw
     }
 
     /// Optional truncation of the Matryoshka output. 0 = full

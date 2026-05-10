@@ -42,6 +42,17 @@ struct LibraryWindowView: View {
     /// chat pane shouldn't pay for it.
     @StateObject private var chatVM = LibraryChatViewModel()
 
+    /// Bulk-index runner — walks every catalog entry and builds /
+    /// refreshes its embedding sidecar so library chat has
+    /// something to retrieve from. Lazy state because most users
+    /// never invoke it.
+    @StateObject private var indexBuilder = LibraryIndexBuilder()
+    @State private var showIndexProgress = false
+    /// Surfaced when a bulk-index attempt couldn't resolve the
+    /// embedding backend. Plain banner; same posture as the
+    /// fallback note in the chat panes.
+    @State private var indexBuildError: String?
+
     var body: some View {
         HSplitView {
             browserColumn
@@ -65,6 +76,50 @@ struct LibraryWindowView: View {
                 targets: selectedEntries,
                 isPresented: $showBulkEdit
             )
+        }
+        .sheet(isPresented: $showIndexProgress) {
+            LibraryIndexProgressSheet(
+                builder: indexBuilder,
+                isPresented: $showIndexProgress
+            )
+        }
+        .alert("Indexing failed",
+               isPresented: Binding(
+                   get: { indexBuildError != nil },
+                   set: { if !$0 { indexBuildError = nil } }
+               )) {
+            Button("OK", role: .cancel) { indexBuildError = nil }
+        } message: {
+            Text(indexBuildError ?? "")
+        }
+    }
+
+    /// Kick off a bulk index of every catalog entry. Resolves the
+    /// user's chosen embedding backend (and surfaces a friendly
+    /// alert if it can't), then hands off to `indexBuilder` and
+    /// reveals the progress sheet.
+    private func startBulkIndex(forceRebuild: Bool = false) {
+        indexBuildError = nil
+        let entries = library.entries
+        guard !entries.isEmpty else {
+            indexBuildError = "Library is empty — nothing to index."
+            return
+        }
+        Task {
+            // Resolve the backend through the same path the chat
+            // VMs use, so a Settings change applies here too.
+            let resolution = await BackendResolver.resolveForLibraryIndexing()
+            guard let backend = resolution.backend else {
+                indexBuildError = resolution.failureMessage
+                    ?? "No embedding backend available."
+                return
+            }
+            indexBuilder.start(
+                entries: entries,
+                backend: backend,
+                forceRebuild: forceRebuild
+            )
+            showIndexProgress = true
         }
     }
 
@@ -129,6 +184,26 @@ struct LibraryWindowView: View {
                 .pickerStyle(.menu)
                 .fixedSize()
             }
+            // Bulk-index button. Useful any time the user wants
+            // library chat to see books they haven't opened yet
+            // (the alternative is to open every book once to
+            // trigger its lazy index build). Default-click runs
+            // an incremental build (skips books whose sidecar
+            // already matches the current backend); ⌥-click
+            // forces a full rebuild.
+            Menu {
+                Button("Build Missing Indexes") {
+                    startBulkIndex(forceRebuild: false)
+                }
+                Button("Rebuild All Indexes (force)") {
+                    startBulkIndex(forceRebuild: true)
+                }
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Build embedding indexes for every book")
             // Chat-pane reveal toggle. Lives in the filter bar
             // because that's where every other library-window
             // affordance lives; users expect "show / hide chat"
