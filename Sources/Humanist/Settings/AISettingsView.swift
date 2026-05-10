@@ -191,6 +191,12 @@ struct AISettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            } else {
+                // Private-mode shows the on-device features so users
+                // who picked Privacy aren't left without any AI
+                // assistance. Each one is independently toggle-able
+                // and gated on Apple Intelligence availability.
+                localAISection
             }
 
             // Book Chat sits outside the cloud-only conditional —
@@ -474,6 +480,35 @@ struct AISettingsView: View {
                             modelTag: ollamaModel
                         )
                     }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var localAISection: some View {
+        Section("Local AI") {
+            switch AppleFoundationModelClient.availability {
+            case .available:
+                Toggle(
+                    "On-device chapter classification",
+                    isOn: $vm.settings.localFeatures.localChapterClassification
+                )
+                Text("When on, Apple's Foundation Models framework picks an EPUB 3 structural label (chapter, preface, bibliography, …) for each chapter. Free, on-device, no cloud calls. Quality is moderate but better than nothing — Cloud Haiku is still the higher-accuracy option when you have a key.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .unavailable(let reason):
+                Label("Apple Intelligence isn't available on this Mac",
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+                Text("Reason: \(reason)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Local AI features need Apple Intelligence enabled in System Settings → Apple Intelligence & Siri. Once it's on, the toggles here become active and on-device classification runs alongside any Cloud features you configure.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

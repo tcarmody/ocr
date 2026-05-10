@@ -230,6 +230,7 @@ final class JobRunner: ObservableObject {
             forceOCR: job.options.forceOCR,
             processingMode: aiSettings.processingMode,
             cloudFeatures: cloudFeatures,
+            localFeatures: aiSettings.localFeatures,
             perBookCallCap: aiSettings.perBookCallCap,
             // Closure (not a captured string) so a key rotation in
             // Settings UI takes effect on the next request without

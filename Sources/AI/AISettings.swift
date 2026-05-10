@@ -10,6 +10,12 @@ import Foundation
 public struct AISettings: Sendable, Codable, Equatable {
     public var processingMode: ProcessingMode
     public var cloudFeatures: CloudFeatures
+    /// On-device feature toggles, gated by `processingMode ==
+    /// .privateLocal` and runtime availability (Apple Intelligence
+    /// must be enabled in System Settings). Lets Private-mode users
+    /// pick up classification-shaped Cloud features via Apple's
+    /// Foundation Models framework — `L-Foundation-Models`.
+    public var localFeatures: LocalFeatures
     /// Hard ceiling on Claude calls per book. Defaults to 200 —
     /// catches runaway documents (every region triggering Claude)
     /// without throttling normal use. Settable from 0 (disable
@@ -27,17 +33,20 @@ public struct AISettings: Sendable, Codable, Equatable {
     public init(
         processingMode: ProcessingMode = .privateLocal,
         cloudFeatures: CloudFeatures = CloudFeatures(),
+        localFeatures: LocalFeatures = LocalFeatures(),
         perBookCallCap: Int = 200,
         forceOCR: Bool = false
     ) {
         self.processingMode = processingMode
         self.cloudFeatures = cloudFeatures
+        self.localFeatures = localFeatures
         self.perBookCallCap = perBookCallCap
         self.forceOCR = forceOCR
     }
 
     private enum CodingKeys: String, CodingKey {
-        case processingMode, cloudFeatures, perBookCallCap, forceOCR
+        case processingMode, cloudFeatures, localFeatures
+        case perBookCallCap, forceOCR
     }
 
     public init(from decoder: Decoder) throws {
@@ -48,6 +57,39 @@ public struct AISettings: Sendable, Codable, Equatable {
         // Decode optionally so settings persisted before this field
         // existed don't fail to round-trip.
         self.forceOCR = try c.decodeIfPresent(Bool.self, forKey: .forceOCR) ?? false
+        self.localFeatures = try c.decodeIfPresent(
+            LocalFeatures.self, forKey: .localFeatures
+        ) ?? LocalFeatures()
+    }
+
+    /// On-device feature toggles backed by Apple's Foundation Models
+    /// framework. Phase 1 of `L-Foundation-Models` ships chapter
+    /// classification; later phases add metadata extraction, post-
+    /// OCR cleanup, and coherence pass.
+    public struct LocalFeatures: Sendable, Codable, Equatable {
+        /// Run on-device chapter classification (`epub:type`) when
+        /// processing mode is `.privateLocal` and Apple Intelligence
+        /// is available. Mirrors `cloudFeatures.semanticClassification`
+        /// but without the API-key / cost gate.
+        public var localChapterClassification: Bool
+
+        public init(localChapterClassification: Bool = true) {
+            self.localChapterClassification = localChapterClassification
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case localChapterClassification
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // Default-on so Private-mode users get classification
+            // automatically; flipping off restores the no-label
+            // behavior they had before this feature shipped.
+            self.localChapterClassification = try c.decodeIfPresent(
+                Bool.self, forKey: .localChapterClassification
+            ) ?? true
+        }
     }
 
     /// Per-feature toggles. Each is independently switchable, but

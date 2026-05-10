@@ -3124,14 +3124,66 @@ into two if Manuscript is more pressing.
 
 ## L-Foundation-Models — On-device classification for Private mode
 
-**Status**: not started. Apple's Foundation Models framework
-(macOS 26+) ships a ~3B-parameter on-device language model with
-schema-guided generation (`@Generable`). The codebase already
-targets macOS 26 (per `Package.swift` and the macos-26-only memory),
-so the floor is met. Today every Cloud-mode feature is gated behind
-an Anthropic key — Private-mode users get the cascade OCR and that's
+**Status**: Phase 1 shipped — chapter classification on-device via
+Apple's Foundation Models framework. Phase 2 (metadata extraction,
+post-OCR cleanup, coherence pass) and Phase 3 (TOC parsing) still
+on the runway. The codebase already targets macOS 26 (per
+`Package.swift` and the macos-26-only memory), so the framework
+floor is met. Today every Cloud-mode feature is gated behind an
+Anthropic key — Private-mode users get the cascade OCR and that's
 it: no chapter classification, no metadata extraction, no post-OCR
 cleanup. AFM fills most of that gap, on-device, free, no key.
+
+### What landed in Phase 1
+
+- **`AppleFoundationModelClient`** (`Sources/AI`): thin wrapper
+  over `FoundationModels`. Static `availability` property bridges
+  `SystemLanguageModel.default.availability` into a Sendable
+  `Availability` enum. `respond(instructions:prompt:generating:)`
+  is the one schema-guided entry point — each call constructs a
+  fresh `LanguageModelSession` (sessions accumulate transcript
+  context, which is helpful for chat but actively counterproductive
+  for classification where every chapter should be scored against
+  the same fixed instructions).
+- **`AppleFoundationModelClassifier`** (`Sources/Pipeline`):
+  conforms to a new `SemanticChapterClassifier` protocol. Uses a
+  `@Generable enum EpubChapterLabel` to constrain on-device output
+  to one of the 16 EPUB 3 structural-semantics tokens — the schema
+  guidance means parsing succeeds without the post-hoc
+  normalization the Cloud path needs. Mirrors
+  `ClaudeChapterClassifier.makeContext` for prompt construction,
+  so cross-impl quality comparisons are apples-to-apples.
+- **Pipeline routing**: new `makeChapterClassifier` factory picks
+  Cloud (when configured + key + budget) or AFM (when Private +
+  toggle on + Apple Intelligence available); both impls feed the
+  same `classifyChapters` fan-out which now takes the protocol
+  type. `ClaudeChapterClassifier` retroactively conforms; nothing
+  in the Cloud path changes.
+- **`AISettings.LocalFeatures`**: new sibling of `CloudFeatures`
+  with `localChapterClassification` (default on). Decoded
+  optionally so settings persisted before this field existed
+  round-trip cleanly.
+- **Settings UI**: a new "Local AI" section appears under Private
+  mode. When `LanguageModelSession.availability == .available`
+  the toggle is live; when unavailable, the section shows a
+  one-line notice + the framework's reason string + a hint to
+  enable Apple Intelligence in System Settings.
+
+### Still pending (Phase 2)
+
+- `AppleFoundationModelMetadataExtractor` — front-matter →
+  `BookMetadata` `Generable` struct. Reuses the shared client.
+- `AppleFoundationModelPostProcessor` — per-region OCR cleanup.
+  Quality on classical / worn text uncertain; Cloud Haiku stays
+  as the higher-accuracy option.
+- `AppleFoundationModelCoherenceAnalyzer` — recurring-OCR-error
+  detection. Long-context (whole-book digest); AFM's 8K-token
+  window is tight, so probably needs chunking or a "skip on long
+  books" fallback.
+
+Phase 3 — TOC parsing — remains deferred; long-context structured
+extraction is AFM's hardest case and we want Phase 1+2 quality
+data before committing to it.
 
 The previous Tier 8 placeholder (`S-Apple-Intelligence-Polish`) is
 superseded by this entry now that the macOS 26 floor makes it a
@@ -4072,14 +4124,13 @@ use; distribution is lower priority than correctness.
    multi-model A/B). Tiers 1+2 are about 3 days end-to-end and
    cover the practical research-workflow surface; Tiers 3+4 are
    nice-to-haves to pick from based on actual friction.
-4. **L-Foundation-Models** — on-device classification for Private
-   mode via Apple's Foundation Models framework (macOS 26+).
-   Phase 1 (chapter classification, ~1-1.5 days) is the clean
-   beachhead; Phase 2 (metadata extraction, post-OCR cleanup,
-   coherence) extends to ~3-4 days total. Closes the parity gap
-   for users who chose Private mode and otherwise get nothing
-   from the Cloud-only feature set. Vision-heavy features stay
-   Cloud-only — AFM is text-only.
+4. **L-Foundation-Models Phase 2** — Phase 1 (chapter
+   classification) shipped; Phase 2 extends the same on-device
+   path to metadata extraction, post-OCR cleanup, and the
+   coherence pass. ~2-3 days. Reuses `AppleFoundationModelClient`
+   so each new feature is mostly a `Generable` schema + prompt
+   + protocol conformance + factory branch. Phase 3 (TOC parsing)
+   remains deferred until Phase 1+2 quality data is in.
 5. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work

@@ -80,6 +80,11 @@ public actor PDFToEPUBPipeline {
         /// `processingMode == .cloud`. In `.privateLocal` mode the
         /// values are inert.
         public var cloudFeatures: AISettings.CloudFeatures
+        /// Per-feature toggles for on-device features (Apple
+        /// Foundation Models). Consulted only when `processingMode ==
+        /// .privateLocal` *and* runtime availability of the model
+        /// confirms — see `AppleFoundationModelClient.availability`.
+        public var localFeatures: AISettings.LocalFeatures
         /// Hard ceiling on Claude calls per book, shared across all
         /// Cloud-mode features. Pipeline constructs one
         /// `ClaudeCallBudget` per `convert(...)` from this value and
@@ -180,6 +185,7 @@ public actor PDFToEPUBPipeline {
             forceOCR: Bool = false,
             processingMode: ProcessingMode = .privateLocal,
             cloudFeatures: AISettings.CloudFeatures = AISettings.CloudFeatures(),
+            localFeatures: AISettings.LocalFeatures = AISettings.LocalFeatures(),
             perBookCallCap: Int = 200,
             anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
             disableLocalCascadeEscalation: Bool = false,
@@ -206,6 +212,7 @@ public actor PDFToEPUBPipeline {
             self.forceOCR = forceOCR
             self.processingMode = processingMode
             self.cloudFeatures = cloudFeatures
+            self.localFeatures = localFeatures
             self.perBookCallCap = perBookCallCap
             self.anthropicAPIKeyProvider = anthropicAPIKeyProvider
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
@@ -346,6 +353,37 @@ public actor PDFToEPUBPipeline {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.semanticClassification
         ) { ClaudeChapterClassifier(client: $0, budget: $1) }
+    }
+
+    /// Pick a chapter classifier based on processing mode +
+    /// per-feature toggles + runtime availability:
+    ///
+    ///  * `.cloud` + `cloudFeatures.semanticClassification` + key →
+    ///    Claude (Haiku 4.5).
+    ///  * `.privateLocal` + `localFeatures.localChapterClassification`
+    ///    + Apple Intelligence available → AFM.
+    ///  * Otherwise → nil (chapters emit without `epub:type`).
+    ///
+    /// Cloud wins when both paths would qualify (a user with Cloud
+    /// configured isn't normally on Private mode, but defensive
+    /// against future config combinations). Returns the protocol
+    /// type so the per-chapter `classifyChapters` pass doesn't
+    /// branch.
+    static func makeChapterClassifier(
+        options: Options, budget: ClaudeCallBudget
+    ) -> (any SemanticChapterClassifier)? {
+        if let cloud = makeClaudeChapterClassifier(
+            options: options, budget: budget
+        ) {
+            return cloud
+        }
+        guard options.processingMode == .privateLocal,
+              options.localFeatures.localChapterClassification
+        else { return nil }
+        if case .available = AppleFoundationModelClient.availability {
+            return AppleFoundationModelClassifier()
+        }
+        return nil
     }
 
     static func makeClaudeTableExtractor(
@@ -683,13 +721,20 @@ public actor PDFToEPUBPipeline {
 
     /// Run the chapter classifier across `chapters`, with a small
     /// concurrency cap so a 30-chapter book doesn't issue 30
-    /// simultaneous Haiku requests. Each `classify` call internally
-    /// gates on `ClaudeCallBudget`, so the cap is also a backstop.
-    /// Returns a chapter list in the same order with `epubType`
-    /// populated where Haiku produced a valid label.
+    /// simultaneous calls. Each `classify` call internally gates
+    /// on its own runtime budget (`ClaudeCallBudget` for Cloud;
+    /// implicit per-call session for AFM), so the cap is also a
+    /// backstop. Returns a chapter list in the same order with
+    /// `epubType` populated where the classifier produced a valid
+    /// label.
+    ///
+    /// Takes the protocol type rather than the concrete Claude
+    /// classifier so the on-device `AppleFoundationModelClassifier`
+    /// (Phase 1 of L-Foundation-Models) shares the same
+    /// fan-out / drain-and-refill plumbing without code duplication.
     static func classifyChapters(
         chapters: [Chapter],
-        classifier: ClaudeChapterClassifier
+        classifier: any SemanticChapterClassifier
     ) async -> [Chapter] {
         let concurrency = 3
         // Indexed labels so the eventual array stays in input order
@@ -2030,10 +2075,12 @@ public actor PDFToEPUBPipeline {
         }
 
         // 5: semantic classification (capped concurrency so a
-        // 30-chapter book doesn't fan out 30 simultaneous Haiku
-        // calls).
+        // 30-chapter book doesn't fan out 30 simultaneous calls).
+        // Cloud Claude wins when configured + available; AFM
+        // (on-device) is the Private-mode fallback under
+        // L-Foundation-Models Phase 1.
         let classifiedChapters: [Chapter]
-        if let classifier = makeClaudeChapterClassifier(
+        if let classifier = Self.makeChapterClassifier(
             options: options, budget: budget
         ) {
             classifiedChapters = await classifyChapters(
