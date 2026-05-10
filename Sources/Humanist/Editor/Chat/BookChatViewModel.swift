@@ -50,6 +50,13 @@ final class BookChatViewModel: ObservableObject {
     /// Per-paragraph vector index; built asynchronously after init
     /// or after `bookDidReload`. Nil until the build completes.
     private var embeddingIndex: BookEmbeddingIndex?
+    /// Per-book chapter / section tree from `nav.xhtml`. Built
+    /// during the embedding pipeline and cached in the same sidecar.
+    /// Used to (a) detect structural queries ("chapter 3"), (b)
+    /// label paragraph hits with their containing chapter title in
+    /// the rendered context, and (c) include a TOC preamble in the
+    /// system prompt.
+    private var hierarchyIndex: BookHierarchyIndex?
     private(set) var book: EPUBBook
     private let bookTitle: String
     private let client: AnthropicAPIClient
@@ -375,6 +382,7 @@ final class BookChatViewModel: ObservableObject {
         self.book = updated
         self.bm25Index = nil
         self.embeddingIndex = nil
+        self.hierarchyIndex = nil
         startEmbeddingBuild()
     }
 
@@ -474,10 +482,17 @@ final class BookChatViewModel: ObservableObject {
                 let index = try await BookEmbeddingIndex.build(
                     for: snapshot, backend: backend, cache: &sidecar
                 )
+                // Refresh the hierarchy from the live nav.xhtml.
+                // Cheap (regex parse + spine lookup); always re-runs
+                // since structural mutations like Split/Merge could
+                // have invalidated a cached tree.
+                let hierarchy = BookHierarchyIndex.build(from: snapshot)
+                sidecar.hierarchy = hierarchy
                 store.write(sidecar, for: url)
                 try Task.checkCancellation()
                 await MainActor.run {
                     self?.embeddingIndex = index
+                    self?.hierarchyIndex = hierarchy
                     self?.embeddingStatus = .ready
                 }
             } catch is CancellationError {
@@ -721,7 +736,7 @@ final class BookChatViewModel: ObservableObject {
     // MARK: - prompt
 
     private var systemPrompt: String {
-        """
+        let base = """
         You are a research assistant embedded in an EPUB editor. \
         The user has opened "\(bookTitle)" and is asking questions \
         about its contents.
@@ -744,6 +759,46 @@ final class BookChatViewModel: ObservableObject {
         Keep replies tight: a short paragraph or two is plenty for \
         most questions. The user is reading the answer in a sidebar \
         pane, not a full window.
+        """
+        guard let preamble = tocPreamble() else { return base }
+        return base + "\n\n" + preamble
+    }
+
+    /// Compact table of contents the model sees as part of the
+    /// system prompt. Lets it reason about structural references
+    /// ("the chapter on heterotopia," "what does Part Two cover")
+    /// even when retrieval surfaces paragraphs from elsewhere.
+    /// Capped at ~80 entries to keep token cost bounded; very long
+    /// books (encyclopedia-style) summarize to top-level chapters.
+    private func tocPreamble() -> String? {
+        guard let hierarchy = hierarchyIndex, !hierarchy.nodes.isEmpty else {
+            return nil
+        }
+        var lines: [String] = []
+        lines.reserveCapacity(80)
+        var emitted = 0
+        for node in hierarchy.nodes where emitted < 80 {
+            let title = node.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { continue }
+            let prefix = "[chapter:\(node.chapterIdx)]"
+            lines.append("- \(prefix) \(title)")
+            emitted += 1
+            // Include up to 4 sub-section titles per chapter so the
+            // model sees the structural detail without ballooning.
+            for child in node.children.prefix(4) where emitted < 80 {
+                let childTitle = child.title
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !childTitle.isEmpty else { continue }
+                lines.append("  - \(childTitle)")
+                emitted += 1
+            }
+        }
+        guard !lines.isEmpty else { return nil }
+        let body = lines.joined(separator: "\n")
+        return """
+        Table of contents (use this to interpret structural \
+        references like "chapter 3" or "the introduction"):
+        \(body)
         """
     }
 }

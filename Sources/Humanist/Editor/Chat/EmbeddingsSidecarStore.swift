@@ -14,18 +14,26 @@ import EPUB
 /// 50 MB total embedding cache, switch to `Data(contentsOf:).gunzipped()`
 /// later — the schema doesn't have to change.
 struct EmbeddingsSidecar: Codable, Sendable {
-    static let currentSchemaVersion: Int = 1
+    /// Schema version. Bump and old sidecars get rebuilt on next
+    /// open. Bumped from 1 to 2 in `R-Chat-Graph-Lite` to add the
+    /// `hierarchy` section.
+    static let currentSchemaVersion: Int = 2
 
-    let schemaVersion: Int
+    var schemaVersion: Int
     /// Backend identity (`apple.nl.sentence.en`, `voyage.voyage-3-lite`,
     /// etc.). A change forces a full rebuild — the vector spaces are
     /// not comparable across backends.
-    let backendIdentifier: String
+    var backendIdentifier: String
     /// Vector dimension. Stored alongside the identifier as a defense
     /// against a backend whose dimension changes between versions
     /// (Matryoshka models, different output_dim configs, etc.).
-    let dimension: Int
-    let paragraphs: [Entry]
+    var dimension: Int
+    var paragraphs: [Entry]
+    /// Per-book chapter/section tree built from `nav.xhtml`. Optional
+    /// for forward compatibility — earlier sidecars (schemaVersion 1)
+    /// loaded with a nil hierarchy and trigger a rebuild that
+    /// populates it.
+    var hierarchy: BookHierarchyIndex?
 
     struct Entry: Codable, Sendable {
         let chapterIdx: Int
@@ -42,7 +50,40 @@ struct EmbeddingsSidecar: Codable, Sendable {
             schemaVersion: currentSchemaVersion,
             backendIdentifier: backend,
             dimension: dimension,
-            paragraphs: []
+            paragraphs: [],
+            hierarchy: nil
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, backendIdentifier, dimension
+        case paragraphs, hierarchy
+    }
+
+    init(
+        schemaVersion: Int,
+        backendIdentifier: String,
+        dimension: Int,
+        paragraphs: [Entry],
+        hierarchy: BookHierarchyIndex?
+    ) {
+        self.schemaVersion = schemaVersion
+        self.backendIdentifier = backendIdentifier
+        self.dimension = dimension
+        self.paragraphs = paragraphs
+        self.hierarchy = hierarchy
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        self.backendIdentifier = try c.decode(String.self, forKey: .backendIdentifier)
+        self.dimension = try c.decode(Int.self, forKey: .dimension)
+        self.paragraphs = try c.decode([Entry].self, forKey: .paragraphs)
+        // Optional decode so v1 sidecars still load; the build
+        // pass refreshes the hierarchy on next open.
+        self.hierarchy = try c.decodeIfPresent(
+            BookHierarchyIndex.self, forKey: .hierarchy
         )
     }
 }
@@ -91,14 +132,22 @@ struct EmbeddingsSidecarStore {
     }
 
     /// Read the sidecar for `epubURL`. Returns `nil` when no file
-    /// exists or the file is unreadable; the caller treats both as
-    /// "no cache; build from scratch."
+    /// exists, the file is unreadable, or its `schemaVersion` is
+    /// older than the current version (the caller treats those
+    /// equivalently — "no usable cache; build from scratch").
     func read(for epubURL: URL) -> EmbeddingsSidecar? {
         let url = fileURL(for: epubURL)
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
               let payload = try? Self.decoder.decode(EmbeddingsSidecar.self, from: data)
         else { return nil }
+        // Forward-compat: a future Humanist build might write a
+        // higher schemaVersion than this one knows about. Newer
+        // sidecars are loaded as-is; older ones are dropped so the
+        // build pass can re-populate the missing sections.
+        guard payload.schemaVersion >= EmbeddingsSidecar.currentSchemaVersion else {
+            return nil
+        }
         return payload
     }
 

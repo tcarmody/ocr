@@ -98,7 +98,8 @@ final class ChatEmbeddingsTests: XCTestCase {
             paragraphs: [
                 .init(chapterIdx: 0, paragraphIdx: 1, textHash: "abc", vector: [0.1, 0.2, 0.3]),
                 .init(chapterIdx: 1, paragraphIdx: 0, textHash: "def", vector: [0.4, 0.5, 0.6]),
-            ]
+            ],
+            hierarchy: nil
         )
         let url = URL(fileURLWithPath: "/tmp/sample.epub")
         store.write(payload, for: url)
@@ -200,5 +201,110 @@ private struct StubBackend: EmbeddingBackend {
     var dimension: Int { 3 }
     func embed(_ texts: [String]) async throws -> [[Float]] {
         Array(repeating: [0, 0, 0], count: texts.count)
+    }
+}
+
+// MARK: - Hierarchy parser
+
+final class BookHierarchyIndexTests: XCTestCase {
+
+    /// Real-world flat nav.xhtml shape (chapters only, no nested
+    /// sections) — this is what most converted books look like.
+    func test_parser_handles_flat_nav() {
+        let xhtml = """
+        <html><body>
+        <nav epub:type="toc" id="toc">
+          <h1>Title</h1>
+          <ol>
+            <li><a href="text/ch-001.xhtml">Chapter One</a></li>
+            <li><a href="text/ch-002.xhtml">Chapter Two</a></li>
+            <li><a href="text/ch-003.xhtml#hu-page-12">Chapter Three</a></li>
+          </ol>
+        </nav>
+        </body></html>
+        """
+        let raw = NavParser.parse(xhtml)
+        XCTAssertEqual(raw.count, 3)
+        XCTAssertEqual(raw[0].title, "Chapter One")
+        XCTAssertEqual(raw[0].href, "text/ch-001.xhtml")
+        XCTAssertEqual(raw[2].title, "Chapter Three")
+        XCTAssertEqual(raw[2].href, "text/ch-003.xhtml#hu-page-12")
+    }
+
+    /// R-Hierarchy nested nav: chapters with sub-section `<ol>`s.
+    func test_parser_handles_nested_sections() {
+        let xhtml = """
+        <html><body>
+        <nav epub:type="toc">
+          <ol>
+            <li><a href="text/ch-001.xhtml">Chapter One</a>
+              <ol>
+                <li><a href="text/ch-001.xhtml#sec-1-1">Section 1.1</a></li>
+                <li><a href="text/ch-001.xhtml#sec-1-2">Section 1.2</a></li>
+              </ol>
+            </li>
+            <li><a href="text/ch-002.xhtml">Chapter Two</a></li>
+          </ol>
+        </nav>
+        </body></html>
+        """
+        let raw = NavParser.parse(xhtml)
+        XCTAssertEqual(raw.count, 2)
+        XCTAssertEqual(raw[0].children.count, 2)
+        XCTAssertEqual(raw[0].children[0].title, "Section 1.1")
+        XCTAssertEqual(raw[0].children[0].href, "text/ch-001.xhtml#sec-1-1")
+        XCTAssertTrue(raw[1].children.isEmpty)
+    }
+
+    /// Empty / missing nav returns an empty list — chat path falls
+    /// back to chapter-only context.
+    func test_parser_returns_empty_when_no_nav() {
+        XCTAssertEqual(NavParser.parse("<html></html>").count, 0)
+        XCTAssertEqual(NavParser.parse("not html").count, 0)
+    }
+
+    /// Anchors with named-entity titles round-trip cleanly.
+    func test_parser_decodes_entities_in_titles() {
+        let xhtml = """
+        <nav epub:type="toc">
+          <ol>
+            <li><a href="x.xhtml">Foo &amp; Bar</a></li>
+          </ol>
+        </nav>
+        """
+        let raw = NavParser.parse(xhtml)
+        XCTAssertEqual(raw.first?.title, "Foo & Bar")
+    }
+
+    /// Structural-pattern matching: "chapter 3" finds the third
+    /// chapter (1-based). Falls back to title-substring match too.
+    func test_structural_query_matches_chapter_number() {
+        let xhtml = """
+        <nav epub:type="toc">
+          <ol>
+            <li><a href="ch-001.xhtml">On Heterotopias</a></li>
+            <li><a href="ch-002.xhtml">The Order of Things</a></li>
+            <li><a href="ch-003.xhtml">Power / Knowledge</a></li>
+          </ol>
+        </nav>
+        """
+        let raw = NavParser.parse(xhtml)
+        let nodes = raw.enumerated().map { idx, r in
+            BookHierarchyIndex.Node(
+                id: "ch-\(idx)",
+                kind: .chapter,
+                title: r.title,
+                chapterIdx: idx,
+                fragment: nil,
+                children: []
+            )
+        }
+        let index = BookHierarchyIndex(nodes: nodes)
+        // Numeric pattern: "chapter 2" matches the second chapter.
+        let numeric = index.nodesMatching(query: "summarize chapter 2")
+        XCTAssertEqual(numeric.first?.chapterIdx, 1)
+        // Title pattern: "heterotopias" matches the first chapter.
+        let titled = index.nodesMatching(query: "what about heterotopias?")
+        XCTAssertEqual(titled.first?.chapterIdx, 0)
     }
 }

@@ -192,24 +192,20 @@ struct BookEmbeddingIndex {
         }
 
         let allParagraphs = resolved.compactMap { $0 }
-        // Refresh the sidecar with whatever we have on hand —
-        // including the newly-embedded vectors. Drop any cached
-        // entries whose (chapterIdx, paragraphIdx) no longer
-        // appears in the extracted paragraphs (chapter deleted,
-        // paragraphs re-numbered after a split, etc.).
-        cache = EmbeddingsSidecar(
-            schemaVersion: EmbeddingsSidecar.currentSchemaVersion,
-            backendIdentifier: backend.identifier,
-            dimension: backend.dimension,
-            paragraphs: allParagraphs.map {
-                EmbeddingsSidecar.Entry(
-                    chapterIdx: $0.chapterIdx,
-                    paragraphIdx: $0.paragraphIdx,
-                    textHash: $0.textHash,
-                    vector: $0.vector
-                )
-            }
-        )
+        // Refresh the cache's paragraph entries in place. Other
+        // sections (hierarchy, future: entities) are preserved —
+        // BookEmbeddingIndex.build owns paragraphs only.
+        cache.schemaVersion = EmbeddingsSidecar.currentSchemaVersion
+        cache.backendIdentifier = backend.identifier
+        cache.dimension = backend.dimension
+        cache.paragraphs = allParagraphs.map {
+            EmbeddingsSidecar.Entry(
+                chapterIdx: $0.chapterIdx,
+                paragraphIdx: $0.paragraphIdx,
+                textHash: $0.textHash,
+                vector: $0.vector
+            )
+        }
         return BookEmbeddingIndex(paragraphs: allParagraphs, backend: backend)
     }
 
