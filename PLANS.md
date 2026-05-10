@@ -2468,16 +2468,26 @@ pending.
   toggles for structural / entity retrieval (default on) so users
   can turn off the boosts at retrieval time without invalidating
   sidecars.
+- **Variable-granularity render + alias dictionary**: when 4+
+  paragraph hits cluster in one chapter, the render path
+  surfaces the whole chapter (capped at 30 KB) instead of
+  individual bullets — the model gets surrounding context that's
+  often what cluster-shaped queries actually want. Other
+  chapters keep paragraph-level rendering. The alias dictionary
+  is a per-library text editor (Settings → AI → Chat Retrieval →
+  Alias dictionary) where users add concepts NLTagger missed —
+  one term per line. At query time, alias matches scan paragraph
+  texts and contribute the same RRF boost as NER entities. Same
+  Settings toggle gates both NER and alias retrieval.
 
 ### Still pending
 
-- Alias dictionary editor — surface for users to add canonical
-  names that NLTagger missed (the planned remediation for
-  classical / non-English text where NER recall is weak).
-- Variable-granularity render — currently the hierarchy is used
-  for the TOC preamble + structural-query expansion; whole-
-  section context expansion when hits cluster in one section is
-  a follow-up.
+- Section-level granularity — chapter-level expansion shipped;
+  section-level expansion (sub-chapter scope when paragraphs
+  cluster in one nested section) is a finer cut that requires
+  mapping paragraphs to section anchors. R-Hierarchy already
+  emits the anchors; consuming them precisely is a follow-up
+  worth doing only if chapter-level proves too coarse.
 
 ### Why bother
 

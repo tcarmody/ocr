@@ -229,6 +229,17 @@ final class BookChatViewModel: ObservableObject {
     /// paragraph break can produce a 10 KB run-on). 4 KB is plenty
     /// for any well-formed paragraph.
     private static let maxParagraphChars = 4_000
+    /// Hit count above which the renderer switches a chapter from
+    /// per-paragraph bullets to whole-chapter expansion. 4 hits in
+    /// one chapter is a strong "this is what the user wants" signal
+    /// — fewer is still better-served by paragraph-level rendering.
+    private static let chapterClusterThreshold = 4
+    /// Cap on the text emitted by a single chapter expansion. Long
+    /// enough to cover a normal chapter (~30 pages of prose); short
+    /// enough that a fully-expanded chapter doesn't blow the cloud
+    /// chat budget. Only applies to expansion mode; paragraph
+    /// rendering stays per-paragraph capped.
+    private static let maxExpansionChars = 30_000
 
     init(book: EPUBBook, epubURL: URL) {
         self.book = book
@@ -322,11 +333,22 @@ final class BookChatViewModel: ObservableObject {
                     embeddings: embeddingIndexSnapshot
                   )
                 : []
-            let entityMatches = useEntity
+            // Alias dictionary is gated by the same toggle as
+            // entity retrieval — both are entity-shaped boosts and
+            // users should be able to flip them together.
+            let aliasDictionary = useEntity
+                ? AliasDictionaryStore().read()
+                : .empty
+            var entityMatches = useEntity
                 ? self.computeEntityMatches(
                     query: query, entities: entitySnapshot
                   )
                 : []
+            entityMatches.append(contentsOf: self.computeAliasMatches(
+                query: query,
+                embeddings: embeddingIndexSnapshot,
+                aliases: aliasDictionary
+            ))
 
             var retriever = HybridRetriever(
                 style: style,
@@ -418,11 +440,20 @@ final class BookChatViewModel: ObservableObject {
             // retrieval.
             let useEntity = await MainActor.run { self.useEntityRetrieval }
             let entityIndex = await MainActor.run { self.libraryEntityIndex }
-            let entityAnchors = useEntity
+            var entityAnchors = useEntity
                 ? self.computeLibraryEntityAnchors(
                     query: query, entities: entityIndex
                   )
                 : []
+            // Alias dictionary contributes additional anchors via
+            // a paragraph-text scan across the federated sources.
+            // Same toggle as the entity boost.
+            let aliasDictionary = useEntity
+                ? AliasDictionaryStore().read()
+                : .empty
+            entityAnchors.append(contentsOf: self.computeLibraryAliasAnchors(
+                query: query, library: library, aliases: aliasDictionary
+            ))
             let hits = library.search(
                 queryVector: queryVector,
                 topK: Self.maxRetrievedParagraphs,
@@ -785,6 +816,70 @@ final class BookChatViewModel: ObservableObject {
             }
         }
         return out
+    }
+
+    /// Look up alias matches in the per-book paragraph cache. For
+    /// each alias the user has defined that appears in `query`,
+    /// scan the embedding index's paragraph texts (which have been
+    /// stripped + decoded) for that alias as a substring. Returns
+    /// every matching paragraph anchor — these participate in RRF
+    /// the same way as NER entity matches.
+    private func computeAliasMatches(
+        query: String,
+        embeddings: BookEmbeddingIndex?,
+        aliases: AliasDictionary
+    ) -> [(chapterIdx: Int, paragraphIdx: Int)] {
+        guard let embeddings, !aliases.terms.isEmpty else { return [] }
+        let queryLowered = query.lowercased()
+        let matched = aliases.terms.filter { queryLowered.contains($0) }
+        guard !matched.isEmpty else { return [] }
+        var anchors: [(chapterIdx: Int, paragraphIdx: Int)] = []
+        for paragraph in embeddings.paragraphs {
+            let textLowered = paragraph.text.lowercased()
+            for term in matched where textLowered.contains(term) {
+                anchors.append((paragraph.chapterIdx, paragraph.paragraphIdx))
+                break  // one anchor per paragraph; multi-term hits don't compound
+            }
+        }
+        return anchors
+    }
+
+    /// Library-scope alias matches. Walks every source's paragraph
+    /// entries and emits anchors for paragraphs whose cached text
+    /// contains a query-matched alias. Sources whose sidecar
+    /// pre-dates the per-entry text storage contribute nothing for
+    /// this path — the alias scan needs the text on hand and we
+    /// don't unzip books on every query.
+    private func computeLibraryAliasAnchors(
+        query: String,
+        library: LibraryEmbeddingIndex,
+        aliases: AliasDictionary
+    ) -> [LibraryEntityIndex.LibraryAnchor] {
+        guard !aliases.terms.isEmpty else { return [] }
+        let queryLowered = query.lowercased()
+        let matched = aliases.terms.filter { queryLowered.contains($0) }
+        guard !matched.isEmpty else { return [] }
+        var anchors: [LibraryEntityIndex.LibraryAnchor] = []
+        let perAliasCap = 200
+        let totalCap = 1500
+        for source in library.sources {
+            for entry in source.paragraphs {
+                guard let text = entry.text else { continue }
+                let textLowered = text.lowercased()
+                for term in matched where textLowered.contains(term) {
+                    anchors.append(LibraryEntityIndex.LibraryAnchor(
+                        epubURL: source.epubURL,
+                        bookTitle: source.bookTitle,
+                        chapterIdx: entry.chapterIdx,
+                        paragraphIdx: entry.paragraphIdx
+                    ))
+                    if anchors.count >= totalCap { return anchors }
+                    break
+                }
+            }
+            if anchors.count >= perAliasCap * matched.count { break }
+        }
+        return anchors
     }
 
     // MARK: - Library scope
@@ -1161,6 +1256,15 @@ final class BookChatViewModel: ObservableObject {
     /// can still cite `[chapter:N]` accurately. Within each chapter
     /// the paragraphs appear in their best-rank order (already what
     /// the retriever returns).
+    ///
+    /// Variable-granularity expansion: when several hits cluster
+    /// in one chapter, the model usually wants the whole chapter as
+    /// context — the answer is "this chapter discusses X" not "here
+    /// are 4 sentences from this chapter." When `chapterClusterThreshold`
+    /// or more hits land in a single chapter, the chapter's full
+    /// text (capped at `maxExpansionChars`) is rendered in place of
+    /// the individual paragraph bullets. Chapters with fewer hits
+    /// keep the per-paragraph rendering.
     private func renderParagraphContext(hits: [HybridRetriever.Hit]) -> String {
         var byChapter: [Int: [HybridRetriever.Hit]] = [:]
         var chapterOrder: [Int] = []
@@ -1176,13 +1280,38 @@ final class BookChatViewModel: ObservableObject {
             let title = chapterTitle(forChapterIndex: chapterIdx)
                 ?? "Chapter \(chapterIdx + 1)"
             out += "[chapter:\(chapterIdx)] \(title)\n"
-            for hit in chapterHits {
-                let text = String(hit.text.prefix(Self.maxParagraphChars))
-                out += "  • \(text)\n"
+            // Hit-cluster check — if many hits sit in this chapter,
+            // surface the whole chapter as context so the model has
+            // surrounding prose. Cap the expansion so a single
+            // very-long chapter (encyclopedia-style books can have
+            // 100KB+ chapters) doesn't blow the token budget.
+            let shouldExpand = chapterHits.count >= Self.chapterClusterThreshold
+            if shouldExpand,
+               let expansion = chapterTextForExpansion(chapterIdx) {
+                out += "  (chapter-level context — \(chapterHits.count) of the top hits cluster here)\n"
+                out += expansion + "\n"
+            } else {
+                for hit in chapterHits {
+                    let text = String(hit.text.prefix(Self.maxParagraphChars))
+                    out += "  • \(text)\n"
+                }
             }
             out += "\n"
         }
         return out
+    }
+
+    /// Pull the full text of a chapter for variable-granularity
+    /// expansion. Capped at `maxExpansionChars` so long chapters
+    /// don't blow the model's context. Returns nil when the
+    /// resource isn't a text resource or doesn't exist.
+    private func chapterTextForExpansion(_ idx: Int) -> String? {
+        guard idx >= 0, idx < book.spine.count else { return nil }
+        let resourceID = book.spine[idx]
+        guard let resource = book.resourcesByID[resourceID],
+              let xhtml = resource.text else { return nil }
+        let stripped = stripTags(xhtml)
+        return String(stripped.prefix(Self.maxExpansionChars))
     }
 
     /// Chapter-level rendering — used for BM25-only retrieval and

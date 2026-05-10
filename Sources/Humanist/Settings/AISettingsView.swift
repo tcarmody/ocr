@@ -59,6 +59,12 @@ struct AISettingsView: View {
     /// as the structural toggle.
     @AppStorage("humanist.chat.useEntityRetrieval")
     private var useEntityRetrieval: Bool = true
+    /// Buffer for the alias-dictionary text editor. Loaded on
+    /// appear; persisted on commit (focus loss / blur).
+    @State private var aliasEditorText: String = ""
+    /// Tracks whether the user has unsaved alias-editor changes
+    /// so the Save button enables/disables.
+    @State private var aliasEditorIsDirty: Bool = false
     @State private var showingOllamaSetup = false
     /// Bytes used by all embedding sidecars across the user's
     /// library. Refreshed on appear and after a clear.
@@ -186,7 +192,22 @@ struct AISettingsView: View {
             refreshEmbeddingsCacheSize()
             refreshVoyageKeyState()
             refreshGeminiKeyState()
+            loadAliasEditor()
         }
+    }
+
+    private func loadAliasEditor() {
+        aliasEditorText = AliasDictionaryStore().read().render()
+        aliasEditorIsDirty = false
+    }
+
+    private func saveAliasEditor() {
+        let parsed = AliasDictionary.parse(aliasEditorText)
+        AliasDictionaryStore().write(parsed)
+        // Re-render from the parsed dictionary so duplicate /
+        // empty-line cleanup is reflected back in the editor.
+        aliasEditorText = parsed.render()
+        aliasEditorIsDirty = false
     }
 
     /// Recompute the on-disk size of the embeddings cache. Cheap (a
@@ -324,6 +345,32 @@ struct AISettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            // Alias dictionary — concepts / names NLTagger missed.
+            // One per line, applied across every indexed book.
+            // Hidden behind a DisclosureGroup so the section
+            // doesn't get bulky for users who don't customize.
+            DisclosureGroup("Alias dictionary") {
+                Text("One concept or name per line. Queries containing any of these terms boost paragraphs that mention the term — useful for words NLTagger didn't recognize as entities (e.g. \"heterotopia\", \"biopolitics\", or transliterated classical names). Library-wide; applies to every indexed book.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextEditor(text: $aliasEditorText)
+                    .font(.callout.monospaced())
+                    .frame(minHeight: 90, maxHeight: 220)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                    )
+                    .onChange(of: aliasEditorText) { _, _ in
+                        aliasEditorIsDirty = true
+                    }
+                HStack {
+                    Spacer()
+                    Button("Save aliases") { saveAliasEditor() }
+                        .disabled(!aliasEditorIsDirty)
+                }
+            }
 
             // Embedding-backend picker is hidden when the user picked
             // BM25-only retrieval — there's nothing to embed.

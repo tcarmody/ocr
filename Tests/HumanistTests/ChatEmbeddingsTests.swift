@@ -304,6 +304,62 @@ final class BookEntityIndexTests: XCTestCase {
         XCTAssertTrue(index.anchors(for: "missing").isEmpty)
     }
 
+    // MARK: - Alias dictionary
+
+    func test_alias_parse_round_trips_through_render() {
+        let input = """
+        Heterotopia
+        biopolitics
+        Governmentality
+        """
+        let dict = AliasDictionary.parse(input)
+        XCTAssertEqual(dict.terms, ["heterotopia", "biopolitics", "governmentality"])
+        XCTAssertEqual(dict.displayTerms["heterotopia"], "Heterotopia")
+        XCTAssertEqual(dict.displayTerms["biopolitics"], "biopolitics")
+        // Render is sorted alphabetically; display forms preserved.
+        XCTAssertEqual(
+            dict.render(),
+            "biopolitics\nGovernmentality\nHeterotopia"
+        )
+    }
+
+    func test_alias_parse_skips_empty_and_whitespace_lines() {
+        let input = """
+        first
+
+
+        second
+
+        """
+        let dict = AliasDictionary.parse(input)
+        XCTAssertEqual(dict.terms, ["first", "second"])
+    }
+
+    func test_alias_parse_dedupes_case_insensitively() {
+        let input = "Foo\nfoo\nFOO"
+        let dict = AliasDictionary.parse(input)
+        XCTAssertEqual(dict.terms.count, 1)
+        // Display form prefers most-uppercase: "FOO" beats "Foo"
+        // beats "foo" because uppercase count + length tiebreak.
+        XCTAssertEqual(dict.displayTerms["foo"], "FOO")
+    }
+
+    func test_alias_store_round_trips_through_disk() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("humanist-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("aliases.json")
+        let store = AliasDictionaryStore(storeURL: url)
+        let dict = AliasDictionary.parse("alpha\nbeta")
+        store.write(dict)
+        let loaded = store.read()
+        XCTAssertEqual(loaded.terms, dict.terms)
+        XCTAssertEqual(loaded.displayTerms, dict.displayTerms)
+    }
+
     /// Codable round-trip — sidecar persistence relies on this.
     func test_entity_index_codable_round_trip() throws {
         let index = BookEntityIndex(
