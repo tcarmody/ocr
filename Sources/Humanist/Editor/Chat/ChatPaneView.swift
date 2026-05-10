@@ -121,7 +121,7 @@ struct ChatPaneView: View {
                 .buttonStyle(.borderless)
                 .help(vm.useLongFormSynthesis
                       ? "Switch back to short chat-shaped answers"
-                      : "Long-form synthesis: structured 1-2 page response")
+                      : "Longer-form: a few well-developed paragraphs instead of one or two")
                 Button {
                     showRetrievalDetail.toggle()
                 } label: {

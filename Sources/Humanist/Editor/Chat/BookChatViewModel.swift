@@ -616,7 +616,7 @@ final class BookChatViewModel: ObservableObject {
         }
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: useLongFormSynthesis ? 4000 : 1500,
+            maxTokens: useLongFormSynthesis ? 2000 : 1500,
             system: .cached(systemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .plain(userPrompt))
@@ -1244,7 +1244,7 @@ final class BookChatViewModel: ObservableObject {
         }
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: useLongFormSynthesis ? 4000 : 1500,
+            maxTokens: useLongFormSynthesis ? 2000 : 1500,
             system: .cached(libraryScopeSystemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .plain(userPrompt))
@@ -1770,11 +1770,13 @@ final class BookChatViewModel: ObservableObject {
         let length: String
         if useLongFormSynthesis {
             length = """
-            The user has requested long-form synthesis. Take an \
-            essay's worth of length: a structured 1-2 page response \
-            with clear sections (use Markdown headings to organize), \
-            drawing connections across the supplied paragraphs and \
-            quoting the strongest passages with full citations.
+            The user has requested a longer-form answer. Take a \
+            few well-developed paragraphs (4-6 paragraphs is the \
+            target) — enough room to draw connections across the \
+            supplied passages and quote the strongest ones with \
+            citations, but still readable in a sidebar pane. \
+            Don't pad to fill space; if the question only needs a \
+            short answer, give a short answer.
             """
         } else {
             length = """

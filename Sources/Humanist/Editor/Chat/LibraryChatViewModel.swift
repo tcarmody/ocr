@@ -580,7 +580,7 @@ final class LibraryChatViewModel: ObservableObject {
         }
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: useLongFormSynthesis ? 4000 : 1500,
+            maxTokens: useLongFormSynthesis ? 2000 : 1500,
             system: .cached(systemPrompt, ttl: .oneHour),
             messages: [Message(role: .user, content: .plain(userPrompt))],
             thinking: .disabled
@@ -809,11 +809,12 @@ final class LibraryChatViewModel: ObservableObject {
         let length: String
         if useLongFormSynthesis {
             length = """
-            The user has requested long-form synthesis. Take an \
-            essay's worth of length: a structured 1-2 page response \
-            with clear sections (use Markdown headings to organize), \
-            drawing connections across books and quoting the \
-            strongest passages with full citations.
+            The user has requested a longer-form answer. Take a \
+            few well-developed paragraphs (4-6 paragraphs is the \
+            target) — enough room to compare across books and \
+            quote the strongest passages with citations, but still \
+            readable in a sidebar pane. Don't pad; if the question \
+            only needs a short answer, give a short answer.
             """
         } else {
             length = "Keep replies tight: a paragraph or two is usually enough."
