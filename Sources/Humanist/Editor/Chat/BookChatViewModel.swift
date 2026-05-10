@@ -81,6 +81,16 @@ final class BookChatViewModel: ObservableObject {
         return raw.isEmpty ? "gemma4:26b" : raw
     }
 
+    /// Local Ollama embedding model tag. Independent from the chat
+    /// model — embedding tasks want a small dedicated embedder
+    /// (`nomic-embed-text` ~ 270 MB) rather than a 20 GB chat model.
+    private var ollamaEmbeddingModel: String {
+        let raw = UserDefaults.standard.string(
+            forKey: "humanist.chat.ollamaEmbeddingModel"
+        ) ?? ""
+        return raw.isEmpty ? "nomic-embed-text" : raw
+    }
+
     /// User's retrieval style. Read per-send so a Settings change
     /// applies immediately.
     private var retrievalStyle: HybridRetriever.Style {
@@ -340,20 +350,40 @@ final class BookChatViewModel: ObservableObject {
 
     // MARK: - Embedding pipeline
 
-    /// Resolve the user's chosen embedding backend. Until the
-    /// non-NLEmbedding paths land, anything other than `.appleNL`
-    /// silently falls back to `.appleNL` so the index still builds.
-    /// Returns nil only when the system can't even build the
-    /// NLEmbedding fallback (rare).
-    private func resolveEmbeddingBackend() -> (any EmbeddingBackend)? {
+    /// Resolve the user's chosen embedding backend. Async because
+    /// some backends (Ollama, future cloud providers) need a probe
+    /// call to learn their dimension before they're usable. Returns
+    /// nil only when even the NLEmbedding fallback can't be built.
+    ///
+    /// On a backend-specific failure (Ollama daemon down, missing
+    /// model, missing key), falls back to NLEmbedding rather than
+    /// failing the whole index build — the user still gets a
+    /// working chat. The fallback note is folded into the
+    /// `embeddingStatus` label so the chat pane can surface it.
+    private func resolveEmbeddingBackend() async -> (
+        backend: (any EmbeddingBackend)?,
+        fallbackNote: String?
+    ) {
         switch embeddingBackendChoice {
-        case .appleNL, .ollama, .voyage, .gemini:
-            // .ollama / .voyage / .gemini will dispatch to their
-            // own implementations once those backends are wired.
-            // Until then, fall through to NLEmbedding so the chat
-            // path keeps working — the Settings picker hides
-            // unwired choices behind a "coming soon" hint.
-            return NLSentenceEmbeddingBackend(language: .english)
+        case .appleNL:
+            return (NLSentenceEmbeddingBackend(language: .english), nil)
+        case .ollama:
+            do {
+                let backend = try await OllamaEmbeddingBackend.make(
+                    model: ollamaEmbeddingModel
+                )
+                return (backend, nil)
+            } catch {
+                let note = "Ollama embedding unavailable (\(error.localizedDescription)). Using Apple NLEmbedding instead."
+                return (NLSentenceEmbeddingBackend(language: .english), note)
+            }
+        case .voyage, .gemini:
+            // Voyage / Gemini land in follow-up commits; until then
+            // fall through to NLEmbedding so the chat keeps working.
+            // The Settings picker shows a "coming soon" hint so the
+            // user knows the picker hasn't taken effect.
+            let note = "\(embeddingBackendChoice.displayName) isn't wired yet — using Apple NLEmbedding."
+            return (NLSentenceEmbeddingBackend(language: .english), note)
         }
     }
 
@@ -373,12 +403,14 @@ final class BookChatViewModel: ObservableObject {
         let url = epubURL
         let store = embeddingsStore
         let snapshot = book
-        let backend = resolveEmbeddingBackend()
-        guard let backend else {
-            embeddingStatus = .failed("No embedding backend available.")
-            return
-        }
         embeddingBuildTask = Task { [weak self] in
+            guard let resolution = await self?.resolveEmbeddingBackend() else { return }
+            guard let backend = resolution.backend else {
+                await MainActor.run {
+                    self?.embeddingStatus = .failed("No embedding backend available.")
+                }
+                return
+            }
             do {
                 var sidecar = store.read(for: url)
                     ?? EmbeddingsSidecar.empty(
@@ -401,16 +433,14 @@ final class BookChatViewModel: ObservableObject {
                 store.write(sidecar, for: url)
                 try Task.checkCancellation()
                 await MainActor.run {
-                    guard let self else { return }
-                    self.embeddingIndex = index
-                    self.embeddingStatus = .ready
+                    self?.embeddingIndex = index
+                    self?.embeddingStatus = .ready
                 }
             } catch is CancellationError {
                 return
             } catch {
                 await MainActor.run {
-                    guard let self else { return }
-                    self.embeddingStatus = .failed(error.localizedDescription)
+                    self?.embeddingStatus = .failed(error.localizedDescription)
                 }
             }
         }

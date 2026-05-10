@@ -145,3 +145,115 @@ private struct ConcurrencySafeEmbedding: @unchecked Sendable {
         return raw.vector(for: trimmed)
     }
 }
+
+// MARK: - Ollama embedding backend
+
+/// Embedding backend driven by an Ollama daemon's `/api/embed`
+/// endpoint. Better quality than `NLEmbedding` for technical / code
+/// content (depending on the chosen model), and free / local — the
+/// same Ollama install that powers the local-chat path can serve
+/// embeddings.
+///
+/// Dimension is probed at construction time by embedding a single
+/// short string; this is the only way to know without a per-model
+/// hard-coded table, which would silently break when users pick
+/// non-standard models.
+public struct OllamaEmbeddingBackend: EmbeddingBackend {
+    public let identifier: String
+    public let dimension: Int
+    public let model: String
+    private let client: OllamaClient
+
+    /// Build a backend by probing the daemon for the model's
+    /// dimension. Throws `EmbeddingError.backendUnavailable` if the
+    /// daemon isn't reachable or the model isn't pulled.
+    public static func make(
+        model: String, client: OllamaClient = OllamaClient()
+    ) async throws -> OllamaEmbeddingBackend {
+        let probe: [[Float]]
+        do {
+            probe = try await client.embed(model: model, texts: ["x"])
+        } catch let error as OllamaError {
+            switch error {
+            case .daemonNotReachable:
+                throw EmbeddingError.backendUnavailable(
+                    "Ollama daemon not running at \(client.config.baseURL.absoluteString)"
+                )
+            case .modelNotPulled(let name):
+                throw EmbeddingError.backendUnavailable(
+                    "Ollama model \"\(name)\" isn't pulled. Run `ollama pull \(name)`."
+                )
+            case .serverError(let status, let message):
+                throw EmbeddingError.serverError(
+                    status: status, message: message
+                )
+            case .network(let inner):
+                throw EmbeddingError.network(inner)
+            case .decode(let detail):
+                throw EmbeddingError.decode(detail)
+            }
+        }
+        guard let firstVector = probe.first, !firstVector.isEmpty else {
+            throw EmbeddingError.decode(
+                "ollama returned empty embeddings for the dimension probe"
+            )
+        }
+        return OllamaEmbeddingBackend(
+            identifier: "ollama.\(model)",
+            dimension: firstVector.count,
+            model: model,
+            client: client
+        )
+    }
+
+    /// Internal init — public callers go through `make` so the
+    /// dimension probe always runs.
+    internal init(
+        identifier: String,
+        dimension: Int,
+        model: String,
+        client: OllamaClient
+    ) {
+        self.identifier = identifier
+        self.dimension = dimension
+        self.model = model
+        self.client = client
+    }
+
+    public func embed(_ texts: [String]) async throws -> [[Float]] {
+        guard !texts.isEmpty else { return [] }
+        do {
+            let vectors = try await client.embed(model: model, texts: texts)
+            // Defend against a daemon that returns vectors of a
+            // different dimension than what the probe saw — would
+            // corrupt the sidecar silently otherwise.
+            for v in vectors where v.count != dimension {
+                throw EmbeddingError.dimensionMismatch(
+                    expected: dimension, got: v.count
+                )
+            }
+            return vectors
+        } catch let error as EmbeddingError {
+            throw error
+        } catch let error as OllamaError {
+            switch error {
+            case .daemonNotReachable:
+                throw EmbeddingError.backendUnavailable(
+                    "Ollama daemon not running"
+                )
+            case .modelNotPulled(let name):
+                throw EmbeddingError.backendUnavailable(
+                    "Ollama model \"\(name)\" not pulled"
+                )
+            case .serverError(let status, let message):
+                throw EmbeddingError.serverError(
+                    status: status, message: message
+                )
+            case .network(let inner):
+                throw EmbeddingError.network(inner)
+            case .decode(let detail):
+                throw EmbeddingError.decode(detail)
+            }
+        }
+    }
+}

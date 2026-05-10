@@ -17,6 +17,11 @@ struct AISettingsView: View {
     private var chatBackendRaw: String = ChatBackend.cloudHaiku.rawValue
     @AppStorage("humanist.chat.ollamaModel")
     private var ollamaModel: String = "gemma4:26b"
+    /// Ollama embedding model tag. Independent from the chat model
+    /// so users can run a small dedicated embedder (~270 MB) for
+    /// retrieval and a heavier model for chat answers.
+    @AppStorage("humanist.chat.ollamaEmbeddingModel")
+    private var ollamaEmbeddingModel: String = "nomic-embed-text"
     /// Retrieval style for chat-with-book. Read by
     /// `BookChatViewModel` per-send.
     @AppStorage("humanist.chat.retrievalStyle")
@@ -226,7 +231,20 @@ struct AISettingsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if embeddingBackendBinding.wrappedValue != .appleNL {
+                switch embeddingBackendBinding.wrappedValue {
+                case .appleNL:
+                    EmptyView()
+                case .ollama:
+                    HStack {
+                        Text("Embedding model")
+                        TextField("ollama embed tag", text: $ollamaEmbeddingModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Text("Default \"nomic-embed-text\" is ~270 MB. Pull it once with `ollama pull nomic-embed-text`. The daemon must be running when the editor opens an EPUB.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                case .voyage, .gemini:
                     Label(
                         "This backend isn't wired yet — falls back to Apple NLEmbedding for now.",
                         systemImage: "info.circle"

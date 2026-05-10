@@ -77,6 +77,27 @@ public actor OllamaClient {
         }
     }
 
+    /// Embed a batch of texts via `/api/embed`. The daemon must have
+    /// the requested embedding model pulled (e.g.
+    /// `ollama pull nomic-embed-text`); if it's missing, the call
+    /// returns `OllamaError.modelNotPulled`.
+    ///
+    /// Vectors come back as `[Double]` from Ollama; we down-convert
+    /// to `[Float]` to match the rest of the pipeline (sidecar
+    /// storage and cosine math).
+    public func embed(model: String, texts: [String]) async throws -> [[Float]] {
+        guard !texts.isEmpty else { return [] }
+        let body = EmbedRequestBody(model: model, input: texts)
+        let request = try buildRequest(path: "/api/embed", body: body)
+        let (data, _) = try await sendOnce(request, modelHint: model)
+        do {
+            let envelope = try Self.decoder.decode(EmbedResponseBody.self, from: data)
+            return envelope.embeddings.map { $0.map(Float.init) }
+        } catch {
+            throw OllamaError.decode(String(describing: error))
+        }
+    }
+
     /// Returns the list of locally-pulled model tags. Caller can use
     /// this to verify a model exists before sending a chat request.
     public func installedModels() async throws -> [String] {
@@ -176,6 +197,20 @@ public actor OllamaClient {
         let model: String
         let message: Message
         let done: Bool
+    }
+
+    private struct EmbedRequestBody: Codable {
+        let model: String
+        /// Ollama's `/api/embed` accepts either a single string or
+        /// an array of strings; we always send the array form so the
+        /// response shape is consistent.
+        let input: [String]
+    }
+
+    private struct EmbedResponseBody: Codable {
+        /// Always present, indexed parallel to the input array. Ollama
+        /// reports `[Double]` per text; the client down-converts.
+        let embeddings: [[Double]]
     }
 
     private struct TagsResponseBody: Codable {
