@@ -3122,6 +3122,174 @@ into two if Manuscript is more pressing.
 
 ---
 
+## L-Foundation-Models — On-device classification for Private mode
+
+**Status**: not started. Apple's Foundation Models framework
+(macOS 26+) ships a ~3B-parameter on-device language model with
+schema-guided generation (`@Generable`). The codebase already
+targets macOS 26 (per `Package.swift` and the macos-26-only memory),
+so the floor is met. Today every Cloud-mode feature is gated behind
+an Anthropic key — Private-mode users get the cascade OCR and that's
+it: no chapter classification, no metadata extraction, no post-OCR
+cleanup. AFM fills most of that gap, on-device, free, no key.
+
+The previous Tier 8 placeholder (`S-Apple-Intelligence-Polish`) is
+superseded by this entry now that the macOS 26 floor makes it a
+first-class feature rather than a stretch.
+
+### Why bother
+
+The user's choice of Private mode is a privacy / cost / offline
+preference, not a quality preference. Today that choice costs them
+every Cloud-only feature. AFM is a 3B-class model — meaningfully
+smaller than Claude Sonnet, but plausibly competitive on
+classification-shaped tasks where output is short and structured.
+For Private-mode users the comparison isn't AFM vs Cloud; it's AFM
+vs nothing. Even moderate quality is a real win.
+
+The shape that fits AFM best is **schema-guided classification**.
+Several existing Cloud features map cleanly onto that shape:
+
+- **Chapter classification**: input = chapter title (+ first
+  paragraph), output = one EPUB 3 `epub:type` token from a closed
+  enum. Bounded. Fast. Easy to A/B against Cloud Sonnet.
+- **Metadata extraction**: input = front-matter pages, output =
+  `Generable` struct with `title / author / year / publisher / isbn`.
+  Probably AFM's strongest use case — small input, structured output,
+  lots of training-data overlap with publication conventions.
+- **Post-OCR cleanup**: input = (originalText, regionImage),
+  output = (cleanedText, confidence). Quality uncertain on hardest
+  regions (worn type, polytonic Greek); Cloud path stays as the
+  high-quality option.
+
+What AFM doesn't help with: vision tasks (page-OCR, hard-region OCR,
+table extraction) where the model needs to read pixels — AFM is
+text-only. Those Cloud features stay Cloud-only. Chat-with-book
+already has a local backend (Ollama, Gemma 4 26B); AFM would be
+worse for that use case.
+
+### Scope: phased rollout
+
+**Phase 1 — chapter classification (~1-1.5 days).** The clean
+beachhead.
+
+- `Sources/AI/AppleFoundationModelClient.swift` — actor wrapping
+  `LanguageModelSession`. Ping / availability / structured-respond
+  surface; mirrors the `OllamaClient` shape so future swaps are
+  mechanical.
+- `Sources/Pipeline/AppleFoundationModelClassifier.swift` —
+  `@Generable enum EpubChapterType { case chapter, preface,
+  foreword, … }`; per-chapter `respond(to:generating:)` call with
+  the title + first paragraph. Conforms to the existing
+  `SemanticClassifier` protocol so the pipeline picks between
+  Cloud and Local based on Settings + availability.
+- Settings → AI → Local AI: new toggle `localChapterClassification`
+  (default on under Private mode when AFM is available); graceful
+  fallback when `LanguageModelSession.availability != .available`
+  (user disabled Apple Intelligence) — silent skip, no banner.
+- Validation: hand-classify ~10 chapters as ground truth; compute
+  AFM accuracy vs Cloud Sonnet vs Cloud Haiku. Ship if AFM lands
+  within ~5% of Haiku.
+
+**Phase 2 — metadata + cleanup (~2-3 days, opt-in).** Once Phase 1
+ships and the client is proven:
+
+- `AppleFoundationModelMetadataExtractor` — front-matter →
+  `BookMetadata` `Generable` struct. Parallels
+  `ClaudeMetadataExtractor`.
+- `AppleFoundationModelPostProcessor` — per-region typo cleanup.
+  Document the quality tradeoff ("Cloud Haiku is more accurate on
+  worn / classical text") so users can opt back to Cloud where
+  needed.
+- `AppleFoundationModelCoherenceAnalyzer` — recurring-OCR-error
+  detection across whole book. Long-context (whole-book digest);
+  AFM's 8K-token window is tight, so probably needs chunking or a
+  "skip on long books" fallback.
+
+**Phase 3 — TOC parsing (defer).** Long-context structured
+extraction. Hardest of the bunch. AFM might struggle vs Cloud
+Sonnet's much larger window. Punt until Phase 1+2 validate AFM
+at smaller scopes; revisit if there's demand.
+
+### Architecture
+
+```
+Sources/AI/
+└── AppleFoundationModelClient.swift  NEW — LanguageModelSession wrapper
+
+Sources/Pipeline/
+├── SemanticClassifier.swift          (existing protocol)
+├── ClaudeChapterClassifier.swift     (existing — Cloud path)
+└── AppleFoundationModelClassifier.swift  NEW — Local path
+```
+
+The pipeline's chapter-classification stage already abstracts behind
+`SemanticClassifier`; adding a third backend (alongside Cloud +
+no-op-fallback) is a constructor-injection change, not a refactor.
+
+### Settings
+
+- New `Local AI` section in Settings → AI, parallel to the existing
+  `Cloud Features` section. Each entry mirrors a Cloud-mode toggle
+  but routes through AFM when enabled.
+- Defaults: under `processingMode == .privateLocal`, all
+  Local-AI features default *on* when `LanguageModelSession.
+  availability == .available`. Defaults to *off* otherwise.
+- "Apple Intelligence isn't enabled" notice with a deep link to
+  System Settings → Apple Intelligence when availability is
+  `.unavailable(reason)`.
+
+### Risks
+
+- **macOS 26 minor-version churn**: Foundation Models is new in
+  macOS 26.0; API may shift in 26.x point releases. The thin
+  client wrapper isolates the blast radius — most code references
+  `AppleFoundationModelClient`, not the framework directly.
+- **AFM quality on non-English content**: weaker than English.
+  For chapter titles (typically in the book's primary language)
+  probably fine. For classical-script bodies (post-OCR cleanup)
+  more uncertain — document as a known limitation; recommend
+  Cloud for those users.
+- **Apple Intelligence opt-in**: user must have it enabled in
+  System Settings. Off by default for some setups (managed Macs,
+  privacy-conscious users). Graceful fallback handles this.
+- **Quality-floor regression**: enabling Local AI for a user who
+  was happily on Cloud with high-accuracy settings would be a
+  downgrade. Default Local-AI features under Private mode only —
+  Cloud users keep their Cloud features.
+
+### Effort
+
+Phase 1 alone: ~1-1.5 days end-to-end:
+- ~0.5 day: `AppleFoundationModelClient` + availability probe.
+- ~0.5 day: `AppleFoundationModelClassifier` + `Generable` enum
+  for `epub:type`.
+- ~0.5 day: Settings UI + pipeline wiring + validation against
+  hand-classified ground truth.
+
+Phase 1+2 together: ~3-4 days. Phase 3 deferred.
+
+### When to ship
+
+Anytime; orthogonal to chat / library work. Strongest fit for
+users who specifically chose Private mode (where the upside is
+biggest) — gives them feature parity for the classification-
+shaped tasks Cloud users have had since R-Conversion-Summary.
+
+### Dependencies
+
+- macOS 26+ — already targeted (`Package.swift` platform floor;
+  matches the `macos-26-only` memory).
+- User has enabled Apple Intelligence in System Settings —
+  detected via `LanguageModelSession.availability`; graceful
+  fallback when unavailable.
+- Existing `SemanticClassifier` protocol in the pipeline (Phase 1)
+  and `MetadataExtractor` / `OCRPostProcessor` / `CoherenceAnalyzer`
+  protocols (Phase 2) — all already abstract over the Cloud impls,
+  so the AFM impls slot in alongside.
+
+---
+
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
 **Status**: one shared Surya sidecar serves all pipelines. Sequential
@@ -3271,12 +3439,6 @@ automatically.
 ---
 
 # Tier 8: Stretch / speculative
-
-## S-Apple-Intelligence-Polish
-
-When macOS 26+ becomes the realistic minimum, use Foundation Models
-(see [Plans/Phase2-Semantic-Classification.md](Plans/Phase2-Semantic-Classification.md))
-for chapter classification. Cleaner than cloud Claude and free.
 
 ## S-Custom-Footnote-Style
 
@@ -3910,17 +4072,26 @@ use; distribution is lower priority than correctness.
    multi-model A/B). Tiers 1+2 are about 3 days end-to-end and
    cover the practical research-workflow surface; Tiers 3+4 are
    nice-to-haves to pick from based on actual friction.
-4. **Distribution polish** — see `RELEASES.md`. Need a Developer
+4. **L-Foundation-Models** — on-device classification for Private
+   mode via Apple's Foundation Models framework (macOS 26+).
+   Phase 1 (chapter classification, ~1-1.5 days) is the clean
+   beachhead; Phase 2 (metadata extraction, post-OCR cleanup,
+   coherence) extends to ~3-4 days total. Closes the parity gap
+   for users who chose Private mode and otherwise get nothing
+   from the Cloud-only feature set. Vision-heavy features stay
+   Cloud-only — AFM is text-only.
+5. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-5. **P-Greek-Quality** — ground-truth measurement of Tesseract
+6. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-6. **Stretch / speculative items in Tier 8** if a specific need
-   surfaces — Apple Foundation Models polish for chapter
-   classification (macOS 26 ships them on-device), custom
-   footnote styles, audio output via `AVSpeechSynthesizer`.
+7. **Stretch / speculative items in Tier 8** if a specific need
+   surfaces — custom footnote styles, audio output via
+   `AVSpeechSynthesizer`. (Apple Foundation Models for chapter
+   classification has graduated out of stretch into
+   `L-Foundation-Models` above now that macOS 26 is the floor.)
 
 Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely
 — corpus doesn't justify the bidi-rendering and per-script
