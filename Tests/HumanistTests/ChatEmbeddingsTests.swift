@@ -344,6 +344,76 @@ final class BookEntityIndexTests: XCTestCase {
         XCTAssertEqual(dict.displayTerms["foo"], "FOO")
     }
 
+    // MARK: - Markdown rendering
+
+    func test_markdown_paragraph_default() {
+        let blocks = MarkdownMessageBody.parseBlocks("plain text reply")
+        XCTAssertEqual(blocks, [.paragraph("plain text reply")])
+    }
+
+    func test_markdown_bullet_list() {
+        let blocks = MarkdownMessageBody.parseBlocks("""
+        Lead-in.
+
+        - first
+        - second
+        - third
+        """)
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0], .paragraph("Lead-in."))
+        XCTAssertEqual(blocks[1], .bulletList(items: ["first", "second", "third"]))
+    }
+
+    func test_markdown_ordered_list_and_heading() {
+        let blocks = MarkdownMessageBody.parseBlocks("""
+        ## Findings
+
+        1. one
+        2. two
+        """)
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0], .heading(level: 2, text: "Findings"))
+        XCTAssertEqual(blocks[1], .orderedList(items: ["one", "two"]))
+    }
+
+    func test_markdown_fenced_code_block_spans_blank_lines() {
+        let blocks = MarkdownMessageBody.parseBlocks("""
+        Here's the code:
+
+        ```swift
+        let x = 1
+
+        let y = 2
+        ```
+
+        That's all.
+        """)
+        XCTAssertEqual(blocks.count, 3)
+        XCTAssertEqual(blocks[0], .paragraph("Here's the code:"))
+        XCTAssertEqual(
+            blocks[1],
+            .codeBlock(language: "swift", code: "let x = 1\n\nlet y = 2")
+        )
+        XCTAssertEqual(blocks[2], .paragraph("That's all."))
+    }
+
+    func test_markdown_blockquote() {
+        let blocks = MarkdownMessageBody.parseBlocks("""
+        > One.
+        > Two.
+
+        Outside.
+        """)
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0], .blockquote("One. Two."))
+        XCTAssertEqual(blocks[1], .paragraph("Outside."))
+    }
+
+    func test_markdown_paragraph_collapses_single_newlines() {
+        let blocks = MarkdownMessageBody.parseBlocks("line one\nline two")
+        XCTAssertEqual(blocks, [.paragraph("line one line two")])
+    }
+
     func test_alias_store_round_trips_through_disk() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("humanist-tests-\(UUID().uuidString)")

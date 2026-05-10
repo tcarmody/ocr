@@ -24,15 +24,29 @@ struct ChatMessageRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(message.text)
-                .font(.callout)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(bubbleColor)
-                )
+            // Assistant replies routinely include Markdown
+            // (**bold**, lists, headings, inline `code`); the user's
+            // own input is plain text. Render via the
+            // Markdown-aware body for assistant turns; keep the
+            // raw `Text` for the user side both because it doesn't
+            // need formatting and because rendering user-typed
+            // asterisks as bold is the wrong behavior.
+            Group {
+                if message.role == .assistant {
+                    MarkdownMessageBody(text: message.text)
+                        .font(.callout)
+                } else {
+                    Text(message.text)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(bubbleColor)
+            )
             if !message.citations.isEmpty {
                 FlowingCitationRow(
                     citations: message.citations,
