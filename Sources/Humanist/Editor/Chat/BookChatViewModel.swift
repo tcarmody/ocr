@@ -175,6 +175,27 @@ final class BookChatViewModel: ObservableObject {
         return HybridRetriever.Style(rawValue: raw) ?? .hybrid
     }
 
+    /// Whether structural-query expansion contributes to the RRF
+    /// fusion. Default on. Disabling skips the per-query
+    /// hierarchy boost but doesn't drop the cached hierarchy from
+    /// the sidecar (the TOC preamble in the system prompt always
+    /// runs — that's free).
+    private var useStructuralRetrieval: Bool {
+        UserDefaults.standard.object(
+            forKey: "humanist.chat.useStructuralRetrieval"
+        ) as? Bool ?? true
+    }
+
+    /// Whether entity-match boosting contributes to the RRF fusion.
+    /// Default on. Disabling skips the entity boost on both
+    /// per-book and library scopes; the cached entity index stays
+    /// on disk for when the user re-enables it.
+    private var useEntityRetrieval: Bool {
+        UserDefaults.standard.object(
+            forKey: "humanist.chat.useEntityRetrieval"
+        ) as? Bool ?? true
+    }
+
     /// User's embedding-backend choice. Today only `.appleNL` is
     /// wired; the other choices fall back to `.appleNL` until their
     /// implementations land.
@@ -287,18 +308,25 @@ final class BookChatViewModel: ObservableObject {
             }
 
             // Compute hierarchy / entity boost paragraphs from the
-            // query. Hierarchy: matched chapter nodes expand to
-            // every paragraph in that chapter (the embedding index
-            // is the source of paragraph identities). Entities:
+            // query, gated by the user's Settings preferences.
+            // Hierarchy: matched chapter nodes expand to every
+            // paragraph in that chapter (the embedding index is
+            // the source of paragraph identities). Entities:
             // anchors come straight from the entity index.
-            let hierarchyMatches = self.computeHierarchyMatches(
-                query: query,
-                hierarchy: hierarchySnapshot,
-                embeddings: embeddingIndexSnapshot
-            )
-            let entityMatches = self.computeEntityMatches(
-                query: query, entities: entitySnapshot
-            )
+            let useStructural = await MainActor.run { self.useStructuralRetrieval }
+            let useEntity = await MainActor.run { self.useEntityRetrieval }
+            let hierarchyMatches = useStructural
+                ? self.computeHierarchyMatches(
+                    query: query,
+                    hierarchy: hierarchySnapshot,
+                    embeddings: embeddingIndexSnapshot
+                  )
+                : []
+            let entityMatches = useEntity
+                ? self.computeEntityMatches(
+                    query: query, entities: entitySnapshot
+                  )
+                : []
 
             var retriever = HybridRetriever(
                 style: style,
@@ -385,11 +413,16 @@ final class BookChatViewModel: ObservableObject {
             // Library entity boost — when the user named an
             // entity present in the federated index, every
             // paragraph mentioning that entity gets a rank-1 RRF
-            // contribution alongside the cosine hits.
+            // contribution alongside the cosine hits. Gated by
+            // the same Settings toggle as per-book entity
+            // retrieval.
+            let useEntity = await MainActor.run { self.useEntityRetrieval }
             let entityIndex = await MainActor.run { self.libraryEntityIndex }
-            let entityAnchors = self.computeLibraryEntityAnchors(
-                query: query, entities: entityIndex
-            )
+            let entityAnchors = useEntity
+                ? self.computeLibraryEntityAnchors(
+                    query: query, entities: entityIndex
+                  )
+                : []
             let hits = library.search(
                 queryVector: queryVector,
                 topK: Self.maxRetrievedParagraphs,

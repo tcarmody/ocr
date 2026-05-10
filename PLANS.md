@@ -2454,19 +2454,30 @@ pending.
   EmbeddingsSidecar.Entry gained an optional `text` field so
   library-scope queries don't have to unzip the cited EPUB on
   every hit (with a fallback for older sidecars without text).
+- **NER entities + four-way RRF fusion** (`d28a9d8`):
+  `BookEntityIndex` runs NLTagger `.nameType` over every paragraph
+  and aggregates personal / place / org names into a `canonical →
+  [anchor]` table. `LibraryEntityIndex` federates across per-book
+  sidecars; supports cross-corpus entity queries and set queries.
+  `HybridRetriever` extended to a four-way RRF: BM25 chapter
+  projection + embedding cosine + hierarchy-set + entity-set;
+  hierarchy / entity rankers contribute a fixed rank-1 boost
+  (they tag a set as relevant rather than ranking within).
+  `LibraryEmbeddingIndex.search` also folds library-wide entity
+  matches into a two-way RRF on the library scope. Settings
+  toggles for structural / entity retrieval (default on) so users
+  can turn off the boosts at retrieval time without invalidating
+  sidecars.
 
 ### Still pending
 
-- BookEntityIndex via NLTagger (Primitive 2).
-- LibraryEntityIndex federation; entity-driven retrieval hits.
-- HybridRetriever extended to four-way RRF fusion (BM25 +
-  embeddings + hierarchy structural-match expansion + entities).
-- Settings toggles (use structural retrieval / use entity
-  retrieval) + alias dictionary editor.
+- Alias dictionary editor — surface for users to add canonical
+  names that NLTagger missed (the planned remediation for
+  classical / non-English text where NER recall is weak).
 - Variable-granularity render — currently the hierarchy is used
-  for the TOC preamble and structural-query matching only;
-  whole-section context expansion when hits cluster in one
-  section is a follow-up.
+  for the TOC preamble + structural-query expansion; whole-
+  section context expansion when hits cluster in one section is
+  a follow-up.
 
 ### Why bother
 

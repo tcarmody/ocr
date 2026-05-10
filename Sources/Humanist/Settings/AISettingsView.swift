@@ -51,6 +51,14 @@ struct AISettingsView: View {
     /// corresponding implementations land.
     @AppStorage(EmbeddingBackendChoice.userDefaultsKey)
     private var embeddingBackendRaw: String = EmbeddingBackendChoice.appleNL.rawValue
+    /// Toggles the hierarchy structural-query boost. Default on —
+    /// it's free signal (the index is already in the sidecar).
+    @AppStorage("humanist.chat.useStructuralRetrieval")
+    private var useStructuralRetrieval: Bool = true
+    /// Toggles the entity-match boost. Default on — same reasoning
+    /// as the structural toggle.
+    @AppStorage("humanist.chat.useEntityRetrieval")
+    private var useEntityRetrieval: Bool = true
     @State private var showingOllamaSetup = false
     /// Bytes used by all embedding sidecars across the user's
     /// library. Refreshed on appear and after a clear.
@@ -299,6 +307,21 @@ struct AISettingsView: View {
             }
             Text(retrievalStyleBinding.wrappedValue.blurb)
                 .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Graph-Lite boosts. Both default on; toggle off only
+            // when retrieval feels noisy (the entity boost can
+            // misfire on books with NER-detectable but
+            // unrepresentative names).
+            Toggle("Use structural retrieval", isOn: $useStructuralRetrieval)
+            Text("Boosts paragraphs in chapters / sections the user names in the query (e.g. \"chapter 3\", \"the introduction\"). Free at retrieval time — the structure is parsed once from nav.xhtml and cached.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Use entity retrieval", isOn: $useEntityRetrieval)
+            Text("Boosts paragraphs mentioning entities (people, places, organizations) the user names in the query. Detected via Apple's on-device NLTagger; quality is moderate on contemporary English and weaker on classical-script text.")
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
