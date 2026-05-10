@@ -2032,10 +2032,50 @@ is now a hard compile-time constraint that can't regress.
 
 ## R-Chat-Embeddings — Hybrid BM25 + embedding retrieval for chat-with-book
 
-**Status**: not started. Chat retrieval is BM25-only via
-`BookKeywordIndex` (commit `b26a09c`). Per query, the index returns
-the top 4 spine chapters by BM25 score; their full body text (capped
-at 60 KB each) is then dropped into the model's context.
+**Status**: shipped over commits `452daeb` (foundation), `a421161`
+(Ollama), and `1d4cb71` (Voyage + Gemini). Chat retrieval is now
+per-paragraph hybrid: BM25 chapters projected onto their paragraphs
++ embedding cosine, fused via RRF (k=60). Default embedding backend
+is on-device Apple NLEmbedding (free, no setup); Ollama / Voyage /
+Gemini are wired alternatives. Per-book sidecar caches vectors
+under `~/Library/Application Support/Humanist/Embeddings/<sha256>.json`
+so the second open is instant; per-paragraph hashing means a save
+re-embeds only the paragraphs that changed. 13 new tests cover the
+math, paragraph extraction, sidecar round-trip, and RRF fusion.
+
+### What landed
+
+- **Foundation pass** (`452daeb`): `EmbeddingBackend` protocol +
+  `NLSentenceEmbeddingBackend`; `BookEmbeddingIndex` with cosine
+  search; `EmbeddingsSidecarStore`; `HybridRetriever` with RRF;
+  per-paragraph context rendering; Settings → AI → Chat Retrieval
+  section with index-size readout + Clear button.
+- **Ollama backend** (`a421161`): `OllamaClient.embed(model:texts:)`
+  + `OllamaEmbeddingBackend` with daemon-probe-on-init for the
+  dimension. `nomic-embed-text` is the recommended model.
+- **Voyage + Gemini backends** (`1d4cb71`): generalized
+  `KeychainAPIKeyStore` so adding a third + fourth provider key was
+  a 30-line shim each (`VoyageAPIKeyStore`, `GeminiAPIKeyStore`).
+  HTTP backends both probe for dimension before returning. Gemini
+  exposes `outputDimensionality` (Matryoshka 768 / 1536 / full)
+  for storage / quality tradeoffs.
+
+### Storage choice that diverged from the plan
+
+The plan called for the embedding cache to live inside the EPUB at
+`META-INF/com.humanist.embeddings.json`. Shipped as a sidecar
+under Application Support instead, matching the existing
+`ChatTranscriptStore` pattern: derived state shouldn't couple to
+the EPUB save flow (would force a full re-zip on every paragraph
+edit) or pollute a spec-faithful EPUB with a 2 MB binary blob.
+Tradeoff: moving the .epub file orphans its sidecar; rebuild on
+next open is ~1 minute with NLEmbedding, acceptable.
+
+### Outcome
+
+Shipped, ~1 day actual vs ~3-4 days estimated — the keychain
+generalization shaved per-provider cost and the protocol-driven
+backend split made each new provider a ~60-line addition.
 
 ### Why bother
 
@@ -3202,17 +3242,23 @@ use; distribution is lower priority than correctness.
   the deinit-only `pdfPageObserver` token. Compiler help is now
   free quality; every future Swift toolchain tightens the screws
   at build time rather than at 3 AM.
+- **Hybrid chat retrieval** (`R-Chat-Embeddings`, commits `452daeb`
+  / `a421161` / `1d4cb71`): BM25-only chat replaced with paragraph-
+  granularity BM25 + embedding cosine fused via RRF. Four
+  embedding backends: Apple NLEmbedding (default, free, offline),
+  Ollama (local, `nomic-embed-text` recommended), Voyage AI
+  (`voyage-3` / `voyage-3-lite`), and Gemini Embedding 2
+  (`gemini-embedding-002` with Matryoshka 768/1536/full output).
+  Per-book sidecar caches vectors keyed by per-paragraph SHA-256;
+  a save re-embeds only changed paragraphs. Generalized the
+  Anthropic key store into `KeychainAPIKeyStore` so adding the
+  Voyage + Gemini key types was a 30-line shim each. 13 new
+  tests pin the cosine math, paragraph extractor, sidecar
+  round-trip, and RRF fusion.
 
 **Next, in roughly this order:**
 
-1. **R-Chat-Embeddings** — replace BM25-only chat retrieval with
-   hybrid BM25 + embedding search at paragraph granularity. ~3-4 days.
-   Default to free on-device Apple `NLEmbedding`; offer Ollama,
-   Voyage, and Gemini Embedding 2 as paid/local upgrades. The Swift 6
-   migration that just landed makes the embedding cache crossing the
-   chat ViewModel's isolation much easier to write Sendable-clean
-   from the start.
-2. **R-Chat-Graph-Lite** — successor to R-Chat-Embeddings. Adds two
+1. **R-Chat-Graph-Lite** — successor to R-Chat-Embeddings. Adds two
    graph primitives the embedding layer can't do: a hierarchical
    structure index (variable-granularity retrieval — return whole
    sections instead of just paragraphs when appropriate) and a
@@ -3221,14 +3267,14 @@ use; distribution is lower priority than correctness.
    Both extend the per-book embeddings sidecar; both run free /
    on-device. Citation graphs and full GraphRAG explicitly out of
    scope.
-3. **Distribution polish** — see `RELEASES.md`. Need a Developer
+2. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-4. **P-Greek-Quality** — ground-truth measurement of Tesseract
+3. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-5. **Stretch / speculative items in Tier 8** if a specific need
+4. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
