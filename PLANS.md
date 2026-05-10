@@ -2296,12 +2296,14 @@ Each item is independently shippable in 30 minutes to 2 hours.
 
 ### Backlog
 
-- **Bulk-index command** — Library window action that walks every
-  cataloged EPUB and builds (or refreshes) its embedding index. Today
-  each book waits until its chat pane opens; on a large library that
-  means hand-opening every book once. Background queue with progress;
-  read the per-book sidecar to skip ones that are already complete +
-  current. ~2 hours.
+- ~~**Bulk-index command**~~ shipped (commit `fc33b0d`).
+  `LibraryIndexBuilder` walks every cataloged EPUB and builds /
+  refreshes its embedding + hierarchy + entity sidecar against
+  the user's chosen backend; skips books already current; force-
+  rebuild option wipes and re-runs. Triggered from the Library
+  window's circular-arrow menu ("Build Missing Indexes" /
+  "Rebuild All Indexes"); progress sheet shows per-book progress
+  + failure list.
 - ~~**Per-book "Rebuild index" button"**~~ shipped. Circular-arrow
   button in the per-book chat pane header (`Editor → Chat`) calls
   `BookChatViewModel.rebuildIndex()` which wipes the book's
@@ -2422,6 +2424,185 @@ After the entity / four-way-fusion work in R-Chat-Graph-Lite
 finishes, or interleaved if the entity work hits a subtle
 problem. The library-chat surface doesn't depend on entities;
 it's an orthogonal UX promotion.
+
+---
+
+## R-Library-Chat-Plus — Workflow enhancements for the library chat surface
+
+**Status**: not started. The library window now has a chat pane
+(R-Library-Chat) and the federation works end-to-end. This entry
+is the backlog of enhancements that level it up from "ask
+questions across my library" to "use this as the primary research
+surface." Items are independently shippable in 30 minutes to 1-2
+days; the order below is the recommended priority for actual
+research workflow value.
+
+### Tier 1 — clear wins, build first
+
+These are short, obvious, and unlock follow-on value. The first
+two as a pair are the highest-leverage thing on this entire list.
+
+1. **Chat with Selected** — the Library table already has multi-
+   selection (drives bulk find/replace). Add a "Chat with Selected
+   (n)" button next to "Bulk Edit Selected…" that scopes the next
+   chat session to just those rows. Most "compare these N books"
+   queries don't need durable groupings; they need one-click
+   scoping for a one-time comparison. ~1-2 hours.
+2. **Collections** — durable named groupings ("Foucault corpus",
+   "for the chapter on biopolitics"). Persisted as catalog
+   metadata; chat scope picker gains a "Collection: X" option.
+   Library window grows a sidebar of collections and a "Add to
+   Collection" row action. ~1-2 days. Pairs with Chat with
+   Selected: ad-hoc selection for one-off questions, collections
+   for recurring scopes.
+3. **Suggested follow-ups** — model emits 2-3 follow-up questions
+   after each answer (asked-as-part-of-the-prompt; cheap). One
+   click on a suggestion sends it as the next user turn. Common
+   pattern in modern chat UIs; ~2 hours. ~+200 tokens per response.
+4. **Long-form synthesis toggle** — small switch on the chat pane
+   that flips the system prompt from "tight paragraph or two" to
+   "structured 1-2 page essay synthesizing across sources" + lifts
+   `maxTokens` accordingly. ~30 minutes. Genuinely useful when the
+   user wants more than a chat-shaped reply.
+5. **Per-book exclusion** — `─` button on a citation chip to
+   "exclude this book from the rest of this conversation." Stored
+   on the chat session, respected in the next send's retrieval.
+   ~1-2 hours. Catches the common case where one book keeps
+   surfacing irrelevant matches and the user wants it out of the
+   way without leaving chat.
+
+### Tier 2 — research-workflow utility
+
+These shape the chat output for downstream use (research notes,
+citations, drafting). Not as universally useful as Tier 1; pick
+based on whether your workflow leans heavily on writing-up.
+
+6. **Citation export** — turn `[book:N chapter:M]` markers into
+   real bibliographic citations (Chicago / MLA / APA) by reading
+   `book.metadata`. Toggle below each answer to show the formatted
+   bibliography. ~4-6 hours. The metadata-extraction Cloud feature
+   already populates `book.metadata.author / year / publisher`;
+   formatting is the only new code.
+7. **Conversation export** — Markdown / DOCX of the current chat
+   thread with citations resolved. Reuses the existing DOCX
+   writer. ~2-3 hours. Drops directly into research notes.
+8. **Pinned passages** — when chat surfaces a passage worth
+   keeping, click a star on the citation to save it to a per-
+   library "Quotes" pane (passage text + source book + chapter +
+   the question that surfaced it). Becomes a chat-driven
+   highlights file. ~1 day. Pairs naturally with Citation export.
+9. **Ask-each-book mode** — one query, one independent answer
+   *per book in scope*. Different from today's RRF-merged answer;
+   useful for surveys ("what does each of these books say about
+   X?") rather than synthesis ("what does my library say about
+   X?"). Surface as a toggle in the scope strip. ~3-4 hours.
+
+### Tier 3 — nice-to-haves; build only if motivated
+
+Genuinely useful but neither universally needed nor cheap. Skip
+unless one matches an actual recurring pain point.
+
+10. **Comparative-prompt presets** — saved system prompts the
+    user picks per session ("primary-source quotation finder",
+    "careful historian", "argumentative summary", "translation
+    comparison"). Library of canned scholarly stances. ~half day.
+    Worth building only if the user finds themselves rewriting
+    the same prompt prefix repeatedly.
+11. **Multiple chat threads** — named threads ("Power chapter
+    research", "translation comparison") rather than one rolling
+    transcript. ~1 day. Likely overkill for solo use; useful when
+    the user is juggling several research projects in parallel.
+12. **Retrieval debug surface** — already in `R-Chat-Polish`.
+    Hit `bm25Rank` / `embeddingRank` / `hierarchyMatched` /
+    `entityMatched` are already on `HybridRetriever.Hit`; just
+    needs a UI toggle. Critical when retrieval misfires and the
+    user wants to know whether to fix the query, the alias
+    dictionary, or the backend choice. ~1-2 hours.
+
+### Tier 4 — speculative
+
+Real engineering investment, uncertain payoff. Document for the
+runway; don't build unless a specific need surfaces.
+
+13. **Knowledge-graph view** — interactive graph of the
+    federated `LibraryEntityIndex`: people / places / concepts as
+    nodes, co-occurrence as edges. Click a node to seed a chat
+    about that entity. The data is already extracted; the new
+    work is the layout / interaction (D3-ish in WebView, or a
+    native SwiftUI graph). ~3-5 days. Visually impressive but
+    most actual research happens through targeted chat queries,
+    not graph browsing. Build if the user finds themselves
+    asking "what's near X in my library?" frequently.
+14. **Per-book chat history surfacing** — when reading a book in
+    the editor, the chat pane shows "asked about this book in
+    library chat: 7 times" with one-click recall. Cross-context
+    recall. ~half day. Speculative value — depends on whether
+    the user actually re-reads questions they already asked.
+15. **Multi-model A/B in library scope** — same query through
+    Sonnet and Gemini (or any two backends) side-by-side. Useful
+    when the user doesn't trust one model's reading on a hard
+    question. ~1 day. Doubles per-query cost; skip unless model
+    disagreement is biting.
+
+### Caveats
+
+- **Don't build the speculative items first** even if they sound
+  exciting. The Tier 1 scope-control items multiply the value of
+  every other item below them — chat-with-selected makes
+  ask-each-book actually useful, citation export is more
+  meaningful when you can scope the conversation that produced
+  the citations, etc. Build the foundation before the visualization.
+- **Citation export depends on book metadata**. Books converted
+  before the metadata-extraction Cloud feature shipped won't have
+  authors / publishers / years populated. The exporter should
+  fall back to the source filename + chapter title with a "(no
+  author / year recorded)" note rather than fabricating.
+- **Multiple chat threads conflict with how the transcript is
+  persisted today**. The library transcript is a single
+  `library.json` keyed by app instance; threading would require
+  rethinking the schema. If we do it, do it before pinned
+  passages so the pin storage can reference a thread id.
+- **Knowledge-graph view is the easiest item to over-engineer**.
+  Force-directed-layout-with-zoom-pan-tooltips is days of
+  fiddly UI; the question to answer first is whether the
+  *feature* is valuable, not whether it can be polished.
+
+### Sequencing
+
+Recommended order if you build any of this:
+
+1. Chat with Selected (1-2 hours) — instant payoff.
+2. Suggested follow-ups (2 hours) — instant payoff, orthogonal.
+3. Long-form synthesis toggle (30 min) — instant payoff.
+4. Per-book exclusion (1-2 hours).
+5. Collections (1-2 days) — durable groupings; unlocks
+   recurring-scope workflows.
+6. Citation export (4-6 hours).
+7. Conversation export (2-3 hours).
+8. Pinned passages (1 day) — pairs with the export items.
+9. Ask-each-book mode (3-4 hours).
+10. Comparative-prompt presets (half day) if needed.
+11. Retrieval debug surface (1-2 hours) — moved up if retrieval
+    is misfiring.
+12. Multi-model A/B (1 day) if model disagreement bites.
+13. Multiple chat threads (1 day) if juggling projects.
+14. Knowledge-graph view (3-5 days) — last; speculative.
+
+The first four items combined are about 5 hours of work and
+deliver most of the research-workflow value. Tier 2 adds 2-3
+days for the writing-up flow. Tier 3 + 4 are opt-in based on
+real friction.
+
+### Dependencies
+
+- `R-Chat-Graph-Lite` (shipped) for the federated index that
+  every item here builds on.
+- `R-Library-Chat` (shipped) for the surface.
+- `LibraryStore` for collections persistence; existing JSON
+  format gains a `collections: [Collection]` field.
+- Citation export consumes `book.metadata` populated by the
+  metadata-extraction Cloud feature; documented fallback
+  for books without it.
 
 ---
 
@@ -3703,19 +3884,27 @@ use; distribution is lower priority than correctness.
    Both modes are 4-5× the cost of the default print mode but
    produce qualitatively different output for content the cascade
    can't handle well.
-3. **R-Chat-Polish** — remaining small UX gaps in the chat
-   surface (bulk-index command, paragraph-level citation jumps,
-   retrieval debug surface, tunable knobs, backend-swap cascade).
-   Each item independently shippable in 30 minutes to 2 hours;
-   pick whichever bites hardest. Can interleave with other work.
-4. **Distribution polish** — see `RELEASES.md`. Need a Developer
+3. **R-Library-Chat-Plus** — workflow enhancements for the
+   library chat surface: scope control (Chat with Selected,
+   Collections), suggested follow-ups, long-form synthesis,
+   citation export, conversation export, pinned passages, ask-
+   each-book mode, and a few speculative items (knowledge graph,
+   multi-model A/B). Tiers 1+2 are about 3 days end-to-end and
+   cover the practical research-workflow surface; Tiers 3+4 are
+   nice-to-haves to pick from based on actual friction.
+4. **R-Chat-Polish** — remaining small UX gaps in the chat
+   surface (paragraph-level citation jumps, retrieval debug
+   surface, tunable knobs, backend-swap cascade). Each item
+   independently shippable in 30 minutes to 2 hours; pick
+   whichever bites hardest. Can interleave with other work.
+5. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-5. **P-Greek-Quality** — ground-truth measurement of Tesseract
+6. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-6. **Stretch / speculative items in Tier 8** if a specific need
+7. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
