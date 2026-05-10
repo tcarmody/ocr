@@ -1961,6 +1961,225 @@ and are checked in regardless of whether the rest lands.
 
 ---
 
+## R-Chat-Embeddings — Hybrid BM25 + embedding retrieval for chat-with-book
+
+**Status**: not started. Chat retrieval is BM25-only via
+`BookKeywordIndex` (commit `b26a09c`). Per query, the index returns
+the top 4 spine chapters by BM25 score; their full body text (capped
+at 60 KB each) is then dropped into the model's context.
+
+### Why bother
+
+BM25 is a keyword overlap score. It works well when the user's
+question shares vocabulary with the answer:
+*"Where does Foucault discuss heterotopia?"* finds the chapter that
+literally says "heterotopia." It works poorly when the question is
+conceptual or uses different words than the source:
+*"What does the author say about spaces of otherness?"* gets nothing
+useful because none of the keywords overlap.
+
+Embeddings invert that — they find *conceptually similar* passages
+even when the wording differs. The right answer for academic chat
+isn't *replacing* BM25 with embeddings (you'd lose the precision on
+direct-mention queries); it's combining the two.
+
+### Goal
+
+Hybrid retrieval that runs both BM25 and a vector cosine search,
+combines them via reciprocal rank fusion (RRF), and returns the
+top-k merged results. Granularity drops from per-chapter to
+per-paragraph so the context window doesn't have to swallow whole
+chapters when only a few paragraphs are relevant.
+
+### Architecture
+
+```
+Sources/Humanist/Editor/Chat/
+├── BookKeywordIndex.swift       (existing — BM25 over chapters)
+├── BookEmbeddingIndex.swift     NEW — per-paragraph embeddings + cosine
+├── HybridRetriever.swift        NEW — BM25 + embedding RRF fusion
+└── BookChatViewModel.swift      route through HybridRetriever
+```
+
+**`BookEmbeddingIndex`**: holds `[(chapterIdx, paragraphIdx, vector)]`
+plus the parallel paragraph text array. Cosine similarity against the
+query vector returns top-k by similarity. Pure Swift; for the
+expected size (~1k–3k paragraphs per book), a brute-force scan beats
+any tree structure on this CPU.
+
+**`HybridRetriever`**: takes a query string, returns
+`[ScoredParagraph]`. Internally:
+
+1. Embed the query.
+2. BM25 over chapters → list of (chapterIdx, score).
+3. Cosine over paragraph vectors → list of (chapter+paragraph, score).
+4. RRF fusion: `score = sum over rankers of 1/(k + rank)` with k=60.
+5. Top-N paragraphs returned; chapter-level BM25 hits convert to
+   "all paragraphs from that chapter, ranked by their cosine within
+   the chapter."
+
+### Embedding backend
+
+Four tiers, picked at Settings level (similar to chat backend):
+
+- **Local — Apple `NLEmbedding`** (default). Built into the
+  `NaturalLanguage` framework, on-device, free, works for the major
+  Western European languages + Chinese / Japanese / Russian.
+  Quality: moderate but adequate for this use case. Latency: ~10 ms
+  per paragraph; embedding a 300-page book is a one-shot ~1-minute
+  cost.
+- **Local — Ollama** (e.g. `nomic-embed-text`). Better quality, more
+  memory, ~50-200 ms per paragraph. Requires the Ollama daemon
+  (which the local-chat path already uses).
+- **Cloud — Voyage AI** (`voyage-3` or `voyage-3-lite`). Anthropic's
+  recommended embedding provider. ~$0.02 / 1M tokens, ~$0.005 per
+  book. Strong on technical/academic English.
+- **Cloud — Gemini Embedding 2** (`gemini-embedding-002`,
+  released March 2026). Currently #1 on the MTEB multilingual
+  leaderboard — beats the runner-up by ~6 points. 100+ languages
+  including ancient/classical scripts; 8K-token input window;
+  Matryoshka representation lets us truncate the 3072-dim output
+  to a smaller dimension for cheaper storage with minimal quality
+  loss. The right default for a corpus heavy on classical Greek,
+  Latin, and other multilingual academic content. Requires a
+  Google AI Studio API key.
+
+The chat backend choice (Cloud Haiku/Sonnet, Local Ollama) and the
+embedding backend choice are independent — a user might run Cloud
+Sonnet for chat answers but use free local NLEmbedding for
+retrieval, or vice versa.
+
+For Humanist's actual corpus (academic books with classical-script
+passages), **Gemini Embedding 2 is probably the right default for
+users who already use Cloud features** — the multilingual lead over
+Voyage and the open-source field is large and the cost is trivial
+(~$0.005/book). NLEmbedding stays as the offline default for
+Private-mode users.
+
+### Per-book persistence
+
+Embedding a 300-page book takes ~1-2 minutes (NLEmbedding) or
+~$0.005 (Voyage). Doing it on every editor open is wasteful. Cache
+the vectors in a per-EPUB sidecar:
+
+```
+META-INF/com.humanist.embeddings.json
+```
+
+Schema (JSON, gzipped if size becomes a concern):
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "backend": "nlembedding|ollama:nomic-embed-text|voyage-3",
+  "dimension": 384,
+  "spineFingerprint": "sha256:...",   // invalidate if spine changes
+  "paragraphs": [
+    {
+      "chapterIdx": 0,
+      "paragraphIdx": 12,
+      "textHash": "sha256:...",
+      "vector": [0.123, -0.456, ...]
+    },
+    ...
+  ]
+}
+```
+
+Sidecar invalidation:
+
+- Whole-book invalidate when the backend or dimension changes.
+- Per-paragraph invalidate when its `textHash` differs from the
+  current text — re-embed only those paragraphs after a save.
+
+Storage size: ~1500 paragraphs × 384 floats × 4 bytes = ~2.3 MB per
+book uncompressed, ~1 MB gzipped. Trivial on disk.
+
+### Re-embedding triggers
+
+- **First open after install**: build the index from scratch. Pane
+  shows a "Indexing for chat-with-book…" hint while it runs.
+- **After save**: re-embed paragraphs whose `textHash` changed.
+  Hooks into the same `wysiwygReloadToken` → save cycle as the
+  WYSIWYG-vs-Source sync.
+- **Backend switch**: full rebuild (new dimension + different vector
+  space).
+
+### Settings
+
+New "Chat retrieval" subsection under Settings → AI → Book Chat:
+
+- **Retrieval style**: BM25 only · Embeddings only · Hybrid
+  (default)
+- **Embedding backend**: Apple NLEmbedding (default) · Ollama
+  (model picker) · Voyage (key entry)
+- **Index size**: shows MB used by the embeddings sidecar across all
+  cataloged EPUBs. Button: "Clear all indexes" (wipes the sidecars;
+  rebuild on next open).
+
+### Cost / latency budget
+
+| Backend | Embed once | Embed re-edit | Per-query |
+|---|---|---|---|
+| NLEmbedding | ~1-2 min/book | ~50 ms/paragraph | ~10 ms |
+| Ollama (`nomic-embed-text`) | ~5-10 min/book | ~200 ms/paragraph | ~50 ms |
+| Voyage (`voyage-3`) | ~$0.005/book | ~$0.0001/paragraph | ~100 ms |
+| Gemini Embedding 2 | ~$0.01/book | ~$0.0002/paragraph | ~150 ms |
+
+Per-query is dominated by retrieval, not embedding — query embedding
+is a single call.
+
+### Risks
+
+- **Mediocre quality on classical/multilingual text**. NLEmbedding
+  was trained on contemporary corpora; polytonic Greek and classical
+  Latin may embed poorly. The Voyage path (or a domain-specific
+  Ollama model) hedges this.
+- **Sidecar bloat for large libraries**. 100 books × 1 MB = 100 MB
+  inside EPUBs that the user might not realize they're carrying.
+  Mitigation: gzip-encode the sidecar; offer a "Clear all indexes"
+  button.
+- **Drift between BM25 and embedding rankers**. RRF handles this
+  gracefully but the mixing constants (k=60) might need tuning per
+  corpus. Start with the standard value; expose as a hidden
+  preference if real-world testing demands it.
+
+### Effort
+
+~3-4 days end-to-end:
+- ~1 day: `BookEmbeddingIndex` with NLEmbedding backend (build,
+  cache, query) + sidecar write/read.
+- ~0.5 day: `HybridRetriever` + RRF fusion + per-paragraph
+  granularity refactor through `BookChatViewModel`.
+- ~0.5 day: Ollama embedding backend (mostly the existing
+  `OllamaClient` pattern, just `/api/embed`).
+- ~0.5 day: Voyage backend (HTTP client, key entry in Settings,
+  same shape as the existing AnthropicAPIClient).
+- ~0.5 day: Settings UI + clear-indexes action + index-size
+  reporting.
+- ~0.5 day: integration testing on real books, threshold tuning,
+  fixture tests.
+
+### When to ship
+
+After Swift 6 migration. The retrieval refactor adds Sendable
+requirements (the embedding cache crosses the chat ViewModel's
+isolation), and tackling Sendable-clean code now is much easier
+post-Swift-6 when the compiler is enforcing it for us.
+
+### Dependencies
+
+- `NaturalLanguage` framework — already available, no new dependency.
+- Ollama — already optional; if the user already set up local chat,
+  same daemon and same `OllamaClient` plumbing (just hit `/api/embed`
+  instead of `/api/chat`).
+- Voyage / Gemini API keys — new optional credentials. Generalize
+  `AnthropicAPIKeyStore` into a multi-service `APIKeyStore` (Anthropic,
+  Voyage, Google AI Studio) so the Settings → AI pane has one place
+  for keys instead of three parallel stores.
+
+---
+
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
 **Status**: one shared Surya sidecar serves all pipelines. Sequential
@@ -2708,14 +2927,21 @@ use; distribution is lower priority than correctness.
    in mind from the partial cleanup that already shipped, and every
    future Swift release tightens the screws — so cheaper to clear
    now than later.
-2. **Distribution polish** — see `RELEASES.md`. Need a Developer
+2. **R-Chat-Embeddings** — replace BM25-only chat retrieval with
+   hybrid BM25 + embedding search at paragraph granularity. ~3-4 days.
+   Default to free on-device Apple `NLEmbedding`; offer Ollama,
+   Voyage, and Gemini Embedding 2 as paid/local upgrades. Sequenced
+   after Swift 6 because the embedding cache crosses the chat
+   ViewModel's isolation and Sendable-clean code is much easier
+   to write when the compiler enforces it.
+3. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-3. **P-Greek-Quality** — ground-truth measurement of Tesseract
+4. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-4. **Stretch / speculative items in Tier 8** if a specific need
+5. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
