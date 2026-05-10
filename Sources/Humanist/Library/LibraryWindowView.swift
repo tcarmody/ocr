@@ -71,6 +71,14 @@ struct LibraryWindowView: View {
     /// fallback note in the chat panes.
     @State private var indexBuildError: String?
 
+    /// R-EPUB-Import. Brings existing EPUBs into the library —
+    /// inject paragraph anchors, route to the Books folder, catalog,
+    /// build the embedding sidecar. Lazy state for the same reason
+    /// as `indexBuilder` (most users never invoke it).
+    @StateObject private var importer = EPUBImporter()
+    @State private var showImportProgress = false
+    @State private var importError: String?
+
     /// New-collection prompt state. Holds the staged name + the
     /// optional pending member set ("New Collection from
     /// Selection…" hands the row IDs through this).
@@ -115,6 +123,12 @@ struct LibraryWindowView: View {
                 isPresented: $showIndexProgress
             )
         }
+        .sheet(isPresented: $showImportProgress) {
+            ImportEPUBProgressSheet(
+                importer: importer,
+                isPresented: $showImportProgress
+            )
+        }
         .sheet(item: $newCollectionSheet) { ctx in
             NewCollectionSheet(
                 seedMemberIDs: ctx.memberIDs,
@@ -148,6 +162,20 @@ struct LibraryWindowView: View {
         } message: {
             Text(indexBuildError ?? "")
         }
+        .alert("Import failed",
+               isPresented: Binding(
+                   get: { importError != nil },
+                   set: { if !$0 { importError = nil } }
+               )) {
+            Button("OK", role: .cancel) { importError = nil }
+        } message: {
+            Text(importError ?? "")
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .humanistImportEPUBRequested
+        )) { _ in
+            startImport()
+        }
     }
 
     /// Restrict the library chat to just the selected rows and
@@ -179,6 +207,39 @@ struct LibraryWindowView: View {
         )
         if !showChatPane {
             showChatPane = true
+        }
+    }
+
+    /// R-EPUB-Import. Open a multi-select `.epub` picker, then run
+    /// the picked sources through `EPUBImporter`: inject anchors,
+    /// route to Books/, catalog, build sidecar. Resolves the
+    /// embedding backend through the same path the bulk-index button
+    /// uses; lets the import run even without a backend (the books
+    /// land in the catalog; chat just can't retrieve from them until
+    /// a separate index pass runs).
+    private func startImport() {
+        importError = nil
+        let panel = NSOpenPanel()
+        panel.title = "Import EPUB into Library"
+        panel.prompt = "Import"
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.epub]
+        guard panel.runModal() == .OK else { return }
+        let sources = panel.urls
+        guard !sources.isEmpty else { return }
+        Task {
+            // Backend resolution is best-effort. Imports proceed
+            // either way; the user sees a friendly note on the
+            // progress sheet's first row if indexing was skipped.
+            let resolution = await BackendResolver.resolveForLibraryIndexing()
+            importer.start(
+                sources: sources,
+                library: library,
+                indexBackend: resolution.backend
+            )
+            showImportProgress = true
         }
     }
 
@@ -304,6 +365,16 @@ struct LibraryWindowView: View {
                 .pickerStyle(.menu)
                 .fixedSize()
             }
+            // R-EPUB-Import: bring an existing .epub into the
+            // library — anchor injection + cataloging + index. Sits
+            // next to the bulk-index button so both "fill out the
+            // library" affordances cluster together.
+            Button {
+                startImport()
+            } label: {
+                Image(systemName: "tray.and.arrow.down")
+            }
+            .help("Import EPUB into Library…")
             // Bulk-index button. Useful any time the user wants
             // library chat to see books they haven't opened yet
             // (the alternative is to open every book once to

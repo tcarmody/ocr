@@ -101,9 +101,34 @@ final class LibraryIndexBuilder: ObservableObject {
 
     /// Build (or skip) a single book's sidecar. Returns true if a
     /// fresh build ran; false if the cached sidecar already matched
-    /// the requested backend and was non-empty.
+    /// the requested backend and was non-empty. Thin wrapper around
+    /// `BookSidecarBuilder.buildIfNeeded` — shared with
+    /// `EPUBImporter`, which builds exactly one book per call.
     private static func buildOneBook(
         entry: LibraryEntry,
+        backend: any EmbeddingBackend,
+        store: EmbeddingsSidecarStore,
+        forceRebuild: Bool
+    ) async throws -> Bool {
+        try await BookSidecarBuilder.buildIfNeeded(
+            epubURL: entry.epubURL,
+            backend: backend,
+            store: store,
+            forceRebuild: forceRebuild
+        )
+    }
+}
+
+/// Build a single book's embedding + hierarchy + entity sidecar.
+/// Extracted so both `LibraryIndexBuilder` (bulk) and `EPUBImporter`
+/// (per-book on import) can build the same shape without duplicating
+/// the cache / backend / EPUB-open machinery.
+enum BookSidecarBuilder {
+    /// Build the sidecar for the EPUB at `epubURL`. Returns true on
+    /// a fresh build, false when the cached sidecar already matched
+    /// the requested backend + dimension and was non-empty.
+    static func buildIfNeeded(
+        epubURL: URL,
         backend: any EmbeddingBackend,
         store: EmbeddingsSidecarStore,
         forceRebuild: Bool
@@ -112,7 +137,7 @@ final class LibraryIndexBuilder: ObservableObject {
         // we skip it entirely when the persisted sidecar matches
         // and is non-empty.
         if !forceRebuild,
-           let existing = store.read(for: entry.epubURL),
+           let existing = store.read(for: epubURL),
            existing.backendIdentifier == backend.identifier,
            existing.dimension == backend.dimension,
            !existing.paragraphs.isEmpty {
@@ -121,8 +146,8 @@ final class LibraryIndexBuilder: ObservableObject {
         // Open the book on disk. EPUBBook.open unzips into a temp
         // directory; the throwaway book is released at scope exit
         // and the temp dir cleaned by its deinit.
-        let book = try EPUBBook.open(epubURL: entry.epubURL)
-        var sidecar = store.read(for: entry.epubURL)
+        let book = try EPUBBook.open(epubURL: epubURL)
+        var sidecar = store.read(for: epubURL)
             ?? EmbeddingsSidecar.empty(
                 backend: backend.identifier,
                 dimension: backend.dimension
@@ -140,7 +165,7 @@ final class LibraryIndexBuilder: ObservableObject {
         )
         sidecar.hierarchy = BookHierarchyIndex.build(from: book)
         sidecar.entities = BookEntityIndex.build(from: book)
-        store.write(sidecar, for: entry.epubURL)
+        store.write(sidecar, for: epubURL)
         return true
     }
 }

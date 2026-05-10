@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-11)
+## Status snapshot (as of 2026-05-10)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -425,6 +425,38 @@ in Tier 6 — full write-up there):
   Apple Silicon, 256K context). The "Book Chat" Settings section
   moved outside the cloud-only conditional so a Private-mode user
   can configure local chat without flipping their global mode.
+
+**Done — Library workflow polish** (R-Library-Chat-Plus Tier 1):
+- **Chat with Selected**, **Suggested follow-ups**, **Long-form
+  synthesis toggle**, **Per-book exclusion** (commit `7c2a879`):
+  ad-hoc subset scoping, `[follow-ups]…[/follow-ups]` model
+  contract + parser + clickable buttons, doc.text toggle that
+  bumps `maxTokens` to 2500 + lengthens guidance, citation-chip
+  context-menu deny-list applied via `excluding:` on
+  `LibraryEmbeddingIndex.search`.
+- **Collections** (commit `e443772`): durable named book
+  groupings on `LibraryStore` (`BookCollection`); toggleable
+  left sidebar in the Library window; row context menu
+  "Add to Collection ▸ …"; filter bar swaps "Chat with
+  Selected" for "Chat with {Collection} (N)" when a collection
+  is the active filter and no rows are selected. 15 new
+  `LibraryStoreTests` cover the mutations + the legacy-load
+  + membership-pruning paths.
+
+**Done — Existing-EPUB on-ramp** (R-EPUB-Import v1):
+- **`EPUBImporter`** + **`ParagraphAnchorInjector`** +
+  `ImportEPUBProgressSheet` + `BookSidecarBuilder` (split out
+  from `LibraryIndexBuilder`): File → Import EPUB into Library…
+  (`⇧⌘I`) opens a multi-select `.epub` picker, then per-book
+  runs open → inject `hu-p-N-M` anchors where missing → save →
+  repack into Books/ → catalog → build embedding sidecar.
+  Idempotent on re-import (anchor injection is a no-op for
+  already-anchored books; catalog row updates in place via
+  canonical-URL match). 13 new `ParagraphAnchorInjectorTests`
+  cover the rewriter edge cases (XML quirks, mixed case, single
+  vs. double quoted attributes, `xml:id` / `data-id`
+  look-alikes). AFM passes on import + drag-drop deferred to a
+  follow-up.
 
 **Done — Cloud Phase 5**:
 - **`ClaudeTableExtractor`**: Sonnet-driven table structure behind
@@ -2290,9 +2322,9 @@ enforcement from the compiler at build time.
 
 ## R-Chat-Polish — Chat embedding papercuts
 
-**Status**: not started. Small UX gaps in the chat / embedding
-surface that aren't blockers but would noticeably improve daily use.
-Each item is independently shippable in 30 minutes to 2 hours.
+**Status**: complete. Every item in the original backlog
+shipped. Kept here as a record of the punch-list and where each
+piece landed so the design intent isn't lost to git history.
 
 ### Backlog
 
@@ -2447,7 +2479,9 @@ it's an orthogonal UX promotion.
 
 ## R-Library-Chat-Plus — Workflow enhancements for the library chat surface
 
-**Status**: not started. The library window now has a chat pane
+**Status**: Tier 1 complete (Chat with Selected, Collections,
+Suggested follow-ups, Long-form synthesis, Per-book exclusion).
+Tiers 2–4 not started. The library window now has a chat pane
 (R-Library-Chat) and the federation works end-to-end. This entry
 is the backlog of enhancements that level it up from "ask
 questions across my library" to "use this as the primary research
@@ -2634,12 +2668,63 @@ real friction.
 
 ## R-EPUB-Import — Bring existing EPUBs into the library
 
-**Status**: not started. Today every book in the library got there
-through the PDF pipeline. Users with pre-existing EPUBs (already-
-edited books, books converted from documents they no longer have,
-books from other sources) can't get them into the library at all
-— they exist as files on disk that the editor can open but that
-don't appear in the catalog and can't participate in library chat.
+**Status**: v1 shipped. File → Import EPUB into Library… (⇧⌘I)
+and a Library-window button open an `NSOpenPanel` multi-select on
+`.epub`; the picked sources run through `EPUBImporter` which opens
+each book via `EPUBBook.open`, injects paragraph anchors via
+`ParagraphAnchorInjector`, flushes through `EPUBBookSaver`,
+repacks via `EPUBRepacker` to the configured Books folder (or
+`~/Documents/Humanist Library/Books/` when no output root is
+configured), catalogs in `LibraryStore.recordConversion`, and
+builds the embedding sidecar via the new `BookSidecarBuilder`
+shared with `LibraryIndexBuilder`. Re-import is idempotent
+(paragraph anchors skipped when present; catalog row updates in
+place via canonical-URL match). 13 new
+`ParagraphAnchorInjectorTests` cover the rewriter end to end.
+
+### What landed in v1
+
+- **`ParagraphAnchorInjector`** (Sources/Pipeline) — regex
+  walker over `<p>` opening tags; injects
+  `id="hu-p-{chapter}-{para}"` only where `id=` is absent.
+  Word-boundary anchor rejects `<pre>` / `<picture>`; tolerant
+  of single- and double-quoted attributes, whitespace around
+  `=`, mixed case (`<P>` / `<p ID="...">`). Per-chapter counter
+  increments on every `<p>` so injections sit at their true
+  document-order ordinal.
+- **`EPUBImporter`** (Sources/Humanist/Library) — main-actor
+  `ObservableObject` that publishes per-book progress + a
+  failures array; runs the open → inject → save → repack →
+  catalog → index pipeline serially. Backend resolution is
+  best-effort: imports proceed even when no embedding backend
+  is available (catalog gets the row; chat just can't retrieve
+  from it until a separate index pass runs).
+- **`BookSidecarBuilder`** — pulled out of
+  `LibraryIndexBuilder.buildOneBook` so both the bulk indexer
+  and the importer build the same shape without duplicating
+  cache / backend / EPUB-open machinery.
+- **`ImportEPUBProgressSheet`** (Sources/Humanist/Library) —
+  same shape as `LibraryIndexProgressSheet`: header status,
+  progress bar, "N of M", failures disclosure.
+- **File menu**: "Import EPUB into Library…" with `⇧⌘I`.
+  Opens the Library window first, then posts
+  `humanistImportEPUBRequested` for the window to handle.
+- **Library window**: `tray.and.arrow.down` button next to the
+  bulk-index menu in the filter bar.
+
+### Deferred to a follow-up
+
+- **AFM passes on import** (chapter classification / metadata
+  extraction / coherence pass). The protocol-based factories
+  in `PDFToEPUBPipeline` already exist; layering them into
+  `EPUBImporter.importOne` is straightforward but expands the
+  per-book time meaningfully. Re-running the imported book
+  through the existing per-book pipeline is the current path.
+- **Drag-drop of `.epub` onto the Library window**.
+- **Settings → Library → Import section** with per-feature
+  toggles. The existing `localFeatures.*` toggles already
+  apply during conversion; when AFM-on-import ships, they'll
+  apply here too without a new Settings surface.
 
 This is the gap the importer closes: take any existing EPUB, give
 it the structural marks Humanist relies on (paragraph anchors), put
@@ -2832,10 +2917,12 @@ they still have).
 
 ## R-Chat-Graph-Lite — Hierarchical + entity graphs for chat retrieval
 
-**Status**: in progress. Hierarchy primitive + multi-book chat scope
-shipped (commits `189fe37` + `ae65e95`); BookEntityIndex /
-LibraryEntityIndex / four-way RRF fusion / Settings toggles still
-pending.
+**Status**: substantively complete. Hierarchy primitive, multi-book
+chat scope, `BookEntityIndex` / `LibraryEntityIndex`, four-way RRF
+fusion, alias dictionary, and Settings toggles all shipped. The
+only remaining piece is section-level granularity — see "Still
+pending" below; build only if chapter-level expansion proves too
+coarse in practice.
 
 ### What landed so far
 

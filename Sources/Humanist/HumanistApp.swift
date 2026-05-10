@@ -191,6 +191,7 @@ private struct FileOpenCommands: Commands {
             OpenCommand()
             OpenRecentMenu()
             ConvertCommand()
+            ImportEPUBCommand()
             Divider()
             SplitTwoUpCommand()
             Divider()
@@ -399,6 +400,23 @@ private struct ConvertCommand: View {
     }
 }
 
+/// R-EPUB-Import. Reveal the Library window (so the
+/// `EPUBImporter` it owns is the one driving the import) and
+/// post the request notification. The Library window's
+/// `.onReceive` runs the open-panel + importer.
+private struct ImportEPUBCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Import EPUB into Library…") {
+            openWindow(id: "library")
+            NotificationCenter.default.post(
+                name: .humanistImportEPUBRequested, object: nil
+            )
+        }
+        .keyboardShortcut("i", modifiers: [.command, .shift])
+    }
+}
+
 /// Window menu — Show Converter (⌘1), Show Library (⌘2),
 /// Show Editor (⌘3), Show Queue (⌘4). Single-instance scenes
 /// (Library, Queue) use SwiftUI's `openWindow(id:)`, which brings
@@ -559,5 +577,13 @@ extension Notification.Name {
     /// stale results from the prior vector space.
     static let humanistEmbeddingBackendChanged = Notification.Name(
         "humanistEmbeddingBackendChanged"
+    )
+    /// Posted by File → Import EPUB into Library…; the Library
+    /// window listens and runs `EPUBImporter` against the
+    /// user-picked sources. Routed through a notification (rather
+    /// than direct invocation) because the command lives outside
+    /// the Library window's state.
+    static let humanistImportEPUBRequested = Notification.Name(
+        "humanistImportEPUBRequested"
     )
 }
