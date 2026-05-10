@@ -15,8 +15,17 @@ public enum ConversionSettingsKeys {
 /// v1 — exposing them as user-renamable settings would expand the
 /// surface area more than the value justifies for most workflows.
 public enum ConversionOutputSubfolder {
-    /// EPUBs (and, when V-PDF-Searchable ships, output PDFs) land here.
+    /// EPUBs land here.
     public static let books = "Books"
+    /// Searchable-PDF siblings (source PDF + invisible OCR text
+    /// overlay). Kept separate from `books` so the library folder
+    /// is unambiguous: `Books/` is the EPUB collection that opens
+    /// in the editor; `Searchable PDFs/` is the parallel set of
+    /// Cmd+F'able source PDFs that nothing in the editor pipeline
+    /// reads from. Bookkeeping aside, this also lets users sync
+    /// `Books/` to a Kindle / Boox / dedicated reader without
+    /// pulling along the much larger PDF copies.
+    public static let searchablePDFs = "Searchable PDFs"
     /// Plain-text sibling outputs (V-Outputs).
     public static let textFiles = "Text Files"
     /// Markdown sibling outputs (V-Outputs).
@@ -115,17 +124,21 @@ public enum ConversionOutputResolver {
     }
 
     /// Build the searchable-PDF sibling URL for a source PDF when
-    /// the user has an output root configured. Lands next to the
-    /// EPUB in the `Books` subfolder so paired outputs sort
-    /// together. Returns nil when there's no root — pipeline keeps
-    /// the side-by-side default.
+    /// the user has an output root configured. Lands in the
+    /// `Searchable PDFs/` subfolder — separate from `Books/` so the
+    /// EPUB library stays uncluttered and can be synced to e-reader
+    /// hardware without pulling along the much larger PDF copies.
+    /// Returns nil when there's no root — pipeline keeps the
+    /// side-by-side default.
     public static func searchablePDFOutputURL(
         forSource sourcePDF: URL, suffix: String = ""
     ) -> URL? {
         let stem = stemmedName(forSource: sourcePDF, suffix: suffix)
         guard let root = currentRoot() else { return nil }
         return root
-            .appendingPathComponent(ConversionOutputSubfolder.books, isDirectory: true)
+            .appendingPathComponent(
+                ConversionOutputSubfolder.searchablePDFs, isDirectory: true
+            )
             .appendingPathComponent(stem)
             .appendingPathExtension("searchable.pdf")
     }

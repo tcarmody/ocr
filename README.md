@@ -72,7 +72,7 @@ Every conversion produces:
 | `<basename>.docx` | Microsoft Word OOXML — opens in Word, Pages, Google Docs |
 | `<basename>.searchable.pdf` | Source PDF with an invisible OCR text overlay — Cmd+F searchable, no visual change |
 
-The launcher splits sibling outputs into two toggles: **`.txt + .md`** (cheap, on by default) and **`.html + .docx`** (heavier, off by default). All siblings are regenerated whenever you save the EPUB in the editor. An optional **configurable output folder** (Settings → Conversion) routes each format into its own subfolder (`Books/`, `Text Files/`, `Markdown/`, `HTML/`, `Word Documents/`).
+The launcher splits sibling outputs into two toggles: **`.txt + .md`** (cheap, on by default) and **`.html + .docx`** (heavier, off by default). All siblings are regenerated whenever you save the EPUB in the editor. An optional **configurable output folder** (Settings → Conversion) routes each format into its own subfolder (`Books/`, `Searchable PDFs/`, `Text Files/`, `Markdown/`, `HTML/`, `Word Documents/`).
 
 ## Editor
 
