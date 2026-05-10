@@ -22,15 +22,27 @@
 # path explicitly, the script honors what's set in Settings →
 # Conversion → Output folder.
 #
+# Conversion defaults — Surya / Claude OCR, Force OCR, Private
+# mode, debug log, sibling formats — are also read from the
+# `humanist.conversion.default*` UserDefaults set by Settings →
+# Conversion → Conversion defaults. The script translates each
+# default to the matching humanist-cli flag. Any extra flags
+# passed after `--` win — the script appends them last so user
+# overrides take precedence.
+#
 # `humanist-cli` must be on $PATH. Build it once via:
 #
 #   swift build --product humanist-cli -c release
 #   cp "$(swift build --show-bin-path -c release)/humanist-cli" \
 #     ~/.local/bin/humanist-cli
 #
-# Pass any humanist-cli flags after `--`:
+# Pass any extra humanist-cli flags after `--`:
 #
-#   Scripts/auto-scan-input.sh -- --private --no-claude-tables
+#   Scripts/auto-scan-input.sh -- --no-claude-tables -l grc
+#
+# To temporarily override a Settings default, just pass the
+# explicit flag after `--`: e.g. `-- --private` to force Private
+# mode for this run regardless of the Settings toggle.
 
 set -euo pipefail
 
@@ -56,6 +68,48 @@ if [[ $# -gt 0 && "$1" == "--" ]]; then
   shift
 fi
 CLI_EXTRA_ARGS=("$@")
+
+# Read a Bool default from the app's UserDefaults. Falls back to
+# the second arg when the key isn't set. macOS's `defaults read`
+# prints 1/0 for booleans; treat anything that isn't an exact "1"
+# as false.
+read_bool_default() {
+  local key="$1"
+  local fallback="$2"
+  local raw
+  if raw=$(defaults read "$BUNDLE_ID" "$key" 2>/dev/null); then
+    [[ "$raw" == "1" ]] && echo "true" || echo "false"
+  else
+    echo "$fallback"
+  fi
+}
+
+DEFAULT_SURYA=$(read_bool_default humanist.conversion.defaultUseSuryaOCR false)
+DEFAULT_CLAUDE_PAGE=$(read_bool_default humanist.conversion.defaultUseClaudePageOCR false)
+DEFAULT_FORCE_OCR=$(read_bool_default humanist.conversion.defaultForceOCR false)
+DEFAULT_PRIVATE=$(read_bool_default humanist.conversion.defaultPrivateMode false)
+DEFAULT_DEBUG=$(read_bool_default humanist.conversion.defaultEmitDebugLog false)
+DEFAULT_TEXT_SIBLINGS=$(read_bool_default humanist.conversion.defaultEmitSiblingTextOutputs true)
+DEFAULT_DOC_SIBLINGS=$(read_bool_default humanist.conversion.defaultEmitSiblingDocuments false)
+DEFAULT_SEARCHABLE_PDF=$(read_bool_default humanist.conversion.defaultEmitSearchablePDF false)
+
+# Compose the format list from the sibling toggles. EPUB is always
+# in; the txt/md, html/docx, and searchable-pdf groups follow the
+# same pairing the launcher uses.
+FORMATS="epub"
+[[ "$DEFAULT_TEXT_SIBLINGS" == "true" ]] && FORMATS="$FORMATS,md,txt"
+[[ "$DEFAULT_DOC_SIBLINGS"  == "true" ]] && FORMATS="$FORMATS,html,docx"
+[[ "$DEFAULT_SEARCHABLE_PDF" == "true" ]] && FORMATS="$FORMATS,searchable-pdf"
+
+# Translate the remaining boolean defaults into humanist-cli flags.
+# Built into an array so word-splitting doesn't break paths with
+# spaces (none of these flags carry values, but defensive shape).
+DEFAULT_FLAGS=()
+[[ "$DEFAULT_SURYA"       == "true" ]] && DEFAULT_FLAGS+=("--surya")
+[[ "$DEFAULT_CLAUDE_PAGE" == "true" ]] && DEFAULT_FLAGS+=("--claude-page-ocr")
+[[ "$DEFAULT_FORCE_OCR"   == "true" ]] && DEFAULT_FLAGS+=("--force-ocr")
+[[ "$DEFAULT_PRIVATE"     == "true" ]] && DEFAULT_FLAGS+=("--private")
+[[ "$DEFAULT_DEBUG"       == "true" ]] && DEFAULT_FLAGS+=("--debug")
 
 INPUT_DIR="$OUTPUT_ROOT/Input"
 BOOKS_DIR="$OUTPUT_ROOT/Books"
@@ -88,15 +142,25 @@ for pdf in "$INPUT_DIR"/*.pdf "$INPUT_DIR"/*.PDF; do
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
-  echo "auto-scan-input: converting $(basename "$pdf")"
+  echo "auto-scan-input: converting $(basename "$pdf") (formats: $FORMATS)"
   # humanist-cli's `-o` is a flat output directory — it drops the
-  # .epub straight in. Route into Books/ so the in-app library
-  # window picks the conversion up automatically. Pass any
-  # additional `-f` flags via `--` if you want sibling outputs
-  # (md, html, docx, searchable-pdf); they'll all land in Books/
-  # too, which differs from the launcher's multi-subfolder routing
-  # — pick whichever matches your workflow.
-  if humanist-cli convert "$pdf" -o "$BOOKS_DIR" "${CLI_EXTRA_ARGS[@]}"; then
+  # .epub (and any other requested formats) straight in. Route
+  # everything into Books/ so the in-app library window picks the
+  # conversion up automatically. The launcher splits by subfolder
+  # (Books/, Searchable PDFs/, Text Files/, etc.) but the CLI
+  # doesn't — known divergence. Defaults from Settings turn into
+  # `--surya` / `--claude-page-ocr` / `--force-ocr` / `--private` /
+  # `--debug` flags and a composed `-f epub,md,txt,…` list. User
+  # `-- …` flags append last so they win over the defaults.
+  # Defensive empty-array expansion — bash 3.2.57 (the macOS
+  # system bash) treats `"${arr[@]}"` of an empty array as unbound
+  # under `set -u`. The `${arr[@]+…}` form expands to nothing when
+  # the array is empty and to the elements when it's not.
+  if humanist-cli convert "$pdf" \
+      -o "$BOOKS_DIR" \
+      -f "$FORMATS" \
+      ${DEFAULT_FLAGS[@]+"${DEFAULT_FLAGS[@]}"} \
+      ${CLI_EXTRA_ARGS[@]+"${CLI_EXTRA_ARGS[@]}"}; then
     PROCESSED=$((PROCESSED + 1))
   else
     FAILED=$((FAILED + 1))

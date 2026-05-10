@@ -114,6 +114,22 @@ final class QueueViewModel: ObservableObject {
         self.store = store
         self.runner = runner
         self.tesseractAvailable = (TesseractOCREngine.detect() != nil)
+        // Seed the launcher's per-conversion toggles from Settings
+        // → Conversion → Defaults. Per-session overrides made in
+        // the launcher UI don't persist back; the next launch
+        // reads these Settings values again. This is intentional:
+        // "Settings defaults, launcher overrides" matches the user
+        // mental model that a per-job tweak shouldn't quietly
+        // mutate their long-term preferences.
+        let defaults = ConversionDefaults.current()
+        self.useSuryaOCR = defaults.useSuryaOCR
+        self.useClaudePageOCR = defaults.useClaudePageOCR
+        self.forceOCR = defaults.forceOCR
+        self.privateMode = defaults.privateMode
+        self.emitDebugLog = defaults.emitDebugLog
+        self.emitSiblingTextOutputs = defaults.emitSiblingTextOutputs
+        self.emitSiblingDocuments = defaults.emitSiblingDocuments
+        self.emitSearchablePDF = defaults.emitSearchablePDF
         // If a previous session left work in the queue, pick it up
         // automatically on launch.
         if store.hasPendingWork {

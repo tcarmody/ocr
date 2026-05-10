@@ -11,6 +11,27 @@ struct ConversionSettingsView: View {
     @AppStorage(ConversionSettingsKeys.autoScanInputFolder)
     private var autoScanInputFolder: Bool = false
 
+    // Conversion defaults — read by `QueueViewModel.init` on launch
+    // to seed the launcher's per-conversion toggles. Same UserDefaults
+    // domain is read by `Scripts/auto-scan-input.sh` to pass
+    // equivalent flags to `humanist-cli` in headless / cron runs.
+    @AppStorage(ConversionSettingsKeys.defaultUseSuryaOCR)
+    private var defaultUseSuryaOCR: Bool = false
+    @AppStorage(ConversionSettingsKeys.defaultUseClaudePageOCR)
+    private var defaultUseClaudePageOCR: Bool = false
+    @AppStorage(ConversionSettingsKeys.defaultForceOCR)
+    private var defaultForceOCR: Bool = false
+    @AppStorage(ConversionSettingsKeys.defaultPrivateMode)
+    private var defaultPrivateMode: Bool = false
+    @AppStorage(ConversionSettingsKeys.defaultEmitDebugLog)
+    private var defaultEmitDebugLog: Bool = false
+    @AppStorage(ConversionSettingsKeys.defaultEmitSiblingTextOutputs)
+    private var defaultEmitSiblingTextOutputs: Bool = true
+    @AppStorage(ConversionSettingsKeys.defaultEmitSiblingDocuments)
+    private var defaultEmitSiblingDocuments: Bool = false
+    @AppStorage(ConversionSettingsKeys.defaultEmitSearchablePDF)
+    private var defaultEmitSearchablePDF: Bool = false
+
     var body: some View {
         Form {
             Section("Output folder") {
@@ -23,6 +44,7 @@ struct ConversionSettingsView: View {
                     layoutPreview
                 }
             }
+            conversionDefaultsSection
             if !outputFolderPath.isEmpty {
                 Section("Auto-scan") {
                     Toggle(
@@ -40,7 +62,48 @@ struct ConversionSettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 540, alignment: .leading)
+        .frame(width: 560, alignment: .leading)
+    }
+
+    /// Conversion defaults section. Each toggle seeds the matching
+    /// launcher toggle on next launch; per-session overrides made
+    /// in the launcher UI don't persist back. The shell companion
+    /// reads the same keys and passes equivalent flags to
+    /// humanist-cli.
+    @ViewBuilder
+    private var conversionDefaultsSection: some View {
+        Section("Conversion defaults") {
+            Text("These set the initial values of the launcher's toggles each session. Per-conversion changes in the launcher don't write back here. The auto-scan watcher (and `Scripts/auto-scan-input.sh`) use these defaults too.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Surya OCR", isOn: $defaultUseSuryaOCR)
+            Toggle("Claude OCR ($$$)", isOn: $defaultUseClaudePageOCR)
+            Toggle("Force OCR (ignore embedded PDF text)", isOn: $defaultForceOCR)
+            Toggle("Private mode (disable every Cloud feature)", isOn: $defaultPrivateMode)
+            Toggle("Save log (keep debug staging directory)", isOn: $defaultEmitDebugLog)
+            Divider()
+            Toggle("Emit `.txt` + `.md` siblings", isOn: $defaultEmitSiblingTextOutputs)
+            Toggle("Emit `.html` + `.docx` siblings", isOn: $defaultEmitSiblingDocuments)
+            Toggle("Emit searchable PDF (overlay)", isOn: $defaultEmitSearchablePDF)
+            HStack {
+                Spacer()
+                Button("Reset to factory defaults", action: resetConversionDefaults)
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private func resetConversionDefaults() {
+        let f = ConversionDefaults.factory
+        defaultUseSuryaOCR = f.useSuryaOCR
+        defaultUseClaudePageOCR = f.useClaudePageOCR
+        defaultForceOCR = f.forceOCR
+        defaultPrivateMode = f.privateMode
+        defaultEmitDebugLog = f.emitDebugLog
+        defaultEmitSiblingTextOutputs = f.emitSiblingTextOutputs
+        defaultEmitSiblingDocuments = f.emitSiblingDocuments
+        defaultEmitSearchablePDF = f.emitSearchablePDF
     }
 
     private var explanation: String {

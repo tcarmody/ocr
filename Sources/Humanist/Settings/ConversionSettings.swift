@@ -14,6 +14,73 @@ public enum ConversionSettingsKeys {
     /// current default settings. Effective only when an output root
     /// is configured — no root means no `Input/` folder to watch.
     public static let autoScanInputFolder = "humanist.conversion.autoScanInputFolder"
+
+    /// Initial values for the launcher's per-conversion toggles.
+    /// `QueueViewModel.init` seeds its `@Published` properties from
+    /// these on app launch; the user can override per-session in
+    /// the launcher UI, but the override doesn't persist back — the
+    /// next launch starts from these Settings values again. The
+    /// auto-scan shell companion (`Scripts/auto-scan-input.sh`)
+    /// reads the same keys to pass equivalent humanist-cli flags
+    /// for headless / cron runs.
+    public static let defaultUseSuryaOCR = "humanist.conversion.defaultUseSuryaOCR"
+    public static let defaultUseClaudePageOCR = "humanist.conversion.defaultUseClaudePageOCR"
+    public static let defaultForceOCR = "humanist.conversion.defaultForceOCR"
+    public static let defaultPrivateMode = "humanist.conversion.defaultPrivateMode"
+    public static let defaultEmitDebugLog = "humanist.conversion.defaultEmitDebugLog"
+    public static let defaultEmitSiblingTextOutputs = "humanist.conversion.defaultEmitSiblingTextOutputs"
+    public static let defaultEmitSiblingDocuments = "humanist.conversion.defaultEmitSiblingDocuments"
+    public static let defaultEmitSearchablePDF = "humanist.conversion.defaultEmitSearchablePDF"
+}
+
+/// Snapshot of the per-conversion toggle defaults. Read at app
+/// launch and at auto-scan time so the same source-of-truth flows
+/// to the launcher UI, the auto-scan watcher (which goes through
+/// the launcher's queue anyway), and the headless CLI companion.
+///
+/// `emitSiblingTextOutputs` is the only true-by-default toggle —
+/// everything else stays false until the user flips a Settings
+/// switch. Reads use `object(forKey:)` so a missing key falls back
+/// to the factory default (`bool(forKey:)` would return false for
+/// every unset key, breaking the emitSiblingTextOutputs case).
+public struct ConversionDefaults: Sendable, Equatable {
+    public var useSuryaOCR: Bool
+    public var useClaudePageOCR: Bool
+    public var forceOCR: Bool
+    public var privateMode: Bool
+    public var emitDebugLog: Bool
+    public var emitSiblingTextOutputs: Bool
+    public var emitSiblingDocuments: Bool
+    public var emitSearchablePDF: Bool
+
+    public static let factory = ConversionDefaults(
+        useSuryaOCR: false,
+        useClaudePageOCR: false,
+        forceOCR: false,
+        privateMode: false,
+        emitDebugLog: false,
+        emitSiblingTextOutputs: true,
+        emitSiblingDocuments: false,
+        emitSearchablePDF: false
+    )
+
+    public static func current() -> ConversionDefaults {
+        let d = UserDefaults.standard
+        func read(_ key: String, fallback: Bool) -> Bool {
+            (d.object(forKey: key) as? Bool) ?? fallback
+        }
+        let f = factory
+        return ConversionDefaults(
+            useSuryaOCR: read(ConversionSettingsKeys.defaultUseSuryaOCR, fallback: f.useSuryaOCR),
+            useClaudePageOCR: read(ConversionSettingsKeys.defaultUseClaudePageOCR, fallback: f.useClaudePageOCR),
+            forceOCR: read(ConversionSettingsKeys.defaultForceOCR, fallback: f.forceOCR),
+            privateMode: read(ConversionSettingsKeys.defaultPrivateMode, fallback: f.privateMode),
+            emitDebugLog: read(ConversionSettingsKeys.defaultEmitDebugLog, fallback: f.emitDebugLog),
+            emitSiblingTextOutputs: read(ConversionSettingsKeys.defaultEmitSiblingTextOutputs, fallback: f.emitSiblingTextOutputs),
+            emitSiblingDocuments: read(ConversionSettingsKeys.defaultEmitSiblingDocuments, fallback: f.emitSiblingDocuments),
+            emitSearchablePDF: read(ConversionSettingsKeys.defaultEmitSearchablePDF, fallback: f.emitSearchablePDF)
+        )
+    }
 }
 
 /// Subfolder layout under the configured output root. Hardcoded for
