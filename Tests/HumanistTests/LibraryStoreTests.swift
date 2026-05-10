@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import EPUB  // canonicalForFile
 @testable import Humanist
 
 /// `LibraryStore` JSON round-trip + dedup + record-open semantics.
@@ -140,5 +141,176 @@ final class LibraryStoreTests: XCTestCase {
         store.remove(store.entries[0].id)
         XCTAssertTrue(FileManager.default.fileExists(atPath: epub.path),
             "remove must not delete the .epub file from disk")
+    }
+
+    // MARK: - collections
+
+    func test_createCollection_appends_named_grouping() {
+        let store = makeStore()
+        let a = makeEPUBStub(name: "a")
+        store.recordConversion(epubURL: a, title: "A", languages: [])
+        let aID = store.entries[0].id
+        let created = store.createCollection(
+            name: "Foucault corpus", bookIDs: [aID]
+        )
+        XCTAssertEqual(store.collections.count, 1)
+        XCTAssertEqual(store.collections[0].name, "Foucault corpus")
+        XCTAssertEqual(store.collections[0].bookIDs, [aID])
+        XCTAssertEqual(created.id, store.collections[0].id)
+    }
+
+    func test_createCollection_drops_ids_for_unknown_entries() {
+        // Seeding membership with an id that isn't in `entries` is
+        // a programmer error; silently drop rather than carry a
+        // dangling reference.
+        let store = makeStore()
+        let phantom = UUID()
+        store.createCollection(name: "Mystery", bookIDs: [phantom])
+        XCTAssertEqual(store.collections[0].bookIDs, [])
+    }
+
+    func test_addToCollection_appends_without_duplicates() {
+        let store = makeStore()
+        let a = makeEPUBStub(name: "a")
+        let b = makeEPUBStub(name: "b")
+        store.recordConversion(epubURL: a, title: "A", languages: [])
+        store.recordConversion(epubURL: b, title: "B", languages: [])
+        let aID = store.entries[0].id
+        let bID = store.entries[1].id
+        let c = store.createCollection(name: "Pair")
+        store.addToCollection(c.id, bookIDs: [aID])
+        store.addToCollection(c.id, bookIDs: [aID, bID])
+        XCTAssertEqual(store.collections[0].bookIDs, [aID, bID],
+            "duplicate add must not double-list a book")
+    }
+
+    func test_removeFromCollection_drops_listed_ids() {
+        let store = makeStore()
+        let a = makeEPUBStub(name: "a")
+        let b = makeEPUBStub(name: "b")
+        store.recordConversion(epubURL: a, title: "A", languages: [])
+        store.recordConversion(epubURL: b, title: "B", languages: [])
+        let aID = store.entries[0].id
+        let bID = store.entries[1].id
+        let c = store.createCollection(name: "Pair", bookIDs: [aID, bID])
+        store.removeFromCollection(c.id, bookIDs: [aID])
+        XCTAssertEqual(store.collections[0].bookIDs, [bID])
+    }
+
+    func test_remove_drops_id_from_every_collection() {
+        // Forgetting a book must scrub its id out of any
+        // collection that referenced it — otherwise membership
+        // lists carry dangling refs.
+        let store = makeStore()
+        let a = makeEPUBStub(name: "a")
+        let b = makeEPUBStub(name: "b")
+        store.recordConversion(epubURL: a, title: "A", languages: [])
+        store.recordConversion(epubURL: b, title: "B", languages: [])
+        let aID = store.entries[0].id
+        let bID = store.entries[1].id
+        let one = store.createCollection(name: "One", bookIDs: [aID, bID])
+        let two = store.createCollection(name: "Two", bookIDs: [aID])
+        store.remove(aID)
+        let oneAfter = store.collections.first { $0.id == one.id }!
+        let twoAfter = store.collections.first { $0.id == two.id }!
+        XCTAssertEqual(oneAfter.bookIDs, [bID])
+        XCTAssertEqual(twoAfter.bookIDs, [])
+    }
+
+    func test_renameCollection_updates_name_and_persists() {
+        let store = makeStore()
+        let c = store.createCollection(name: "Original")
+        store.renameCollection(c.id, to: "New name")
+        XCTAssertEqual(store.collections[0].name, "New name")
+        let restarted = makeStore()
+        XCTAssertEqual(restarted.collections[0].name, "New name")
+    }
+
+    func test_deleteCollection_removes_grouping_only() {
+        let store = makeStore()
+        let a = makeEPUBStub(name: "a")
+        store.recordConversion(epubURL: a, title: "A", languages: [])
+        let aID = store.entries[0].id
+        let c = store.createCollection(name: "Doomed", bookIDs: [aID])
+        store.deleteCollection(c.id)
+        XCTAssertTrue(store.collections.isEmpty)
+        XCTAssertEqual(store.entries.count, 1,
+            "deleting a collection must not touch the library catalog")
+    }
+
+    func test_collections_round_trip_through_disk() {
+        let store = makeStore()
+        let a = makeEPUBStub(name: "a")
+        store.recordConversion(epubURL: a, title: "A", languages: [])
+        let aID = store.entries[0].id
+        store.createCollection(name: "Persisted", bookIDs: [aID])
+
+        let restarted = makeStore()
+        XCTAssertEqual(restarted.collections.count, 1)
+        XCTAssertEqual(restarted.collections[0].name, "Persisted")
+        XCTAssertEqual(restarted.collections[0].bookIDs, [aID])
+    }
+
+    func test_legacy_bare_array_file_loads_with_no_collections() {
+        // Pre-Collections library files are a bare `[LibraryEntry]`
+        // array. Load must accept that shape and treat
+        // `collections` as empty so existing users see no
+        // disruption.
+        let storeURL = tempDir.appendingPathComponent("library.json")
+        let epub = makeEPUBStub(name: "legacy")
+        let entry = LibraryEntry(
+            epubURL: epub.canonicalForFile,
+            title: "Legacy",
+            languages: ["en"],
+            addedAt: Date()
+        )
+        let data = try! JSONEncoder().encode([entry])
+        try! data.write(to: storeURL)
+
+        let store = LibraryStore(storeURL: storeURL)
+        XCTAssertEqual(store.entries.count, 1)
+        XCTAssertEqual(store.entries[0].title, "Legacy")
+        XCTAssertTrue(store.collections.isEmpty)
+    }
+
+    func test_load_prunes_membership_pointing_at_missing_files() {
+        // A collection that references a book whose .epub vanished
+        // on disk should lose that membership on next load — the
+        // garbage-collection equivalent of `load`'s entry filter.
+        let storeURL = tempDir.appendingPathComponent("library.json")
+        let real = makeEPUBStub(name: "real")
+        let phantom = tempDir.appendingPathComponent("phantom.epub")
+        let realEntry = LibraryEntry(
+            epubURL: real.canonicalForFile,
+            title: "Real",
+            languages: [],
+            addedAt: Date()
+        )
+        let phantomEntry = LibraryEntry(
+            epubURL: phantom,
+            title: "Phantom",
+            languages: [],
+            addedAt: Date()
+        )
+        let collection = BookCollection(
+            name: "Mixed",
+            bookIDs: [realEntry.id, phantomEntry.id]
+        )
+        struct Payload: Codable {
+            var entries: [LibraryEntry]
+            var collections: [BookCollection]
+        }
+        let payload = Payload(
+            entries: [realEntry, phantomEntry],
+            collections: [collection]
+        )
+        let data = try! JSONEncoder().encode(payload)
+        try! data.write(to: storeURL)
+
+        let store = LibraryStore(storeURL: storeURL)
+        XCTAssertEqual(store.entries.count, 1, "phantom should be pruned")
+        XCTAssertEqual(store.collections.count, 1)
+        XCTAssertEqual(store.collections[0].bookIDs, [realEntry.id],
+            "phantom id must be scrubbed out of collection membership on load")
     }
 }

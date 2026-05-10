@@ -2467,13 +2467,18 @@ two as a pair are the highest-leverage thing on this entire list.
    filter; `LibraryEmbeddingIndex.search` gained a `restrictTo`
    parameter; status row shows "Scoped to: book1, book2, …" with
    a Clear button.
-2. **Collections** — durable named groupings ("Foucault corpus",
-   "for the chapter on biopolitics"). Persisted as catalog
-   metadata; chat scope picker gains a "Collection: X" option.
-   Library window grows a sidebar of collections and a "Add to
-   Collection" row action. ~1-2 days. Pairs with Chat with
-   Selected: ad-hoc selection for one-off questions, collections
-   for recurring scopes.
+2. ~~**Collections**~~ shipped. Durable named groupings persisted
+   on `LibraryStore` as a `BookCollection` array (file format grew
+   a wrapper; legacy bare-array reads still work). Library window
+   gained a toggleable left sidebar listing "All Books" + each
+   collection; clicking a collection filters the table to its
+   members in stored membership order. Row context menu offers
+   "Add to Collection ▸" with existing collections + a
+   "New Collection…" entry that seeds membership from the current
+   selection. Filter bar swaps the "Chat with Selected" button
+   for "Chat with {Collection} (N)" when a collection is the
+   active filter and nothing is selected. Sidebar context menu:
+   "Chat with This Collection", "Rename…", "Delete".
 3. ~~**Suggested follow-ups**~~ shipped. Model emits 2-3 questions
    inside a `[follow-ups]…[/follow-ups]` block at the end of each
    response; `FollowUpParser` strips the block from the visible

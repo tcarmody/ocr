@@ -6,6 +6,11 @@ import AppKit
 /// click → open in editor; right-click → Reveal in Finder /
 /// Remove from Library. Each row carries a thumbnail of the EPUB's
 /// cover image, decoded lazily and cached in `CoverImageCache`.
+///
+/// R-Library-Chat-Plus Collections: an optional sidebar lists the
+/// user's saved collections (durable named book groupings). Click
+/// "All Books" to see the full catalog; click a collection to scope
+/// the table and unlock a "Chat with this collection" affordance.
 struct LibraryWindowView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var coverCache: CoverImageCache
@@ -37,6 +42,19 @@ struct LibraryWindowView: View {
     @AppStorage("humanist.library.showChatPane")
     private var showChatPane: Bool = false
 
+    /// Whether the Collections sidebar is visible. Persisted per
+    /// app; default off — the sidebar surfaces collections, which
+    /// don't exist for first-launch users.
+    @AppStorage("humanist.library.showCollectionsSidebar")
+    private var showCollectionsSidebar: Bool = false
+
+    /// Active collection filter. `nil` = "All Books." Stored as the
+    /// collection's UUID so it survives `LibraryStore` mutations
+    /// (renames, membership edits) without going stale. Per-session
+    /// state — defaults to All on every launch so a left-over
+    /// filter doesn't surprise the user after a restart.
+    @State private var activeCollectionID: UUID? = nil
+
     /// Library chat session. Built lazily on first reveal — the
     /// federated index isn't free, and a user who never opens the
     /// chat pane shouldn't pay for it.
@@ -53,8 +71,22 @@ struct LibraryWindowView: View {
     /// fallback note in the chat panes.
     @State private var indexBuildError: String?
 
+    /// New-collection prompt state. Holds the staged name + the
+    /// optional pending member set ("New Collection from
+    /// Selection…" hands the row IDs through this).
+    @State private var newCollectionSheet: NewCollectionContext?
+
+    /// Rename-collection prompt state — null when no rename is in
+    /// flight, populated with the collection under edit when the
+    /// sidebar context menu fires "Rename…".
+    @State private var renameContext: RenameContext?
+
     var body: some View {
         HSplitView {
+            if showCollectionsSidebar {
+                collectionsSidebar
+                    .frame(minWidth: 180, idealWidth: 220, maxWidth: 320)
+            }
             browserColumn
                 .frame(minWidth: 480)
             if showChatPane {
@@ -83,6 +115,30 @@ struct LibraryWindowView: View {
                 isPresented: $showIndexProgress
             )
         }
+        .sheet(item: $newCollectionSheet) { ctx in
+            NewCollectionSheet(
+                seedMemberIDs: ctx.memberIDs,
+                onCreate: { name in
+                    let created = library.createCollection(
+                        name: name, bookIDs: ctx.memberIDs
+                    )
+                    activeCollectionID = created.id
+                    showCollectionsSidebar = true
+                    newCollectionSheet = nil
+                },
+                onCancel: { newCollectionSheet = nil }
+            )
+        }
+        .sheet(item: $renameContext) { ctx in
+            RenameCollectionSheet(
+                initialName: ctx.name,
+                onCommit: { name in
+                    library.renameCollection(ctx.id, to: name)
+                    renameContext = nil
+                },
+                onCancel: { renameContext = nil }
+            )
+        }
         .alert("Indexing failed",
                isPresented: Binding(
                    get: { indexBuildError != nil },
@@ -104,6 +160,23 @@ struct LibraryWindowView: View {
         let urls = Set(entries.map(\.epubURL))
         let titles = entries.map(\.title)
         chatVM.setScope(urls: urls, titles: titles)
+        if !showChatPane {
+            showChatPane = true
+        }
+    }
+
+    /// Scope the library chat to a saved collection and reveal the
+    /// chat pane. The collection's stored book-id order drives the
+    /// title list so chat status reads in the order the user added
+    /// books to the collection.
+    private func chatWithCollection(_ collection: BookCollection) {
+        let entriesByID = Dictionary(uniqueKeysWithValues: library.entries.map { ($0.id, $0) })
+        let members = collection.bookIDs.compactMap { entriesByID[$0] }
+        guard !members.isEmpty else { return }
+        chatVM.setScope(
+            urls: Set(members.map(\.epubURL)),
+            titles: members.map(\.title)
+        )
         if !showChatPane {
             showChatPane = true
         }
@@ -164,6 +237,14 @@ struct LibraryWindowView: View {
         displayedEntries.filter { selection.contains($0.id) }
     }
 
+    /// Active collection if `activeCollectionID` resolves to one
+    /// that still exists. Stale ids (collection deleted out from
+    /// under us) silently fall back to All Books.
+    private var activeCollection: BookCollection? {
+        guard let id = activeCollectionID else { return nil }
+        return library.collections.first(where: { $0.id == id })
+    }
+
     // MARK: - filter bar
 
     @ViewBuilder
@@ -197,6 +278,21 @@ struct LibraryWindowView: View {
                     )
                 }
                 .help("Scope the library chat to the selected books")
+            } else if let collection = activeCollection,
+                      !collection.bookIDs.isEmpty {
+                // No row selection, but the table is filtered to a
+                // collection — offer a one-click "chat with the
+                // whole collection" shortcut so the user doesn't
+                // have to select-all first.
+                Button {
+                    chatWithCollection(collection)
+                } label: {
+                    Label(
+                        "Chat with \(collection.name) (\(collection.bookIDs.count))",
+                        systemImage: "bubble.left.and.text.bubble.right"
+                    )
+                }
+                .help("Scope the library chat to this collection")
             }
             if !availableLanguages.isEmpty {
                 Picker("Language", selection: $languageFilter) {
@@ -228,6 +324,18 @@ struct LibraryWindowView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("Build embedding indexes for every book")
+            // Collections sidebar reveal. Lives next to the chat
+            // toggle for symmetry: both are auxiliary panes.
+            Button {
+                showCollectionsSidebar.toggle()
+            } label: {
+                Image(systemName: showCollectionsSidebar
+                      ? "sidebar.left"
+                      : "sidebar.leading")
+            }
+            .help(showCollectionsSidebar
+                  ? "Hide collections sidebar"
+                  : "Show collections sidebar")
             // Chat-pane reveal toggle. Lives in the filter bar
             // because that's where every other library-window
             // affordance lives; users expect "show / hide chat"
@@ -243,6 +351,83 @@ struct LibraryWindowView: View {
                   ? "Hide library chat pane"
                   : "Show library chat pane")
             .keyboardShortcut("/", modifiers: [.command])
+        }
+    }
+
+    // MARK: - collections sidebar
+
+    @ViewBuilder
+    private var collectionsSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Collections")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    newCollectionSheet = NewCollectionContext(memberIDs: [])
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("New collection")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            Divider()
+            List(selection: $activeCollectionID) {
+                // "All Books" row. Selected when activeCollectionID
+                // is nil; List selection binding represents that
+                // with `nil` so we render it as a tagged option.
+                Label("All Books", systemImage: "books.vertical")
+                    .tag(UUID?.none)
+                    .contextMenu {
+                        Button("Show All Books") { activeCollectionID = nil }
+                    }
+                if !library.collections.isEmpty {
+                    Section("My Collections") {
+                        ForEach(library.collections) { collection in
+                            collectionRow(collection)
+                                .tag(UUID?.some(collection.id))
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private func collectionRow(_ collection: BookCollection) -> some View {
+        Label {
+            HStack {
+                Text(collection.name)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer()
+                Text("\(collection.bookIDs.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        } icon: {
+            Image(systemName: "rectangle.stack")
+        }
+        .contextMenu {
+            Button("Chat with This Collection") {
+                chatWithCollection(collection)
+            }
+            .disabled(collection.bookIDs.isEmpty)
+            Divider()
+            Button("Rename…") {
+                renameContext = RenameContext(id: collection.id, name: collection.name)
+            }
+            Button("Delete", role: .destructive) {
+                if activeCollectionID == collection.id {
+                    activeCollectionID = nil
+                }
+                library.deleteCollection(collection.id)
+            }
         }
     }
 
@@ -360,19 +545,65 @@ struct LibraryWindowView: View {
             NSWorkspace.shared.activateFileViewerSelecting([entry.epubURL])
         }
         Divider()
+        addToCollectionMenu(for: entry)
+        if let collection = activeCollection,
+           collection.bookIDs.contains(entry.id) {
+            Button("Remove from \(collection.name)") {
+                library.removeFromCollection(collection.id, bookIDs: [entry.id])
+            }
+        }
+        Divider()
         Button("Remove from Library", role: .destructive) {
             coverCache.invalidate(entry.epubURL)
             library.remove(entry.id)
         }
     }
 
+    /// "Add to Collection ▸" submenu. The menu adopts the current
+    /// row selection when the right-clicked entry is one of the
+    /// selected rows (matches Finder behavior — context menus act
+    /// on the selection, not just the right-clicked item). Plain
+    /// right-click on a non-selected row acts on that row alone.
+    @ViewBuilder
+    private func addToCollectionMenu(for entry: LibraryEntry) -> some View {
+        let targetIDs: [UUID] = selection.contains(entry.id)
+            ? selectedEntries.map(\.id)
+            : [entry.id]
+        Menu("Add to Collection") {
+            Button("New Collection…") {
+                newCollectionSheet = NewCollectionContext(memberIDs: targetIDs)
+            }
+            if !library.collections.isEmpty {
+                Divider()
+                ForEach(library.collections) { collection in
+                    Button(collection.name) {
+                        library.addToCollection(collection.id, bookIDs: targetIDs)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - data
 
-    /// Apply the language filter and the table's sort order.
+    /// Apply the language + collection filters and the table's
+    /// sort order. When a collection is active the rows surface in
+    /// the collection's stored membership order (not the table's
+    /// sort key) so the user sees the same order they curate it
+    /// in. Falls back to the sort order outside the collection
+    /// view.
     private var displayedEntries: [LibraryEntry] {
         var rows = library.entries
         if let lang = languageFilter {
             rows = rows.filter { $0.languages.contains(lang) }
+        }
+        if let collection = activeCollection {
+            let membership = Set(collection.bookIDs)
+            rows = rows.filter { membership.contains($0.id) }
+            let order = Dictionary(
+                uniqueKeysWithValues: collection.bookIDs.enumerated().map { ($1, $0) }
+            )
+            return rows.sorted { (order[$0.id] ?? .max) < (order[$1.id] ?? .max) }
         }
         return rows.sorted(using: sortOrder)
     }
@@ -413,5 +644,101 @@ private extension LibraryEntry {
     /// (= most-recent-first) order.
     var lastOpenedSortKey: Date {
         lastOpened ?? .distantPast
+    }
+}
+
+// MARK: - new-collection / rename helpers
+
+/// Sheet payload for "New Collection…". `memberIDs` may be empty
+/// (sidebar plus-button) or populated ("New Collection from
+/// Selection…" / "Add to Collection ▸ New Collection…" both seed
+/// the picked rows so the create + add steps happen in one shot).
+private struct NewCollectionContext: Identifiable {
+    let id = UUID()
+    let memberIDs: [UUID]
+}
+
+private struct RenameContext: Identifiable {
+    let id: UUID
+    let name: String
+}
+
+private struct NewCollectionSheet: View {
+    let seedMemberIDs: [UUID]
+    let onCreate: (String) -> Void
+    let onCancel: () -> Void
+    @State private var name: String = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("New Collection")
+                .font(.headline)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .onSubmit(submit)
+            if !seedMemberIDs.isEmpty {
+                Text("\(seedMemberIDs.count) book(s) will be added")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Create", action: submit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 320)
+        .onAppear { focused = true }
+    }
+
+    private func submit() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        onCreate(trimmed)
+    }
+}
+
+private struct RenameCollectionSheet: View {
+    let initialName: String
+    let onCommit: (String) -> Void
+    let onCancel: () -> Void
+    @State private var name: String = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rename Collection")
+                .font(.headline)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .onSubmit(submit)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename", action: submit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 320)
+        .onAppear {
+            name = initialName
+            focused = true
+        }
+    }
+
+    private func submit() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        onCommit(trimmed)
     }
 }
