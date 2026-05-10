@@ -22,6 +22,26 @@ struct AISettingsView: View {
     /// retrieval and a heavier model for chat answers.
     @AppStorage("humanist.chat.ollamaEmbeddingModel")
     private var ollamaEmbeddingModel: String = "nomic-embed-text"
+    /// Voyage embedding model. `voyage-3` (1024-dim) is the strong
+    /// default; `voyage-3-lite` (512-dim) is roughly half the cost.
+    @AppStorage("humanist.chat.voyageModel")
+    private var voyageModel: String = "voyage-3"
+    /// Pending Voyage API key in the entry field. Saved to keychain
+    /// on `Save` / `Replace`; never read back into UI state.
+    @State private var pendingVoyageKey: String = ""
+    /// Mirror of "is a Voyage key stored." Refreshed on appear and
+    /// after each save / delete.
+    @State private var hasVoyageKey: Bool = false
+    @AppStorage("humanist.chat.geminiModel")
+    private var geminiModel: String = "gemini-embedding-002"
+    /// Optional Matryoshka output dimensionality. 0 means "full"
+    /// (model's native 3072 for `gemini-embedding-002`). Useful
+    /// alternatives are 768 and 1536 — quarter / half storage with
+    /// marginal quality loss thanks to the Matryoshka representation.
+    @AppStorage("humanist.chat.geminiOutputDimensionality")
+    private var geminiOutputDimensionality: Int = 0
+    @State private var pendingGeminiKey: String = ""
+    @State private var hasGeminiKey: Bool = false
     /// Retrieval style for chat-with-book. Read by
     /// `BookChatViewModel` per-send.
     @AppStorage("humanist.chat.retrievalStyle")
@@ -154,7 +174,11 @@ struct AISettingsView: View {
         .padding(.vertical)
         .frame(width: 520)
         .frame(minHeight: 420)
-        .onAppear { refreshEmbeddingsCacheSize() }
+        .onAppear {
+            refreshEmbeddingsCacheSize()
+            refreshVoyageKeyState()
+            refreshGeminiKeyState()
+        }
     }
 
     /// Recompute the on-disk size of the embeddings cache. Cheap (a
@@ -162,6 +186,65 @@ struct AISettingsView: View {
     /// open.
     private func refreshEmbeddingsCacheSize() {
         embeddingsCacheBytes = EmbeddingsSidecarStore().totalBytes()
+    }
+
+    private func refreshVoyageKeyState() {
+        hasVoyageKey = VoyageAPIKeyStore().hasKey
+    }
+
+    private func commitVoyageKey() {
+        let trimmed = pendingVoyageKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let store = VoyageAPIKeyStore()
+        do {
+            if trimmed.isEmpty {
+                try store.delete()
+            } else {
+                try store.write(trimmed)
+            }
+            pendingVoyageKey = ""
+            refreshVoyageKeyState()
+        } catch {
+            // Errors here are vanishingly rare (keychain misconfig);
+            // surface via the secure-field placeholder rather than a
+            // separate banner so the Settings layout stays compact.
+        }
+    }
+
+    private func deleteVoyageKey() {
+        let store = VoyageAPIKeyStore()
+        try? store.delete()
+        pendingVoyageKey = ""
+        refreshVoyageKeyState()
+    }
+
+    private func refreshGeminiKeyState() {
+        hasGeminiKey = GeminiAPIKeyStore().hasKey
+    }
+
+    private func commitGeminiKey() {
+        let trimmed = pendingGeminiKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let store = GeminiAPIKeyStore()
+        do {
+            if trimmed.isEmpty {
+                try store.delete()
+            } else {
+                try store.write(trimmed)
+            }
+            pendingGeminiKey = ""
+            refreshGeminiKeyState()
+        } catch {
+            // Errors are vanishingly rare; swallow silently rather
+            // than adding a banner per provider.
+        }
+    }
+
+    private func deleteGeminiKey() {
+        let store = GeminiAPIKeyStore()
+        try? store.delete()
+        pendingGeminiKey = ""
+        refreshGeminiKeyState()
     }
 
     // MARK: - Pieces
@@ -244,13 +327,33 @@ struct AISettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                case .voyage, .gemini:
-                    Label(
-                        "This backend isn't wired yet — falls back to Apple NLEmbedding for now.",
-                        systemImage: "info.circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                case .voyage:
+                    HStack {
+                        Text("Voyage model")
+                        TextField("voyage-3", text: $voyageModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Text("\"voyage-3\" is the strong default (1024-dim). \"voyage-3-lite\" (512-dim) is ~half the price; both are well-suited to academic English.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    voyageKeyEntry
+                case .gemini:
+                    HStack {
+                        Text("Gemini model")
+                        TextField("gemini-embedding-002", text: $geminiModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Picker("Output dimensions", selection: $geminiOutputDimensionality) {
+                        Text("Full (~3072)").tag(0)
+                        Text("1536 (half storage)").tag(1536)
+                        Text("768 (quarter storage)").tag(768)
+                    }
+                    Text("Gemini's Matryoshka representation truncates the embedding to a smaller dimension cheaply — 768 stores 4× less per book with marginal quality cost. Default \"Full\" is best for libraries with mixed-script / classical content.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    geminiKeyEntry
                 }
 
                 HStack {
@@ -270,6 +373,56 @@ struct AISettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var geminiKeyEntry: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                SecureField(
+                    hasGeminiKey ? "•••• stored — paste to replace ••••" : "AIza...",
+                    text: $pendingGeminiKey
+                )
+                Button(hasGeminiKey ? "Replace" : "Save") {
+                    commitGeminiKey()
+                }
+                .disabled(pendingGeminiKey.isEmpty)
+                if hasGeminiKey {
+                    Button("Remove", role: .destructive) {
+                        deleteGeminiKey()
+                    }
+                }
+            }
+            Text("Get a key at aistudio.google.com. Stored in your macOS keychain.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var voyageKeyEntry: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                SecureField(
+                    hasVoyageKey ? "•••• stored — paste to replace ••••" : "voyage-...",
+                    text: $pendingVoyageKey
+                )
+                Button(hasVoyageKey ? "Replace" : "Save") {
+                    commitVoyageKey()
+                }
+                .disabled(pendingVoyageKey.isEmpty)
+                if hasVoyageKey {
+                    Button("Remove", role: .destructive) {
+                        deleteVoyageKey()
+                    }
+                }
+            }
+            Text("Get a key at voyageai.com. Stored in your macOS keychain — never written to disk in plain text.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

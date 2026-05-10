@@ -91,6 +91,36 @@ final class BookChatViewModel: ObservableObject {
         return raw.isEmpty ? "nomic-embed-text" : raw
     }
 
+    /// Voyage embedding model. `voyage-3` is the strong default;
+    /// `voyage-3-lite` is roughly half the cost with a smaller
+    /// dimension (512 vs 1024) for users on a tight budget.
+    private var voyageModel: String {
+        let raw = UserDefaults.standard.string(
+            forKey: "humanist.chat.voyageModel"
+        ) ?? ""
+        return raw.isEmpty ? "voyage-3" : raw
+    }
+
+    /// Gemini embedding model. `gemini-embedding-002` is current-
+    /// best-in-class on multilingual MTEB.
+    private var geminiModel: String {
+        let raw = UserDefaults.standard.string(
+            forKey: "humanist.chat.geminiModel"
+        ) ?? ""
+        return raw.isEmpty ? "gemini-embedding-002" : raw
+    }
+
+    /// Optional truncation of the Matryoshka output. 0 = full
+    /// dimension (~3072 for Gemini); useful values are 768, 1536.
+    /// Smaller dimensions cut sidecar storage roughly proportionally
+    /// with marginal quality cost.
+    private var geminiOutputDimensionality: Int? {
+        let raw = UserDefaults.standard.integer(
+            forKey: "humanist.chat.geminiOutputDimensionality"
+        )
+        return raw > 0 ? raw : nil
+    }
+
     /// User's retrieval style. Read per-send so a Settings change
     /// applies immediately.
     private var retrievalStyle: HybridRetriever.Style {
@@ -377,13 +407,27 @@ final class BookChatViewModel: ObservableObject {
                 let note = "Ollama embedding unavailable (\(error.localizedDescription)). Using Apple NLEmbedding instead."
                 return (NLSentenceEmbeddingBackend(language: .english), note)
             }
-        case .voyage, .gemini:
-            // Voyage / Gemini land in follow-up commits; until then
-            // fall through to NLEmbedding so the chat keeps working.
-            // The Settings picker shows a "coming soon" hint so the
-            // user knows the picker hasn't taken effect.
-            let note = "\(embeddingBackendChoice.displayName) isn't wired yet — using Apple NLEmbedding."
-            return (NLSentenceEmbeddingBackend(language: .english), note)
+        case .voyage:
+            do {
+                let backend = try await VoyageEmbeddingBackend.make(
+                    model: voyageModel
+                )
+                return (backend, nil)
+            } catch {
+                let note = "Voyage embedding unavailable (\(error.localizedDescription)). Using Apple NLEmbedding instead."
+                return (NLSentenceEmbeddingBackend(language: .english), note)
+            }
+        case .gemini:
+            do {
+                let backend = try await GeminiEmbeddingBackend.make(
+                    model: geminiModel,
+                    outputDimensionality: geminiOutputDimensionality
+                )
+                return (backend, nil)
+            } catch {
+                let note = "Gemini embedding unavailable (\(error.localizedDescription)). Using Apple NLEmbedding instead."
+                return (NLSentenceEmbeddingBackend(language: .english), note)
+            }
         }
     }
 
