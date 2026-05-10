@@ -16,7 +16,7 @@ struct HumanistCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "humanist-cli",
         abstract: "Convert academic PDFs and rich documents into well-structured EPUB and friends.",
-        version: "1.0.0",
+        version: "1.1.0",
         subcommands: [
             ConvertCommand.self,
             CompareCommand.self,

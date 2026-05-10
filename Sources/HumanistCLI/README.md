@@ -94,6 +94,10 @@ Cloud features (Claude OCR, table extraction, post-OCR cleanup, TOC parsing, sem
 
 The Anthropic API key is read from `ANTHROPIC_API_KEY` by default. Override the env var name with `--api-key-env MY_VAR`.
 
+### Private-mode on-device features (macOS 26+)
+
+Starting in CLI version 1.1.0, `--private` conversions on macOS 26 with Apple Intelligence enabled get three on-device features for free, via Apple's Foundation Models framework: chapter classification (`epub:type` labels for `chapter` / `preface` / `bibliography` / etc.), front-matter metadata extraction (title / author / year / publisher / ISBN written into the OPF), and a coherence pass that proposes guarded global rewrites for recurring OCR errors. No API key, no network calls — runs entirely on the user's Mac. Falls back gracefully (no-op) on systems where Apple Intelligence isn't available.
+
 ### Output naming
 
 ```
