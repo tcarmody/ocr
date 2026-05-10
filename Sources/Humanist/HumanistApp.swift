@@ -399,25 +399,43 @@ private struct ConvertCommand: View {
     }
 }
 
-/// Window menu — Show Queue (⇧⌘Q) + Show Library (⇧⌘L). Both open
-/// single-instance scenes; opening when already open just brings to
-/// front. Placed in the standard `.windowList` position so they sit
-/// alongside the OS-provided window-list items.
+/// Window menu — Show Converter (⌘1), Show Library (⌘2),
+/// Show Editor (⌘3), Show Queue (⌘4). Single-instance scenes
+/// (Library, Queue) use SwiftUI's `openWindow(id:)`, which brings
+/// existing windows forward. Multi-instance scenes (Converter,
+/// Editor) use `WindowSwitcher` to find the most-recent window of
+/// the right kind in `NSApp.windows` rather than spawning a new
+/// instance every chord press.
 struct ShowWindowCommands: Commands {
     var body: some Commands {
         CommandGroup(before: .windowList) {
-            ShowQueueButton()
+            ShowConverterButton()
             ShowLibraryButton()
+            ShowEditorButton()
+            ShowQueueButton()
             Divider()
         }
     }
 }
 
-private struct ShowQueueButton: View {
+private struct ShowConverterButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        Button("Show Queue") { openWindow(id: "queue") }
-            .keyboardShortcut("q", modifiers: [.command, .shift])
+        Button("Show Converter") {
+            // Launcher's WindowGroup has no `id`, so SwiftUI's
+            // `openWindow` would create a fresh launcher rather
+            // than reveal the existing one. Title-match on
+            // "Humanist" (set by `WindowGroup("Humanist")`) and
+            // bring it forward.
+            if !WindowSwitcher.showWindow(withTitle: "Humanist") {
+                // No launcher in `NSApp.windows` — reopen via the
+                // dock-icon path. SwiftUI doesn't expose a direct
+                // "open new launcher" id, but `Bring All To Front`
+                // typically restores it from saved state.
+                NSApp.unhide(nil)
+            }
+        }
+        .keyboardShortcut("1", modifiers: .command)
     }
 }
 
@@ -425,7 +443,27 @@ private struct ShowLibraryButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("Show Library") { openWindow(id: "library") }
-            .keyboardShortcut("l", modifiers: [.command, .shift])
+            .keyboardShortcut("2", modifiers: .command)
+    }
+}
+
+private struct ShowEditorButton: View {
+    var body: some View {
+        Button("Show Editor") {
+            // Editors are a multi-instance WindowGroup keyed by
+            // EPUB URL. Bring forward the most-recently-focused
+            // editor window via identifier match.
+            _ = WindowSwitcher.showWindow(matchingIdentifier: "editor")
+        }
+        .keyboardShortcut("3", modifiers: .command)
+    }
+}
+
+private struct ShowQueueButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Show Queue") { openWindow(id: "queue") }
+            .keyboardShortcut("4", modifiers: .command)
     }
 }
 

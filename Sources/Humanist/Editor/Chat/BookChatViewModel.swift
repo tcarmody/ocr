@@ -42,6 +42,13 @@ final class BookChatViewModel: ObservableObject {
     /// this to render an "X of Y books indexed for current backend"
     /// status row when scope is `.library`.
     @Published private(set) var libraryStatus: LibraryStatus = .idle
+    /// Surfaced when the resolved embedding backend silently fell
+    /// back to NLEmbedding (e.g. Voyage key rotated, Ollama daemon
+    /// stopped, network out). Cleared on the next clean resolution.
+    /// The chat pane renders this as an inline notice so users
+    /// notice the silent degrade rather than wondering why their
+    /// fancy backend isn't producing different results.
+    @Published private(set) var fallbackNote: String?
 
     enum LibraryStatus: Equatable {
         case idle
@@ -407,6 +414,9 @@ final class BookChatViewModel: ObservableObject {
                 }
                 return
             }
+            await MainActor.run {
+                self.fallbackNote = resolution.fallbackNote
+            }
             let library = await self.buildOrReuseLibraryIndex(backend: backend)
             guard library.totalParagraphCount > 0 else {
                 await MainActor.run {
@@ -594,6 +604,21 @@ final class BookChatViewModel: ObservableObject {
         startEmbeddingBuild()
     }
 
+    /// Wipe this book's sidecar from disk and rebuild every index
+    /// from scratch. Surfaced from the chat-pane header so a user
+    /// can recover from a corrupt or stale cache without going
+    /// through "Settings → Clear all indexes" (which would also
+    /// nuke every other book's sidecar).
+    func rebuildIndex() {
+        bm25Index = nil
+        embeddingIndex = nil
+        hierarchyIndex = nil
+        entityIndex = nil
+        fallbackNote = nil
+        embeddingsStore.clear(for: epubURL)
+        startEmbeddingBuild()
+    }
+
     // MARK: - Embedding pipeline
 
     /// Resolve the user's chosen embedding backend. Async because
@@ -670,6 +695,11 @@ final class BookChatViewModel: ObservableObject {
                     self?.embeddingStatus = .failed("No embedding backend available.")
                 }
                 return
+            }
+            // Surface the fallback note (if any) so the user sees
+            // why their chosen backend isn't actually being used.
+            await MainActor.run {
+                self?.fallbackNote = resolution.fallbackNote
             }
             do {
                 var sidecar = store.read(for: url)

@@ -30,7 +30,49 @@ struct LibraryWindowView: View {
     @State private var selection: Set<LibraryEntry.ID> = []
     @State private var showBulkEdit: Bool = false
 
+    /// Whether the library-scope chat pane is visible. Persisted
+    /// per-app via `@AppStorage` so the user's preference sticks
+    /// across launches; default off so first-launch users see the
+    /// browser they expect.
+    @AppStorage("humanist.library.showChatPane")
+    private var showChatPane: Bool = false
+
+    /// Library chat session. Built lazily on first reveal — the
+    /// federated index isn't free, and a user who never opens the
+    /// chat pane shouldn't pay for it.
+    @StateObject private var chatVM = LibraryChatViewModel()
+
     var body: some View {
+        HSplitView {
+            browserColumn
+                .frame(minWidth: 480)
+            if showChatPane {
+                LibraryChatPaneView(
+                    vm: chatVM,
+                    onCitationTap: { citation in
+                        if let url = citation.bookEpubURL {
+                            OpenRouter.open(url, openWindow: openWindow)
+                        }
+                    }
+                )
+                .frame(minWidth: 320, idealWidth: 380)
+            }
+        }
+        .navigationTitle("Humanist Library")
+        .frame(minWidth: 620, minHeight: 380)
+        .sheet(isPresented: $showBulkEdit) {
+            BulkEditSheet(
+                targets: selectedEntries,
+                isPresented: $showBulkEdit
+            )
+        }
+    }
+
+    /// Original browser surface (filter bar + table / empty state).
+    /// Extracted into its own column so the new chat pane sits
+    /// beside it under an `HSplitView`.
+    @ViewBuilder
+    private var browserColumn: some View {
         VStack(spacing: 0) {
             filterBar
                 .padding(.horizontal, 12)
@@ -42,14 +84,6 @@ struct LibraryWindowView: View {
             } else {
                 table
             }
-        }
-        .navigationTitle("Humanist Library")
-        .frame(minWidth: 620, minHeight: 380)
-        .sheet(isPresented: $showBulkEdit) {
-            BulkEditSheet(
-                targets: selectedEntries,
-                isPresented: $showBulkEdit
-            )
         }
     }
 
@@ -95,6 +129,21 @@ struct LibraryWindowView: View {
                 .pickerStyle(.menu)
                 .fixedSize()
             }
+            // Chat-pane reveal toggle. Lives in the filter bar
+            // because that's where every other library-window
+            // affordance lives; users expect "show / hide chat"
+            // to be one click away rather than buried in a menu.
+            Button {
+                showChatPane.toggle()
+            } label: {
+                Image(systemName: showChatPane
+                      ? "bubble.left.and.text.bubble.right.fill"
+                      : "bubble.left.and.text.bubble.right")
+            }
+            .help(showChatPane
+                  ? "Hide library chat pane"
+                  : "Show library chat pane")
+            .keyboardShortcut("/", modifiers: [.command])
         }
     }
 

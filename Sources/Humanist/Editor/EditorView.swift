@@ -453,15 +453,25 @@ struct EditorView: View {
     private var chatPane: some View {
         VStack(spacing: 0) {
             paneHeader("Chat", systemImage: "bubble.left.and.text.bubble.right") {
-                if let chat = vm.chatViewModel, !chat.messages.isEmpty {
+                if let chat = vm.chatViewModel {
                     Button {
-                        chat.clear()
+                        chat.rebuildIndex()
                     } label: {
-                        Image(systemName: "trash")
+                        Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .help("Clear this chat (deletes the persisted transcript)")
+                    .help("Rebuild this book's chat indexes from scratch")
+                    if !chat.messages.isEmpty {
+                        Button {
+                            chat.clear()
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .help("Clear this chat (deletes the persisted transcript)")
+                    }
                 }
             }
             if let chat = vm.chatViewModel {

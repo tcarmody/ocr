@@ -2302,17 +2302,18 @@ Each item is independently shippable in 30 minutes to 2 hours.
   means hand-opening every book once. Background queue with progress;
   read the per-book sidecar to skip ones that are already complete +
   current. ~2 hours.
-- **Per-book "Rebuild index" button** — surfaced from the chat pane
-  header, the editor's File menu, or the Library row context menu.
-  Wipes that one book's sidecar and rebuilds. The current alternative
-  is "Settings → Clear all", which is heavier than usually wanted.
-  ~30 minutes.
-- **Backend-fallback visibility** — `BookChatViewModel.resolveEmbedding
-  Backend` already returns a `fallbackNote` (e.g. "Voyage embedding
-  unavailable: missing API key. Using Apple NLEmbedding instead.")
-  but the chat-pane status strip doesn't surface it. Surface as an
-  inline notice next to the indexing strip when present. Catches
-  silent fallbacks the user otherwise wouldn't notice. ~30 minutes.
+- ~~**Per-book "Rebuild index" button"**~~ shipped. Circular-arrow
+  button in the per-book chat pane header (`Editor → Chat`) calls
+  `BookChatViewModel.rebuildIndex()` which wipes the book's
+  sidecar and re-runs the embedding + hierarchy + entity passes.
+  Library chat pane has the same affordance for the federated
+  index (`LibraryChatViewModel.invalidateLibraryIndex()` triggers
+  a fresh sidecar walk on the next message).
+- ~~**Backend-fallback visibility**~~ shipped. `BookChatViewModel`
+  and `LibraryChatViewModel` both publish `fallbackNote`; per-book
+  and library chat panes render an inline orange notice strip when
+  set so silent backend degrades (Voyage key rotated, Ollama daemon
+  stopped, etc.) actually surface to the user.
 - **Backend-swap cascade** — when the Settings backend changes, all
   open editor windows continue to use the old vectors until they
   reload. Either invalidate `embeddingIndex` proactively across all
@@ -2332,16 +2333,13 @@ Each item is independently shippable in 30 minutes to 2 hours.
   `maxParagraphChars=4000` are reasonable defaults but aren't
   surfaced. Hidden / advanced section in Settings → AI for power
   users. ~1 hour.
-- **Window-switcher menu commands** — `Window > Show Converter`
-  / `Show Library` / `Show Editor` shortcuts (e.g. `⌘1` / `⌘2` /
-  `⌘3`). The macOS Window menu lists every open window, but a
-  fast keyboard switch between the three "primary" surfaces
-  (converter / library / most-recent editor) is the usual
-  navigation move and deserves a top-level chord. `Show Library`
-  + `Show Queue` already exist in the menu; this rounds them
-  out and adds the converter + most-recent-editor entries. ~30
-  minutes, but synergizes with the library-chat surface below
-  since that becomes a frequent navigation target.
+- ~~**Window-switcher menu commands**~~ shipped. `Window > Show
+  Converter` (`⌘1`) / `Show Library` (`⌘2`) / `Show Editor`
+  (`⌘3`) / `Show Queue` (`⌘4`). Single-instance scenes use
+  `openWindow(id:)`; multi-instance scenes (Converter, Editor)
+  go through `WindowSwitcher` which finds the most-recent window
+  in `NSApp.windows` and brings it forward rather than spawning
+  a new instance every chord press.
 
 ### When to ship
 
@@ -2352,13 +2350,11 @@ require new infrastructure.
 
 ## R-Library-Chat — First-class library window with embedded chat
 
-**Status**: not started. Today the only way to ask a cross-corpus
-question is to open a book and flip the chat pane's scope picker
-to "Whole library." The library *itself* is just a browser — list
-of EPUBs with thumbnails + metadata + bulk find/replace. Promoting
-the library window to a primary surface (alongside the converter
-and editor) with its own embedded chat pane removes the awkward
-"open a book to query the library" step.
+**Status**: shipped. The library window now has a collapsible chat
+pane on the right (toggled via `⌘/` or the bubble button in the
+filter bar) backed by a dedicated `LibraryChatViewModel`. Window-
+switcher menu commands wired alongside (`⌘1` Show Converter,
+`⌘2` Show Library, `⌘3` Show Editor, `⌘4` Show Queue).
 
 ### Why bother
 
@@ -3696,15 +3692,7 @@ use; distribution is lower priority than correctness.
    R-Chat-Embeddings. ~4-5 days. All primitives extend the per-book
    embeddings sidecar; all run free / on-device. Citation graphs
    and full GraphRAG explicitly out of scope.
-2. **R-Library-Chat** — promote the library window to a first-
-   class surface with its own embedded chat pane so cross-corpus
-   questions don't require opening an anchor book first. ~1-1.5
-   days. Reuses the multi-book retrieval path; adds a
-   `LibraryChatViewModel` and a split-view layout in the library
-   window. Bundles the window-switcher menu commands (Show
-   Converter / Show Library / Show Editor / Show Queue) since the
-   library window becomes a primary navigation target.
-3. **E-Vision-Modes** — Manuscript mode (Claude Opus 4.7,
+2. **E-Vision-Modes** — Manuscript mode (Claude Opus 4.7,
    diplomatic transcription posture) and Early Print mode
    (Gemini 3.1 Pro, fluent normalization with strong typeface
    priors) as per-conversion choices in the launcher. Each mode
@@ -3715,20 +3703,19 @@ use; distribution is lower priority than correctness.
    Both modes are 4-5× the cost of the default print mode but
    produce qualitatively different output for content the cascade
    can't handle well.
-4. **R-Chat-Polish** — small UX gaps in the chat / embedding
-   surface (bulk-index command, per-book rebuild button, fallback
-   visibility, paragraph-level citation jumps, retrieval debug
-   surface, tunable knobs, window-switcher menu commands). Each
-   item independently shippable in 30 minutes to 2 hours; pick
-   whichever bites hardest. Can interleave with other work.
-5. **Distribution polish** — see `RELEASES.md`. Need a Developer
+3. **R-Chat-Polish** — remaining small UX gaps in the chat
+   surface (bulk-index command, paragraph-level citation jumps,
+   retrieval debug surface, tunable knobs, backend-swap cascade).
+   Each item independently shippable in 30 minutes to 2 hours;
+   pick whichever bites hardest. Can interleave with other work.
+4. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-6. **P-Greek-Quality** — ground-truth measurement of Tesseract
+5. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-7. **Stretch / speculative items in Tier 8** if a specific need
+6. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
