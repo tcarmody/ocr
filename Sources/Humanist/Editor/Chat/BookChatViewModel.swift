@@ -230,6 +230,14 @@ final class BookChatViewModel: ObservableObject {
     /// `bookDidReload` runs so we don't race two builds against
     /// possibly-divergent paragraph numbering.
     private var embeddingBuildTask: Task<Void, Never>?
+    /// Notification observer that catches embedding-backend
+    /// changes from Settings so this VM can drop its cached
+    /// indexes mid-session instead of waiting for an editor
+    /// reload. `nonisolated(unsafe)` because the token is opaque
+    /// (`NSObjectProtocol`), only touched in `deinit`, and there's
+    /// no reachable race — same justification as the
+    /// `pdfPageObserver` token in `EditorViewModel`.
+    private nonisolated(unsafe) var backendChangeObserver: (any NSObjectProtocol)?
 
     /// Top-K BM25 chapters when the path is BM25-only. Mirrors the
     /// pre-embedding behavior.
@@ -240,12 +248,26 @@ final class BookChatViewModel: ObservableObject {
     /// Higher than the chapter count because each paragraph is much
     /// smaller — 12 paragraphs ≈ 12 KB, well under the cloud cost
     /// budget and enough to cover the answer most of the time.
-    private static let maxRetrievedParagraphs = 12
+    /// User-tunable via Settings → AI → Advanced.
+    private var maxRetrievedParagraphs: Int {
+        let raw = UserDefaults.standard.integer(forKey: "humanist.chat.topK")
+        return raw > 0 ? raw : 12
+    }
     /// Per-paragraph character cap. Trims abnormally long paragraphs
     /// (one of the OCR pipeline's known failure modes — a missed
     /// paragraph break can produce a 10 KB run-on). 4 KB is plenty
-    /// for any well-formed paragraph.
-    private static let maxParagraphChars = 4_000
+    /// for any well-formed paragraph. User-tunable.
+    private var maxParagraphChars: Int {
+        let raw = UserDefaults.standard.integer(forKey: "humanist.chat.maxParaChars")
+        return raw > 0 ? raw : 4_000
+    }
+    /// RRF constant from Cormack et al. Default 60. User-tunable
+    /// via Settings → AI → Advanced for power users who want to
+    /// shift the balance between top-ranked and middle-ranked hits.
+    private var rrfK: Double {
+        let raw = UserDefaults.standard.integer(forKey: "humanist.chat.rrfK")
+        return raw > 0 ? Double(raw) : HybridRetriever.defaultRRFK
+    }
     /// Hit count above which the renderer switches a chapter from
     /// per-paragraph bullets to whole-chapter expansion. 4 hits in
     /// one chapter is a strong "this is what the user wants" signal
@@ -276,6 +298,18 @@ final class BookChatViewModel: ObservableObject {
         // Restore prior transcript synchronously so the pane
         // doesn't flash empty before the load completes.
         self.messages = transcriptStore.read(for: epubURL)
+        // Subscribe to Settings backend changes. Drop cached
+        // indexes and re-trigger the build so a flip from e.g.
+        // NLEmbedding → Gemini takes effect on the next send
+        // without forcing the user to close and reopen the editor.
+        self.backendChangeObserver = NotificationCenter.default
+            .addObserver(
+                forName: .humanistEmbeddingBackendChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.handleBackendChange() }
+            }
         // Kick off embedding indexing in the background; the
         // pane shows progress via `embeddingStatus`.
         startEmbeddingBuild()
@@ -287,6 +321,26 @@ final class BookChatViewModel: ObservableObject {
         // the last `appendAndPersist`.
         streamTask?.cancel()
         embeddingBuildTask?.cancel()
+        if let observer = backendChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Handle a Settings-driven backend change. Drop cached
+    /// per-book and library indexes (the latter is also held by
+    /// this VM via the library scope path) and kick off a fresh
+    /// embedding build. The on-disk sidecar self-invalidates
+    /// when the build pass sees a backend identifier mismatch,
+    /// so we don't have to wipe it explicitly here.
+    private func handleBackendChange() {
+        embeddingIndex = nil
+        hierarchyIndex = nil
+        entityIndex = nil
+        libraryIndex = nil
+        libraryEntityIndex = nil
+        libraryParagraphCache.removeAll()
+        fallbackNote = nil
+        startEmbeddingBuild()
     }
 
     /// Submit `input` as the next user turn. No-op on empty / while
@@ -375,9 +429,13 @@ final class BookChatViewModel: ObservableObject {
             )
             retriever.hierarchyMatches = hierarchyMatches
             retriever.entityMatches = entityMatches
+            // Apply user-tuned RRF constant (default 60). The
+            // tunable lives on the instance because Settings can
+            // change it mid-session.
+            retriever.rrfK = await MainActor.run { self.rrfK }
             let usedParagraphs = (style != .bm25) && (queryVector != nil) && (embeddingIndexSnapshot != nil)
             let topK = usedParagraphs
-                ? Self.maxRetrievedParagraphs
+                ? await MainActor.run { self.maxRetrievedParagraphs }
                 : Self.maxRetrievedChapters
             let hits = retriever.search(query: query, topK: topK)
             let context = self.renderContext(
@@ -474,10 +532,13 @@ final class BookChatViewModel: ObservableObject {
             entityAnchors.append(contentsOf: self.computeLibraryAliasAnchors(
                 query: query, library: library, aliases: aliasDictionary
             ))
+            let topK = await MainActor.run { self.maxRetrievedParagraphs }
+            let rrfK = await MainActor.run { self.rrfK }
             let hits = library.search(
                 queryVector: queryVector,
-                topK: Self.maxRetrievedParagraphs,
-                entityMatches: entityAnchors
+                topK: topK,
+                entityMatches: entityAnchors,
+                rrfK: rrfK
             )
             let resolved = await self.resolveLibraryHits(hits)
             let context = self.renderLibraryContext(hits: resolved)
@@ -526,7 +587,10 @@ final class BookChatViewModel: ObservableObject {
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
-                citations: cited.citations
+                citations: cited.citations,
+                retrievalDetail: Self.makeRetrievalDetail(
+                    hits: allowedHits
+                )
             ))
         } catch is CancellationError {
             return
@@ -563,7 +627,10 @@ final class BookChatViewModel: ObservableObject {
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
-                citations: cited.citations
+                citations: cited.citations,
+                retrievalDetail: Self.makeRetrievalDetail(
+                    hits: allowedHits
+                )
             ))
         } catch is CancellationError {
             return
@@ -583,6 +650,47 @@ final class BookChatViewModel: ObservableObject {
     private func appendAndPersist(_ message: BookChatMessage) {
         messages.append(message)
         persist()
+    }
+
+    /// Project per-book hybrid hits into the persisted retrieval-
+    /// debug shape. The `bookTitle` field stays nil for per-book
+    /// scope — the source book is implicit in the editor window.
+    private static func makeRetrievalDetail(
+        hits: [HybridRetriever.Hit]
+    ) -> RetrievalDetail {
+        let entries: [RetrievalDetail.Hit] = hits.map {
+            RetrievalDetail.Hit(
+                chapterIdx: $0.chapterIdx,
+                paragraphIdx: $0.paragraphIdx,
+                bookTitle: nil,
+                score: $0.score,
+                bm25Rank: $0.bm25Rank,
+                embeddingRank: $0.embeddingRank,
+                hierarchyMatched: $0.hierarchyMatched,
+                entityMatched: $0.entityMatched
+            )
+        }
+        return RetrievalDetail(hits: entries)
+    }
+
+    /// Library-scope variant. `bookTitle` is populated so the
+    /// debug surface can label hits with their source book.
+    private static func makeRetrievalDetail(
+        libraryHits: [ResolvedLibraryHit]
+    ) -> RetrievalDetail {
+        let entries: [RetrievalDetail.Hit] = libraryHits.map {
+            RetrievalDetail.Hit(
+                chapterIdx: $0.chapterIdx,
+                paragraphIdx: $0.paragraphIdx,
+                bookTitle: $0.bookTitle,
+                score: $0.score,
+                bm25Rank: nil,
+                embeddingRank: nil,
+                hierarchyMatched: false,
+                entityMatched: false
+            )
+        }
+        return RetrievalDetail(hits: entries)
     }
 
     private func persist() {
@@ -1065,8 +1173,8 @@ final class BookChatViewModel: ObservableObject {
         out += "\nRelevant paragraphs:\n\n"
         for hit in hits {
             guard let bIdx = bookIndex[hit.epubURL] else { continue }
-            let text = String(hit.text.prefix(Self.maxParagraphChars))
-            out += "[book:\(bIdx) chapter:\(hit.chapterIdx)]\n  • \(text)\n\n"
+            let text = String(hit.text.prefix(self.maxParagraphChars))
+            out += "[book:\(bIdx) chapter:\(hit.chapterIdx) para:\(hit.paragraphIdx)]\n  • \(text)\n\n"
         }
         return out
     }
@@ -1097,7 +1205,10 @@ final class BookChatViewModel: ObservableObject {
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
-                citations: cited.citations
+                citations: cited.citations,
+                retrievalDetail: Self.makeRetrievalDetail(
+                    libraryHits: allowedHits
+                )
             ))
         } catch is CancellationError {
             return
@@ -1134,7 +1245,10 @@ final class BookChatViewModel: ObservableObject {
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
-                citations: cited.citations
+                citations: cited.citations,
+                retrievalDetail: Self.makeRetrievalDetail(
+                    libraryHits: allowedHits
+                )
             ))
         } catch is CancellationError {
             return
@@ -1168,7 +1282,10 @@ final class BookChatViewModel: ObservableObject {
             seenBooks[hit.epubURL] = idx
             bookByIndex[idx] = (hit.epubURL, hit.bookTitle)
         }
-        let pattern = "\\[book:(\\d+)\\s+chapter:(\\d+)\\]"
+        // Match `[book:N chapter:M]` and `[book:N chapter:M para:K]`
+        // in one pass — paragraph segment is optional. Group 3 is
+        // the paragraph index when present.
+        let pattern = "\\[book:(\\d+)\\s+chapter:(\\d+)(?:\\s+para:(\\d+))?\\]"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return CitationParse(cleaned: text, citations: [])
         }
@@ -1180,9 +1297,15 @@ final class BookChatViewModel: ObservableObject {
         var cleaned = text
         var seen: [String: BookChatCitation] = [:]
         for match in matches.reversed() {
-            guard match.numberOfRanges == 3 else { continue }
+            guard match.numberOfRanges == 4 else { continue }
             let bookRaw = nsText.substring(with: match.range(at: 1))
             let chapterRaw = nsText.substring(with: match.range(at: 2))
+            let paragraphRaw: String? = {
+                let r = match.range(at: 3)
+                return r.location == NSNotFound
+                    ? nil
+                    : nsText.substring(with: r)
+            }()
             guard let bookIdx = Int(bookRaw),
                   let chapterIdx = Int(chapterRaw),
                   let bookEntry = bookByIndex[bookIdx]
@@ -1193,14 +1316,16 @@ final class BookChatViewModel: ObservableObject {
                 }
                 continue
             }
-            let key = "\(bookIdx)#\(chapterIdx)"
+            let paraIdx: Int? = paragraphRaw.flatMap(Int.init)
+            let key = "\(bookIdx)#\(chapterIdx)#\(paraIdx.map(String.init) ?? "-")"
             if seen[key] == nil {
                 seen[key] = BookChatCitation(
                     chapterIndex: chapterIdx,
                     title: bookEntry.title,
                     resourceID: "",  // unknown without opening the book
                     bookEpubURL: bookEntry.url,
-                    bookTitle: bookEntry.title
+                    bookTitle: bookEntry.title,
+                    paragraphIndex: paraIdx
                 )
             }
             let nsRange = match.range(at: 0)
@@ -1219,15 +1344,18 @@ final class BookChatViewModel: ObservableObject {
                 if lhs.bookTitle ?? "" != rhs.bookTitle ?? "" {
                     return (lhs.bookTitle ?? "") < (rhs.bookTitle ?? "")
                 }
-                return lhs.chapterIndex < rhs.chapterIndex
+                if lhs.chapterIndex != rhs.chapterIndex {
+                    return lhs.chapterIndex < rhs.chapterIndex
+                }
+                return (lhs.paragraphIndex ?? -1) < (rhs.paragraphIndex ?? -1)
             }
         return CitationParse(cleaned: cleaned, citations: citations)
     }
 
     /// System prompt used in library scope. Differs from the per-
     /// book prompt in that the model is told to cite `[book:N
-    /// chapter:M]` and to compare across books when the question
-    /// invites it.
+    /// chapter:M para:K]` and to compare across books when the
+    /// question invites it.
     private var libraryScopeSystemPrompt: String {
         """
         You are a research assistant embedded in an EPUB editor. \
@@ -1235,17 +1363,18 @@ final class BookChatViewModel: ObservableObject {
         is asking a question that may span more than one of them.
 
         For each question, you'll receive a small set of paragraphs \
-        retrieved from across the user's library (the most relevant \
-        on a hybrid keyword + semantic match for the question), \
-        prefixed with a list of the source books. Each paragraph is \
-        labeled `[book:N chapter:M]` where N indexes into the books \
-        list and M indexes into that book's spine.
+        retrieved from across the user's library, prefixed with a \
+        list of the source books. Each paragraph is labeled \
+        `[book:N chapter:M para:K]` where N indexes into the books \
+        list, M indexes into that book's spine, and K is the \
+        paragraph within the chapter.
 
-        When you reference a source in your answer, cite it inline \
-        as `[book:N chapter:M]` using the same indices. The user's \
-        interface renders these markers as clickable links that \
-        open the cited book in a new editor window at the cited \
-        chapter.
+        Cite sources inline using the same marker form. The user's \
+        interface renders these as clickable links that open the \
+        cited book in a new editor window. Use the full \
+        `[book:N chapter:M para:K]` marker when the claim comes \
+        from a specific paragraph; the shorter `[book:N chapter:M]` \
+        form is fine for whole-chapter references.
 
         Compare across books when the question invites it; quote \
         brief passages with their citation when they directly \
@@ -1332,8 +1461,14 @@ final class BookChatViewModel: ObservableObject {
                 out += expansion + "\n"
             } else {
                 for hit in chapterHits {
-                    let text = String(hit.text.prefix(Self.maxParagraphChars))
-                    out += "  • \(text)\n"
+                    let text = String(hit.text.prefix(self.maxParagraphChars))
+                    // Per-paragraph marker so citations can resolve
+                    // to a specific paragraph anchor — the model
+                    // cites with the same marker form, our parser
+                    // captures the para:M index, and the chip's
+                    // tap handler scrolls source + preview to
+                    // `<p id="hu-p-N-M">`.
+                    out += "  [chapter:\(hit.chapterIdx) para:\(hit.paragraphIdx)] \(text)\n"
                 }
             }
             out += "\n"
@@ -1444,8 +1579,15 @@ final class BookChatViewModel: ObservableObject {
         in text: String, allowedHits: [HybridRetriever.Hit]
     ) -> CitationParse {
         let allowedIndices = Set(allowedHits.map(\.chapterIdx))
-        var seen: [Int: BookChatCitation] = [:]
-        let pattern = "\\[chapter:(\\d+)\\]"
+        // Key by "chapter#paragraph" so the same chapter cited at
+        // two different paragraphs produces two distinct chips
+        // (each scrolling to its own anchor). Chapter-only
+        // citations key as "chapter#-".
+        var seen: [String: BookChatCitation] = [:]
+        // Match `[chapter:N]` and `[chapter:N para:M]` in one pass.
+        // `(?:\\s+para:(\\d+))?` makes the paragraph segment
+        // optional; group 2 is the paragraph index when present.
+        let pattern = "\\[chapter:(\\d+)(?:\\s+para:(\\d+))?\\]"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return CitationParse(cleaned: text, citations: [])
         }
@@ -1456,9 +1598,15 @@ final class BookChatViewModel: ObservableObject {
         )
         var cleaned = text
         for match in matches.reversed() {
-            guard match.numberOfRanges == 2 else { continue }
-            let raw = nsText.substring(with: match.range(at: 1))
-            guard let idx = Int(raw),
+            guard match.numberOfRanges == 3 else { continue }
+            let chapterRaw = nsText.substring(with: match.range(at: 1))
+            let paragraphRaw: String? = {
+                let r = match.range(at: 2)
+                return r.location == NSNotFound
+                    ? nil
+                    : nsText.substring(with: r)
+            }()
+            guard let idx = Int(chapterRaw),
                   allowedIndices.contains(idx),
                   let resource = chapterResource(for: idx)
             else {
@@ -1470,17 +1618,21 @@ final class BookChatViewModel: ObservableObject {
                 }
                 continue
             }
+            let paraIdx: Int? = paragraphRaw.flatMap(Int.init)
             let title = chapterTitle(forChapterIndex: idx)
-            seen[idx] = BookChatCitation(
-                chapterIndex: idx,
-                title: title ?? "Chapter \(idx + 1)",
-                resourceID: resource.id
-            )
+            let key = "\(idx)#\(paraIdx.map(String.init) ?? "-")"
+            if seen[key] == nil {
+                seen[key] = BookChatCitation(
+                    chapterIndex: idx,
+                    title: title ?? "Chapter \(idx + 1)",
+                    resourceID: resource.id,
+                    paragraphIndex: paraIdx
+                )
+            }
             // Strip the inline marker entirely — the citation
             // chips below the message body carry the click
             // target. Inlining "(see TITLE)" looked terrible
-            // when Claude cited the same chapter twice in a row
-            // ("…(see X)(see X)…").
+            // when Claude cited the same chapter twice in a row.
             let nsRange = match.range(at: 0)
             if let r = Range(nsRange, in: cleaned) {
                 cleaned.removeSubrange(r)
@@ -1498,7 +1650,12 @@ final class BookChatViewModel: ObservableObject {
             of: " ([.,;:!?])", with: "$1", options: .regularExpression
         )
         let citations = Array(seen.values)
-            .sorted { $0.chapterIndex < $1.chapterIndex }
+            .sorted {
+                if $0.chapterIndex != $1.chapterIndex {
+                    return $0.chapterIndex < $1.chapterIndex
+                }
+                return ($0.paragraphIndex ?? -1) < ($1.paragraphIndex ?? -1)
+            }
         return CitationParse(cleaned: cleaned, citations: citations)
     }
 
@@ -1516,19 +1673,23 @@ final class BookChatViewModel: ObservableObject {
         about its contents.
 
         For each question, you'll receive a small set of paragraphs \
-        retrieved from the book (the most relevant on a hybrid \
-        keyword + semantic match for the question). Answer the \
+        retrieved from the book. Each paragraph is labeled \
+        `[chapter:N para:M]` where N is the chapter index and M is \
+        the paragraph index within that chapter. Answer the \
         question using only the supplied text.
 
-        When you reference a specific chapter in your answer, mark \
-        the reference inline as `[chapter:N]` where N is the index \
-        from the supplied chapter headers. The user's interface \
-        renders these markers as clickable links to the chapter.
+        Cite the source of every claim inline. When the claim comes \
+        from a specific paragraph, use the full `[chapter:N para:M]` \
+        marker — the user's interface scrolls the editor to that \
+        exact paragraph on click. When the claim is broader (a \
+        whole chapter's argument), you may use the shorter \
+        `[chapter:N]` form, which selects the chapter without \
+        scrolling to a specific paragraph.
 
         If the supplied paragraphs don't contain enough information \
         to answer, say so plainly — don't guess. Quote brief \
         passages when they directly support the answer; cite their \
-        chapter with `[chapter:N]`.
+        location with the marker form above.
 
         Keep replies tight: a short paragraph or two is plenty for \
         most questions. The user is reading the answer in a sidebar \

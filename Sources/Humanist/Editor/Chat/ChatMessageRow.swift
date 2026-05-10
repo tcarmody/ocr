@@ -8,6 +8,12 @@ import SwiftUI
 struct ChatMessageRow: View {
     let message: BookChatMessage
     let onCitationTap: (BookChatCitation) -> Void
+    /// When true, assistant messages with retrieval data show a
+    /// per-hit score / rank breakdown beneath their citation
+    /// strip. Driven by a per-window toggle in the chat pane
+    /// chrome — useful for diagnosing "why did this paragraph
+    /// surface?" without reaching for a debugger.
+    var showRetrievalDetail: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -33,7 +39,49 @@ struct ChatMessageRow: View {
                     onTap: onCitationTap
                 )
             }
+            if showRetrievalDetail,
+               let detail = message.retrievalDetail,
+               !detail.hits.isEmpty {
+                retrievalDetailView(detail)
+            }
         }
+    }
+
+    @ViewBuilder
+    private func retrievalDetailView(_ detail: RetrievalDetail) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Retrieved \(detail.hits.count) paragraph\(detail.hits.count == 1 ? "" : "s")")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            ForEach(Array(detail.hits.enumerated()), id: \.offset) { _, hit in
+                Text(formatHit(hit))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.secondary.opacity(0.05))
+        )
+    }
+
+    /// Single-line hit summary suited to a monospaced caption row.
+    /// Library hits include the source book; per-book hits skip it.
+    private func formatHit(_ hit: RetrievalDetail.Hit) -> String {
+        var parts: [String] = []
+        if let book = hit.bookTitle {
+            parts.append(book)
+        }
+        parts.append("ch.\(hit.chapterIdx) ¶\(hit.paragraphIdx)")
+        parts.append(String(format: "score=%.4f", hit.score))
+        if let rank = hit.bm25Rank { parts.append("bm25=\(rank)") }
+        if let rank = hit.embeddingRank { parts.append("emb=\(rank)") }
+        if hit.hierarchyMatched { parts.append("hier✓") }
+        if hit.entityMatched { parts.append("ent✓") }
+        return parts.joined(separator: " · ")
     }
 
     private var roleLabel: String {
@@ -97,18 +145,25 @@ struct FlowingCitationRow: View {
     }
 
     /// Library citations show "Book Title — ch. N"; per-book
-    /// citations show just the chapter title (the book is implicit
-    /// in the active editor window).
+    /// citations show the chapter title. Both append "¶ M" when
+    /// the citation carries a paragraph index so the user sees
+    /// at a glance that the chip jumps to a specific paragraph
+    /// rather than the chapter top.
     private func citationLabel(_ citation: BookChatCitation) -> String {
+        let paraSuffix = citation.paragraphIndex
+            .map { " ¶\($0)" } ?? ""
         if let book = citation.bookTitle {
-            return "\(book) — ch. \(citation.chapterIndex + 1)"
+            return "\(book) — ch. \(citation.chapterIndex + 1)\(paraSuffix)"
         }
-        return citation.title
+        return "\(citation.title)\(paraSuffix)"
     }
 
     private func citationHelpText(_ citation: BookChatCitation) -> String {
         if citation.bookEpubURL != nil {
             return "Open in a new editor window"
+        }
+        if citation.paragraphIndex != nil {
+            return "Scroll to this paragraph in \(citation.title)"
         }
         return "Open \(citation.title)"
     }

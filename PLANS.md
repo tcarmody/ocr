@@ -2316,25 +2316,43 @@ Each item is independently shippable in 30 minutes to 2 hours.
   and library chat panes render an inline orange notice strip when
   set so silent backend degrades (Voyage key rotated, Ollama daemon
   stopped, etc.) actually surface to the user.
-- **Backend-swap cascade** — when the Settings backend changes, all
-  open editor windows continue to use the old vectors until they
-  reload. Either invalidate `embeddingIndex` proactively across all
-  registered chat view-models when the choice changes, or surface a
-  "Backend changed; reopen editor windows to apply" notice. ~1 hour.
-- **Paragraph-level citation jumps** — `HybridRetriever.Hit` carries
-  `paragraphIdx` but the citation chips navigate to the chapter root.
-  Chat would feel more precise if a citation scrolled the editor to
-  the cited paragraph (`<p id="hu-p-N-M">`) rather than the chapter
-  top. ~1 hour. Requires a small editor selection API.
-- **Retrieval debug surface** — `bm25Rank` / `embeddingRank` / score
-  fields on each hit aren't exposed anywhere. A "Show retrieval
-  detail" toggle on the chat pane that prints the scored paragraph
-  list under each user message would help when retrieval feels
-  wrong. ~1 hour.
-- **Tunable knobs in Settings** — `RRF k=60`, `topK=12 paragraphs`,
-  `maxParagraphChars=4000` are reasonable defaults but aren't
-  surfaced. Hidden / advanced section in Settings → AI for power
-  users. ~1 hour.
+- ~~**Backend-swap cascade**~~ shipped. Settings posts
+  `humanistEmbeddingBackendChanged` whenever the backend choice or
+  any per-backend model field changes; both `BookChatViewModel`
+  and `LibraryChatViewModel` observe and drop their cached indexes
+  so the next send re-resolves with the new backend.
+- ~~**Paragraph-level citation jumps**~~ shipped. Render context
+  now emits `[chapter:N para:M]` markers per paragraph (per-book)
+  and `[book:N chapter:M para:K]` (library); system prompts updated
+  to teach the model the new form. `BookChatCitation.paragraphIndex`
+  carries the parsed value; chips show "ch. N ¶ M" when set;
+  per-book citations route through a new
+  `EditorViewModel.requestParagraphScroll(resourceID:paragraphIdx:)`
+  that selects the chapter (if needed) and posts an
+  `AnchorScrollRequest` for `<p id="hu-p-N-M">` so source +
+  preview both land on the cited paragraph. Library citations
+  carry the paragraph index for chip labeling but still open in
+  a new window — passing the anchor through `OpenRouter.open`
+  would require window-state plumbing that's out of scope for
+  this round.
+- ~~**Retrieval debug surface**~~ shipped. `RetrievalDetail` is a
+  new optional field on `BookChatMessage` (decodeIfPresent for
+  backward compat); both VMs capture per-hit score + rank +
+  hierarchy / entity flags at send time. Chat panes have an
+  `info.circle` toggle in the chrome that flips a per-window
+  state; when on, each assistant message renders a monospaced
+  hit summary beneath its citation strip ("ch.3 ¶7
+  score=0.045 bm25=2 emb=1 ent✓").
+- ~~**Tunable knobs in Settings**~~ shipped. Advanced retrieval
+  disclosure in Settings → AI → Chat Retrieval with three
+  stepper rows for RRF k (default 60), Top-K paragraphs
+  (default 12), and Max paragraph chars (default 4000). 0 in
+  the persisted value means "use default", so the Reset button
+  zeroes the binding rather than seeding a hardcoded number.
+  `HybridRetriever.rrfK` is now an instance property;
+  `LibraryEmbeddingIndex.search` takes `rrfK` as a parameter.
+  Both chat VMs read the persisted values per-send so changes
+  apply immediately.
 - ~~**Window-switcher menu commands**~~ shipped. `Window > Show
   Converter` (`⌘1`) / `Show Library` (`⌘2`) / `Show Editor`
   (`⌘3`) / `Show Queue` (`⌘4`). Single-instance scenes use
@@ -3892,19 +3910,14 @@ use; distribution is lower priority than correctness.
    multi-model A/B). Tiers 1+2 are about 3 days end-to-end and
    cover the practical research-workflow surface; Tiers 3+4 are
    nice-to-haves to pick from based on actual friction.
-4. **R-Chat-Polish** — remaining small UX gaps in the chat
-   surface (paragraph-level citation jumps, retrieval debug
-   surface, tunable knobs, backend-swap cascade). Each item
-   independently shippable in 30 minutes to 2 hours; pick
-   whichever bites hardest. Can interleave with other work.
-5. **Distribution polish** — see `RELEASES.md`. Need a Developer
+4. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-6. **P-Greek-Quality** — ground-truth measurement of Tesseract
+5. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-7. **Stretch / speculative items in Tier 8** if a specific need
+6. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.

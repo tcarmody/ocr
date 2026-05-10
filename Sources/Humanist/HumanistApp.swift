@@ -551,4 +551,13 @@ extension Notification.Name {
     static let humanistShowEPUBDiff = Notification.Name(
         "humanistShowEPUBDiff"
     )
+    /// Posted by Settings → AI when the user changes their
+    /// embedding backend choice (or the Gemini / Voyage model
+    /// names that drive backend identity). Open chat view-models
+    /// observe and drop their cached indexes so the next send
+    /// re-resolves with the new backend instead of returning
+    /// stale results from the prior vector space.
+    static let humanistEmbeddingBackendChanged = Notification.Name(
+        "humanistEmbeddingBackendChanged"
+    )
 }

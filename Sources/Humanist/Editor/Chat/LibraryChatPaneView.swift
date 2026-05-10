@@ -13,6 +13,7 @@ import SwiftUI
 struct LibraryChatPaneView: View {
     @ObservedObject var vm: LibraryChatViewModel
     let onCitationTap: (BookChatCitation) -> Void
+    @State private var showRetrievalDetail: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -69,6 +70,18 @@ struct LibraryChatPaneView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+            Button {
+                showRetrievalDetail.toggle()
+            } label: {
+                Image(systemName: showRetrievalDetail
+                      ? "info.circle.fill"
+                      : "info.circle")
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderless)
+            .help(showRetrievalDetail
+                  ? "Hide retrieval detail under each answer"
+                  : "Show retrieval detail under each answer")
             if !vm.messages.isEmpty {
                 Button {
                     vm.clear()
@@ -111,7 +124,8 @@ struct LibraryChatPaneView: View {
                     ForEach(vm.messages) { message in
                         ChatMessageRow(
                             message: message,
-                            onCitationTap: onCitationTap
+                            onCitationTap: onCitationTap,
+                            showRetrievalDetail: showRetrievalDetail
                         )
                         .id(message.id)
                     }

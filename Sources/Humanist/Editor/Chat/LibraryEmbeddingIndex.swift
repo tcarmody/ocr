@@ -136,7 +136,8 @@ struct LibraryEmbeddingIndex: Sendable {
     func search(
         queryVector: [Float],
         topK: Int = 12,
-        entityMatches: [LibraryEntityIndex.LibraryAnchor] = []
+        entityMatches: [LibraryEntityIndex.LibraryAnchor] = [],
+        rrfK: Double = 60
     ) -> [Hit] {
         guard !queryVector.isEmpty else { return [] }
         let entitySet: Set<EntityKey> = Set(entityMatches.map {
@@ -179,7 +180,6 @@ struct LibraryEmbeddingIndex: Sendable {
         let cosineTopN = min(candidates.count, max(topK * 4, 96))
         var inUnion: Set<EntityKey> = []
         var fused: [(hit: Hit, score: Double)] = []
-        let rrfK = 60.0
         for (rank, candidate) in candidates.prefix(cosineTopN).enumerated() {
             let key = EntityKey(
                 candidate.hit.epubURL,

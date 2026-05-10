@@ -105,9 +105,27 @@ final class LibraryChatViewModel: ObservableObject {
     private var libraryIndex: LibraryEmbeddingIndex?
     private var libraryEntityIndex: LibraryEntityIndex?
     private var streamTask: Task<Void, Never>?
+    /// Same `nonisolated(unsafe)` justification as the per-book
+    /// chat VM: the observer token is opaque, deinit-only, and
+    /// has no reachable race.
+    private nonisolated(unsafe) var backendChangeObserver: (any NSObjectProtocol)?
 
-    private static let maxRetrievedParagraphs = 12
-    private static let maxParagraphChars = 4_000
+    /// Top-K paragraphs returned by retrieval. User-tunable via
+    /// Settings → AI → Advanced; default 12.
+    private var maxRetrievedParagraphs: Int {
+        let raw = UserDefaults.standard.integer(forKey: "humanist.chat.topK")
+        return raw > 0 ? raw : 12
+    }
+    /// Per-paragraph character cap. User-tunable; default 4000.
+    private var maxParagraphChars: Int {
+        let raw = UserDefaults.standard.integer(forKey: "humanist.chat.maxParaChars")
+        return raw > 0 ? raw : 4_000
+    }
+    /// RRF constant. User-tunable; default 60.
+    private var rrfK: Double {
+        let raw = UserDefaults.standard.integer(forKey: "humanist.chat.rrfK")
+        return raw > 0 ? Double(raw) : HybridRetriever.defaultRRFK
+    }
 
     init(transcriptURL: URL? = nil) {
         let keyStore = AnthropicAPIKeyStore()
@@ -117,10 +135,24 @@ final class LibraryChatViewModel: ObservableObject {
         self.ollama = OllamaClient()
         self.transcriptURL = transcriptURL ?? Self.defaultTranscriptURL()
         self.messages = Self.loadTranscript(from: self.transcriptURL)
+        // Drop the federated index when the user changes their
+        // embedding backend in Settings — same posture as the
+        // per-book chat VMs.
+        self.backendChangeObserver = NotificationCenter.default
+            .addObserver(
+                forName: .humanistEmbeddingBackendChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.invalidateLibraryIndex() }
+            }
     }
 
     deinit {
         streamTask?.cancel()
+        if let observer = backendChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     // MARK: - Transcript persistence
@@ -243,10 +275,13 @@ final class LibraryChatViewModel: ObservableObject {
             entityAnchors.append(contentsOf: self.computeLibraryAliasAnchors(
                 query: query, library: library, aliases: aliases
             ))
+            let topK = await MainActor.run { self.maxRetrievedParagraphs }
+            let rrfK = await MainActor.run { self.rrfK }
             let hits = library.search(
                 queryVector: queryVector,
-                topK: Self.maxRetrievedParagraphs,
-                entityMatches: entityAnchors
+                topK: topK,
+                entityMatches: entityAnchors,
+                rrfK: rrfK
             )
             let context = self.renderLibraryContext(hits: hits)
             let userPrompt = context + "\n\nQuestion: " + query
@@ -442,8 +477,8 @@ final class LibraryChatViewModel: ObservableObject {
         for hit in hits {
             guard let bIdx = bookIndex[hit.epubURL] else { continue }
             let text = (hit.text ?? "")
-                .prefix(Self.maxParagraphChars)
-            out += "[book:\(bIdx) chapter:\(hit.chapterIdx)]\n  • \(text)\n\n"
+                .prefix(maxParagraphChars)
+            out += "[book:\(bIdx) chapter:\(hit.chapterIdx) para:\(hit.paragraphIdx)]\n  • \(text)\n\n"
         }
         return out
     }
@@ -472,7 +507,8 @@ final class LibraryChatViewModel: ObservableObject {
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
-                citations: cited.citations
+                citations: cited.citations,
+                retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits)
             ))
         } catch is CancellationError {
             return
@@ -508,7 +544,8 @@ final class LibraryChatViewModel: ObservableObject {
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
-                citations: cited.citations
+                citations: cited.citations,
+                retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits)
             ))
         } catch is CancellationError {
             return
@@ -523,6 +560,29 @@ final class LibraryChatViewModel: ObservableObject {
                 text: "Couldn't answer that — \(error.localizedDescription)."
             ))
         }
+    }
+
+    /// Project library hits into the persisted retrieval-debug
+    /// shape. The library scope's hits don't carry BM25 / hierarchy
+    /// / entity rank info on the underlying type — the federated
+    /// retriever fuses cosine + entity boost only — so those
+    /// fields stay nil / false.
+    private static func makeRetrievalDetail(
+        hits: [LibraryEmbeddingIndex.Hit]
+    ) -> RetrievalDetail {
+        let entries: [RetrievalDetail.Hit] = hits.map {
+            RetrievalDetail.Hit(
+                chapterIdx: $0.chapterIdx,
+                paragraphIdx: $0.paragraphIdx,
+                bookTitle: $0.bookTitle,
+                score: $0.score,
+                bm25Rank: nil,
+                embeddingRank: nil,
+                hierarchyMatched: false,
+                entityMatched: false
+            )
+        }
+        return RetrievalDetail(hits: entries)
     }
 
     private func appendAndPersist(_ message: BookChatMessage) {
@@ -544,7 +604,10 @@ final class LibraryChatViewModel: ObservableObject {
             seenBooks[hit.epubURL] = idx
             bookByIndex[idx] = (hit.epubURL, hit.bookTitle)
         }
-        let pattern = "\\[book:(\\d+)\\s+chapter:(\\d+)\\]"
+        // Match `[book:N chapter:M]` and `[book:N chapter:M para:K]`
+        // in one pass; paragraph segment is optional. Group 3 is
+        // the paragraph index when present.
+        let pattern = "\\[book:(\\d+)\\s+chapter:(\\d+)(?:\\s+para:(\\d+))?\\]"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return CitationParse(cleaned: text, citations: [])
         }
@@ -556,9 +619,15 @@ final class LibraryChatViewModel: ObservableObject {
         var cleaned = text
         var seen: [String: BookChatCitation] = [:]
         for match in matches.reversed() {
-            guard match.numberOfRanges == 3 else { continue }
+            guard match.numberOfRanges == 4 else { continue }
             let bookRaw = nsText.substring(with: match.range(at: 1))
             let chapterRaw = nsText.substring(with: match.range(at: 2))
+            let paragraphRaw: String? = {
+                let r = match.range(at: 3)
+                return r.location == NSNotFound
+                    ? nil
+                    : nsText.substring(with: r)
+            }()
             guard let bookIdx = Int(bookRaw),
                   let chapterIdx = Int(chapterRaw),
                   let bookEntry = bookByIndex[bookIdx]
@@ -569,14 +638,16 @@ final class LibraryChatViewModel: ObservableObject {
                 }
                 continue
             }
-            let key = "\(bookIdx)#\(chapterIdx)"
+            let paraIdx: Int? = paragraphRaw.flatMap(Int.init)
+            let key = "\(bookIdx)#\(chapterIdx)#\(paraIdx.map(String.init) ?? "-")"
             if seen[key] == nil {
                 seen[key] = BookChatCitation(
                     chapterIndex: chapterIdx,
                     title: bookEntry.title,
                     resourceID: "",
                     bookEpubURL: bookEntry.url,
-                    bookTitle: bookEntry.title
+                    bookTitle: bookEntry.title,
+                    paragraphIndex: paraIdx
                 )
             }
             let nsRange = match.range(at: 0)
@@ -591,10 +662,14 @@ final class LibraryChatViewModel: ObservableObject {
             of: " ([.,;:!?])", with: "$1", options: .regularExpression
         )
         let citations = Array(seen.values)
-            .sorted {
-                ($0.bookTitle ?? "") < ($1.bookTitle ?? "")
-                    || ($0.bookTitle == $1.bookTitle
-                        && $0.chapterIndex < $1.chapterIndex)
+            .sorted { lhs, rhs in
+                if (lhs.bookTitle ?? "") != (rhs.bookTitle ?? "") {
+                    return (lhs.bookTitle ?? "") < (rhs.bookTitle ?? "")
+                }
+                if lhs.chapterIndex != rhs.chapterIndex {
+                    return lhs.chapterIndex < rhs.chapterIndex
+                }
+                return (lhs.paragraphIndex ?? -1) < (rhs.paragraphIndex ?? -1)
             }
         return CitationParse(cleaned: cleaned, citations: citations)
     }
@@ -610,13 +685,16 @@ final class LibraryChatViewModel: ObservableObject {
         books. The user is asking a corpus-wide question and you'll \
         receive a small set of paragraphs retrieved from across that \
         library, prefixed with a list of source books. Each paragraph \
-        is labeled `[book:N chapter:M]` where N indexes into the \
-        books list and M indexes into that book's spine.
+        is labeled `[book:N chapter:M para:K]` where N indexes into \
+        the books list, M indexes into that book's spine, and K is \
+        the paragraph within the chapter.
 
-        Cite sources inline as `[book:N chapter:M]` using the same \
-        indices. The user's interface renders these markers as \
-        clickable links that open the cited book in a new editor \
-        window at the cited chapter.
+        Cite sources inline using the same marker form. The user's \
+        interface renders these as clickable links that open the \
+        cited book in a new editor window. Use the full \
+        `[book:N chapter:M para:K]` marker when the claim comes \
+        from a specific paragraph; the shorter `[book:N chapter:M]` \
+        form is fine for whole-chapter references.
 
         Compare across books when the question invites it; quote \
         brief passages with their citation when they directly support \

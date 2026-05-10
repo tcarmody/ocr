@@ -8,6 +8,12 @@ struct ChatPaneView: View {
     @ObservedObject var vm: BookChatViewModel
     /// Forwarded to the editor when the user clicks a citation.
     let onCitationTap: (BookChatCitation) -> Void
+    /// Per-window toggle that reveals the retrieval-debug
+    /// disclosure beneath each assistant message. Useful when
+    /// retrieval misfires and the user wants to see *why* each
+    /// paragraph was picked. Persisted across sends but not
+    /// across editor reopen — debug state is ephemeral by design.
+    @State private var showRetrievalDetail: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,6 +68,17 @@ struct ChatPaneView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 Spacer()
+                Button {
+                    showRetrievalDetail.toggle()
+                } label: {
+                    Image(systemName: showRetrievalDetail
+                          ? "info.circle.fill"
+                          : "info.circle")
+                }
+                .buttonStyle(.borderless)
+                .help(showRetrievalDetail
+                      ? "Hide retrieval detail under each answer"
+                      : "Show retrieval detail under each answer")
             }
             if vm.chatScope == .library {
                 libraryStatusLabel
@@ -160,7 +177,8 @@ struct ChatPaneView: View {
                     ForEach(vm.messages) { message in
                         ChatMessageRow(
                             message: message,
-                            onCitationTap: onCitationTap
+                            onCitationTap: onCitationTap,
+                            showRetrievalDetail: showRetrievalDetail
                         )
                         .id(message.id)
                     }

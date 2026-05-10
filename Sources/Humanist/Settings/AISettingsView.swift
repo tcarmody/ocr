@@ -69,6 +69,15 @@ struct AISettingsView: View {
     /// as the structural toggle.
     @AppStorage("humanist.chat.useEntityRetrieval")
     private var useEntityRetrieval: Bool = true
+    /// Advanced retrieval knobs. 0 = "use the default" so a user
+    /// who never opens the Advanced disclosure stays on the
+    /// shipped values without having to seed Settings explicitly.
+    @AppStorage("humanist.chat.rrfK")
+    private var rrfK: Int = 0          // 0 → defaults to 60
+    @AppStorage("humanist.chat.topK")
+    private var topK: Int = 0          // 0 → defaults to 12
+    @AppStorage("humanist.chat.maxParaChars")
+    private var maxParaChars: Int = 0  // 0 → defaults to 4_000
     /// Buffer for the alias-dictionary text editor. Loaded on
     /// appear; persisted on commit (focus loss / blur).
     @State private var aliasEditorText: String = ""
@@ -97,7 +106,19 @@ struct AISettingsView: View {
     private var embeddingBackendBinding: Binding<EmbeddingBackendChoice> {
         Binding(
             get: { EmbeddingBackendChoice(rawValue: embeddingBackendRaw) ?? .appleNL },
-            set: { embeddingBackendRaw = $0.rawValue }
+            set: { newValue in
+                let previous = embeddingBackendRaw
+                embeddingBackendRaw = newValue.rawValue
+                // Notify open chat view-models so they drop their
+                // cached indexes and re-resolve on the next send.
+                // Skip when the value didn't actually change to
+                // avoid spurious rebuilds from binding round-trips.
+                if previous != newValue.rawValue {
+                    NotificationCenter.default.post(
+                        name: .humanistEmbeddingBackendChanged, object: nil
+                    )
+                }
+            }
         )
     }
 
@@ -214,6 +235,69 @@ struct AISettingsView: View {
             if geminiModel == "gemini-embedding-002" {
                 geminiModel = "gemini-embedding-2"
             }
+        }
+        // Per-backend model identity is part of the resolved
+        // backend's `identifier`, so a model-name change requires
+        // the same cache-invalidation cascade as a backend-choice
+        // change. Watching each persisted value individually is
+        // simpler than a single composite — SwiftUI fires onChange
+        // exactly once per actual mutation, which is what we want.
+        .onChange(of: voyageModel) { _, _ in postBackendChange() }
+        .onChange(of: geminiModel) { _, _ in postBackendChange() }
+        .onChange(of: ollamaEmbeddingModel) { _, _ in postBackendChange() }
+        .onChange(of: geminiOutputDimensionality) { _, _ in postBackendChange() }
+    }
+
+    private func postBackendChange() {
+        NotificationCenter.default.post(
+            name: .humanistEmbeddingBackendChanged, object: nil
+        )
+    }
+
+    /// Single row in the Advanced retrieval disclosure: a
+    /// stepper-bound int (0 = default), the default value
+    /// rendered as placeholder text, plus a Reset button that
+    /// zeroes the binding (which restores the default).
+    @ViewBuilder
+    private func tunableKnobRow(
+        label: String,
+        binding: Binding<Int>,
+        defaultValue: Int,
+        range: ClosedRange<Int>,
+        blurb: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                Spacer()
+                if binding.wrappedValue == 0 {
+                    Text("Default (\(defaultValue))")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                } else {
+                    Text("\(binding.wrappedValue)")
+                        .font(.callout.monospacedDigit())
+                }
+                Stepper(
+                    "",
+                    value: Binding(
+                        get: { binding.wrappedValue == 0 ? defaultValue : binding.wrappedValue },
+                        set: { newValue in
+                            binding.wrappedValue = newValue == defaultValue ? 0 : newValue
+                        }
+                    ),
+                    in: range
+                )
+                .labelsHidden()
+                if binding.wrappedValue != 0 {
+                    Button("Reset") { binding.wrappedValue = 0 }
+                        .controlSize(.small)
+                }
+            }
+            Text(blurb)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -421,6 +505,34 @@ struct AISettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            // Power-user retrieval knobs. Hidden behind a
+            // DisclosureGroup so the section stays compact for
+            // users who never tune. 0 = "use shipped default" so
+            // resetting a field returns to the canonical value.
+            DisclosureGroup("Advanced retrieval") {
+                tunableKnobRow(
+                    label: "RRF k",
+                    binding: $rrfK,
+                    defaultValue: Int(HybridRetriever.defaultRRFK),
+                    range: 30...120,
+                    blurb: "Reciprocal Rank Fusion constant. Higher k flattens the rank distribution (mid-ranked hits weigh more); lower k concentrates on top hits. Default 60 from Cormack et al."
+                )
+                tunableKnobRow(
+                    label: "Top-K paragraphs",
+                    binding: $topK,
+                    defaultValue: 12,
+                    range: 4...30,
+                    blurb: "Paragraphs returned per query. Lower = tighter context (cheaper, less recall); higher = broader context (more cost, higher chance of catching the answer)."
+                )
+                tunableKnobRow(
+                    label: "Max paragraph chars",
+                    binding: $maxParaChars,
+                    defaultValue: 4_000,
+                    range: 1_000...10_000,
+                    blurb: "Truncates abnormally long paragraphs (rare OCR artifact) before they enter the model's context. Most well-formed paragraphs are under 2 KB; raise this only if the corpus has long run-ons that matter."
+                )
+            }
 
             // Alias dictionary — concepts / names NLTagger missed.
             // One per line, applied across every indexed book.

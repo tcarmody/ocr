@@ -68,8 +68,12 @@ struct HybridRetriever {
 
     /// Standard RRF constant from Cormack et al. The mixing constant
     /// matters less than the rank distribution shape; 60 is a
-    /// reliable default across IR benchmarks.
-    static let rrfK: Double = 60
+    /// reliable default across IR benchmarks. Stored on the
+    /// instance so power users can tune via Settings → AI →
+    /// Advanced. Tests + the static default still reach the
+    /// canonical value through `defaultRRFK`.
+    static let defaultRRFK: Double = 60
+    var rrfK: Double = defaultRRFK
 
     let style: Style
     let bm25: BookKeywordIndex
@@ -197,16 +201,16 @@ struct HybridRetriever {
             let hierarchyHit = hierarchySet.contains(key)
             let entityHit = entitySet.contains(key)
             var score: Double = 0
-            if let r = bm25Rank { score += 1.0 / (Self.rrfK + Double(r)) }
-            if let r = embeddingRank { score += 1.0 / (Self.rrfK + Double(r)) }
+            if let r = bm25Rank { score += 1.0 / (rrfK + Double(r)) }
+            if let r = embeddingRank { score += 1.0 / (rrfK + Double(r)) }
             // Hierarchy / entity boosts: rank-1 contribution each.
             // Same magnitude as a top BM25 / embedding hit, so a
             // paragraph that's in the matched scope but didn't
             // surface in either ranker still has a real shot at
             // the top-K — and one that hits all four rankers
             // dominates.
-            if hierarchyHit { score += 1.0 / (Self.rrfK + 1.0) }
-            if entityHit    { score += 1.0 / (Self.rrfK + 1.0) }
+            if hierarchyHit { score += 1.0 / (rrfK + 1.0) }
+            if entityHit    { score += 1.0 / (rrfK + 1.0) }
             // Find the paragraph text. If the paragraph is in the
             // embedding index we have it directly; otherwise (BM25
             // brought it in via projection but embedding rank is

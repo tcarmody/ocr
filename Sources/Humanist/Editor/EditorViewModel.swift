@@ -564,6 +564,36 @@ final class EditorViewModel: ObservableObject {
         alignOthers(to: anchorId, drivingPane: .preview)
     }
 
+    /// Programmatically navigate to a specific paragraph anchor —
+    /// fired by chat citation chips when the citation carries a
+    /// paragraph index. Selects the chapter file (if not already
+    /// selected) and posts a scroll request to land both source +
+    /// preview panes on `<p id="hu-p-{chapterIdx}-{paragraphIdx}">`.
+    /// The PDF pane stays put; per-paragraph PDF coordinates aren't
+    /// always available, and the chat path doesn't need them anyway.
+    func requestParagraphScroll(resourceID: String, paragraphIdx: Int) {
+        guard let book = book,
+              let resource = book.resourcesByID[resourceID],
+              let tree = fileTree,
+              let chapterIdx = book.spine.firstIndex(of: resourceID)
+        else { return }
+        let url = book.absoluteURL(for: resource).canonicalForFile
+        let anchorId = "hu-p-\(chapterIdx)-\(paragraphIdx)"
+        // Switch chapter only when the citation points elsewhere.
+        if selectedFile?.id.canonicalForFile != url,
+           let node = Self.findLeaf(in: tree, matching: url) {
+            select(node)
+        }
+        scrollNonce &+= 1
+        let req = AnchorScrollRequest(
+            anchorId: anchorId,
+            xhtmlFile: resource.hrefRelativeToOPF,
+            nonce: scrollNonce
+        )
+        scrollPreviewToAnchor = req
+        scrollCodeToAnchor = req
+    }
+
     /// One-shot alignment to a chapter file's first page anchor —
     /// called when the user clicks a chapter in the file-tree
     /// sidebar so the user lands in the right place across all

@@ -481,10 +481,17 @@ struct EditorView: View {
                         // Library-scope citations carry a source
                         // book URL — open it in a new editor window
                         // (or activate one already open). Per-book
-                        // citations stay in this window and just
-                        // select the chapter.
+                        // citations stay in this window. When the
+                        // citation specifies a paragraph index,
+                        // scroll the editor to that paragraph
+                        // rather than just selecting the chapter.
                         if let bookURL = citation.bookEpubURL {
                             OpenRouter.open(bookURL, openWindow: openWindow)
+                        } else if let paraIdx = citation.paragraphIndex {
+                            vm.requestParagraphScroll(
+                                resourceID: citation.resourceID,
+                                paragraphIdx: paraIdx
+                            )
                         } else {
                             selectChapter(byResourceID: citation.resourceID)
                         }
