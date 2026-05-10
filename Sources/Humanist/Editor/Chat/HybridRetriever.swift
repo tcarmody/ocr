@@ -48,10 +48,13 @@ struct HybridRetriever {
         }
     }
 
-    /// One paragraph-level result. `bm25Rank` and `embeddingRank` are
-    /// 1-based; `nil` means the paragraph didn't appear in that
-    /// ranker's top-N. Carried so the chat pane can debug-log "why
-    /// was this picked" if a future bug needs it.
+    /// One paragraph-level result. `bm25Rank` and `embeddingRank`
+    /// are 1-based; `nil` means the paragraph didn't appear in that
+    /// ranker's top-N. `hierarchyMatched` / `entityMatched` are bool
+    /// flags rather than ranks because those rankers tag a *set* of
+    /// paragraphs as relevant (they don't differentiate within the
+    /// set); the embedding / BM25 ranks differentiate. Carried for
+    /// the planned retrieval-debug surface.
     struct Hit: Sendable {
         let chapterIdx: Int
         let paragraphIdx: Int
@@ -59,6 +62,8 @@ struct HybridRetriever {
         let score: Double
         let bm25Rank: Int?
         let embeddingRank: Int?
+        let hierarchyMatched: Bool
+        let entityMatched: Bool
     }
 
     /// Standard RRF constant from Cormack et al. The mixing constant
@@ -75,6 +80,17 @@ struct HybridRetriever {
     /// path is responsible for embedding the query before calling
     /// `search`; this type is dependency-free of any backend.
     let queryVector: [Float]?
+    /// Paragraph anchors that matched a structural query (e.g.
+    /// "chapter 3" → every paragraph in that chapter). Empty when
+    /// no structural pattern was detected. Each anchor contributes
+    /// a fixed RRF rank-1 boost to the fusion.
+    var hierarchyMatches: [(chapterIdx: Int, paragraphIdx: Int)] = []
+    /// Paragraph anchors that mention an entity the user named
+    /// in the query. Empty when no entity was matched. Each anchor
+    /// contributes a fixed RRF rank-1 boost — entity matches don't
+    /// rank internally so the embedding / BM25 signals differentiate
+    /// within the matched set.
+    var entityMatches: [(chapterIdx: Int, paragraphIdx: Int)] = []
 
     /// Run retrieval. Returns up to `topK` paragraph hits in
     /// descending fused-score order. The chat path renders each
@@ -148,21 +164,49 @@ struct HybridRetriever {
                     text: hit.chapter.text,
                     score: hit.score,
                     bm25Rank: nil,
-                    embeddingRank: nil
+                    embeddingRank: nil,
+                    hierarchyMatched: false,
+                    entityMatched: false
                 )
             }
         }
 
+        // Hierarchy / entity matched-set lookups. Each contributes
+        // a fixed rank-1 boost via RRF — these rankers don't
+        // differentiate within their matched set; embeddings + BM25
+        // differentiate.
+        let hierarchySet: Set<Pair> = Set(hierarchyMatches.map {
+            Pair($0.chapterIdx, $0.paragraphIdx)
+        })
+        let entitySet: Set<Pair> = Set(entityMatches.map {
+            Pair($0.chapterIdx, $0.paragraphIdx)
+        })
+
         // Hybrid / embeddings-only with paragraph data: compute RRF.
-        let allKeys = Set(bm25RankByPara.keys).union(embeddingRankByPara.keys)
+        // The key set unions every paragraph any ranker surfaced;
+        // hierarchy / entity sets contribute paragraphs that might
+        // not otherwise appear so the boost actually lands on them.
+        var allKeys = Set(bm25RankByPara.keys).union(embeddingRankByPara.keys)
+        allKeys.formUnion(hierarchySet)
+        allKeys.formUnion(entitySet)
         var scored: [Hit] = []
         scored.reserveCapacity(allKeys.count)
         for key in allKeys {
             let bm25Rank = bm25RankByPara[key]
             let embeddingRank = embeddingRankByPara[key]
+            let hierarchyHit = hierarchySet.contains(key)
+            let entityHit = entitySet.contains(key)
             var score: Double = 0
             if let r = bm25Rank { score += 1.0 / (Self.rrfK + Double(r)) }
             if let r = embeddingRank { score += 1.0 / (Self.rrfK + Double(r)) }
+            // Hierarchy / entity boosts: rank-1 contribution each.
+            // Same magnitude as a top BM25 / embedding hit, so a
+            // paragraph that's in the matched scope but didn't
+            // surface in either ranker still has a real shot at
+            // the top-K — and one that hits all four rankers
+            // dominates.
+            if hierarchyHit { score += 1.0 / (Self.rrfK + 1.0) }
+            if entityHit    { score += 1.0 / (Self.rrfK + 1.0) }
             // Find the paragraph text. If the paragraph is in the
             // embedding index we have it directly; otherwise (BM25
             // brought it in via projection but embedding rank is
@@ -176,7 +220,9 @@ struct HybridRetriever {
                 text: paragraphText,
                 score: score,
                 bm25Rank: bm25Rank,
-                embeddingRank: embeddingRank
+                embeddingRank: embeddingRank,
+                hierarchyMatched: hierarchyHit,
+                entityMatched: entityHit
             ))
         }
         return scored

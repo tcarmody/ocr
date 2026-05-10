@@ -123,32 +123,106 @@ struct LibraryEmbeddingIndex: Sendable {
 
     /// Score every paragraph across every source against
     /// `queryVector` and return the top-K hits in descending
-    /// similarity order. Brute-force per-source loop; faster than
-    /// flattening the parallel arrays into one giant Float[] thanks
-    /// to better cache locality on the per-source pass.
-    func search(queryVector: [Float], topK: Int = 12) -> [Hit] {
+    /// similarity order. Optionally fuses with library-wide entity
+    /// matches via RRF — when `entityMatches` is non-empty, every
+    /// matched (book, chapter, paragraph) anchor receives a
+    /// rank-1 boost on top of its cosine rank, lifting paragraphs
+    /// that both score well on similarity *and* mention the named
+    /// entity the user asked about.
+    ///
+    /// Brute-force per-source loop; faster than flattening the
+    /// parallel arrays into one giant Float[] thanks to better
+    /// cache locality on the per-source pass.
+    func search(
+        queryVector: [Float],
+        topK: Int = 12,
+        entityMatches: [LibraryEntityIndex.LibraryAnchor] = []
+    ) -> [Hit] {
         guard !queryVector.isEmpty else { return [] }
-        var hits: [Hit] = []
-        hits.reserveCapacity(min(totalParagraphCount, topK * 4))
+        let entitySet: Set<EntityKey> = Set(entityMatches.map {
+            EntityKey($0.epubURL, $0.chapterIdx, $0.paragraphIdx)
+        })
+        // Score every paragraph by cosine; track its position so
+        // RRF rank can be added later without a second sort.
+        struct Candidate {
+            let hit: Hit
+            let cosineScore: Double
+        }
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(totalParagraphCount)
         for source in sources {
             for entry in source.paragraphs {
                 let score = BookEmbeddingIndex.cosine(
                     entry.vector, queryVector
                 )
-                hits.append(Hit(
-                    epubURL: source.epubURL,
-                    bookTitle: source.bookTitle,
-                    chapterIdx: entry.chapterIdx,
-                    paragraphIdx: entry.paragraphIdx,
-                    textHash: entry.textHash,
-                    text: entry.text,
-                    score: score
+                candidates.append(Candidate(
+                    hit: Hit(
+                        epubURL: source.epubURL,
+                        bookTitle: source.bookTitle,
+                        chapterIdx: entry.chapterIdx,
+                        paragraphIdx: entry.paragraphIdx,
+                        textHash: entry.textHash,
+                        text: entry.text,
+                        score: score
+                    ),
+                    cosineScore: score
                 ))
             }
         }
-        return hits
+        // Sort by cosine to assign cosine ranks for RRF fusion.
+        candidates.sort { $0.cosineScore > $1.cosineScore }
+        // Build the union of paragraphs that scored well on cosine
+        // *and* every entity-matched paragraph (so a paragraph
+        // mentioning a matched entity but with weak cosine still
+        // has a shot at the top-K). Take a generous cosine top-N
+        // since the RRF fusion is cheap.
+        let cosineTopN = min(candidates.count, max(topK * 4, 96))
+        var inUnion: Set<EntityKey> = []
+        var fused: [(hit: Hit, score: Double)] = []
+        let rrfK = 60.0
+        for (rank, candidate) in candidates.prefix(cosineTopN).enumerated() {
+            let key = EntityKey(
+                candidate.hit.epubURL,
+                candidate.hit.chapterIdx,
+                candidate.hit.paragraphIdx
+            )
+            inUnion.insert(key)
+            var score = 1.0 / (rrfK + Double(rank + 1))
+            if entitySet.contains(key) {
+                score += 1.0 / (rrfK + 1.0)
+            }
+            fused.append((candidate.hit, score))
+        }
+        // Add entity-matched anchors that didn't make the cosine
+        // top-N — their boost is enough to surface them.
+        if !entitySet.isEmpty {
+            for candidate in candidates {
+                let key = EntityKey(
+                    candidate.hit.epubURL,
+                    candidate.hit.chapterIdx,
+                    candidate.hit.paragraphIdx
+                )
+                guard entitySet.contains(key), !inUnion.contains(key) else { continue }
+                inUnion.insert(key)
+                fused.append((candidate.hit, 1.0 / (rrfK + 1.0)))
+            }
+        }
+        return fused
             .sorted { $0.score > $1.score }
             .prefix(topK)
-            .map { $0 }
+            .map { $0.hit }
+    }
+
+    /// Hashable identity key used by the RRF fusion to dedupe
+    /// entity-matched paragraphs against cosine-matched ones.
+    private struct EntityKey: Hashable {
+        let urlPath: String
+        let chapterIdx: Int
+        let paragraphIdx: Int
+        init(_ url: URL, _ c: Int, _ p: Int) {
+            self.urlPath = url.canonicalForFile.standardizedFileURL.path
+            self.chapterIdx = c
+            self.paragraphIdx = p
+        }
     }
 }

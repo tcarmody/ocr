@@ -99,7 +99,8 @@ final class ChatEmbeddingsTests: XCTestCase {
                 .init(chapterIdx: 0, paragraphIdx: 1, textHash: "abc", vector: [0.1, 0.2, 0.3]),
                 .init(chapterIdx: 1, paragraphIdx: 0, textHash: "def", vector: [0.4, 0.5, 0.6]),
             ],
-            hierarchy: nil
+            hierarchy: nil,
+            entities: nil
         )
         let url = URL(fileURLWithPath: "/tmp/sample.epub")
         store.write(payload, for: url)
@@ -159,6 +160,43 @@ final class ChatEmbeddingsTests: XCTestCase {
         XCTAssertEqual(hits.first?.chapterIdx, 0)
     }
 
+    /// Four-way RRF: a paragraph that's matched by hierarchy +
+    /// entity boosts beats one that has only a marginal embedding
+    /// rank. Tests the whole-fusion stacking behavior.
+    func test_hybrid_rrf_with_hierarchy_and_entity_boosts() {
+        let bm25 = BookKeywordIndex(chapters: [
+            .init(id: "c0", title: "A", text: "alpha alpha alpha"),
+            .init(id: "c1", title: "B", text: "beta beta beta"),
+        ])
+        let embeddings = BookEmbeddingIndex(
+            paragraphs: [
+                .init(chapterIdx: 0, paragraphIdx: 0, text: "alpha first", textHash: "h0", vector: [0, 0, 1]),
+                .init(chapterIdx: 0, paragraphIdx: 1, text: "alpha second", textHash: "h1", vector: [0, 0, 1]),
+                .init(chapterIdx: 1, paragraphIdx: 0, text: "beta first", textHash: "h2", vector: [0, 0, 1]),
+            ],
+            backend: StubBackend()
+        )
+        // Query vector orthogonal to all paragraphs — embedding
+        // ranker contributes uniformly, so any winner is driven by
+        // BM25 / hierarchy / entity boosts.
+        var retriever = HybridRetriever(
+            style: .hybrid, bm25: bm25, embeddings: embeddings,
+            queryVector: [1, 0, 0]
+        )
+        // Tag (1, 0) as both hierarchy- and entity-matched. With
+        // two rank-1 boosts on top of any BM25 / embedding rank
+        // it gets, it should top the list — even though c1's BM25
+        // signal is identical to c0's.
+        retriever.hierarchyMatches = [(chapterIdx: 1, paragraphIdx: 0)]
+        retriever.entityMatches = [(chapterIdx: 1, paragraphIdx: 0)]
+        let hits = retriever.search(query: "beta", topK: 3)
+        XCTAssertFalse(hits.isEmpty)
+        XCTAssertEqual(hits.first?.chapterIdx, 1)
+        XCTAssertEqual(hits.first?.paragraphIdx, 0)
+        XCTAssertTrue(hits.first?.hierarchyMatched ?? false)
+        XCTAssertTrue(hits.first?.entityMatched ?? false)
+    }
+
     /// Hybrid with both rankers blends BM25 chapter projection and
     /// embedding paragraph rank via RRF. A paragraph that scores
     /// well on both rankers wins over one that scores well on only
@@ -201,6 +239,84 @@ private struct StubBackend: EmbeddingBackend {
     var dimension: Int { 3 }
     func embed(_ texts: [String]) async throws -> [[Float]] {
         Array(repeating: [0, 0, 0], count: texts.count)
+    }
+}
+
+// MARK: - Entity index
+
+final class BookEntityIndexTests: XCTestCase {
+
+    /// NER on a contemporary English query surfaces the canonical
+    /// names that are present in the index — the matched key list
+    /// is sorted by mention count descending. Uses entities
+    /// NLTagger recognizes reliably (Apple / Google as orgs) so
+    /// the test isn't gated on the model's recall for academic
+    /// surnames.
+    func test_entity_match_orders_by_mention_count() {
+        let appleAnchors = (0..<5).map {
+            BookEntityIndex.Anchor(chapterIdx: 0, paragraphIdx: $0)
+        }
+        let googleAnchors = [
+            BookEntityIndex.Anchor(chapterIdx: 1, paragraphIdx: 0),
+        ]
+        let index = BookEntityIndex(
+            mentions: [
+                "apple": appleAnchors,
+                "google": googleAnchors,
+            ],
+            displayNames: [
+                "apple": "Apple",
+                "google": "Google",
+            ]
+        )
+        let matched = index.entitiesMatching(
+            query: "Apple and Google compete fiercely in mobile"
+        )
+        XCTAssertEqual(matched, ["apple", "google"])
+    }
+
+    /// Entities not in the index are dropped from the match list
+    /// even when the NER pass detects them.
+    func test_entity_match_filters_unknowns() {
+        let index = BookEntityIndex(
+            mentions: ["apple": [
+                BookEntityIndex.Anchor(chapterIdx: 0, paragraphIdx: 0),
+            ]],
+            displayNames: ["apple": "Apple"]
+        )
+        let matched = index.entitiesMatching(
+            query: "Apple and Microsoft rivalry"
+        )
+        XCTAssertEqual(matched, ["apple"])
+    }
+
+    /// Anchors lookup returns the stored list verbatim.
+    func test_anchor_lookup_returns_stored_anchors() {
+        let anchors = [
+            BookEntityIndex.Anchor(chapterIdx: 2, paragraphIdx: 7),
+            BookEntityIndex.Anchor(chapterIdx: 5, paragraphIdx: 0),
+        ]
+        let index = BookEntityIndex(
+            mentions: ["plato": anchors],
+            displayNames: ["plato": "Plato"]
+        )
+        XCTAssertEqual(index.anchors(for: "plato"), anchors)
+        XCTAssertTrue(index.anchors(for: "missing").isEmpty)
+    }
+
+    /// Codable round-trip — sidecar persistence relies on this.
+    func test_entity_index_codable_round_trip() throws {
+        let index = BookEntityIndex(
+            mentions: [
+                "athens": [
+                    BookEntityIndex.Anchor(chapterIdx: 1, paragraphIdx: 3),
+                ],
+            ],
+            displayNames: ["athens": "Athens"]
+        )
+        let data = try JSONEncoder().encode(index)
+        let decoded = try JSONDecoder().decode(BookEntityIndex.self, from: data)
+        XCTAssertEqual(decoded, index)
     }
 }
 

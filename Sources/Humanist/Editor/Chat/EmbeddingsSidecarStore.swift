@@ -34,6 +34,11 @@ struct EmbeddingsSidecar: Codable, Sendable {
     /// loaded with a nil hierarchy and trigger a rebuild that
     /// populates it.
     var hierarchy: BookHierarchyIndex?
+    /// Per-book named-entity index from NLTagger. Optional for
+    /// forward compatibility; populated by `BookEntityIndex.build`
+    /// during the embedding pipeline. Drives entity-shaped
+    /// retrieval and library-wide entity federation.
+    var entities: BookEntityIndex?
 
     struct Entry: Codable, Sendable {
         let chapterIdx: Int
@@ -90,13 +95,14 @@ struct EmbeddingsSidecar: Codable, Sendable {
             backendIdentifier: backend,
             dimension: dimension,
             paragraphs: [],
-            hierarchy: nil
+            hierarchy: nil,
+            entities: nil
         )
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, backendIdentifier, dimension
-        case paragraphs, hierarchy
+        case paragraphs, hierarchy, entities
     }
 
     init(
@@ -104,13 +110,15 @@ struct EmbeddingsSidecar: Codable, Sendable {
         backendIdentifier: String,
         dimension: Int,
         paragraphs: [Entry],
-        hierarchy: BookHierarchyIndex?
+        hierarchy: BookHierarchyIndex?,
+        entities: BookEntityIndex?
     ) {
         self.schemaVersion = schemaVersion
         self.backendIdentifier = backendIdentifier
         self.dimension = dimension
         self.paragraphs = paragraphs
         self.hierarchy = hierarchy
+        self.entities = entities
     }
 
     init(from decoder: Decoder) throws {
@@ -120,9 +128,12 @@ struct EmbeddingsSidecar: Codable, Sendable {
         self.dimension = try c.decode(Int.self, forKey: .dimension)
         self.paragraphs = try c.decode([Entry].self, forKey: .paragraphs)
         // Optional decode so v1 sidecars still load; the build
-        // pass refreshes the hierarchy on next open.
+        // pass refreshes the hierarchy / entities on next open.
         self.hierarchy = try c.decodeIfPresent(
             BookHierarchyIndex.self, forKey: .hierarchy
+        )
+        self.entities = try c.decodeIfPresent(
+            BookEntityIndex.self, forKey: .entities
         )
     }
 }

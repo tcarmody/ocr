@@ -75,11 +75,21 @@ final class BookChatViewModel: ObservableObject {
     /// the rendered context, and (c) include a TOC preamble in the
     /// system prompt.
     private var hierarchyIndex: BookHierarchyIndex?
+    /// Per-book NER index built via `NLTagger`. Used by the
+    /// retriever to boost paragraphs mentioning entities the user
+    /// references in the query. Populated alongside the hierarchy
+    /// during the embedding-build task.
+    private var entityIndex: BookEntityIndex?
     /// Federated index over the user's library — built lazily when
     /// the chat scope flips to `.library`. Held until scope flips
     /// back; rebuilt on the next library send so a re-indexed book
     /// joins the federation without an app restart.
     private var libraryIndex: LibraryEmbeddingIndex?
+    /// Federated entity index over the library. Built alongside
+    /// `libraryIndex` and consulted when the user names an entity
+    /// in a library-scope query — every paragraph mentioning that
+    /// entity across the library participates in RRF.
+    private var libraryEntityIndex: LibraryEntityIndex?
     /// Per-book paragraph cache for library scope. When a hit's
     /// sidecar entry has no cached `text`, we open the book on disk
     /// to extract the paragraph; cache the extracted list so
@@ -265,6 +275,8 @@ final class BookChatViewModel: ObservableObject {
         let chosenBackend = backend
         let style = retrievalStyle
         let embeddingIndexSnapshot = embeddingIndex
+        let hierarchySnapshot = hierarchyIndex
+        let entitySnapshot = entityIndex
         let task = Task { [weak self] in
             guard let self else { return }
             let queryVector: [Float]?
@@ -274,12 +286,28 @@ final class BookChatViewModel: ObservableObject {
                 queryVector = nil
             }
 
-            let retriever = HybridRetriever(
+            // Compute hierarchy / entity boost paragraphs from the
+            // query. Hierarchy: matched chapter nodes expand to
+            // every paragraph in that chapter (the embedding index
+            // is the source of paragraph identities). Entities:
+            // anchors come straight from the entity index.
+            let hierarchyMatches = self.computeHierarchyMatches(
+                query: query,
+                hierarchy: hierarchySnapshot,
+                embeddings: embeddingIndexSnapshot
+            )
+            let entityMatches = self.computeEntityMatches(
+                query: query, entities: entitySnapshot
+            )
+
+            var retriever = HybridRetriever(
                 style: style,
                 bm25: bm25,
                 embeddings: embeddingIndexSnapshot,
                 queryVector: queryVector
             )
+            retriever.hierarchyMatches = hierarchyMatches
+            retriever.entityMatches = entityMatches
             let usedParagraphs = (style != .bm25) && (queryVector != nil) && (embeddingIndexSnapshot != nil)
             let topK = usedParagraphs
                 ? Self.maxRetrievedParagraphs
@@ -354,8 +382,18 @@ final class BookChatViewModel: ObservableObject {
                 }
                 return
             }
+            // Library entity boost — when the user named an
+            // entity present in the federated index, every
+            // paragraph mentioning that entity gets a rank-1 RRF
+            // contribution alongside the cosine hits.
+            let entityIndex = await MainActor.run { self.libraryEntityIndex }
+            let entityAnchors = self.computeLibraryEntityAnchors(
+                query: query, entities: entityIndex
+            )
             let hits = library.search(
-                queryVector: queryVector, topK: Self.maxRetrievedParagraphs
+                queryVector: queryVector,
+                topK: Self.maxRetrievedParagraphs,
+                entityMatches: entityAnchors
             )
             let resolved = await self.resolveLibraryHits(hits)
             let context = self.renderLibraryContext(hits: resolved)
@@ -488,6 +526,7 @@ final class BookChatViewModel: ObservableObject {
         self.bm25Index = nil
         self.embeddingIndex = nil
         self.hierarchyIndex = nil
+        self.entityIndex = nil
         startEmbeddingBuild()
     }
 
@@ -593,11 +632,20 @@ final class BookChatViewModel: ObservableObject {
                 // have invalidated a cached tree.
                 let hierarchy = BookHierarchyIndex.build(from: snapshot)
                 sidecar.hierarchy = hierarchy
+                // Run NER over every paragraph. Sequential pass
+                // through ParagraphExtractor; ~5-10ms per paragraph
+                // (~10-15s for a typical 1500-paragraph book).
+                // Uses the same paragraphs the embedder already
+                // walked, so the I/O cost is just the NLTagger
+                // run itself.
+                let entities = BookEntityIndex.build(from: snapshot)
+                sidecar.entities = entities
                 store.write(sidecar, for: url)
                 try Task.checkCancellation()
                 await MainActor.run {
                     self?.embeddingIndex = index
                     self?.hierarchyIndex = hierarchy
+                    self?.entityIndex = entities
                     self?.embeddingStatus = .ready
                 }
             } catch is CancellationError {
@@ -623,6 +671,89 @@ final class BookChatViewModel: ObservableObject {
         }
     }
 
+    /// Expand structural-query matches to paragraph anchors. A hit
+    /// on "chapter 3" → every paragraph in chapter 3. The embedding
+    /// index supplies the paragraph identity space (it knows which
+    /// paragraph indices exist per chapter); when the embedding
+    /// index isn't built yet, we return an empty list and the RRF
+    /// fusion proceeds without the structural boost.
+    private func computeHierarchyMatches(
+        query: String,
+        hierarchy: BookHierarchyIndex?,
+        embeddings: BookEmbeddingIndex?
+    ) -> [(chapterIdx: Int, paragraphIdx: Int)] {
+        guard let hierarchy, let embeddings else { return [] }
+        let matches = hierarchy.nodesMatching(query: query)
+        guard !matches.isEmpty else { return [] }
+        // Distinct chapter indices the query referenced. Multiple
+        // matched nodes typically share a chapter (a section
+        // matches and so does its containing chapter); dedup so
+        // we don't double-count.
+        let chapterIdxs = Set(matches.map(\.chapterIdx))
+        var anchors: [(chapterIdx: Int, paragraphIdx: Int)] = []
+        for paragraph in embeddings.paragraphs
+        where chapterIdxs.contains(paragraph.chapterIdx) {
+            anchors.append((paragraph.chapterIdx, paragraph.paragraphIdx))
+        }
+        return anchors
+    }
+
+    /// Look up entities the user named in `query` and project to
+    /// paragraph anchors. Caps the per-entity anchor count so a
+    /// single very-frequent entity ("Foucault" in a Foucault book)
+    /// doesn't drown the RRF fusion in boosts that all share rank
+    /// 1 — beyond a few dozen anchors the boost adds noise without
+    /// adding signal.
+    private func computeEntityMatches(
+        query: String,
+        entities: BookEntityIndex?
+    ) -> [(chapterIdx: Int, paragraphIdx: Int)] {
+        guard let entities else { return [] }
+        let matched = entities.entitiesMatching(query: query)
+        guard !matched.isEmpty else { return [] }
+        var out: [(chapterIdx: Int, paragraphIdx: Int)] = []
+        // Cap per-entity at 50 anchors — enough to surface the
+        // entity meaningfully, low enough that the boost is
+        // selective. Across-entity total cap of 200 is a defense
+        // against a 5-entity query in a 10K-paragraph book.
+        let perEntityCap = 50
+        let totalCap = 200
+        for canonical in matched {
+            for anchor in entities.anchors(for: canonical).prefix(perEntityCap) {
+                out.append((anchor.chapterIdx, anchor.paragraphIdx))
+                if out.count >= totalCap { return out }
+            }
+        }
+        return out
+    }
+
+    /// Library-scope counterpart to `computeEntityMatches`. Returns
+    /// every (book, chapter, paragraph) anchor mentioning a
+    /// query-named entity that the federated index knows about.
+    /// Same per-entity / total caps as the per-book path; the
+    /// budget is shared across books since a popular entity in a
+    /// 100-book corpus could otherwise dominate.
+    private func computeLibraryEntityAnchors(
+        query: String,
+        entities: LibraryEntityIndex?
+    ) -> [LibraryEntityIndex.LibraryAnchor] {
+        guard let entities else { return [] }
+        let matched = entities.entitiesMatching(query: query)
+        guard !matched.isEmpty else { return [] }
+        var out: [LibraryEntityIndex.LibraryAnchor] = []
+        // Larger total cap for library scope (1500 vs 200 per-book)
+        // — corpus-wide queries naturally surface more anchors.
+        let perEntityCap = 200
+        let totalCap = 1500
+        for canonical in matched {
+            for anchor in entities.anchors(for: canonical).prefix(perEntityCap) {
+                out.append(anchor)
+                if out.count >= totalCap { return out }
+            }
+        }
+        return out
+    }
+
     // MARK: - Library scope
 
     /// One library hit with its text resolved (either from the
@@ -639,6 +770,8 @@ final class BookChatViewModel: ObservableObject {
     /// Build or reuse the library-wide federated embedding index.
     /// Rebuilds whenever the cached index's backend doesn't match
     /// the resolved backend — happens on Settings backend change.
+    /// The companion `libraryEntityIndex` is built / refreshed in
+    /// the same pass.
     private func buildOrReuseLibraryIndex(
         backend: any EmbeddingBackend
     ) async -> LibraryEmbeddingIndex {
@@ -657,8 +790,12 @@ final class BookChatViewModel: ObservableObject {
             libraryEntries: entries,
             backend: backend
         )
+        let entityIndex = LibraryEntityIndex.build(
+            libraryEntries: entries
+        )
         await MainActor.run {
             self.libraryIndex = index
+            self.libraryEntityIndex = entityIndex
             self.libraryStatus = .ready(
                 indexed: index.stats.indexed,
                 unindexed: index.stats.unindexed,
