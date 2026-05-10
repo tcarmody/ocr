@@ -40,7 +40,7 @@ import NaturalLanguage
 ///     usually means the user mis-specified the language hint, but
 ///     also catches "this PDF's old OCR pass detected the wrong
 ///     language and produced consistent-looking gibberish."
-public struct EmbeddedTextQualityScorer {
+public struct EmbeddedTextQualityScorer: Sendable {
     public enum Verdict: String, Sendable, Equatable {
         case trust  // skip Vision OCR — embedded text is good enough
         case reocr  // run Vision (and gap-fill from embedded if any)

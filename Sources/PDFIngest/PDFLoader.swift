@@ -16,8 +16,26 @@ public enum PDFIngestError: Error, LocalizedError {
 }
 
 /// A loaded PDF, suitable for handing to a renderer / OCR engine.
-/// Not Sendable — PDFKit's `PDFDocument` is not. Hold this on a single task.
-public final class LoadedPDF {
+///
+/// Marked `@unchecked Sendable` so it can be referenced across actor
+/// boundaries in the pipeline (the `async let` per-page concurrency
+/// in `PDFToEPUBPipeline.convert`, and the TaskGroup in the page-OCR
+/// path). The invariant defending the assertion:
+///
+///   * The class's stored properties are all `let` (immutable after
+///     init), so the Swift-level binding is race-free.
+///   * Every PDFKit call (`document.page(at:)`, render via
+///     `PDFRenderer`) runs on the `PDFToEPUBPipeline` actor's
+///     serializing executor. The actor's `async let` and TaskGroup
+///     children share that executor — only one PDFKit access runs
+///     at a time even when child tasks logically execute "in parallel"
+///     (they cooperatively yield through the actor).
+///
+/// `PDFDocument` itself isn't documented as thread-safe; future code
+/// touching `document` from outside the pipeline actor's isolation
+/// must preserve this single-executor invariant or wrap PDFKit access
+/// in a dedicated actor.
+public final class LoadedPDF: @unchecked Sendable {
     public let url: URL
     public let document: PDFDocument
     public let pageCount: Int

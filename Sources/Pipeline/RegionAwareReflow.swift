@@ -40,14 +40,30 @@ enum RegionAwareReflow {
     /// glyph extents.
     private static let regionInflation: CGFloat = 0.005
 
-    /// Per-observation attribution captured during reflow. Used by the
-    /// debug log to explain why specific text ended up in specific
-    /// blocks. Map key is `(pageIndex, observationIndex)`.
-    static var lastAttributions: [ObservationKey: AttributionInfo] = [:]
-
-    struct AttributionInfo: Sendable {
+    struct AttributionInfo: Sendable, Equatable {
         let regionReadingOrder: Int
         let regionKind: String
+    }
+
+    /// Per-pass diagnostic accumulator. Was previously a set of static
+    /// vars on `RegionAwareReflow` (`lastAttributions`,
+    /// `lastFootnotesPerPage`, etc.), which Swift 6 strict mode
+    /// rejects as nonisolated global mutable state. Returning the
+    /// diagnostics by value lets the debug-log writer in
+    /// `PDFToEPUBPipeline.writeDebugLog` consume them through normal
+    /// parameter passing without any shared state.
+    ///
+    /// Empty when reflow ran without any pages contributing to the
+    /// corresponding category (e.g. a book with no `.footnote`
+    /// regions has `footnotesPerPage = [:]`).
+    struct Diagnostics: Sendable, Equatable {
+        var attributions: [ObservationKey: AttributionInfo] = [:]
+        var footnotesPerPage: [Int: [FootnoteLinker.Parsed]] = [:]
+        var reclassificationsPerPage: [Int: [Reclassification]] = [:]
+        var hfReclassificationsPerPage: [Int: [Reclassification]] = [:]
+        var headingPromotionsPerPage: [Int: [HeadingPromotion]] = [:]
+        var regionSplitsPerPage: [Int: [RegionSplit]] = [:]
+        var crossPageDecisionsPerPage: [Int: [CrossPageDecision]] = [:]
     }
 
     /// Output of one reflow pass: the body block stream plus the
@@ -55,11 +71,14 @@ enum RegionAwareReflow {
     /// `InlineRun.noterefId`. Footnotes only get populated when the
     /// layout analyzer found `.footnote` regions. `figureAssets`
     /// carries any image bytes referenced by `Block.figure` blocks.
+    /// `diagnostics` carries debug-log telemetry; callers that don't
+    /// emit a debug log can ignore it.
     struct Result: Sendable, Equatable {
         let blocks: [Block]
         let footnotes: [Footnote]
         let pageAnchors: [PageAnchor]
         let figureAssets: [FigureAsset]
+        var diagnostics: Diagnostics = Diagnostics()
     }
 
     /// Anchor id format. `EditorViewModel`'s linked-navigation feature
@@ -68,29 +87,6 @@ enum RegionAwareReflow {
     static func anchorId(forPageIndex pageIndex: Int) -> String {
         "hu-page-\(pageIndex)"
     }
-
-    /// Per-page footnote audit captured during reflow for the debug
-    /// log. Map key is `pageIndex`. Empty arrays are omitted.
-    static var lastFootnotesPerPage: [Int: [FootnoteLinker.Parsed]] = [:]
-
-    /// Per-page record of `.text` regions Surya tagged that we
-    /// reclassified as `.footnote` based on the marker / position /
-    /// gap heuristic. Surfaced in the debug log so we can see what
-    /// fired (and didn't fire) and tune thresholds.
-    static var lastReclassificationsPerPage: [Int: [Reclassification]] = [:]
-
-    /// Per-page record of `.text` regions reclassified as
-    /// `.pageHeader` / `.pageFooter` by the running-furniture
-    /// heuristic. Same shape as the footnote audit so the debug
-    /// log can format them identically.
-    static var lastHFReclassificationsPerPage: [Int: [Reclassification]] = [:]
-
-    /// Per-page record of heading regions whose Surya-assigned
-    /// reading order placed them after body content despite being
-    /// visually above all of it — promoted to the front of the page
-    /// by `correctHeadingReadingOrder`. Surfaced in the debug log
-    /// so we can see when the heuristic fires.
-    static var lastHeadingPromotionsPerPage: [Int: [HeadingPromotion]] = [:]
 
     /// One heading region's promotion trace.
     struct HeadingPromotion: Sendable, Equatable {
@@ -103,24 +99,10 @@ enum RegionAwareReflow {
         let headingMidY: Double
     }
 
-    /// Per-page record of `.text` regions Surya merged body+footnote
-    /// into one chunk; we split them into a `.text` upper + `.footnote`
-    /// lower based on a large internal gap + leading footnote marker.
-    static var lastRegionSplitsPerPage: [Int: [RegionSplit]] = [:]
-
-    /// Per-page record of `.text` regions reclassified by the
-    /// cross-page recurrence pass. Either promoted to `.sectionHeader`
-    /// (unique top-of-page brief text) or demoted to `.pageHeader`
-    /// (recurring across many pages).
-    static var lastCrossPageDecisionsPerPage: [Int: [CrossPageDecision]] = [:]
-
-    /// Per-page record of `.text` regions promoted to
-    /// `.sectionHeader` (or `.title`) by the typographic-cue pass —
-    /// regions whose geometry + content look like a heading even
-    /// though Surya tagged them as body.
-    static var lastTypographicPromotionsPerPage: [Int: [TypographicPromotion]] = [:]
-
-    /// Audit trace for one typographic promotion.
+    /// Audit trace for one typographic promotion. Computed during
+    /// `promoteTypographicHeadings` but no longer surfaced in the
+    /// debug log (kept as a type so the helper's return value still
+    /// has structure; callers that don't read it pay nothing).
     struct TypographicPromotion: Sendable, Equatable {
         let regionIndex: Int
         let promotedTo: String   // ".sectionHeader" or ".title"
@@ -171,13 +153,13 @@ enum RegionAwareReflow {
             captionByFigure: [:], orientation: .below
         )
     ) -> Result {
-        lastAttributions.removeAll(keepingCapacity: true)
-        lastFootnotesPerPage.removeAll(keepingCapacity: true)
-        lastReclassificationsPerPage.removeAll(keepingCapacity: true)
-        lastHFReclassificationsPerPage.removeAll(keepingCapacity: true)
-        lastHeadingPromotionsPerPage.removeAll(keepingCapacity: true)
-        lastRegionSplitsPerPage.removeAll(keepingCapacity: true)
-        lastCrossPageDecisionsPerPage.removeAll(keepingCapacity: true)
+        // Per-pass diagnostics. Was previously seven `static var lastXxx`
+        // dictionaries on this type, which Swift 6 strict mode flags
+        // as nonisolated global mutable state. Bundling them into a
+        // local value passed by `inout` to helpers keeps the data
+        // local to one reflow call and removes the shared state
+        // entirely.
+        var diagnostics = Diagnostics()
 
         // Decide which picture region (if any) becomes the EPUB cover.
         // Page-0 single dominant picture (≥ 50% of page area) qualifies.
@@ -233,7 +215,7 @@ enum RegionAwareReflow {
             topOverrides, bottomOverrides
         )
         for (pageIdx, decisions) in crossPageOverrides.decisionsByPage {
-            lastCrossPageDecisionsPerPage[pageIdx] = decisions
+            diagnostics.crossPageDecisionsPerPage[pageIdx] = decisions
         }
 
         var blocks: [Block] = []
@@ -279,7 +261,7 @@ enum RegionAwareReflow {
                 regions: regions, observations: page.observations
             )
             if !splitDecisions.isEmpty {
-                lastRegionSplitsPerPage[page.pageIndex] = splitDecisions
+                diagnostics.regionSplitsPerPage[page.pageIndex] = splitDecisions
             }
             // Reclassify Surya `.text` regions that look like
             // footnotes — Surya often misses these and tags them as
@@ -289,7 +271,7 @@ enum RegionAwareReflow {
                 regions: afterSplit, observations: page.observations
             )
             if !fnDecisions.isEmpty {
-                lastReclassificationsPerPage[page.pageIndex] = fnDecisions
+                diagnostics.reclassificationsPerPage[page.pageIndex] = fnDecisions
             }
             // Now do the same for running heads / footers. Runs
             // *after* the footnote pass so a 1-line footnote in the
@@ -299,7 +281,7 @@ enum RegionAwareReflow {
                 regions: afterFootnotes, observations: page.observations
             )
             if !hfDecisions.isEmpty {
-                lastHFReclassificationsPerPage[page.pageIndex] = hfDecisions
+                diagnostics.hfReclassificationsPerPage[page.pageIndex] = hfDecisions
             }
             // Promote `.text` regions whose geometry + content look
             // like chapter titles or section headers (larger font +
@@ -311,10 +293,10 @@ enum RegionAwareReflow {
                 promoteTypographicHeadings(
                     regions: afterHF, observations: page.observations
                 )
-            if !typographicDecisions.isEmpty {
-                lastTypographicPromotionsPerPage[page.pageIndex] =
-                    typographicDecisions
-            }
+            // Typographic decisions are computed for their structural
+            // effects (the regions are reclassified in `afterTypographic`)
+            // but no longer surfaced separately in the debug log.
+            _ = typographicDecisions
             // Repair Surya's reading order for `.title`/`.sectionHeader`
             // regions that sit visually above all body content but got
             // sorted to the back. Runs last so it operates on the
@@ -323,7 +305,7 @@ enum RegionAwareReflow {
                 regions: afterTypographic, observations: page.observations
             )
             if !headingPromotions.isEmpty {
-                lastHeadingPromotionsPerPage[page.pageIndex] = headingPromotions
+                diagnostics.headingPromotionsPerPage[page.pageIndex] = headingPromotions
             }
             let pageFootnotes = FootnoteLinker.parseFootnotes(
                 pageIndex: page.pageIndex,
@@ -331,7 +313,7 @@ enum RegionAwareReflow {
                 regions: effectiveRegions
             )
             if !pageFootnotes.isEmpty {
-                lastFootnotesPerPage[page.pageIndex] = pageFootnotes
+                diagnostics.footnotesPerPage[page.pageIndex] = pageFootnotes
                 allFootnotes.append(contentsOf: pageFootnotes)
             }
             blocks.append(contentsOf: reflowPage(
@@ -342,7 +324,8 @@ enum RegionAwareReflow {
                 assetIdByFigureKey: assetIdByFigureKey,
                 captionByFigure: captionAssociations.captionByFigure,
                 captionsClaimed: captionsClaimed,
-                tableExtractions: tableExtractions
+                tableExtractions: tableExtractions,
+                diagnostics: &diagnostics
             ))
         }
         let bridged = PDFToEPUBPipeline.bridgeBoundaries(blocks)
@@ -350,7 +333,8 @@ enum RegionAwareReflow {
             blocks: bridged,
             footnotes: FootnoteLinker.footnotesForChapter(allFootnotes),
             pageAnchors: pageAnchors,
-            figureAssets: figureAssets
+            figureAssets: figureAssets,
+            diagnostics: diagnostics
         )
     }
 
@@ -448,7 +432,8 @@ enum RegionAwareReflow {
         assetIdByFigureKey: [CaptionAssociator.PageRegionKey: String],
         captionByFigure: [CaptionAssociator.PageRegionKey: CaptionAssociator.PageRegionKey],
         captionsClaimed: Set<CaptionAssociator.PageRegionKey>,
-        tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]]
+        tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]],
+        diagnostics: inout Diagnostics
     ) -> [Block] {
         // Sort by reading order; -1 (unassigned) sorts to the end so
         // it doesn't disrupt the ordered regions.
@@ -584,7 +569,7 @@ enum RegionAwareReflow {
                 guard inflated.contains(CGPoint(x: cx, y: cy)) else { continue }
                 assigned.append(obs)
                 claimed.insert(idx)
-                Self.lastAttributions[
+                diagnostics.attributions[
                     ObservationKey(pageIndex: page.pageIndex, observationIndex: idx)
                 ] = AttributionInfo(
                     regionReadingOrder: region.readingOrder,

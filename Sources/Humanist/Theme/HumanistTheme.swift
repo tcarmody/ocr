@@ -58,7 +58,9 @@ enum HumanistThemeID: String, CaseIterable, Identifiable {
 @MainActor
 final class HumanistThemeStore: ObservableObject {
     static let shared = HumanistThemeStore()
-    static let storageKey = "humanist.theme"
+    /// `nonisolated` so `HumanistTheme.current` (a free helper) can
+    /// read it from any context. Truly immutable — String literal.
+    nonisolated static let storageKey = "humanist.theme"
 
     @Published var themeID: HumanistThemeID {
         didSet {

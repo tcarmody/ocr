@@ -148,9 +148,14 @@ public enum DOCXWriter {
 
     // MARK: - Font helpers
 
-    private static let bodyFont: NSFont = {
+    /// Computed (not stored) so the property doesn't trip Swift 6's
+    /// non-Sendable-static check — NSFont isn't Sendable, and a
+    /// `static let` of a non-Sendable type counts as shared mutable
+    /// state. Lookup cost is a few nanoseconds; doesn't matter for a
+    /// writer that runs once per book.
+    private static var bodyFont: NSFont {
         NSFont.userFont(ofSize: 12) ?? NSFont.systemFont(ofSize: 12)
-    }()
+    }
 
     private static func styledFont(
         size: CGFloat,
@@ -175,7 +180,12 @@ public enum DOCXWriter {
 
     // MARK: - Paragraph helpers
 
-    private static let newline = NSAttributedString(string: "\n")
+    /// Same Sendable-static reasoning as `bodyFont` — NSAttributedString
+    /// isn't Sendable, so we can't keep a stored static of one. Cost
+    /// of recreating it is a single allocation; trivial.
+    private static var newline: NSAttributedString {
+        NSAttributedString(string: "\n")
+    }
 
     private static func paragraph(
         _ out: NSMutableAttributedString,

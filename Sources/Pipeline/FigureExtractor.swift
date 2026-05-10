@@ -20,7 +20,7 @@ import Layout
 /// encoding; until then those figures are re-encoded as PNG at the
 /// page's render DPI, which is lossless for the visible result and
 /// still much smaller than the source page raster.
-public struct FigureExtractor {
+public struct FigureExtractor: Sendable {
     public init() {}
 
     /// One extracted figure, keyed by the index of its source region

@@ -247,9 +247,13 @@ public actor PDFToEPUBPipeline {
     private let suryaEngine: (any OCREngine)?
     private let layoutAnalyzer: SuryaLayoutAnalyzer?
     private let tableExtractor: SuryaTableExtractor?
-    private let embeddedExtractor = EmbeddedTextExtractor()
+    // `nonisolated` so `runPageOCRPage` / `preparePageForBatch` (also
+    // nonisolated; called from sending TaskGroup closures) can read
+    // them without an actor hop. Both types are Sendable value types
+    // with no shared mutable state.
+    private nonisolated let embeddedExtractor = EmbeddedTextExtractor()
     private let gapFiller = EmbeddedTextGapFiller()
-    private let qualityScorer = EmbeddedTextQualityScorer()
+    private nonisolated let qualityScorer = EmbeddedTextQualityScorer()
 
     public init(
         visionEngine: any OCREngine = VisionOCREngine(),
@@ -1737,14 +1741,25 @@ public actor PDFToEPUBPipeline {
                         && nextSubmit < freshIndices.count {
                         let pageIndex = freshIndices[nextSubmit]
                         nextSubmit += 1
-                        group.addTask { [self] in
-                            try await self.runPageOCRPage(
-                                pageIndex: pageIndex,
-                                pdf: pdf,
-                                options: options,
-                                stagingDir: stagingDir,
-                                pageEngine: pageEngine,
-                                figureExtractor: figureExtractor
+                        // Bind everything the task needs into local
+                        // values so the addTask closure captures no
+                        // self-isolated state. `runPageOCRPage` is
+                        // `nonisolated`, so the bound method reference
+                        // is safe to send across the boundary.
+                        // `pdf` snapshotted to a `let` because the
+                        // outer binding is `var` (periodic-reload
+                        // pattern); LoadedPDF is a class so this is
+                        // a reference copy.
+                        let perform = self.runPageOCRPage
+                        let pdfRef = pdf
+                        group.addTask { @Sendable in
+                            try await perform(
+                                pageIndex,
+                                pdfRef,
+                                options,
+                                stagingDir,
+                                pageEngine,
+                                figureExtractor
                             )
                         }
                         inflight += 1
@@ -2204,6 +2219,12 @@ public actor PDFToEPUBPipeline {
         let pageAnchors: [PageAnchor]
         let figureAssets: [FigureAsset]
         let classification: HeaderFooterClassifier.Result
+        // Reflow diagnostics for the debug log. Empty (defaulted) on
+        // the heuristic-only path, populated with per-page audit
+        // trails on the layout path. Was previously read as a set of
+        // static vars on RegionAwareReflow; now flows through the
+        // Result struct.
+        var reflowDiagnostics = RegionAwareReflow.Diagnostics()
 
         if hasAnyLayout {
             // Layout path. We still run the H/F classifier so the debug
@@ -2220,6 +2241,7 @@ public actor PDFToEPUBPipeline {
             footnotes = result.footnotes
             pageAnchors = result.pageAnchors
             figureAssets = result.figureAssets
+            reflowDiagnostics = result.diagnostics
         } else {
             // Heuristic-only path (Phase 1.5 behavior). No layout
             // regions means no footnote regions, so no popups either.
@@ -2251,6 +2273,7 @@ public actor PDFToEPUBPipeline {
                 layoutErrors: layoutErrors,
                 ocrErrors: ocrErrors,
                 footnotes: footnotes,
+                reflowDiagnostics: reflowDiagnostics,
                 to: debugLogURL
             )
         }
@@ -2307,7 +2330,12 @@ public actor PDFToEPUBPipeline {
     /// Throws only on cancellation; Sonnet failures (refusal,
     /// network, parse) are absorbed and surface via
     /// `sonnetSucceeded == false` on the returned value.
-    private func runPageOCRPage(
+    /// `nonisolated` so the page-OCR TaskGroup in `convert` can dispatch
+    /// it from `addTask` without tripping Swift 6's "sending closure
+    /// from self-isolated context" check. The body only reads the
+    /// pipeline's `let` engine properties and `await`s other actor-
+    /// isolated methods explicitly — no actor state is mutated.
+    private nonisolated func runPageOCRPage(
         pageIndex i: Int,
         pdf: LoadedPDF,
         options: Options,
@@ -2525,13 +2553,15 @@ public actor PDFToEPUBPipeline {
                     && nextSubmit < freshIndices.count {
                     let i = freshIndices[nextSubmit]
                     nextSubmit += 1
-                    group.addTask { [self] in
-                        let tuple = try await self.preparePageForBatch(
-                            pageIndex: i,
-                            pdf: pdf, options: options,
-                            stagingDir: stagingDir,
-                            pageEngine: pageEngine,
-                            figureExtractor: figureExtractor
+                    let perform = self.preparePageForBatch
+                    let pdfRef = pdf
+                    group.addTask { @Sendable in
+                        let tuple = try await perform(
+                            i,
+                            pdfRef, options,
+                            stagingDir,
+                            pageEngine,
+                            figureExtractor
                         )
                         return BatchPrepared(
                             pageIndex: tuple.pageIndex,
@@ -2713,7 +2743,10 @@ public actor PDFToEPUBPipeline {
     /// one page: trust check (returns final pending if trust),
     /// else render + Surya layout + figure extraction + build
     /// Sonnet request (returns partial pending + request).
-    private func preparePageForBatch(
+    /// `nonisolated` for the same reason as `runPageOCRPage` — called
+    /// from a TaskGroup in the batch-API dispatch path; needs to be
+    /// safely sendable as a closure.
+    private nonisolated func preparePageForBatch(
         pageIndex i: Int,
         pdf: LoadedPDF,
         options: Options,
@@ -2899,6 +2932,7 @@ public actor PDFToEPUBPipeline {
         layoutErrors: [Int: String],
         ocrErrors: [Int: String],
         footnotes: [Footnote],
+        reflowDiagnostics: RegionAwareReflow.Diagnostics,
         to url: URL
     ) throws {
         var out = ""
@@ -2959,7 +2993,7 @@ public actor PDFToEPUBPipeline {
             out += "\n"
         }
 
-        let parsedByPage = RegionAwareReflow.lastFootnotesPerPage
+        let parsedByPage = reflowDiagnostics.footnotesPerPage
         if !parsedByPage.isEmpty || !footnotes.isEmpty {
             out += "FOOTNOTES (per page, parsed from .footnote regions)\n"
             out += "format: page/marker id=ID  body excerpt\n\n"
@@ -2979,7 +3013,7 @@ public actor PDFToEPUBPipeline {
         // region as `.text` but our marker / position / gap heuristic
         // promoted it to `.footnote`. Visible here so we can see what
         // fired (and didn't) on a given PDF and tune thresholds.
-        let reclasByPage = RegionAwareReflow.lastReclassificationsPerPage
+        let reclasByPage = reflowDiagnostics.reclassificationsPerPage
         if !reclasByPage.isEmpty {
             out += "FOOTNOTE RECLASSIFICATIONS (heuristic: marker + bottom-half + gap)\n"
             out += "format: page/regionIdx originalKind → newKind  excerpt\n"
@@ -2997,7 +3031,7 @@ public actor PDFToEPUBPipeline {
         // pageHeader/pageFooter label and tagged the region as
         // `.text`; the position + size + brevity heuristic dropped
         // it from the body stream.
-        let hfByPage = RegionAwareReflow.lastHFReclassificationsPerPage
+        let hfByPage = reflowDiagnostics.hfReclassificationsPerPage
         if !hfByPage.isEmpty {
             out += "HEADER/FOOTER RECLASSIFICATIONS (heuristic: extreme zone + short region + ≤100 chars)\n"
             out += "format: page/regionIdx originalKind → newKind  excerpt\n"
@@ -3014,7 +3048,7 @@ public actor PDFToEPUBPipeline {
         // Cross-page recurrence decisions — `.text` regions in the
         // top zone classified as either `.pageHeader` (recurring
         // running heads) or `.sectionHeader` (unique chapter titles).
-        let crossPageByPage = RegionAwareReflow.lastCrossPageDecisionsPerPage
+        let crossPageByPage = reflowDiagnostics.crossPageDecisionsPerPage
         if !crossPageByPage.isEmpty {
             out += "CROSS-PAGE TOP-REGION CLASSIFICATION (recurrence ≥3 pages → pageHeader, else sectionHeader)\n"
             out += "format: page/regionIdx originalKind → newKind  excerpt  normalized=\"…\"  pages=N\n\n"
@@ -3029,7 +3063,7 @@ public actor PDFToEPUBPipeline {
         // Region splits — Surya merged body + footnote into a single
         // `.text` region; we detected an internal vertical gap with
         // a footnote marker on the lower side and split it in two.
-        let splitsByPage = RegionAwareReflow.lastRegionSplitsPerPage
+        let splitsByPage = reflowDiagnostics.regionSplitsPerPage
         if !splitsByPage.isEmpty {
             out += "REGION SPLITS (heuristic: large internal gap + footnote marker on lower side)\n"
             out += "format: page/originalRegionIdx upperKind/lowerKind  excerpt  gap=N.NNN > 2.5×medianH=N.NNN\n\n"
@@ -3049,7 +3083,7 @@ public actor PDFToEPUBPipeline {
         // as a heading correctly but ordered it after body content;
         // we moved it to the front because it was visually above all
         // body on the page.
-        let promotionsByPage = RegionAwareReflow.lastHeadingPromotionsPerPage
+        let promotionsByPage = reflowDiagnostics.headingPromotionsPerPage
         if !promotionsByPage.isEmpty {
             out += "HEADING READING-ORDER PROMOTIONS (heuristic: heading visually above all body)\n"
             out += "format: page/regionIdx kind  excerpt  oldOrder → newOrder  midY=N.NN > topBodyMidY=N.NN\n\n"
@@ -3126,7 +3160,7 @@ public actor PDFToEPUBPipeline {
                 case .claude:    src = "c"
                 }
                 let regionInfo: String
-                if let attr = RegionAwareReflow.lastAttributions[key] {
+                if let attr = reflowDiagnostics.attributions[key] {
                     regionInfo = " region=\(attr.regionReadingOrder):\(attr.regionKind)"
                 } else if pages.contains(where: { ($0.layoutRegions?.isEmpty == false) }) {
                     regionInfo = " region=UNASSIGNED"

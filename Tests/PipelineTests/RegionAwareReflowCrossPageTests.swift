@@ -268,11 +268,11 @@ final class RegionAwareReflowCrossPageTests: XCTestCase {
                 bottomText: "Stoicheia I.iii \(pageIdx + 12)"
             )
         }
-        _ = RegionAwareReflow.reflow(pageResults: pages)
+        let result = RegionAwareReflow.reflow(pageResults: pages)
         // Each page should have two cross-page decisions: one for
         // the top region, one for the bottom region.
         for pageIdx in 0..<3 {
-            let decisions = RegionAwareReflow.lastCrossPageDecisionsPerPage[pageIdx] ?? []
+            let decisions = result.diagnostics.crossPageDecisionsPerPage[pageIdx] ?? []
             XCTAssertEqual(decisions.count, 2,
                 "page \(pageIdx) should have a top + bottom cross-page decision")
             XCTAssertTrue(decisions.contains { $0.newKind == "pageHeader" })

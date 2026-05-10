@@ -16,7 +16,7 @@ final class QueueViewModel: ObservableObject {
     /// User-facing language choice. Identical shape to what the old
     /// `ConversionViewModel` used so the picker UI didn't have to
     /// change.
-    struct LanguageOption: Identifiable, Hashable {
+    struct LanguageOption: Identifiable, Hashable, Sendable {
         let id: String
         let language: BCP47
         let label: String
@@ -27,7 +27,10 @@ final class QueueViewModel: ObservableObject {
         }
     }
 
-    static let supportedLanguages: [LanguageOption] = [
+    /// Truly immutable static data — Swift 6 lets us read it from
+    /// any actor without isolation hops. Required because the
+    /// detached profiling Task reads it off-main-actor.
+    nonisolated static let supportedLanguages: [LanguageOption] = [
         .init(.en,         "English"),
         .init(.fr,         "French"),
         .init(.de,         "German"),
@@ -208,7 +211,11 @@ final class QueueViewModel: ObservableObject {
             useClaudePageOCR
             || UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
         )
-        Task.detached(priority: .userInitiated) { [store, weak runner] in
+        // Strong capture of `runner` (was `weak runner`): the
+        // Task isn't retained by anything, so there's no cycle to
+        // break, and Swift 6 strict mode flagged the weak-captured
+        // var as unsafe to read across the MainActor.run boundary.
+        Task.detached(priority: .userInitiated) { [store, runner] in
             let profile = DocumentProfiler.profile(pdfURL: url)
             // Compute the Cloud-mode cost estimate + content/config
             // warnings from the profile + the user's current AI
@@ -260,7 +267,7 @@ final class QueueViewModel: ObservableObject {
                     }
                     mutable.status = .queued
                 }
-                runner?.start()
+                runner.start()
             }
         }
     }

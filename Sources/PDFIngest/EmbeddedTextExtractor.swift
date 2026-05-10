@@ -19,7 +19,7 @@ import PDFKit
 ///      degenerate or empty results.
 ///
 /// Returns lines + diagnostic counts so callers can log what happened.
-public struct EmbeddedTextExtractor {
+public struct EmbeddedTextExtractor: Sendable {
     public init() {}
 
     public struct Line: Sendable, Equatable {

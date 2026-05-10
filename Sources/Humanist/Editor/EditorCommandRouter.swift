@@ -46,19 +46,24 @@ final class EditorCommandRouter: ObservableObject {
     private init() {
         // Watch key-window changes globally so the menu item state
         // reacts when the user clicks between editor windows.
+        // Both observers are set up directly — EditorCommandRouter is
+        // @MainActor, so init runs on the main actor and addObserver
+        // can be called inline. (An earlier version wrapped the
+        // didResignKey observer in `Task { @MainActor in }` for what
+        // looked like a hop, but the wrapper was redundant and
+        // tripped Swift 6's Sendable check on `addObserver`'s
+        // NSObjectProtocol return type.)
         keyWindowObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.recompute() }
         }
-        Task { @MainActor in
-            NotificationCenter.default.addObserver(
-                forName: NSWindow.didResignKeyNotification,
-                object: nil, queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in self?.recompute() }
-            }
+        _ = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.recompute() }
         }
     }
 

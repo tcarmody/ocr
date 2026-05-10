@@ -473,7 +473,12 @@ final class EditorViewModel: ObservableObject {
     /// Token for the PDF-page-change observer. Now used only to
     /// keep `currentPDFPage` up to date for the alignment commands;
     /// no cross-pane drive happens from this notification.
-    private var pdfPageObserver: NSObjectProtocol?
+    /// `nonisolated(unsafe)` is honest here: the token is opaque
+    /// (used only as a key for `removeObserver`), set once on the
+    /// main actor, and read only from this view-model's deinit
+    /// (which is nonisolated by default in Swift 6). No race exists
+    /// even in principle.
+    private nonisolated(unsafe) var pdfPageObserver: (any NSObjectProtocol)?
 
     private func observePDFPageChanges() {
         if let token = pdfPageObserver {

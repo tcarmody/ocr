@@ -395,21 +395,25 @@ conversion via the `ConversionStats` struct returned from
   workflow, DMG assembly, GitHub Releases, optional Sparkle
   auto-updates, and the clean-Mac smoke test.
 
-**Done — Partial Swift 6 prep** (commit `abaa918`):
-- `DocumentProfiler.lastSamples` deleted — was set but never read.
-- `TwoUpDetector` refactored: new `detect(...) -> Detection` struct
-  carries verdict + diagnostics by return value instead of via a
-  static-mutable singleton. `detectIsTwoUp(...)` kept as a thin
-  wrapper for callers that don't need the diagnostics.
-- `SidecarBridge.send(_ payload: Data) -> Data` (was `[String: Any] →
-  [String: Any]`). Wire format is now Sendable-clean across actor
-  boundaries; `[String: Any]` use is scoped inside `SuryaConnection`
-  methods. `helloMessage` cache dropped — was set on spawn but
-  never read.
-
-The remaining ~6 hours of Swift 6 work is scoped under
-[C-Swift6-Migration](#c-swift6-migration--migrate-to-swift-6-strict-concurrency-mode)
-in Tier 6.
+**Done — Swift 6 strict concurrency mode** (`C-Swift6-Migration`,
+in Tier 6 — full write-up there):
+- `Package.swift` is at `swiftLanguageModes: [.v6]`; the 822-test
+  suite passes clean.
+- Partial cleanup landed earlier in commit `abaa918`
+  (`DocumentProfiler.lastSamples` deleted; `TwoUpDetector`
+  refactored to a `Detection` return struct; `SidecarBridge` wire
+  format moved to `Data` for Sendable-clean cross-actor IPC).
+- The rest of the migration (this round) cleared
+  `RegionAwareReflow`'s 8 debug statics into a `Diagnostics`
+  return struct, made `DOCXWriter`'s NSFont/NSAttributedString
+  constants computed, marked `LoadedPDF: @unchecked Sendable` with
+  a defended invariant, restructured `PDFToEPUBPipeline`'s
+  TaskGroup closures to use captured method references plus a
+  PDF snapshot, and fixed `QueueViewModel`'s `runner` capture and
+  `supportedLanguages` isolation. Cascade Sendable conformances
+  on `EmbeddedTextExtractor`, `EmbeddedTextQualityScorer`, and
+  `FigureExtractor`. One audited `nonisolated(unsafe)` for the
+  deinit-only `pdfPageObserver` token in `EditorViewModel`.
 
 **Done — Local chat backend**:
 - **Ollama + Gemma 4 26B MoE** (commit `bbea813`): chat-with-book
@@ -1846,11 +1850,79 @@ no-op, case-sensitivity flag, and per-book progress callback.
 
 ## C-Swift6-Migration — Migrate to Swift 6 strict concurrency mode
 
-**Status**: not started. Codebase is at `swiftLanguageModes: [.v5]`;
-flipping to `.v6` produces 14 distinct error sites + 2 pre-existing
-Humanist warnings that would escalate. A partial cleanup landed in
-commit `abaa918` (DocumentProfiler / TwoUpDetector / SidecarBridge —
-the easy three) but the rest of the migration remains.
+**Status**: shipped. `Package.swift` is at `swiftLanguageModes: [.v6]`;
+the full test suite (822 tests) passes clean under strict concurrency.
+A partial cleanup landed earlier in commit `abaa918` (DocumentProfiler
+/ TwoUpDetector / SidecarBridge — the easy three); the rest of the
+migration is below.
+
+### What landed
+
+- **`RegionAwareReflow` 8 statics → `Diagnostics` struct** flowing
+  through the `Result` return value. `reflow()` declares `var
+  diagnostics = Diagnostics()`; `reflowPage` takes it `inout`.
+  `PDFToEPUBPipeline.writeDebugLog` now reads
+  `reflowDiagnostics.attributions` (etc.) instead of the deleted
+  `RegionAwareReflow.lastAttributions`. Deleted unused
+  `lastTypographicPromotionsPerPage`. Test that read the static
+  (`RegionAwareReflowCrossPageTests`) updated to capture the
+  `Result` and read `result.diagnostics.crossPageDecisionsPerPage`.
+- **`DOCXWriter` constants → computed properties**. `static let
+  bodyFont: NSFont` and `static let newline: NSAttributedString`
+  became computed `static var` (NSFont/NSAttributedString aren't
+  Sendable; the values are conceptually immutable so trivial cost).
+- **`LoadedPDF: @unchecked Sendable`** with a defending doc-comment.
+  Invariant: PDFKit access only happens on the pipeline actor's
+  executor; all stored properties are `let`; the actor's serializing
+  executor prevents simultaneous `PDFDocument` calls even from
+  async-let child tasks. Documented in the type so future changes
+  don't silently break it.
+- **`PDFToEPUBPipeline` sending closures**. `embeddedExtractor` and
+  `qualityScorer` marked `private nonisolated let`;
+  `runPageOCRPage` and `preparePageForBatch` marked `nonisolated`.
+  TaskGroup `addTask` calls now go through a captured method
+  reference (`let perform = self.runPageOCRPage`) and a snapshot
+  `let pdfRef = pdf` so the `@Sendable` closure body never
+  references actor-isolated state. `EmbeddedTextExtractor`,
+  `EmbeddedTextQualityScorer`, and `FigureExtractor` gained
+  `Sendable` conformance.
+- **`QueueViewModel` 2 warnings → errors → fixes**.
+  `LanguageOption: Identifiable, Hashable, Sendable`;
+  `nonisolated static let supportedLanguages`; capture list
+  `[store, runner]` (was `[store, weak runner]`); `runner.start()`
+  in the closure body.
+- **`HumanistTheme.storageKey`** marked `nonisolated static let`
+  so the free `HumanistTheme.current` helper can read it from any
+  context without the @MainActor singleton's isolation leaking.
+- **`EditorCommandRouter` Task wrapper** removed from the
+  `didResignKeyNotification` registration. Init runs on @MainActor,
+  so the redundant `Task { @MainActor in }` wrapper was tripping
+  Swift 6's Sendable check on `addObserver`'s NSObjectProtocol
+  return type. Direct call instead.
+- **`EditorViewModel.pdfPageObserver`** marked
+  `private nonisolated(unsafe) var`. The token is opaque
+  (`NSObjectProtocol`), only accessed in `deinit`, and there's no
+  reachable race — the alternative refactors (boxing the token in
+  an actor, or moving teardown out of deinit) carry more risk than
+  the audited unsafe annotation.
+
+### What didn't pan out as planned
+
+- **Estimate was 14 sites + 2 warnings; actual was ~20**. Cascade
+  effects: making one type Sendable surfaced Sendable requirements
+  in its consumers (`EmbeddedTextExtractor` /
+  `EmbeddedTextQualityScorer` / `FigureExtractor`), and making
+  pipeline methods `nonisolated` surfaced isolation issues in stored
+  properties they touched. Total time ~4 hours, faster than the
+  6-hour estimate because the patterns repeated.
+- **PDFKit-on-one-executor invariant verified**. Reading the call
+  graph confirmed every `PDFDocument` access is reachable only from
+  the pipeline actor's methods or methods explicitly marked
+  `nonisolated` and called from the pipeline's executor. The
+  `@unchecked Sendable` defense holds.
+- **`nonisolated(unsafe)` used exactly once**, for the
+  pdfPageObserver case described above. Every other site refactored
+  to a true Sendable-clean pattern.
 
 ### Why bother
 
@@ -1947,17 +2019,14 @@ unisolated holder.
   more issues in test fixtures (e.g. captured-state in async test
   setup).
 
-### When to ship
+### Outcome
 
-Probably next, since the partial cleanup is fresh in mind and the
-estimate is bounded. A bigger task than `P-Greek-Quality` but produces
-ongoing benefit (every future warning Swift catches is one we don't
-have to debug).
-
-### Dependencies
-
-None hard. The genuine cleanups in commit `abaa918` already happened
-and are checked in regardless of whether the rest lands.
+Shipped, ~4 hours actual vs ~6 hours estimated. Compiler help is now
+free quality across the codebase: every future Swift toolchain that
+tightens concurrency checking will surface issues at build time
+rather than waiting for a Heisenbug to trigger at runtime. The
+QueueViewModel `runner` capture warning that prompted the migration
+is now a hard compile-time constraint that can't regress.
 
 ---
 
@@ -2162,10 +2231,9 @@ is a single call.
 
 ### When to ship
 
-After Swift 6 migration. The retrieval refactor adds Sendable
-requirements (the embedding cache crosses the chat ViewModel's
-isolation), and tackling Sendable-clean code now is much easier
-post-Swift-6 when the compiler is enforcing it for us.
+Anytime now — the Swift 6 migration shipped, so the embedding
+cache crossing the chat ViewModel's isolation gets Sendable-clean
+enforcement from the compiler at build time.
 
 ### Dependencies
 
@@ -3119,31 +3187,32 @@ use; distribution is lower priority than correctness.
 - **P-Vision-Concurrency**: Vision OCR + Surya layout run in
   parallel via `async let`, ~30% per-page speedup when Surya
   is installed.
-- **Partial Swift 6 prep** (commit `abaa918`): dead-static cleanup
-  in `DocumentProfiler`, `TwoUpDetector` refactored to a `Detection`
-  return struct, `SidecarBridge` wire format moved to `Data` for
-  Sendable-clean cross-actor IPC. Remaining migration scoped in
-  `C-Swift6-Migration` below.
+- **Swift 6 strict concurrency mode** (`C-Swift6-Migration`):
+  `Package.swift` flipped to `swiftLanguageModes: [.v6]`; full
+  test suite (822 tests) clean. Earlier prep (commit `abaa918`)
+  cleared the easy three (`DocumentProfiler`, `TwoUpDetector`,
+  `SidecarBridge`); this round cleared the rest — `RegionAwareReflow`'s
+  8 debug statics refactored to a `Diagnostics` return struct,
+  `DOCXWriter`'s NSFont/NSAttributedString constants made computed,
+  `LoadedPDF: @unchecked Sendable` with a defended invariant,
+  `PDFToEPUBPipeline` TaskGroup closures use captured method
+  references, `QueueViewModel`'s `runner` capture and
+  `supportedLanguages` access fixed, plus a handful of cascade
+  Sendable conformances. One audited `nonisolated(unsafe)` for
+  the deinit-only `pdfPageObserver` token. Compiler help is now
+  free quality; every future Swift toolchain tightens the screws
+  at build time rather than at 3 AM.
 
 **Next, in roughly this order:**
 
-1. **C-Swift6-Migration** — flip `swiftLanguageModes: [.v5] → [.v6]`.
-   ~6 hours of mechanical work clearing 14 error sites + 2 latent
-   warnings (8 debug statics in `RegionAwareReflow`, 2 NSFont/
-   NSAttributedString constants in `DOCXWriter`, 2 `LoadedPDF`
-   capture sites + 2 progress-callback `sending` issues in
-   `PDFToEPUBPipeline`, 2 in `QueueViewModel`). Bounded scope, fresh
-   in mind from the partial cleanup that already shipped, and every
-   future Swift release tightens the screws — so cheaper to clear
-   now than later.
-2. **R-Chat-Embeddings** — replace BM25-only chat retrieval with
+1. **R-Chat-Embeddings** — replace BM25-only chat retrieval with
    hybrid BM25 + embedding search at paragraph granularity. ~3-4 days.
    Default to free on-device Apple `NLEmbedding`; offer Ollama,
-   Voyage, and Gemini Embedding 2 as paid/local upgrades. Sequenced
-   after Swift 6 because the embedding cache crosses the chat
-   ViewModel's isolation and Sendable-clean code is much easier
-   to write when the compiler enforces it.
-3. **R-Chat-Graph-Lite** — successor to R-Chat-Embeddings. Adds two
+   Voyage, and Gemini Embedding 2 as paid/local upgrades. The Swift 6
+   migration that just landed makes the embedding cache crossing the
+   chat ViewModel's isolation much easier to write Sendable-clean
+   from the start.
+2. **R-Chat-Graph-Lite** — successor to R-Chat-Embeddings. Adds two
    graph primitives the embedding layer can't do: a hierarchical
    structure index (variable-granularity retrieval — return whole
    sections instead of just paragraphs when appropriate) and a
@@ -3152,14 +3221,14 @@ use; distribution is lower priority than correctness.
    Both extend the per-book embeddings sidecar; both run free /
    on-device. Citation graphs and full GraphRAG explicitly out of
    scope.
-4. **Distribution polish** — see `RELEASES.md`. Need a Developer
+3. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-5. **P-Greek-Quality** — ground-truth measurement of Tesseract
+4. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-6. **Stretch / speculative items in Tier 8** if a specific need
+5. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
