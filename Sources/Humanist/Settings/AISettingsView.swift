@@ -490,10 +490,33 @@ struct AISettingsView: View {
             switch AppleFoundationModelClient.availability {
             case .available:
                 Toggle(
-                    "On-device chapter classification",
+                    "Chapter classification",
                     isOn: $vm.settings.localFeatures.localChapterClassification
                 )
-                Text("When on, Apple's Foundation Models framework picks an EPUB 3 structural label (chapter, preface, bibliography, …) for each chapter. Free, on-device, no cloud calls. Quality is moderate but better than nothing — Cloud Haiku is still the higher-accuracy option when you have a key.")
+                Text("Picks an EPUB 3 structural label (chapter, preface, bibliography, …) for each chapter using Apple's on-device Foundation Models. Free, no cloud calls.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle(
+                    "Front-matter metadata extraction",
+                    isOn: $vm.settings.localFeatures.localMetadataExtraction
+                )
+                Text("Reads the title page / copyright page and pulls title, author, year, publisher, ISBN into the EPUB's metadata. AFM's strongest suit — small input, structured output.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle(
+                    "Coherence pass (recurring OCR errors)",
+                    isOn: $vm.settings.localFeatures.localCoherencePass
+                )
+                Text("Scans every chapter for recurring OCR mistakes (character names with stripped diacritics, ligature artifacts) and applies guarded global find/replaces. Conservative posture — favors false negatives over false positives.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("All three run in seconds per book and are private to this Mac. Cloud Haiku is still the higher-accuracy option when you have an API key configured — these features mirror the Cloud equivalents but trade some quality for not having to leave the device.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -505,7 +528,7 @@ struct AISettingsView: View {
                 Text("Reason: \(reason)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Local AI features need Apple Intelligence enabled in System Settings → Apple Intelligence & Siri. Once it's on, the toggles here become active and on-device classification runs alongside any Cloud features you configure.")
+                Text("Local AI features need Apple Intelligence enabled in System Settings → Apple Intelligence & Siri. Once it's on, the toggles here become active and on-device classification + metadata extraction + coherence pass run alongside any Cloud features you configure.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

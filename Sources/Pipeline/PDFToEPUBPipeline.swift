@@ -355,6 +355,50 @@ public actor PDFToEPUBPipeline {
         ) { ClaudeChapterClassifier(client: $0, budget: $1) }
     }
 
+    /// Pick a metadata extractor: Cloud (when configured) or AFM
+    /// (Private + toggle on + Apple Intelligence available). nil
+    /// means the conversion runs without front-matter extraction;
+    /// the OPF metadata falls back to user-provided / filename
+    /// values, same as before either path existed.
+    static func makeMetadataExtractor(
+        options: Options, budget: ClaudeCallBudget
+    ) -> (any BookMetadataExtractor)? {
+        if let cloud = makeClaudeMetadataExtractor(
+            options: options, budget: budget
+        ) {
+            return cloud
+        }
+        guard options.processingMode == .privateLocal,
+              options.localFeatures.localMetadataExtraction
+        else { return nil }
+        if case .available = AppleFoundationModelClient.availability {
+            return AppleFoundationModelMetadataExtractor()
+        }
+        return nil
+    }
+
+    /// Pick a coherence analyzer: Cloud or AFM under the same
+    /// gating policy as `makeMetadataExtractor`. nil means the
+    /// coherence pass runs as a no-op (chapters pass through
+    /// unchanged), which is also the fallback when no model is
+    /// available.
+    static func makeCoherenceAnalyzer(
+        options: Options, budget: ClaudeCallBudget
+    ) -> (any BookCoherenceAnalyzer)? {
+        if let cloud = makeClaudeCoherenceAnalyzer(
+            options: options, budget: budget
+        ) {
+            return cloud
+        }
+        guard options.processingMode == .privateLocal,
+              options.localFeatures.localCoherencePass
+        else { return nil }
+        if case .available = AppleFoundationModelClient.availability {
+            return AppleFoundationModelCoherenceAnalyzer()
+        }
+        return nil
+    }
+
     /// Pick a chapter classifier based on processing mode +
     /// per-feature toggles + runtime availability:
     ///
@@ -2090,12 +2134,14 @@ public actor PDFToEPUBPipeline {
             classifiedChapters = chapters
         }
 
-        // 6: Q-Coherence pass — one Haiku call over a digest of
+        // 6: Q-Coherence pass — one model call over a digest of
         // every chapter, returning guarded global rewrites. Runs
         // before metadata extraction so the extractor sees the
-        // corrected text.
+        // corrected text. Cloud Haiku wins when configured; AFM
+        // is the Private-mode fallback under L-Foundation-Models
+        // Phase 2.
         let coherenceCleaned: [Chapter]
-        if let analyzer = makeClaudeCoherenceAnalyzer(
+        if let analyzer = Self.makeCoherenceAnalyzer(
             options: options, budget: budget
         ) {
             coherenceCleaned = await analyzer.analyzeAndApply(
@@ -2106,9 +2152,11 @@ public actor PDFToEPUBPipeline {
         }
 
         // 7: front-matter metadata. Updates the corresponding
-        // `Book` fields when the extractor returns values.
+        // `Book` fields when the extractor returns values. Cloud
+        // Haiku wins when configured; AFM is the Private-mode
+        // fallback under L-Foundation-Models Phase 2.
         let extracted: ClaudeMetadataExtractor.Result?
-        if let extractor = makeClaudeMetadataExtractor(
+        if let extractor = Self.makeMetadataExtractor(
             options: options, budget: budget
         ) {
             let frontMatter = ClaudeMetadataExtractor.sampleFrontMatter(

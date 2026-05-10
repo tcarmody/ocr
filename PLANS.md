@@ -3124,15 +3124,19 @@ into two if Manuscript is more pressing.
 
 ## L-Foundation-Models — On-device classification for Private mode
 
-**Status**: Phase 1 shipped — chapter classification on-device via
-Apple's Foundation Models framework. Phase 2 (metadata extraction,
-post-OCR cleanup, coherence pass) and Phase 3 (TOC parsing) still
-on the runway. The codebase already targets macOS 26 (per
-`Package.swift` and the macos-26-only memory), so the framework
-floor is met. Today every Cloud-mode feature is gated behind an
-Anthropic key — Private-mode users get the cascade OCR and that's
-it: no chapter classification, no metadata extraction, no post-OCR
-cleanup. AFM fills most of that gap, on-device, free, no key.
+**Status**: Phases 1 + 2 (mostly) shipped. Phase 1 — chapter
+classification — landed in commit `727d379`. Phase 2 — metadata
+extraction + coherence pass — landed alongside this entry. The
+remaining Phase 2 piece (post-OCR cleanup) is deferred behind a
+clearer integration point; see the "Still pending" section below.
+Phase 3 (TOC parsing) is still on the runway.
+
+The codebase already targets macOS 26 (per `Package.swift` and the
+macos-26-only memory), so the framework floor is met. Today every
+Cloud-mode feature is gated behind an Anthropic key — Private-mode
+users get the cascade OCR and that's it: no chapter classification,
+no metadata extraction, no post-OCR cleanup. AFM fills most of that
+gap, on-device, free, no key.
 
 ### What landed in Phase 1
 
@@ -3169,21 +3173,48 @@ cleanup. AFM fills most of that gap, on-device, free, no key.
   one-line notice + the framework's reason string + a hint to
   enable Apple Intelligence in System Settings.
 
-### Still pending (Phase 2)
+### What landed in Phase 2
 
-- `AppleFoundationModelMetadataExtractor` — front-matter →
-  `BookMetadata` `Generable` struct. Reuses the shared client.
-- `AppleFoundationModelPostProcessor` — per-region OCR cleanup.
-  Quality on classical / worn text uncertain; Cloud Haiku stays
-  as the higher-accuracy option.
-- `AppleFoundationModelCoherenceAnalyzer` — recurring-OCR-error
-  detection. Long-context (whole-book digest); AFM's 8K-token
-  window is tight, so probably needs chunking or a "skip on long
-  books" fallback.
+- **`AppleFoundationModelMetadataExtractor`**: front-matter →
+  `@Generable struct BookMetadata` with the canonical 5 fields
+  (title, author, year, publisher, ISBN). Schema-guided output
+  means parsing succeeds without the JSON-fence stripping the
+  Cloud path needs. Year + ISBN normalization reuses the Cloud
+  impl's helpers verbatim.
+- **`AppleFoundationModelCoherenceAnalyzer`**: same 8 KB digest
+  the Cloud path consumes (well within AFM's context window),
+  output is a `@Generable struct CoherenceSuggestions` with up
+  to 10 `{wrong, right}` pairs. Reuses
+  `ClaudeCoherenceAnalyzer.applyWithGuardrails` +
+  `buildDigest` so pre/post processing is identical between
+  impls — only the model call differs.
+- **Shared protocols**: `BookMetadataExtractor` and
+  `BookCoherenceAnalyzer` parallel `SemanticChapterClassifier`
+  from Phase 1. Cloud impls retroactively conform; pipeline
+  factories `makeMetadataExtractor` and `makeCoherenceAnalyzer`
+  pick Cloud / AFM / nil based on the same gating policy as the
+  classifier factory.
+- **`AISettings.LocalFeatures`** gained `localMetadataExtraction`
+  and `localCoherencePass` (both default on). Settings UI shows
+  three toggles + descriptions under the Local AI section when
+  Apple Intelligence is available.
 
-Phase 3 — TOC parsing — remains deferred; long-context structured
-extraction is AFM's hardest case and we want Phase 1+2 quality
-data before committing to it.
+### Still pending
+
+- **Post-OCR cleanup** (the last Phase 2 piece). The Cloud path
+  is `ClaudePostProcessor`, called from inside `RegionCascade`'s
+  per-region loop. Refactoring to a shared protocol involves
+  multiple call sites including a vision-mode path that AFM
+  doesn't support (text-only model). Reasonable scope is "Phase
+  2.5" — cleaner integration point + scope clarity (text-only,
+  passages mode only). Quality on classical / worn / polytonic-
+  Greek regions is uncertain; Cloud Haiku stays as the higher-
+  accuracy option there even after Phase 2.5 ships.
+- **Phase 3 — TOC parsing**. Long-context structured extraction.
+  AFM's 8K-token context is tight for full TOCs of long books;
+  some chunking strategy needed. Deferred until we have Phase
+  1+2 quality data on simpler shapes to inform whether the
+  chunking complexity is worth it.
 
 The previous Tier 8 placeholder (`S-Apple-Intelligence-Polish`) is
 superseded by this entry now that the macOS 26 floor makes it a
@@ -4124,13 +4155,14 @@ use; distribution is lower priority than correctness.
    multi-model A/B). Tiers 1+2 are about 3 days end-to-end and
    cover the practical research-workflow surface; Tiers 3+4 are
    nice-to-haves to pick from based on actual friction.
-4. **L-Foundation-Models Phase 2** — Phase 1 (chapter
-   classification) shipped; Phase 2 extends the same on-device
-   path to metadata extraction, post-OCR cleanup, and the
-   coherence pass. ~2-3 days. Reuses `AppleFoundationModelClient`
-   so each new feature is mostly a `Generable` schema + prompt
-   + protocol conformance + factory branch. Phase 3 (TOC parsing)
-   remains deferred until Phase 1+2 quality data is in.
+4. **L-Foundation-Models Phase 2.5 + 3** — Phases 1 and 2 (mostly)
+   shipped. The remaining Phase 2 piece is on-device post-OCR
+   cleanup; needs a shared protocol over the per-region cleanup
+   call site in `RegionCascade` (text-only mode only — AFM has no
+   vision capability, so the Cloud path's vision-mode branch
+   stays Cloud-only). Phase 3 — TOC parsing — remains deferred
+   until quality data on the simpler shapes informs whether
+   chunking complexity is worth it. Together: ~1-2 days.
 5. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work

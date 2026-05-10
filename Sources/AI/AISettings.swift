@@ -72,22 +72,47 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// is available. Mirrors `cloudFeatures.semanticClassification`
         /// but without the API-key / cost gate.
         public var localChapterClassification: Bool
+        /// Run on-device front-matter metadata extraction (title,
+        /// author, year, publisher, ISBN). Mirrors
+        /// `cloudFeatures.metadataExtraction`. Phase 2 of
+        /// `L-Foundation-Models`.
+        public var localMetadataExtraction: Bool
+        /// Run the on-device coherence pass — recurring OCR-error
+        /// detection across the whole book, returning guarded
+        /// global rewrites. Mirrors `cloudFeatures.coherencePass`.
+        /// Phase 2 of `L-Foundation-Models`.
+        public var localCoherencePass: Bool
 
-        public init(localChapterClassification: Bool = true) {
+        public init(
+            localChapterClassification: Bool = true,
+            localMetadataExtraction: Bool = true,
+            localCoherencePass: Bool = true
+        ) {
             self.localChapterClassification = localChapterClassification
+            self.localMetadataExtraction = localMetadataExtraction
+            self.localCoherencePass = localCoherencePass
         }
 
         private enum CodingKeys: String, CodingKey {
             case localChapterClassification
+            case localMetadataExtraction
+            case localCoherencePass
         }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             // Default-on so Private-mode users get classification
-            // automatically; flipping off restores the no-label
-            // behavior they had before this feature shipped.
+            // / metadata / coherence automatically; flipping off
+            // restores the no-op behavior they had before each
+            // feature shipped.
             self.localChapterClassification = try c.decodeIfPresent(
                 Bool.self, forKey: .localChapterClassification
+            ) ?? true
+            self.localMetadataExtraction = try c.decodeIfPresent(
+                Bool.self, forKey: .localMetadataExtraction
+            ) ?? true
+            self.localCoherencePass = try c.decodeIfPresent(
+                Bool.self, forKey: .localCoherencePass
             ) ?? true
         }
     }
