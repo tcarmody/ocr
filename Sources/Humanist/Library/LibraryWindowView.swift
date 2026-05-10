@@ -94,6 +94,21 @@ struct LibraryWindowView: View {
         }
     }
 
+    /// Restrict the library chat to just the selected rows and
+    /// reveal the chat pane (if hidden). Title order matches the
+    /// table's current sort + filter so the status row reads
+    /// naturally.
+    private func chatWithSelected() {
+        let entries = selectedEntries
+        guard !entries.isEmpty else { return }
+        let urls = Set(entries.map(\.epubURL))
+        let titles = entries.map(\.title)
+        chatVM.setScope(urls: urls, titles: titles)
+        if !showChatPane {
+            showChatPane = true
+        }
+    }
+
     /// Kick off a bulk index of every catalog entry. Resolves the
     /// user's chosen embedding backend (and surfaces a friendly
     /// alert if it can't), then hands off to `indexBuilder` and
@@ -173,6 +188,15 @@ struct LibraryWindowView: View {
                     Label("Bulk Edit Selected…", systemImage: "pencil.and.list.clipboard")
                 }
                 .help("Run find/replace across the selected books")
+                Button {
+                    chatWithSelected()
+                } label: {
+                    Label(
+                        "Chat with Selected (\(selection.count))",
+                        systemImage: "bubble.left.and.text.bubble.right"
+                    )
+                }
+                .help("Scope the library chat to the selected books")
             }
             if !availableLanguages.isEmpty {
                 Picker("Language", selection: $languageFilter) {

@@ -18,6 +18,10 @@ struct ChatPaneView: View {
     var body: some View {
         VStack(spacing: 0) {
             scopeStrip
+            if !vm.excludedLibraryBookURLs.isEmpty,
+               vm.chatScope == .library {
+                exclusionStatusRow
+            }
             Divider()
             transcript
             Divider()
@@ -26,6 +30,45 @@ struct ChatPaneView: View {
             inputRow
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    /// Library-scope deny-list banner. Mirrors the equivalent
+    /// row in the dedicated library chat pane — appears only when
+    /// the user has right-click → Exclude'd a citation in
+    /// library scope.
+    @ViewBuilder
+    private var exclusionStatusRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "minus.circle")
+                .foregroundStyle(.orange)
+                .imageScale(.small)
+            Text(exclusionSummary())
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Button("Clear") { vm.clearLibraryExclusions() }
+                .controlSize(.small)
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(Color.orange.opacity(0.06))
+    }
+
+    private func exclusionSummary() -> String {
+        let titles = vm.excludedLibraryBookURLs
+            .compactMap { vm.excludedLibraryBookTitles[$0] }
+            .sorted()
+        if titles.isEmpty {
+            return "Excluded \(vm.excludedLibraryBookURLs.count) book(s)"
+        }
+        if titles.count <= 3 {
+            return "Excluded: \(titles.joined(separator: ", "))"
+        }
+        let head = titles.prefix(3).joined(separator: ", ")
+        return "Excluded \(titles.count) books — \(head), …"
     }
 
     /// Surfaces a silent backend fallback so the user notices when
@@ -68,6 +111,17 @@ struct ChatPaneView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 Spacer()
+                Button {
+                    vm.useLongFormSynthesis.toggle()
+                } label: {
+                    Image(systemName: vm.useLongFormSynthesis
+                          ? "doc.text.fill"
+                          : "doc.text")
+                }
+                .buttonStyle(.borderless)
+                .help(vm.useLongFormSynthesis
+                      ? "Switch back to short chat-shaped answers"
+                      : "Long-form synthesis: structured 1-2 page response")
                 Button {
                     showRetrievalDetail.toggle()
                 } label: {
@@ -178,6 +232,22 @@ struct ChatPaneView: View {
                         ChatMessageRow(
                             message: message,
                             onCitationTap: onCitationTap,
+                            onFollowUpTap: { question in
+                                // Populate the input field and
+                                // send immediately. Skips when
+                                // a previous send is still in
+                                // flight to avoid concurrent
+                                // streamTask races.
+                                guard !vm.isThinking else { return }
+                                vm.input = question
+                                Task { await vm.send() }
+                            },
+                            onExcludeBook: { citation in
+                                guard let url = citation.bookEpubURL,
+                                      let title = citation.bookTitle
+                                else { return }
+                                vm.excludeLibraryBook(url: url, title: title)
+                            },
                             showRetrievalDetail: showRetrievalDetail
                         )
                         .id(message.id)

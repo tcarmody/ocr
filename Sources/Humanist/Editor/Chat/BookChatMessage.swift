@@ -27,6 +27,13 @@ struct BookChatMessage: Identifiable, Equatable, Codable {
     /// the chat pane has a toggle that reveals the per-message
     /// disclosure.
     var retrievalDetail: RetrievalDetail?
+    /// Model-suggested follow-up questions parsed out of the
+    /// `[follow-ups]…[/follow-ups]` block at the end of the
+    /// response. Renders beneath the citation strip as one-click
+    /// buttons that send the question as the next user turn.
+    /// Empty / nil when the model didn't emit any (or when the
+    /// transcript is from before this field existed).
+    var suggestedFollowUps: [String]?
 
     init(
         id: UUID = UUID(),
@@ -34,6 +41,7 @@ struct BookChatMessage: Identifiable, Equatable, Codable {
         text: String,
         citations: [BookChatCitation] = [],
         retrievalDetail: RetrievalDetail? = nil,
+        suggestedFollowUps: [String]? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -41,11 +49,13 @@ struct BookChatMessage: Identifiable, Equatable, Codable {
         self.text = text
         self.citations = citations
         self.retrievalDetail = retrievalDetail
+        self.suggestedFollowUps = suggestedFollowUps
         self.createdAt = createdAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, citations, retrievalDetail, createdAt
+        case id, role, text, citations
+        case retrievalDetail, suggestedFollowUps, createdAt
     }
 
     init(from decoder: Decoder) throws {
@@ -56,6 +66,9 @@ struct BookChatMessage: Identifiable, Equatable, Codable {
         self.citations = try c.decode([BookChatCitation].self, forKey: .citations)
         self.retrievalDetail = try c.decodeIfPresent(
             RetrievalDetail.self, forKey: .retrievalDetail
+        )
+        self.suggestedFollowUps = try c.decodeIfPresent(
+            [String].self, forKey: .suggestedFollowUps
         )
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
     }

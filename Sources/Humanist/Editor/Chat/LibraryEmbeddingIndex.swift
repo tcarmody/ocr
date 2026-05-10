@@ -137,9 +137,23 @@ struct LibraryEmbeddingIndex: Sendable {
         queryVector: [Float],
         topK: Int = 12,
         entityMatches: [LibraryEntityIndex.LibraryAnchor] = [],
-        rrfK: Double = 60
+        rrfK: Double = 60,
+        restrictTo: Set<URL>? = nil,
+        excluding: Set<URL> = []
     ) -> [Hit] {
         guard !queryVector.isEmpty else { return [] }
+        // Pre-canonicalize both filter sets once so the per-source
+        // check is constant-time path lookups. URL hashing can be
+        // inconsistent across resolved/standardized forms, so we
+        // key by canonical path string instead.
+        let restrictPaths: Set<String>? = restrictTo.map { urls in
+            Set(urls.map {
+                $0.canonicalForFile.standardizedFileURL.path
+            })
+        }
+        let excludePaths: Set<String> = Set(excluding.map {
+            $0.canonicalForFile.standardizedFileURL.path
+        })
         let entitySet: Set<EntityKey> = Set(entityMatches.map {
             EntityKey($0.epubURL, $0.chapterIdx, $0.paragraphIdx)
         })
@@ -152,6 +166,19 @@ struct LibraryEmbeddingIndex: Sendable {
         var candidates: [Candidate] = []
         candidates.reserveCapacity(totalParagraphCount)
         for source in sources {
+            // Skip sources outside the restriction set entirely
+            // — saves the per-paragraph cosine work for books
+            // the user explicitly excluded.
+            let sourcePath = source.epubURL
+                .canonicalForFile.standardizedFileURL.path
+            if let restrictPaths, !restrictPaths.contains(sourcePath) {
+                continue
+            }
+            // Exclusions are a deny-list — applied after the
+            // (optional) restriction allow-list. A user can both
+            // scope to selected books and then exclude one of
+            // them mid-conversation; the deny check wins.
+            if excludePaths.contains(sourcePath) { continue }
             for entry in source.paragraphs {
                 let score = BookEmbeddingIndex.cosine(
                     entry.vector, queryVector

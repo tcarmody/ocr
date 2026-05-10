@@ -414,6 +414,57 @@ final class BookEntityIndexTests: XCTestCase {
         XCTAssertEqual(blocks, [.paragraph("line one line two")])
     }
 
+    // MARK: - Follow-up parser
+
+    func test_followup_parser_extracts_block_and_strips_text() {
+        let input = """
+        Foucault discusses biopolitics primarily in [chapter:5]. \
+        The argument turns on the shift from sovereignty to \
+        governmentality.
+
+        [follow-ups]
+        How does this differ from Bourdieu's theory of fields?
+        Where else in the book does he discuss this?
+        What primary sources does he cite?
+        [/follow-ups]
+        """
+        let result = FollowUpParser.parse(input)
+        XCTAssertEqual(result.followUps.count, 3)
+        XCTAssertEqual(
+            result.followUps.first,
+            "How does this differ from Bourdieu's theory of fields?"
+        )
+        // Cleaned text shouldn't contain the marker block.
+        XCTAssertFalse(result.cleaned.contains("[follow-ups]"))
+        XCTAssertFalse(result.cleaned.contains("[/follow-ups]"))
+        XCTAssertTrue(result.cleaned.contains("biopolitics"))
+    }
+
+    func test_followup_parser_handles_bullet_prefixes() {
+        let input = """
+        Answer here.
+
+        [follow-ups]
+        - First question?
+        * Second question?
+        1. Third question?
+        [/follow-ups]
+        """
+        let result = FollowUpParser.parse(input)
+        XCTAssertEqual(result.followUps, [
+            "First question?",
+            "Second question?",
+            "Third question?",
+        ])
+    }
+
+    func test_followup_parser_returns_empty_on_no_block() {
+        let input = "Just a regular answer with no follow-ups."
+        let result = FollowUpParser.parse(input)
+        XCTAssertTrue(result.followUps.isEmpty)
+        XCTAssertEqual(result.cleaned, input)
+    }
+
     func test_alias_store_round_trips_through_disk() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("humanist-tests-\(UUID().uuidString)")

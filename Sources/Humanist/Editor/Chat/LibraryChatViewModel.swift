@@ -27,6 +27,30 @@ final class LibraryChatViewModel: ObservableObject {
     /// isn't running, the Voyage key was rotated, the network's
     /// out). Cleared on the next successful send.
     @Published private(set) var fallbackNote: String?
+    /// Long-form synthesis mode — see the per-book chat VM for the
+    /// full doc-comment. Library scope is where this matters most:
+    /// "summarize what my library says about heterotopia" naturally
+    /// wants more than a tight paragraph.
+    @Published var useLongFormSynthesis: Bool = false
+    /// Optional retrieval restriction. When non-nil, library
+    /// search and entity matches both filter to the URLs in this
+    /// set so the answer comes from just the selected books.
+    /// Driven by the Library window's "Chat with Selected" action;
+    /// nil = whole library (the federated default).
+    @Published private(set) var scopedURLs: Set<URL>?
+    /// Display titles for the scoped books, in selection order.
+    /// Surfaced in the chat pane's status row so the user sees
+    /// which books are participating without opening the picker.
+    @Published private(set) var scopedTitles: [String] = []
+    /// Books the user excluded mid-conversation via the citation
+    /// chip's context menu. Applied to retrieval as a deny-list
+    /// (after any active scope's allow-list). Stays scoped to the
+    /// session — clearing the chat or app-restart resets.
+    @Published private(set) var excludedBookURLs: Set<URL> = []
+    /// Display titles for excluded books, parallel to
+    /// `excludedBookURLs`. Used to render "Excluded N: X, Y" in
+    /// the status banner.
+    @Published private(set) var excludedBookTitles: [URL: String] = [:]
 
     enum LibraryStatus: Equatable {
         case idle
@@ -277,11 +301,35 @@ final class LibraryChatViewModel: ObservableObject {
             ))
             let topK = await MainActor.run { self.maxRetrievedParagraphs }
             let rrfK = await MainActor.run { self.rrfK }
+            let scope = await MainActor.run { self.scopedURLs }
+            let excluded = await MainActor.run { self.excludedBookURLs }
+            // Filter entity anchors against the same scope + deny-
+            // list combination the cosine search uses, otherwise
+            // the federated entity index would pull in anchors
+            // outside the effective participating-books set.
+            let allowedSourcePaths: Set<String>? = scope.map { urls in
+                Set(urls.map {
+                    $0.canonicalForFile.standardizedFileURL.path
+                })
+            }
+            let excludedSourcePaths: Set<String> = Set(excluded.map {
+                $0.canonicalForFile.standardizedFileURL.path
+            })
+            let filteredEntityAnchors = entityAnchors.filter { anchor in
+                let p = anchor.epubURL
+                    .canonicalForFile.standardizedFileURL.path
+                if let allowedSourcePaths, !allowedSourcePaths.contains(p) {
+                    return false
+                }
+                return !excludedSourcePaths.contains(p)
+            }
             let hits = library.search(
                 queryVector: queryVector,
                 topK: topK,
-                entityMatches: entityAnchors,
-                rrfK: rrfK
+                entityMatches: filteredEntityAnchors,
+                rrfK: rrfK,
+                restrictTo: scope,
+                excluding: excluded
             )
             let context = self.renderLibraryContext(hits: hits)
             let userPrompt = context + "\n\nQuestion: " + query
@@ -389,6 +437,44 @@ final class LibraryChatViewModel: ObservableObject {
         libraryStatus = .idle
     }
 
+    /// Restrict retrieval to a subset of the library — used by the
+    /// Library window's "Chat with Selected" action. `urls` is the
+    /// canonical EPUB URL set; `titles` are the display labels for
+    /// the chat-pane status row. Pass `nil` / empty to reset to
+    /// the whole library.
+    func setScope(urls: Set<URL>?, titles: [String]) {
+        if let urls, !urls.isEmpty {
+            scopedURLs = urls
+            scopedTitles = titles
+        } else {
+            scopedURLs = nil
+            scopedTitles = []
+        }
+    }
+
+    /// Reset retrieval scope to the whole library. Surfaced as a
+    /// "Clear" affordance in the chat pane's status row when a
+    /// scope is active.
+    func clearScope() {
+        scopedURLs = nil
+        scopedTitles = []
+    }
+
+    /// Add a book to the deny-list for the rest of this chat
+    /// session. Library retrieval skips it on subsequent sends.
+    /// Idempotent — adding the same book twice is a no-op.
+    func excludeBook(url: URL, title: String) {
+        excludedBookURLs.insert(url)
+        excludedBookTitles[url] = title
+    }
+
+    /// Drop every exclusion. Surfaced as the "Clear" button next
+    /// to the exclusion banner in the chat pane.
+    func clearExclusions() {
+        excludedBookURLs.removeAll()
+        excludedBookTitles.removeAll()
+    }
+
     private func embedQuery(
         _ query: String, using backend: any EmbeddingBackend
     ) async -> [Float]? {
@@ -494,7 +580,7 @@ final class LibraryChatViewModel: ObservableObject {
         }
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: 1500,
+            maxTokens: useLongFormSynthesis ? 4000 : 1500,
             system: .cached(systemPrompt, ttl: .oneHour),
             messages: [Message(role: .user, content: .plain(userPrompt))],
             thinking: .disabled
@@ -503,12 +589,17 @@ final class LibraryChatViewModel: ObservableObject {
             let response = try await client.send(request)
             try Task.checkCancellation()
             let raw = response.firstText() ?? ""
-            let cited = parseCitations(in: raw, allowedHits: allowedHits)
+            let withFollowUps = FollowUpParser.parse(raw)
+            let cited = parseCitations(
+                in: withFollowUps.cleaned, allowedHits: allowedHits
+            )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
                 citations: cited.citations,
-                retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits)
+                retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits),
+                suggestedFollowUps: withFollowUps.followUps.isEmpty
+                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -540,12 +631,17 @@ final class LibraryChatViewModel: ObservableObject {
                 userMessage: userPrompt
             )
             try Task.checkCancellation()
-            let cited = parseCitations(in: raw, allowedHits: allowedHits)
+            let withFollowUps = FollowUpParser.parse(raw)
+            let cited = parseCitations(
+                in: withFollowUps.cleaned, allowedHits: allowedHits
+            )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
                 citations: cited.citations,
-                retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits)
+                retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits),
+                suggestedFollowUps: withFollowUps.followUps.isEmpty
+                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -701,8 +797,28 @@ final class LibraryChatViewModel: ObservableObject {
         the answer. If the supplied paragraphs don't contain enough \
         information, say so — don't guess.
 
-        Keep replies tight: a paragraph or two is usually enough.
+        \(lengthGuidance)
         """
+    }
+
+    /// Per-book chat VM has the canonical doc-comment; same idea
+    /// here. Swap between chat-paragraph default and essay-shaped
+    /// long-form depending on the user's toggle. Follow-up
+    /// suggestions ride along in either mode.
+    private var lengthGuidance: String {
+        let length: String
+        if useLongFormSynthesis {
+            length = """
+            The user has requested long-form synthesis. Take an \
+            essay's worth of length: a structured 1-2 page response \
+            with clear sections (use Markdown headings to organize), \
+            drawing connections across books and quoting the \
+            strongest passages with full citations.
+            """
+        } else {
+            length = "Keep replies tight: a paragraph or two is usually enough."
+        }
+        return length + "\n\n" + BookChatViewModel.followUpInstructions
     }
 }
 

@@ -49,6 +49,14 @@ final class BookChatViewModel: ObservableObject {
     /// notice the silent degrade rather than wondering why their
     /// fancy backend isn't producing different results.
     @Published private(set) var fallbackNote: String?
+    /// Long-form synthesis mode. When on, the system prompt asks
+    /// for an essay-length response and `maxTokens` lifts so the
+    /// model has room to produce one. Useful for cross-corpus
+    /// comparisons, "summarize what my library says about X," and
+    /// other questions where the chat-shaped paragraph default is
+    /// too tight. Per-window state — flipping doesn't carry across
+    /// editor reopens.
+    @Published var useLongFormSynthesis: Bool = false
 
     enum LibraryStatus: Equatable {
         case idle
@@ -92,6 +100,27 @@ final class BookChatViewModel: ObservableObject {
     /// back; rebuilt on the next library send so a re-indexed book
     /// joins the federation without an app restart.
     private var libraryIndex: LibraryEmbeddingIndex?
+    /// Books excluded mid-conversation in library scope. Same
+    /// shape as `LibraryChatViewModel.excludedBookURLs` — deny-
+    /// list applied to retrieval after any other gating. Empty
+    /// + idempotent in `.currentBook` scope (the open book
+    /// would never be excluded by itself).
+    @Published private(set) var excludedLibraryBookURLs: Set<URL> = []
+    @Published private(set) var excludedLibraryBookTitles: [URL: String] = [:]
+
+    /// Exclude a library book from this chat session's retrieval.
+    /// Surfaced via the citation chip's context menu in library
+    /// scope. Idempotent.
+    func excludeLibraryBook(url: URL, title: String) {
+        excludedLibraryBookURLs.insert(url)
+        excludedLibraryBookTitles[url] = title
+    }
+
+    /// Clear every library-book exclusion for this session.
+    func clearLibraryExclusions() {
+        excludedLibraryBookURLs.removeAll()
+        excludedLibraryBookTitles.removeAll()
+    }
     /// Federated entity index over the library. Built alongside
     /// `libraryIndex` and consulted when the user names an entity
     /// in a library-scope query — every paragraph mentioning that
@@ -534,11 +563,26 @@ final class BookChatViewModel: ObservableObject {
             ))
             let topK = await MainActor.run { self.maxRetrievedParagraphs }
             let rrfK = await MainActor.run { self.rrfK }
+            let excluded = await MainActor.run {
+                self.excludedLibraryBookURLs
+            }
+            // Filter entity anchors against the same deny-list
+            // applied to the cosine search — see the parallel
+            // logic in LibraryChatViewModel.sendLibrary.
+            let excludedSourcePaths: Set<String> = Set(excluded.map {
+                $0.canonicalForFile.standardizedFileURL.path
+            })
+            let filteredEntityAnchors = entityAnchors.filter { anchor in
+                let p = anchor.epubURL
+                    .canonicalForFile.standardizedFileURL.path
+                return !excludedSourcePaths.contains(p)
+            }
             let hits = library.search(
                 queryVector: queryVector,
                 topK: topK,
-                entityMatches: entityAnchors,
-                rrfK: rrfK
+                entityMatches: filteredEntityAnchors,
+                rrfK: rrfK,
+                excluding: excluded
             )
             let resolved = await self.resolveLibraryHits(hits)
             let context = self.renderLibraryContext(hits: resolved)
@@ -572,7 +616,7 @@ final class BookChatViewModel: ObservableObject {
         }
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: 1500,
+            maxTokens: useLongFormSynthesis ? 4000 : 1500,
             system: .cached(systemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .plain(userPrompt))
@@ -583,14 +627,19 @@ final class BookChatViewModel: ObservableObject {
             let response = try await client.send(request)
             try Task.checkCancellation()
             let raw = response.firstText() ?? ""
-            let cited = parseCitations(in: raw, allowedHits: allowedHits)
+            let withFollowUps = FollowUpParser.parse(raw)
+            let cited = parseCitations(
+                in: withFollowUps.cleaned, allowedHits: allowedHits
+            )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
                 citations: cited.citations,
                 retrievalDetail: Self.makeRetrievalDetail(
                     hits: allowedHits
-                )
+                ),
+                suggestedFollowUps: withFollowUps.followUps.isEmpty
+                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -623,14 +672,19 @@ final class BookChatViewModel: ObservableObject {
                 userMessage: userPrompt
             )
             try Task.checkCancellation()
-            let cited = parseCitations(in: raw, allowedHits: allowedHits)
+            let withFollowUps = FollowUpParser.parse(raw)
+            let cited = parseCitations(
+                in: withFollowUps.cleaned, allowedHits: allowedHits
+            )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
                 citations: cited.citations,
                 retrievalDetail: Self.makeRetrievalDetail(
                     hits: allowedHits
-                )
+                ),
+                suggestedFollowUps: withFollowUps.followUps.isEmpty
+                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -1190,7 +1244,7 @@ final class BookChatViewModel: ObservableObject {
         }
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: 1500,
+            maxTokens: useLongFormSynthesis ? 4000 : 1500,
             system: .cached(libraryScopeSystemPrompt, ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .plain(userPrompt))
@@ -1201,14 +1255,19 @@ final class BookChatViewModel: ObservableObject {
             let response = try await client.send(request)
             try Task.checkCancellation()
             let raw = response.firstText() ?? ""
-            let cited = parseLibraryCitations(in: raw, allowedHits: allowedHits)
+            let withFollowUps = FollowUpParser.parse(raw)
+            let cited = parseLibraryCitations(
+                in: withFollowUps.cleaned, allowedHits: allowedHits
+            )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
                 citations: cited.citations,
                 retrievalDetail: Self.makeRetrievalDetail(
                     libraryHits: allowedHits
-                )
+                ),
+                suggestedFollowUps: withFollowUps.followUps.isEmpty
+                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -1241,14 +1300,19 @@ final class BookChatViewModel: ObservableObject {
                 userMessage: userPrompt
             )
             try Task.checkCancellation()
-            let cited = parseLibraryCitations(in: raw, allowedHits: allowedHits)
+            let withFollowUps = FollowUpParser.parse(raw)
+            let cited = parseLibraryCitations(
+                in: withFollowUps.cleaned, allowedHits: allowedHits
+            )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
                 citations: cited.citations,
                 retrievalDetail: Self.makeRetrievalDetail(
                     libraryHits: allowedHits
-                )
+                ),
+                suggestedFollowUps: withFollowUps.followUps.isEmpty
+                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -1382,8 +1446,7 @@ final class BookChatViewModel: ObservableObject {
         contain enough information to answer, say so plainly — \
         don't guess.
 
-        Keep replies tight: a short paragraph or two is usually \
-        enough.
+        \(lengthGuidance)
         """
     }
 
@@ -1691,13 +1754,50 @@ final class BookChatViewModel: ObservableObject {
         passages when they directly support the answer; cite their \
         location with the marker form above.
 
-        Keep replies tight: a short paragraph or two is plenty for \
-        most questions. The user is reading the answer in a sidebar \
-        pane, not a full window.
+        \(lengthGuidance)
         """
         guard let preamble = tocPreamble() else { return base }
         return base + "\n\n" + preamble
     }
+
+    /// Length guidance is a one-paragraph addendum that swaps when
+    /// the synthesis toggle is on — chat-shaped paragraphs by
+    /// default, structured essay-length when the user wants more
+    /// development. Keeps the rest of the prompt byte-stable so
+    /// the cached-prefix payoff stays mostly intact across the
+    /// two modes. Follow-up suggestions are appended in either mode.
+    private var lengthGuidance: String {
+        let length: String
+        if useLongFormSynthesis {
+            length = """
+            The user has requested long-form synthesis. Take an \
+            essay's worth of length: a structured 1-2 page response \
+            with clear sections (use Markdown headings to organize), \
+            drawing connections across the supplied paragraphs and \
+            quoting the strongest passages with full citations.
+            """
+        } else {
+            length = """
+            Keep replies tight: a short paragraph or two is plenty \
+            for most questions. The user is reading the answer in a \
+            sidebar pane, not a full window.
+            """
+        }
+        return length + "\n\n" + Self.followUpInstructions
+    }
+
+    /// Asks the model to emit 2-3 follow-up questions inside a
+    /// `[follow-ups]…[/follow-ups]` block at the end of its
+    /// response. The chat pane parses and renders them as
+    /// one-click button row beneath the answer.
+    static let followUpInstructions = """
+        After your main answer, suggest 2-3 follow-up questions \
+        the user might naturally ask next. Format them inside \
+        `[follow-ups]…[/follow-ups]` markers (one question per \
+        line, no bullet markers needed). Pick questions that \
+        build on your answer rather than restating the user's \
+        original question.
+        """
 
     /// Compact table of contents the model sees as part of the
     /// system prompt. Lets it reason about structural references

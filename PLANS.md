@@ -2460,12 +2460,13 @@ research workflow value.
 These are short, obvious, and unlock follow-on value. The first
 two as a pair are the highest-leverage thing on this entire list.
 
-1. **Chat with Selected** — the Library table already has multi-
-   selection (drives bulk find/replace). Add a "Chat with Selected
-   (n)" button next to "Bulk Edit Selected…" that scopes the next
-   chat session to just those rows. Most "compare these N books"
-   queries don't need durable groupings; they need one-click
-   scoping for a one-time comparison. ~1-2 hours.
+1. ~~**Chat with Selected**~~ shipped. Library window's filter bar
+   gains a "Chat with Selected (n)" button when rows are selected;
+   click scopes the library chat to those rows and reveals the
+   pane. `LibraryChatViewModel.scopedURLs` drives the retrieval
+   filter; `LibraryEmbeddingIndex.search` gained a `restrictTo`
+   parameter; status row shows "Scoped to: book1, book2, …" with
+   a Clear button.
 2. **Collections** — durable named groupings ("Foucault corpus",
    "for the chapter on biopolitics"). Persisted as catalog
    metadata; chat scope picker gains a "Collection: X" option.
@@ -2473,21 +2474,23 @@ two as a pair are the highest-leverage thing on this entire list.
    Collection" row action. ~1-2 days. Pairs with Chat with
    Selected: ad-hoc selection for one-off questions, collections
    for recurring scopes.
-3. **Suggested follow-ups** — model emits 2-3 follow-up questions
-   after each answer (asked-as-part-of-the-prompt; cheap). One
-   click on a suggestion sends it as the next user turn. Common
-   pattern in modern chat UIs; ~2 hours. ~+200 tokens per response.
-4. **Long-form synthesis toggle** — small switch on the chat pane
-   that flips the system prompt from "tight paragraph or two" to
-   "structured 1-2 page essay synthesizing across sources" + lifts
-   `maxTokens` accordingly. ~30 minutes. Genuinely useful when the
-   user wants more than a chat-shaped reply.
-5. **Per-book exclusion** — `─` button on a citation chip to
-   "exclude this book from the rest of this conversation." Stored
-   on the chat session, respected in the next send's retrieval.
-   ~1-2 hours. Catches the common case where one book keeps
-   surfacing irrelevant matches and the user wants it out of the
-   way without leaving chat.
+3. ~~**Suggested follow-ups**~~ shipped. Model emits 2-3 questions
+   inside a `[follow-ups]…[/follow-ups]` block at the end of each
+   response; `FollowUpParser` strips the block from the visible
+   text and exposes the list as one-click buttons under the
+   citation strip. Click sends as next user turn (gated on
+   `isThinking` to avoid streamTask races).
+4. ~~**Long-form synthesis toggle**~~ shipped. Per-window flag on
+   both VMs flips the system prompt's length-guidance addendum and
+   lifts `maxTokens` from 1500 → 4000. Toggle button in the chat
+   pane chrome (`doc.text` icon).
+5. ~~**Per-book exclusion**~~ shipped. Citation chip's right-click
+   context menu offers "Exclude {Book Title} from chat"; the
+   excluded set is a session-scoped deny-list applied via a new
+   `excluding` parameter on `LibraryEmbeddingIndex.search`. Status
+   banner with "Excluded N books · Clear" when active. Works in
+   both library chat (LibraryChatViewModel) and per-book chat's
+   library scope (BookChatViewModel.excludedLibraryBookURLs).
 
 ### Tier 2 — research-workflow utility
 

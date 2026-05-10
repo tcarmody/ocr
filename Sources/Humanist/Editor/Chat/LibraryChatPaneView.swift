@@ -31,6 +31,19 @@ struct LibraryChatPaneView: View {
 
     @ViewBuilder
     private var statusStrip: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            mainStatusRow
+            if vm.scopedURLs != nil {
+                scopedStatusRow
+            }
+            if !vm.excludedBookURLs.isEmpty {
+                exclusionStatusRow
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var mainStatusRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "books.vertical")
                 .foregroundStyle(.secondary)
@@ -70,6 +83,18 @@ struct LibraryChatPaneView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+            Button {
+                vm.useLongFormSynthesis.toggle()
+            } label: {
+                Image(systemName: vm.useLongFormSynthesis
+                      ? "doc.text.fill"
+                      : "doc.text")
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderless)
+            .help(vm.useLongFormSynthesis
+                  ? "Switch back to short chat-shaped answers"
+                  : "Long-form synthesis: structured 1-2 page response")
             Button {
                 showRetrievalDetail.toggle()
             } label: {
@@ -111,6 +136,80 @@ struct LibraryChatPaneView: View {
         return parts.joined(separator: " · ")
     }
 
+    /// Banner that surfaces the active retrieval scope. Renders
+    /// only when the user has flipped to a subset via "Chat with
+    /// Selected" in the Library window. Lists up to three book
+    /// titles inline; longer scopes get the count + "…".
+    @ViewBuilder
+    private var scopedStatusRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "scope")
+                .foregroundStyle(Color.accentColor)
+                .imageScale(.small)
+            Text(scopeSummary())
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Button("Clear") { vm.clearScope() }
+                .controlSize(.small)
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(Color.accentColor.opacity(0.06))
+    }
+
+    private func scopeSummary() -> String {
+        let titles = vm.scopedTitles
+        if titles.isEmpty { return "Scoped retrieval" }
+        if titles.count <= 3 {
+            return "Scoped to: \(titles.joined(separator: ", "))"
+        }
+        let head = titles.prefix(3).joined(separator: ", ")
+        return "Scoped to \(titles.count) books — \(head), …"
+    }
+
+    /// Banner that surfaces deny-listed books — populated when
+    /// the user right-clicks a citation chip and picks
+    /// "Exclude {Book} from chat." Mirrors the scoped-row layout
+    /// for visual consistency.
+    @ViewBuilder
+    private var exclusionStatusRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "minus.circle")
+                .foregroundStyle(.orange)
+                .imageScale(.small)
+            Text(exclusionSummary())
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Button("Clear") { vm.clearExclusions() }
+                .controlSize(.small)
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(Color.orange.opacity(0.06))
+    }
+
+    private func exclusionSummary() -> String {
+        let titles = vm.excludedBookURLs
+            .compactMap { vm.excludedBookTitles[$0] }
+            .sorted()
+        if titles.isEmpty {
+            return "Excluded \(vm.excludedBookURLs.count) book(s)"
+        }
+        if titles.count <= 3 {
+            return "Excluded: \(titles.joined(separator: ", "))"
+        }
+        let head = titles.prefix(3).joined(separator: ", ")
+        return "Excluded \(titles.count) books — \(head), …"
+    }
+
     // MARK: - transcript
 
     @ViewBuilder
@@ -125,6 +224,17 @@ struct LibraryChatPaneView: View {
                         ChatMessageRow(
                             message: message,
                             onCitationTap: onCitationTap,
+                            onFollowUpTap: { question in
+                                guard !vm.isThinking else { return }
+                                vm.input = question
+                                Task { await vm.send() }
+                            },
+                            onExcludeBook: { citation in
+                                guard let url = citation.bookEpubURL,
+                                      let title = citation.bookTitle
+                                else { return }
+                                vm.excludeBook(url: url, title: title)
+                            },
                             showRetrievalDetail: showRetrievalDetail
                         )
                         .id(message.id)
