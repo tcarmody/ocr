@@ -229,28 +229,12 @@ struct ChatPaneView: View {
 
     @ViewBuilder
     private var inputRow: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField(
-                "Ask a question…",
-                text: $vm.input,
-                axis: .vertical
-            )
-            .textFieldStyle(.roundedBorder)
-            .lineLimit(1...5)
-            .onSubmit { Task { await vm.send() } }
-            Button {
-                Task { await vm.send() }
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
-            }
-            .buttonStyle(.borderless)
-            .disabled(vm.input.trimmingCharacters(in: .whitespaces).isEmpty
-                      || vm.isThinking)
-            .keyboardShortcut(.return, modifiers: [.command])
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        ChatInputRow(
+            text: $vm.input,
+            placeholder: "Ask a question…",
+            isThinking: vm.isThinking,
+            onSend: { Task { await vm.send() } }
+        )
     }
 }
 
