@@ -2180,6 +2180,215 @@ post-Swift-6 when the compiler is enforcing it for us.
 
 ---
 
+## R-Chat-Graph-Lite — Hierarchical + entity graphs for chat retrieval
+
+**Status**: not started. Successor to `R-Chat-Embeddings`. Adds two
+graph primitives that handle the queries embeddings can't:
+structural (variable-granularity retrieval) and exhaustive (every
+mention of an entity across the library).
+
+### Why bother
+
+Hybrid BM25 + embedding retrieval covers most chat queries well, but
+two query shapes fall through the gaps:
+
+- **Structural** — "summarize chapter 3," "what's the argument of
+  the section on heterotopia?" Embeddings return ranked paragraphs;
+  what the user actually wants is a discussion at the section or
+  chapter scope. The hierarchy is already implicit in the EPUB
+  (`nav.xhtml`, `hu-page-N`, `hu-p-N-M` anchors); making it
+  explicit as a retrieval primitive is nearly free.
+- **Exhaustive** — "every mention of Aristotle across all my books,"
+  "which books discuss both Foucault and Bourdieu?" Embeddings give
+  ranked top-K, not exhaustive enumeration. Set operations over an
+  entity index are the right tool.
+
+This isn't GraphRAG — no LLM-extracted entity-relation triples, no
+community detection, no multi-level summarization. Two narrow,
+high-leverage primitives that compose with the hybrid retriever.
+
+### Scope: two primitives
+
+**Primitive 1 — Hierarchical structure graph**
+
+Per-book tree: `book → chapter → section → paragraph`. Nodes carry
+their EPUB anchor (`hu-page-N`, `hu-p-N-M`) so click-to-navigate
+works the same way the existing chat citations do.
+
+Built from `nav.xhtml` (which Humanist already produces, with
+nested `<ol>` levels for sections within chapters via the existing
+`R-Hierarchy` work). No additional analysis needed — the tree
+exists; we just expose it as a retrieval target.
+
+Used for variable-granularity expansion: when the embedding stage
+returns N paragraphs that all sit within one section, the
+retriever offers the section as the answer scope instead of just
+the matched paragraphs. Also enables direct structural queries:
+"give me chapter 3" walks that subtree.
+
+**Primitive 2 — Light entity index**
+
+Per-book sidecar: `entity name → [paragraph anchors]`. Entities
+extracted via Apple's `NLTagger` with `.nameType` scheme — gives
+PERSON / PLACE / ORG / DATE on contemporary text out of the box,
+no API key, on-device. Quality on classical Greek and Latin will
+be weaker; document this as a known limitation.
+
+Library-level federation: union the per-book entity tables, deduped
+by canonical form. Query path:
+
+1. Detect entity mentions in the query (same `NLTagger` pass).
+2. For each detected entity, look up the federated entity index.
+3. Retrieve all paragraph anchors mentioning that entity.
+4. Pass to the model as additional context alongside the BM25 +
+   embedding hits.
+
+Set queries fall out for free: "books mentioning both X and Y" is
+just a set intersection on the entity index.
+
+### Architecture
+
+```
+Sources/Humanist/Editor/Chat/
+├── BookHierarchyIndex.swift     NEW — tree built from nav.xhtml
+├── BookEntityIndex.swift        NEW — NLTagger-driven mentions table
+├── HybridRetriever.swift        EDIT — fold hierarchy + entity hits
+│                                  into the RRF fusion alongside BM25
+│                                  + embeddings
+└── (LibraryEmbeddingIndex)      cross-book federation pattern from
+                                   R-Chat-Embeddings reused for entity
+                                   index federation
+```
+
+`HybridRetriever` becomes a four-way fusion (BM25 + embeddings +
+hierarchy expansion + entity matches) via reciprocal rank fusion.
+Each retriever returns ranked candidates with the same paragraph-
+anchor identity; RRF combines them with k=60.
+
+### Per-book persistence
+
+Extend the existing `META-INF/com.humanist.embeddings.json` sidecar
+with two new sections rather than spawning a third file:
+
+```jsonc
+{
+  "schemaVersion": 2,                 // bumped from 1
+  "backend": "...",
+  "dimension": 384,
+  "spineFingerprint": "sha256:...",
+  "paragraphs": [...],                // unchanged from R-Chat-Embeddings
+  "hierarchy": {                      // NEW
+    "rootBookID": "...",
+    "nodes": [
+      { "id": "ch-0", "kind": "chapter", "anchor": "hu-page-1",
+        "children": ["sec-0-0", "sec-0-1"] },
+      ...
+    ]
+  },
+  "entities": {                       // NEW
+    "Foucault": ["hu-p-2-12", "hu-p-3-7", ...],
+    "heterotopia": ["hu-p-3-9", ...],
+    ...
+  }
+}
+```
+
+Schema version bump triggers full rebuild on first open after the
+upgrade. Per-paragraph re-edits trigger entity re-extraction for
+those paragraphs; hierarchy is stable across paragraph-level edits
+(it changes only on Split / Merge / Move Chapter, which already
+post a structural-dirty signal via the existing chapter-operations
+plumbing).
+
+### Library-level federation
+
+Mirrors the `LibraryEmbeddingIndex` pattern from R-Chat-Embeddings:
+
+- `LibraryHierarchyIndex` — flat list of all chapters/sections in
+  the library, indexed by `(bookID, anchor)`. ~50 KB per book.
+  Lazy-loaded; doesn't need to all sit in RAM.
+- `LibraryEntityIndex` — federated entity → `[(bookID, anchor)]`
+  table. Held in memory at chat time; ~1-5 MB total for a 100-book
+  library depending on entity richness.
+
+### Settings
+
+Single subsection added to Settings → AI → Book Chat:
+
+- **Use structural retrieval**: bool, default on. Adds hierarchy
+  expansion to the fusion.
+- **Use entity retrieval**: bool, default on. Adds entity-index
+  matches to the fusion.
+
+Both are local / free / fast — no separate backend choice. NLTagger
+runs on-device.
+
+### What's deliberately out of scope
+
+- **Citation graphs** ("Book A cites Book B"). Bibliography parsing
+  is a real ML project on its own; demand hasn't surfaced.
+- **GraphRAG-full** (LLM-extracted entity-relation triples + multi-
+  level community summaries). Massive engineering investment for
+  marginal gain on a single-user tool. Document the design pointer
+  but don't implement.
+- **LLM-extracted entities**. Apple's NLTagger is good enough on
+  contemporary English; the upgrade path is documented but not
+  default. If real-world testing shows NER misses are degrading
+  query quality, revisit with a Haiku-extraction backend then.
+
+### Risks
+
+- **NLTagger quality on classical text**. Polytonic Greek / Latin
+  entities won't be detected reliably. Documented limitation;
+  partial mitigation via an "alias dictionary" (per-book or
+  per-library) the user can edit to add canonical names that
+  NER missed.
+- **Entity disambiguation across books**. "Aristotle" in two books
+  is presumably the same entity, but a 20-volume corpus might
+  contain multiple "John Smiths." Default behavior: dedup by
+  surface form (treat all "Aristotle" mentions as one node). Good
+  enough until a real ambiguity surfaces; can later add
+  context-aware disambiguation.
+- **Sidecar schema drift**. Adding hierarchy + entities to the
+  embeddings sidecar means a v1-schema sidecar is incomplete.
+  Detect via `schemaVersion`, rebuild from scratch on first open
+  after the upgrade. Annoying for users with many indexed books
+  but bounded (NLTagger is fast; full library re-index is minutes,
+  not hours).
+
+### Effort
+
+~3-4 days end-to-end:
+- ~1 day: `BookHierarchyIndex` (tree from nav.xhtml + sidecar
+  read/write + schema bump migration).
+- ~1 day: `BookEntityIndex` via NLTagger + sidecar plumbing +
+  per-paragraph re-extraction on edit.
+- ~0.5 day: `HybridRetriever` extended to four-way RRF fusion.
+- ~0.5 day: `LibraryHierarchyIndex` + `LibraryEntityIndex`
+  federation.
+- ~0.5 day: Settings toggles + alias-dictionary UI for missed
+  entities.
+- ~0.5 day: integration testing on real books (mixed contemporary
+  + classical content), threshold tuning.
+
+### When to ship
+
+After `R-Chat-Embeddings` and the cross-library federation it
+introduces. Both primitives benefit from the per-book sidecar
+infrastructure that R-Chat-Embeddings establishes.
+
+### Dependencies
+
+- `R-Chat-Embeddings` for the per-book sidecar pattern + library
+  federation.
+- `NaturalLanguage.NLTagger` — already available; no new
+  dependency.
+- The existing `R-Hierarchy` work (nested `<ol>` in nav.xhtml)
+  already provides the section-level hierarchy this primitive
+  consumes.
+
+---
+
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
 **Status**: one shared Surya sidecar serves all pipelines. Sequential
@@ -2934,14 +3143,23 @@ use; distribution is lower priority than correctness.
    after Swift 6 because the embedding cache crosses the chat
    ViewModel's isolation and Sendable-clean code is much easier
    to write when the compiler enforces it.
-3. **Distribution polish** — see `RELEASES.md`. Need a Developer
+3. **R-Chat-Graph-Lite** — successor to R-Chat-Embeddings. Adds two
+   graph primitives the embedding layer can't do: a hierarchical
+   structure index (variable-granularity retrieval — return whole
+   sections instead of just paragraphs when appropriate) and a
+   light entity index (every mention of a person/place/concept
+   across the library, via Apple's on-device `NLTagger`). ~3-4 days.
+   Both extend the per-book embeddings sidecar; both run free /
+   on-device. Citation graphs and full GraphRAG explicitly out of
+   scope.
+4. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-4. **P-Greek-Quality** — ground-truth measurement of Tesseract
+5. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-5. **Stretch / speculative items in Tier 8** if a specific need
+6. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
