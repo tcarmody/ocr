@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-10)
+## Status snapshot (as of 2026-05-11)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -394,6 +394,22 @@ conversion via the `ConversionStats` struct returned from
   for cert generation, hardened-runtime signing, `notarytool`
   workflow, DMG assembly, GitHub Releases, optional Sparkle
   auto-updates, and the clean-Mac smoke test.
+
+**Done — Partial Swift 6 prep** (commit `abaa918`):
+- `DocumentProfiler.lastSamples` deleted — was set but never read.
+- `TwoUpDetector` refactored: new `detect(...) -> Detection` struct
+  carries verdict + diagnostics by return value instead of via a
+  static-mutable singleton. `detectIsTwoUp(...)` kept as a thin
+  wrapper for callers that don't need the diagnostics.
+- `SidecarBridge.send(_ payload: Data) -> Data` (was `[String: Any] →
+  [String: Any]`). Wire format is now Sendable-clean across actor
+  boundaries; `[String: Any]` use is scoped inside `SuryaConnection`
+  methods. `helloMessage` cache dropped — was set on spawn but
+  never read.
+
+The remaining ~6 hours of Swift 6 work is scoped under
+[C-Swift6-Migration](#c-swift6-migration--migrate-to-swift-6-strict-concurrency-mode)
+in Tier 6.
 
 **Done — Local chat backend**:
 - **Ollama + Gemma 4 26B MoE** (commit `bbea813`): chat-with-book
@@ -1828,6 +1844,123 @@ no-op, case-sensitivity flag, and per-book progress callback.
 
 # Tier 6: Performance + observability
 
+## C-Swift6-Migration — Migrate to Swift 6 strict concurrency mode
+
+**Status**: not started. Codebase is at `swiftLanguageModes: [.v5]`;
+flipping to `.v6` produces 14 distinct error sites + 2 pre-existing
+Humanist warnings that would escalate. A partial cleanup landed in
+commit `abaa918` (DocumentProfiler / TwoUpDetector / SidecarBridge —
+the easy three) but the rest of the migration remains.
+
+### Why bother
+
+- **Forward compatibility**: every new Swift release tightens
+  concurrency checking. Staying on Swift 5 mode means each new toolchain
+  surfaces fresh warnings without the codebase improving.
+- **Catches real races**: the pre-existing `'runner' captured in
+  concurrently-executing code` warning in `QueueViewModel.swift:263`
+  is exactly the kind of bug Swift 6 is meant to find. We've been
+  sitting on it.
+- **Compiler help is free quality**: every issue Swift catches at
+  compile time is one fewer Heisenbug to chase at runtime.
+
+### Goal
+
+Build and test cleanly with `swiftLanguageModes: [.v6]`. No
+`@unchecked Sendable` escape hatches except where defended by a
+specific runtime invariant (e.g. `LoadedPDF` access patterns).
+
+### Scope: 14 error sites + 2 latent warnings
+
+**Pipeline / RegionAwareReflow (8 sites)** — debug introspection
+statics: `lastAttributions`, `lastFootnotesPerPage`,
+`lastReclassificationsPerPage`, `lastHFReclassificationsPerPage`,
+`lastHeadingPromotionsPerPage`, `lastRegionSplitsPerPage`,
+`lastCrossPageDecisionsPerPage`, `lastTypographicPromotionsPerPage`.
+Same pattern as the already-fixed `TwoUpDetector.lastDiagnostics`:
+each is read by the debug-log writer in `PDFToEPUBPipeline`. Refactor
+each to flow through the reflow output struct rather than parking in
+a global. Probably ~3 hours; the per-static refactor is mechanical
+but multiplied by 8 + per-consumer call site updates.
+
+**Pipeline / DOCXWriter (2 sites)** — `bodyFont: NSFont` and
+`newline: NSAttributedString` static lets. Conceptually immutable but
+NSFont/NSAttributedString aren't `Sendable`. Two clean options:
+
+  - Make them computed properties (~5 ns per access; trivial).
+  - Wrap in a `@unchecked Sendable` box that asserts immutability.
+
+Computed property is the cleaner fix. ~10 minutes.
+
+**Pipeline / PDFToEPUBPipeline (2+2 sites)** — async-let captures of
+`pdfRef` (the `LoadedPDF` snapshot from the recent
+P-Vision-Concurrency change) and progress-callback closures with
+`sending` parameters.
+
+The `pdfRef` issue is the deeper one. `LoadedPDF` is intentionally
+non-`Sendable` because PDFKit's `PDFDocument` isn't documented as
+thread-safe. Two paths:
+
+  - Mark `LoadedPDF: @unchecked Sendable`, defended by an invariant:
+    "PDFKit access only ever happens on the pipeline actor's
+    executor, so even when async-let creates concurrent child tasks,
+    the actor's serializing executor prevents simultaneous PDFKit
+    calls." Document the invariant in code so future changes don't
+    silently break it. Cleanest if the invariant holds.
+  - Remove the concurrency entirely and fall back to serial Vision +
+    Surya per-page (loses the ~30% per-page speedup from
+    P-Vision-Concurrency).
+
+Path 1 is right. ~1 hour including invariant write-up. The progress-
+callback `sending` issues should fall out from the same `@Sendable`
++ explicit-capture-list passes.
+
+**Humanist / QueueViewModel (2 latent warnings → errors)**:
+  - `runner` captured in concurrently-executing code (line 263).
+  - `supportedLanguages` main-actor-isolated static accessed from
+    nonisolated context (line 242).
+
+Both real problems. The first is a closure capturing a `var runner`
+across a Task; either rebind to `let` or restructure. The second is
+a `@MainActor`-implicit static that's read from a nonisolated method;
+mark the access path either `@MainActor` or move the data to an
+unisolated holder.
+
+### Effort
+
+~6 hours total broken down:
+- ~3 hours: RegionAwareReflow's 8 statics → return-value plumbing.
+- ~1 hour: DOCXWriter constants → computed properties.
+- ~1 hour: LoadedPDF + progress-callback Sending fixes; verify the
+  PDFKit-on-one-executor invariant by reading the call graph.
+- ~30 min: QueueViewModel rebinds.
+- ~30 min: flip Package.swift to `.v6`, run `swift test`, fix any
+  test-target stragglers.
+
+### Risks
+
+- **PDFKit-on-one-executor invariant could be wrong**. If
+  `analyzeLayoutWithRetry`'s retry path actually hops executors, the
+  `@unchecked Sendable` defense fails. Verify before committing.
+- **Test-target Swift 6 issues**. `swiftLanguageModes` is per-package,
+  so test targets get the same strict checks. Likely surfaces a few
+  more issues in test fixtures (e.g. captured-state in async test
+  setup).
+
+### When to ship
+
+Probably next, since the partial cleanup is fresh in mind and the
+estimate is bounded. A bigger task than `P-Greek-Quality` but produces
+ongoing benefit (every future warning Swift catches is one we don't
+have to debug).
+
+### Dependencies
+
+None hard. The genuine cleanups in commit `abaa918` already happened
+and are checked in regardless of whether the rest lands.
+
+---
+
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
 **Status**: one shared Surya sidecar serves all pipelines. Sequential
@@ -2558,17 +2691,31 @@ use; distribution is lower priority than correctness.
 - **P-Vision-Concurrency**: Vision OCR + Surya layout run in
   parallel via `async let`, ~30% per-page speedup when Surya
   is installed.
+- **Partial Swift 6 prep** (commit `abaa918`): dead-static cleanup
+  in `DocumentProfiler`, `TwoUpDetector` refactored to a `Detection`
+  return struct, `SidecarBridge` wire format moved to `Data` for
+  Sendable-clean cross-actor IPC. Remaining migration scoped in
+  `C-Swift6-Migration` below.
 
 **Next, in roughly this order:**
 
-1. **Distribution polish** — see `RELEASES.md`. Need a Developer
+1. **C-Swift6-Migration** — flip `swiftLanguageModes: [.v5] → [.v6]`.
+   ~6 hours of mechanical work clearing 14 error sites + 2 latent
+   warnings (8 debug statics in `RegionAwareReflow`, 2 NSFont/
+   NSAttributedString constants in `DOCXWriter`, 2 `LoadedPDF`
+   capture sites + 2 progress-callback `sending` issues in
+   `PDFToEPUBPipeline`, 2 in `QueueViewModel`). Bounded scope, fresh
+   in mind from the partial cleanup that already shipped, and every
+   future Swift release tightens the screws — so cheaper to clear
+   now than later.
+2. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-2. **P-Greek-Quality** — ground-truth measurement of Tesseract
+3. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-3. **Stretch / speculative items in Tier 8** if a specific need
+4. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
