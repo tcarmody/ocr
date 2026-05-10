@@ -72,7 +72,7 @@ Every conversion produces:
 | `<basename>.docx` | Microsoft Word OOXML — opens in Word, Pages, Google Docs |
 | `<basename>.searchable.pdf` | Source PDF with an invisible OCR text overlay — Cmd+F searchable, no visual change |
 
-The launcher splits sibling outputs into two toggles: **`.txt + .md`** (cheap, on by default) and **`.html + .docx`** (heavier, off by default). All siblings are regenerated whenever you save the EPUB in the editor. An optional **configurable output folder** (Settings → Conversion) routes each format into its own subfolder (`Books/`, `Searchable PDFs/`, `Text Files/`, `Markdown/`, `HTML/`, `Word Documents/`).
+The launcher splits sibling outputs into two toggles: **`.txt + .md`** (cheap, on by default) and **`.html + .docx`** (heavier, off by default). All siblings are regenerated whenever you save the EPUB in the editor. An optional **configurable output folder** (Settings → Conversion) routes each format into its own subfolder (`Books/`, `Searchable PDFs/`, `Text Files/`, `Markdown/`, `HTML/`, `Word Documents/`). The same folder also gets an `Input/` subfolder used by the optional **auto-scan** feature: enable *Automatically scan Input folder for new PDFs* in Settings → Conversion and any PDF you drop into `Input/` while the launcher is running is enqueued with the current default settings — same code path as a drag-drop conversion. PDFs whose output EPUB already exists are skipped. `Scripts/auto-scan-input.sh` is the headless companion for cron / launchd setups; it walks the same folder via `humanist-cli`.
 
 ## Editor
 

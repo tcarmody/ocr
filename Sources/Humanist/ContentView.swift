@@ -19,6 +19,17 @@ struct ContentView: View {
     @State private var showingSuryaSetup = false
     @State private var showingTesseractSetup = false
     @StateObject private var twoUpProcessor = TwoUpProcessor()
+
+    /// Background scanner for the configured `<outputRoot>/Input/`
+    /// folder. Started when the `autoScanInputFolder` Settings
+    /// toggle is on; stopped when off. Idle by default — no
+    /// filesystem watcher running, no overhead for users who don't
+    /// opt in.
+    @StateObject private var inputScanner = InputFolderScanner()
+    @AppStorage(ConversionSettingsKeys.autoScanInputFolder)
+    private var autoScanInputFolder: Bool = false
+    @AppStorage(ConversionSettingsKeys.outputFolderPath)
+    private var outputFolderPath: String = ""
     /// History disclosure state. Defaults collapsed so a long
     /// bulk run doesn't push the active queue off-screen; users
     /// expand it to inspect past conversions or retry failures.
@@ -99,6 +110,18 @@ struct ContentView: View {
         }
         .onAppear {
             if !welcomeShown { showingWelcome = true }
+            refreshInputScannerLifecycle()
+        }
+        // Track the auto-scan toggle and the output-folder picker
+        // both — flipping the toggle starts/stops the watcher, and
+        // changing the output folder out from under an active
+        // watcher needs a restart so it points at the new
+        // `<root>/Input/`.
+        .onChange(of: autoScanInputFolder) { _, _ in
+            refreshInputScannerLifecycle()
+        }
+        .onChange(of: outputFolderPath) { _, _ in
+            refreshInputScannerLifecycle()
         }
         // Help menu's "Show Welcome…" posts this notification so a
         // user who dismissed the first-run sheet can re-open it
@@ -118,6 +141,19 @@ struct ContentView: View {
             for: .humanistShowEPUBDiff
         )) { _ in
             openWindow(id: "epub-diff")
+        }
+    }
+
+    /// Start or stop the Input-folder scanner to match current
+    /// Settings. The scanner is idempotent on `start(queue:)`, so
+    /// calling this from multiple `onAppear` / `onChange` paths is
+    /// safe.
+    private func refreshInputScannerLifecycle() {
+        let shouldRun = autoScanInputFolder && !outputFolderPath.isEmpty
+        if shouldRun {
+            inputScanner.start(queue: queue)
+        } else {
+            inputScanner.stop()
         }
     }
 

@@ -8,6 +8,9 @@ struct ConversionSettingsView: View {
     @AppStorage(ConversionSettingsKeys.outputFolderPath)
     private var outputFolderPath: String = ""
 
+    @AppStorage(ConversionSettingsKeys.autoScanInputFolder)
+    private var autoScanInputFolder: Bool = false
+
     var body: some View {
         Form {
             Section("Output folder") {
@@ -18,6 +21,21 @@ struct ConversionSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if !outputFolderPath.isEmpty {
                     layoutPreview
+                }
+            }
+            if !outputFolderPath.isEmpty {
+                Section("Auto-scan") {
+                    Toggle(
+                        "Automatically scan Input folder for new PDFs",
+                        isOn: $autoScanInputFolder
+                    )
+                    Text("""
+                        When on, the launcher watches `Input/` under the output folder. \
+                        Drop PDFs in and they get converted automatically with the launcher's current settings — output lands in `Books/`, `Searchable PDFs/`, `Text Files/`, etc. just like a drag-drop conversion. A PDF is skipped once its output EPUB exists; delete the EPUB to re-run.
+                        """)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -60,6 +78,7 @@ struct ConversionSettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
+                folderLine("📥 \(ConversionOutputSubfolder.input)/", "Drop zone — auto-scanned when the toggle below is on")
                 folderLine("📚 \(ConversionOutputSubfolder.books)/", "EPUBs — your reading library")
                 folderLine("🔎 \(ConversionOutputSubfolder.searchablePDFs)/", "Source PDFs with an invisible OCR text overlay")
                 folderLine("📝 \(ConversionOutputSubfolder.textFiles)/", "Plain-text sibling outputs")

@@ -9,12 +9,22 @@ public enum ConversionSettingsKeys {
     /// set, conversion outputs land under this folder, organized
     /// into per-format subfolders.
     public static let outputFolderPath = "humanist.conversion.outputFolderPath"
+    /// When true, the launcher watches `<outputRoot>/Input/` for new
+    /// PDFs and enqueues them automatically with the launcher's
+    /// current default settings. Effective only when an output root
+    /// is configured — no root means no `Input/` folder to watch.
+    public static let autoScanInputFolder = "humanist.conversion.autoScanInputFolder"
 }
 
 /// Subfolder layout under the configured output root. Hardcoded for
 /// v1 — exposing them as user-renamable settings would expand the
 /// surface area more than the value justifies for most workflows.
 public enum ConversionOutputSubfolder {
+    /// Drop zone for the auto-scan watcher. PDFs the user drops
+    /// here get enqueued automatically when the
+    /// `autoScanInputFolder` toggle is on; otherwise the folder is
+    /// just a convenient staging area the user can use manually.
+    public static let input = "Input"
     /// EPUBs land here.
     public static let books = "Books"
     /// Searchable-PDF siblings (source PDF + invisible OCR text
@@ -60,6 +70,22 @@ public enum ConversionOutputResolver {
             atPath: url.path, isDirectory: &isDir
         )
         guard exists, isDir.boolValue else { return nil }
+        return url
+    }
+
+    /// Resolve the auto-scan Input folder URL when an output root
+    /// is configured. Returns nil when no root is set — the
+    /// auto-scan feature requires a root so PDFs and outputs share
+    /// a single configured directory. Creates the directory lazily
+    /// on first read so the user doesn't have to do it manually.
+    public static func inputFolderURL() -> URL? {
+        guard let root = currentRoot() else { return nil }
+        let url = root.appendingPathComponent(
+            ConversionOutputSubfolder.input, isDirectory: true
+        )
+        try? FileManager.default.createDirectory(
+            at: url, withIntermediateDirectories: true
+        )
         return url
     }
 
