@@ -2288,12 +2288,65 @@ enforcement from the compiler at build time.
 
 ---
 
+## R-Chat-Polish — Chat embedding papercuts
+
+**Status**: not started. Small UX gaps in the chat / embedding
+surface that aren't blockers but would noticeably improve daily use.
+Each item is independently shippable in 30 minutes to 2 hours.
+
+### Backlog
+
+- **Bulk-index command** — Library window action that walks every
+  cataloged EPUB and builds (or refreshes) its embedding index. Today
+  each book waits until its chat pane opens; on a large library that
+  means hand-opening every book once. Background queue with progress;
+  read the per-book sidecar to skip ones that are already complete +
+  current. ~2 hours.
+- **Per-book "Rebuild index" button** — surfaced from the chat pane
+  header, the editor's File menu, or the Library row context menu.
+  Wipes that one book's sidecar and rebuilds. The current alternative
+  is "Settings → Clear all", which is heavier than usually wanted.
+  ~30 minutes.
+- **Backend-fallback visibility** — `BookChatViewModel.resolveEmbedding
+  Backend` already returns a `fallbackNote` (e.g. "Voyage embedding
+  unavailable: missing API key. Using Apple NLEmbedding instead.")
+  but the chat-pane status strip doesn't surface it. Surface as an
+  inline notice next to the indexing strip when present. Catches
+  silent fallbacks the user otherwise wouldn't notice. ~30 minutes.
+- **Backend-swap cascade** — when the Settings backend changes, all
+  open editor windows continue to use the old vectors until they
+  reload. Either invalidate `embeddingIndex` proactively across all
+  registered chat view-models when the choice changes, or surface a
+  "Backend changed; reopen editor windows to apply" notice. ~1 hour.
+- **Paragraph-level citation jumps** — `HybridRetriever.Hit` carries
+  `paragraphIdx` but the citation chips navigate to the chapter root.
+  Chat would feel more precise if a citation scrolled the editor to
+  the cited paragraph (`<p id="hu-p-N-M">`) rather than the chapter
+  top. ~1 hour. Requires a small editor selection API.
+- **Retrieval debug surface** — `bm25Rank` / `embeddingRank` / score
+  fields on each hit aren't exposed anywhere. A "Show retrieval
+  detail" toggle on the chat pane that prints the scored paragraph
+  list under each user message would help when retrieval feels
+  wrong. ~1 hour.
+- **Tunable knobs in Settings** — `RRF k=60`, `topK=12 paragraphs`,
+  `maxParagraphChars=4000` are reasonable defaults but aren't
+  surfaced. Hidden / advanced section in Settings → AI for power
+  users. ~1 hour.
+
+### When to ship
+
+Anytime; pick whichever items are biting hardest. None of them
+require new infrastructure.
+
+---
+
 ## R-Chat-Graph-Lite — Hierarchical + entity graphs for chat retrieval
 
 **Status**: not started. Successor to `R-Chat-Embeddings`. Adds two
 graph primitives that handle the queries embeddings can't:
 structural (variable-granularity retrieval) and exhaustive (every
-mention of an entity across the library).
+mention of an entity across the library), plus the multi-book chat
+scope that R-Chat-Embeddings deliberately deferred.
 
 ### Why bother
 
@@ -2375,20 +2428,21 @@ anchor identity; RRF combines them with k=60.
 
 ### Per-book persistence
 
-Extend the existing `META-INF/com.humanist.embeddings.json` sidecar
-with two new sections rather than spawning a third file:
+R-Chat-Embeddings stores its sidecar at
+`~/Library/Application Support/Humanist/Embeddings/<sha256>.json`,
+*not* inside the EPUB. Same path here. Extend the existing payload
+with two new top-level sections rather than spawning sibling files:
 
 ```jsonc
 {
   "schemaVersion": 2,                 // bumped from 1
-  "backend": "...",
+  "backendIdentifier": "...",
   "dimension": 384,
-  "spineFingerprint": "sha256:...",
   "paragraphs": [...],                // unchanged from R-Chat-Embeddings
   "hierarchy": {                      // NEW
-    "rootBookID": "...",
     "nodes": [
       { "id": "ch-0", "kind": "chapter", "anchor": "hu-page-1",
+        "title": "On Heterotopias",
         "children": ["sec-0-0", "sec-0-1"] },
       ...
     ]
@@ -2401,23 +2455,57 @@ with two new sections rather than spawning a third file:
 }
 ```
 
-Schema version bump triggers full rebuild on first open after the
-upgrade. Per-paragraph re-edits trigger entity re-extraction for
-those paragraphs; hierarchy is stable across paragraph-level edits
-(it changes only on Split / Merge / Move Chapter, which already
-post a structural-dirty signal via the existing chapter-operations
+Schema version bump triggers a full rebuild on first open after the
+upgrade — the existing `EmbeddingsSidecarStore.read` already drops
+mismatched sidecars, so a v1 → v2 transition just re-runs the
+embedding pass plus the new hierarchy / entity passes.
+
+Per-paragraph re-edits trigger entity re-extraction for those
+paragraphs; hierarchy is stable across paragraph-level edits (it
+changes only on Split / Merge / Move Chapter, which already post a
+structural-dirty signal via the existing chapter-operations
 plumbing).
 
 ### Library-level federation
 
-Mirrors the `LibraryEmbeddingIndex` pattern from R-Chat-Embeddings:
+R-Chat-Embeddings shipped per-book chat only — no cross-library
+retrieval. This task adds three federated indexes:
 
+- `LibraryEmbeddingIndex` — aggregates per-book paragraph vectors
+  for cross-library cosine search. Built on demand from the existing
+  per-book sidecars. Citations carry book + chapter (not just
+  chapter) so a hit in book X navigates the user to the right place
+  in the right book.
 - `LibraryHierarchyIndex` — flat list of all chapters/sections in
   the library, indexed by `(bookID, anchor)`. ~50 KB per book.
   Lazy-loaded; doesn't need to all sit in RAM.
 - `LibraryEntityIndex` — federated entity → `[(bookID, anchor)]`
   table. Held in memory at chat time; ~1-5 MB total for a 100-book
   library depending on entity richness.
+
+### Multi-book chat scope
+
+R-Chat-Embeddings ships per-book chat: each chat session sees one
+EPUB. Federation enables a "library" scope; we don't want it
+silently to take over the existing per-book sessions, so a scope
+picker is needed.
+
+- **Current book** (default for newly-opened chat panes) — today's
+  behavior. Retrieval scoped to one EPUB; citations are chapter-
+  level chips that navigate within the editor window.
+- **Whole library** — every book that has a sidecar participates.
+  Citations carry book + chapter. Clicking a citation opens a new
+  editor window on the cited book at the cited chapter.
+
+Surface as a small picker at the top of the chat pane (above the
+transcript) so users can flip per-question without leaving the
+chat. The choice is per-window, not global — a user can have one
+book's editor in "Current book" mode and another window in
+"Whole library" mode.
+
+Only books with a complete sidecar participate in library mode; a
+status row ("87 of 124 books indexed") lives next to the picker
+and links to the bulk-index command from `R-Chat-Polish`.
 
 ### Settings
 
@@ -2466,14 +2554,15 @@ runs on-device.
 
 ### Effort
 
-~3-4 days end-to-end:
+~4-5 days end-to-end:
 - ~1 day: `BookHierarchyIndex` (tree from nav.xhtml + sidecar
   read/write + schema bump migration).
 - ~1 day: `BookEntityIndex` via NLTagger + sidecar plumbing +
   per-paragraph re-extraction on edit.
 - ~0.5 day: `HybridRetriever` extended to four-way RRF fusion.
-- ~0.5 day: `LibraryHierarchyIndex` + `LibraryEntityIndex`
-  federation.
+- ~1 day: `LibraryEmbeddingIndex` + `LibraryHierarchyIndex` +
+  `LibraryEntityIndex` federation; multi-book chat scope picker;
+  book-aware citation chips that open a new editor window on click.
 - ~0.5 day: Settings toggles + alias-dictionary UI for missed
   entities.
 - ~0.5 day: integration testing on real books (mixed contemporary
@@ -2481,14 +2570,13 @@ runs on-device.
 
 ### When to ship
 
-After `R-Chat-Embeddings` and the cross-library federation it
-introduces. Both primitives benefit from the per-book sidecar
-infrastructure that R-Chat-Embeddings establishes.
+Anytime — `R-Chat-Embeddings` shipped, and the per-book sidecar
+infrastructure it established is what this builds on. The four-way
+RRF fusion + library federation is the natural next pass.
 
 ### Dependencies
 
-- `R-Chat-Embeddings` for the per-book sidecar pattern + library
-  federation.
+- `R-Chat-Embeddings` for the per-book sidecar pattern.
 - `NaturalLanguage.NLTagger` — already available; no new
   dependency.
 - The existing `R-Hierarchy` work (nested `<ol>` in nav.xhtml)
@@ -3259,22 +3347,27 @@ use; distribution is lower priority than correctness.
 **Next, in roughly this order:**
 
 1. **R-Chat-Graph-Lite** — successor to R-Chat-Embeddings. Adds two
-   graph primitives the embedding layer can't do: a hierarchical
-   structure index (variable-granularity retrieval — return whole
-   sections instead of just paragraphs when appropriate) and a
-   light entity index (every mention of a person/place/concept
-   across the library, via Apple's on-device `NLTagger`). ~3-4 days.
-   Both extend the per-book embeddings sidecar; both run free /
-   on-device. Citation graphs and full GraphRAG explicitly out of
-   scope.
-2. **Distribution polish** — see `RELEASES.md`. Need a Developer
+   graph primitives the embedding layer can't do (a hierarchical
+   structure index for variable-granularity retrieval and a light
+   entity index across the library via Apple's on-device
+   `NLTagger`), plus the multi-book chat scope deferred from
+   R-Chat-Embeddings. ~4-5 days. All primitives extend the per-book
+   embeddings sidecar; all run free / on-device. Citation graphs
+   and full GraphRAG explicitly out of scope.
+2. **R-Chat-Polish** — small UX gaps in the chat / embedding
+   surface (bulk-index command, per-book rebuild button, fallback
+   visibility, paragraph-level citation jumps, retrieval debug
+   surface, tunable knobs). Each item independently shippable in
+   30 minutes to 2 hours; pick whichever bites hardest. Can
+   interleave with other work.
+3. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-3. **P-Greek-Quality** — ground-truth measurement of Tesseract
+4. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-4. **Stretch / speculative items in Tier 8** if a specific need
+5. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
