@@ -2726,6 +2726,207 @@ RRF fusion + library federation is the natural next pass.
 
 ---
 
+## E-Vision-Modes — Manuscript mode (Claude) + Early Print mode (Gemini)
+
+**Status**: not started. Two new per-conversion modes that route
+pages through a flagship vision model with a content-tuned prompt
+instead of the default printed-book pipeline. Different models for
+different content types because their training priors point in
+different directions.
+
+### Why two modes (not one)
+
+Modern VLMs all clear "good enough" on character recognition; what
+differentiates them on hard sources is **transcription posture**.
+
+- **Manuscript content** (medieval / early-modern handwriting,
+  scribal abbreviations, marginalia, faded ink) wants
+  **diplomatic transcription** — preserve abbreviations, mark
+  uncertainty with brackets, don't "helpfully" normalize. Claude
+  Opus 4.7 has been trained for this kind of fidelity-over-fluency
+  posture. It tends to flag illegibility (`⟨illegible⟩`) rather
+  than guess, and preserves period-specific orthography.
+- **Early printed content** (incunabula, Gothic blackletter,
+  19th-century cursive newsprint, dense ligature-heavy fonts)
+  wants **strong typeface priors** + fluent normalization. Gemini
+  3.1 Pro has trained on a lot of historical-corpus material via
+  Google Books / the Library Project; its priors for older
+  typefaces are deeper than competitors'. The "fluency over
+  fidelity" trade is right for printed content where the source
+  *was* meant to be normalized.
+
+Same model in both roles would be the wrong answer for one of them.
+Two modes gives the user the right posture for each content type
+without making them tune prompts manually.
+
+### Validation spike (do first)
+
+Empirical recommendation beats my prior. Before committing to the
+full implementation, run a one-day spike:
+
+1. **CLI command** `humanist-cli vision-spike <image>
+   [--mode manuscript|early-print] [--model claude|gemini]`.
+   Takes one page image, runs through one or both
+   model+prompt combos, prints transcriptions side-by-side.
+2. **Hand-correct 2–3 pages** as ground truth from the user's
+   actual target corpus.
+3. **Compute CER** for each combo. Pick the winner per mode.
+4. **Document the prompt template** that produced the winner —
+   the prompt is half the work.
+
+If the spike contradicts the prior (e.g. Gemini turns out better
+on manuscripts because the user's corpus is mostly modern cursive
+where Google's training helps), swap the model assignment and
+ship. If the spike confirms, implement as planned.
+
+### Architecture
+
+Both modes are page-level OCR engines that bypass the `RegionCascade`
++ Vision/Tesseract path. Each engine:
+
+```
+Sources/Pipeline/
+├── ClaudePageOCREngine.swift    (existing — Sonnet 4.6 default)
+├── ClaudeManuscriptEngine.swift NEW — Claude Opus 4.7 + diplomatic prompt
+└── GeminiEarlyPrintEngine.swift NEW — Gemini 3.1 Pro + early-print prompt
+```
+
+`ClaudeManuscriptEngine` reuses `AnthropicAPIClient` (different
+model + prompt template). `GeminiEarlyPrintEngine` is a new HTTP
+client paralleling `GeminiEmbeddingBackend` (key store already
+exists; same `?key=<api_key>` auth pattern).
+
+Per-page output is structured XHTML (matches the existing page-OCR
+output shape so downstream reflow / packager code is unchanged).
+Both engines emit the same `[Block] + [Footnote]` shape; the
+difference is in *what they produce*, not how it's consumed.
+
+### Prompt templates (sketch)
+
+**Manuscript prompt** (Claude Opus):
+
+```
+You are transcribing a manuscript page. Produce a diplomatic
+transcription: preserve scribal abbreviations as written (do not
+expand them silently); preserve period-specific orthography (long
+s, u/v variations, etc.); mark unreadable spans as ⟨illegible⟩;
+mark uncertain readings as ⟨...?⟩; render line breaks as <br/>
+when they're meaningful (verse, marginalia); do not normalize
+spelling, capitalization, or punctuation. If the page has
+marginalia, render them after the main text in a separate block
+labeled "Margin:".
+```
+
+**Early-print prompt** (Gemini Pro):
+
+```
+You are transcribing a page from an early printed book. Produce
+a clean, normalized transcription: expand period-specific
+ligatures (æ, œ, long s, etc.) into modern equivalents; correct
+obvious typesetting artifacts (e.g. damaged single letters that
+context resolves); preserve original line breaks within
+paragraphs only when they appear to be intentional; flag any
+uncertain reading with `<sic>uncertain</sic>` so a human can
+verify. The output should read as modern prose; the original
+typesetting is captured in the source PDF.
+```
+
+Both prompts are tunable in code (no UI surface for prompt
+editing in v1; the templates live in their respective engine
+files).
+
+### Settings / UI
+
+Per-conversion picker in the launcher window, alongside the
+existing High Accuracy / Force OCR toggles. Values:
+
+- **Print** (default) — current pipeline.
+- **Manuscript** — routes through `ClaudeManuscriptEngine`.
+  Requires Anthropic key + Cloud mode.
+- **Early Print** — routes through `GeminiEarlyPrintEngine`.
+  Requires Gemini key (stored via the existing `GeminiAPIKeyStore`
+  the embedding work added).
+
+Per-conversion not per-app since a user's library mixes content
+types. The choice persists per-job in the queue but doesn't bleed
+into the global Cloud-feature toggles.
+
+### Cost / latency
+
+Rough estimate (without spike-confirmed numbers):
+
+| Mode | Per-page cost | 200-page book | Latency |
+|---|---|---|---|
+| Manuscript (Opus 4.7) | ~$0.05 | ~$10 | ~8-15 s/page |
+| Early Print (Gemini 3.1 Pro) | ~$0.04 | ~$8 | ~5-10 s/page |
+| Print (Sonnet 4.6, current) | ~$0.01 | ~$2 | ~3-5 s/page |
+
+Both new modes are 4-5× the cost of the default print mode but
+produce qualitatively different output. Surface in the conversion
+summary so users know what they're committing to before clicking
+Convert. Per-book cost cap (`AISettings.perBookCallCap`) already
+guards against runaway documents.
+
+### Risks
+
+- **Layout failures**: marginalia, multi-column manuscripts, and
+  glosses break the simple page-level output shape. v1 emits
+  what the model produces; v2 could add layout-aware prompting
+  or fall back to Surya layout for spatial reasoning.
+- **Damaged pages**: water damage, palimpsests, and very faded
+  ink hit the recall floor of any general-purpose VLM. Manual
+  correction in the editor is the escape hatch — the
+  `correction-trail.json` sidecar already captures edits so
+  re-runs preserve them.
+- **Specialized scripts that need fine-tuning**: cuneiform,
+  epigraphic Greek, cursive Hebrew — these benefit more from
+  Transkribus / Kraken with per-script training than from a
+  general VLM. Document as a known limitation; recommend
+  external tools when it surfaces.
+- **Model drift**: prompt templates that work today may need
+  re-tuning as model updates ship. Pin the model version in
+  Settings → AI so the user controls when an upgrade lands.
+
+### Effort
+
+~2-3 days end-to-end after the spike validates the model picks:
+
+- ~0.5 day: validation spike CLI + ground-truth comparison.
+- ~0.5 day: `ClaudeManuscriptEngine` (mostly an
+  `AnthropicMessageRequest` factory + the diplomatic prompt
+  template + per-mode response parsing).
+- ~0.5 day: `GeminiEarlyPrintEngine` (HTTP client + Gemini
+  vision request shape — `gemini-3.1-pro` accepts inline base64
+  images; key auth is `?key=` query param like the embedding
+  client).
+- ~0.5 day: launcher UI picker + per-conversion mode plumbing
+  through `ConversionOptions`.
+- ~0.5 day: integration tests on 5-10 pages of each type;
+  prompt iteration based on actual output.
+
+### When to ship
+
+After R-Library-Chat or interleaved with it — the modes are
+independent of the chat work and use disjoint code paths. Spike
+first, then implement; both modes can land in one PR or split
+into two if Manuscript is more pressing.
+
+### Dependencies
+
+- Anthropic API key — already in keychain via
+  `AnthropicAPIKeyStore`.
+- Gemini API key — already in keychain via `GeminiAPIKeyStore`
+  (added for embeddings in R-Chat-Embeddings).
+- Existing `ClaudePageOCREngine` plumbing — the new engines
+  follow its shape so downstream block / reflow code is
+  unchanged.
+- `AISettings.cloudFeatures` is the natural place to add per-mode
+  toggles (rather than UserDefaults sprawl); follow the
+  existing field-with-decodeIfPresent pattern so older
+  persisted settings still load.
+
+---
+
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
 **Status**: one shared Surya sidecar serves all pipelines. Sequential
@@ -3503,20 +3704,31 @@ use; distribution is lower priority than correctness.
    window. Bundles the window-switcher menu commands (Show
    Converter / Show Library / Show Editor / Show Queue) since the
    library window becomes a primary navigation target.
-3. **R-Chat-Polish** — small UX gaps in the chat / embedding
+3. **E-Vision-Modes** — Manuscript mode (Claude Opus 4.7,
+   diplomatic transcription posture) and Early Print mode
+   (Gemini 3.1 Pro, fluent normalization with strong typeface
+   priors) as per-conversion choices in the launcher. Each mode
+   routes pages through a flagship vision model with a content-
+   tuned prompt instead of the default printed-book pipeline.
+   ~2-3 days after a one-day validation spike (CLI comparison
+   on hand-corrected ground truth) confirms the model picks.
+   Both modes are 4-5× the cost of the default print mode but
+   produce qualitatively different output for content the cascade
+   can't handle well.
+4. **R-Chat-Polish** — small UX gaps in the chat / embedding
    surface (bulk-index command, per-book rebuild button, fallback
    visibility, paragraph-level citation jumps, retrieval debug
    surface, tunable knobs, window-switcher menu commands). Each
    item independently shippable in 30 minutes to 2 hours; pick
    whichever bites hardest. Can interleave with other work.
-4. **Distribution polish** — see `RELEASES.md`. Need a Developer
+5. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-5. **P-Greek-Quality** — ground-truth measurement of Tesseract
+6. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-6. **Stretch / speculative items in Tier 8** if a specific need
+7. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
