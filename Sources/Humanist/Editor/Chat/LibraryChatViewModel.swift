@@ -580,7 +580,7 @@ final class LibraryChatViewModel: ObservableObject {
         }
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: useLongFormSynthesis ? 2000 : 1500,
+            maxTokens: useLongFormSynthesis ? 2500 : 1500,
             system: .cached(systemPrompt, ttl: .oneHour),
             messages: [Message(role: .user, content: .plain(userPrompt))],
             thinking: .disabled
