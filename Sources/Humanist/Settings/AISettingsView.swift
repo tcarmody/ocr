@@ -17,12 +17,38 @@ struct AISettingsView: View {
     private var chatBackendRaw: String = ChatBackend.cloudHaiku.rawValue
     @AppStorage("humanist.chat.ollamaModel")
     private var ollamaModel: String = "gemma4:26b"
+    /// Retrieval style for chat-with-book. Read by
+    /// `BookChatViewModel` per-send.
+    @AppStorage("humanist.chat.retrievalStyle")
+    private var retrievalStyleRaw: String = HybridRetriever.Style.hybrid.rawValue
+    /// Embedding backend choice. Today only `.appleNL` is fully
+    /// wired; the other choices fall back to `.appleNL` until the
+    /// corresponding implementations land.
+    @AppStorage(EmbeddingBackendChoice.userDefaultsKey)
+    private var embeddingBackendRaw: String = EmbeddingBackendChoice.appleNL.rawValue
     @State private var showingOllamaSetup = false
+    /// Bytes used by all embedding sidecars across the user's
+    /// library. Refreshed on appear and after a clear.
+    @State private var embeddingsCacheBytes: Int = 0
 
     private var chatBackendBinding: Binding<ChatBackend> {
         Binding(
             get: { ChatBackend(rawValue: chatBackendRaw) ?? .cloudHaiku },
             set: { chatBackendRaw = $0.rawValue }
+        )
+    }
+
+    private var retrievalStyleBinding: Binding<HybridRetriever.Style> {
+        Binding(
+            get: { HybridRetriever.Style(rawValue: retrievalStyleRaw) ?? .hybrid },
+            set: { retrievalStyleRaw = $0.rawValue }
+        )
+    }
+
+    private var embeddingBackendBinding: Binding<EmbeddingBackendChoice> {
+        Binding(
+            get: { EmbeddingBackendChoice(rawValue: embeddingBackendRaw) ?? .appleNL },
+            set: { embeddingBackendRaw = $0.rawValue }
         )
     }
 
@@ -102,6 +128,12 @@ struct AISettingsView: View {
             // chat backend without flipping their global setting.
             bookChatSection
 
+            // Chat retrieval (BM25 + embeddings hybrid). Independent
+            // from the chat answering backend — a user can run free
+            // local NLEmbedding for retrieval and Cloud Sonnet for
+            // answers, or vice versa.
+            chatRetrievalSection
+
             // Force OCR moved out to the launcher window — it's a
             // per-conversion toggle, so it lives next to the other
             // per-conversion options (Languages, High-accuracy).
@@ -117,6 +149,14 @@ struct AISettingsView: View {
         .padding(.vertical)
         .frame(width: 520)
         .frame(minHeight: 420)
+        .onAppear { refreshEmbeddingsCacheSize() }
+    }
+
+    /// Recompute the on-disk size of the embeddings cache. Cheap (a
+    /// directory enumeration) so it's fine to call on every Settings
+    /// open.
+    private func refreshEmbeddingsCacheSize() {
+        embeddingsCacheBytes = EmbeddingsSidecarStore().totalBytes()
     }
 
     // MARK: - Pieces
@@ -159,6 +199,67 @@ struct AISettingsView: View {
                     }
             }
         }
+    }
+
+    @ViewBuilder
+    private var chatRetrievalSection: some View {
+        Section("Chat Retrieval") {
+            Picker("Retrieval style", selection: retrievalStyleBinding) {
+                ForEach(HybridRetriever.Style.allCases) { style in
+                    Text(style.displayName).tag(style)
+                }
+            }
+            Text(retrievalStyleBinding.wrappedValue.blurb)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Embedding-backend picker is hidden when the user picked
+            // BM25-only retrieval — there's nothing to embed.
+            if retrievalStyleBinding.wrappedValue != .bm25 {
+                Picker("Embedding backend", selection: embeddingBackendBinding) {
+                    ForEach(EmbeddingBackendChoice.allCases) { choice in
+                        Text(choice.displayName).tag(choice)
+                    }
+                }
+                Text(embeddingBackendBinding.wrappedValue.blurb)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if embeddingBackendBinding.wrappedValue != .appleNL {
+                    Label(
+                        "This backend isn't wired yet — falls back to Apple NLEmbedding for now.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Text("Index cache")
+                    Spacer()
+                    Text(formattedCacheSize)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Clear all") {
+                        _ = EmbeddingsSidecarStore().clearAll()
+                        refreshEmbeddingsCacheSize()
+                    }
+                    .disabled(embeddingsCacheBytes == 0)
+                }
+                Text("Each indexed book caches its paragraph vectors here so the editor opens instantly the second time. Clearing forces a re-index on next open.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var formattedCacheSize: String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(embeddingsCacheBytes),
+            countStyle: .file
+        )
     }
 
     @ViewBuilder

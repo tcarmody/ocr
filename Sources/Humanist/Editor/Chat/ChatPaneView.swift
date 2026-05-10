@@ -13,9 +13,45 @@ struct ChatPaneView: View {
         VStack(spacing: 0) {
             transcript
             Divider()
+            indexingStrip
             inputRow
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    /// Slim status strip above the input row. Only renders when the
+    /// embedding index is mid-build or failed — silent when idle /
+    /// ready / user-disabled. Keeps the chat pane visually quiet
+    /// during the common case (cached index ready in a few seconds).
+    @ViewBuilder
+    private var indexingStrip: some View {
+        switch vm.embeddingStatus {
+        case .building:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Indexing for chat-with-book — keyword retrieval until done.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.secondary.opacity(0.05))
+        case .failed(let message):
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Text("Embedding indexing failed: \(message). Falling back to keyword retrieval.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.orange.opacity(0.06))
+        case .idle, .ready, .disabled:
+            EmptyView()
+        }
     }
 
     @ViewBuilder

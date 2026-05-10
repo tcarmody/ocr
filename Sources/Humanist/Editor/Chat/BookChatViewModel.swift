@@ -3,9 +3,20 @@ import AI
 import EPUB
 
 /// Per-EPUB chat session: tracks message history, runs queries
-/// through the keyword index, and asks Sonnet to answer using the
-/// retrieved chapter texts. Lives on the `EditorViewModel` and is
-/// recreated when a different EPUB is opened.
+/// through the hybrid retriever (BM25 + embedding cosine), and asks
+/// Claude / Ollama to answer using the retrieved paragraphs. Lives on
+/// the `EditorViewModel` and is recreated when a different EPUB is
+/// opened.
+///
+/// Retrieval is two-stage:
+///  1. On init, kick off an async build of the per-book embedding
+///     index (consulting the on-disk sidecar so unchanged paragraphs
+///     skip re-embedding). The chat pane shows an "Indexing…" badge
+///     while it runs.
+///  2. Per send, optionally embed the query (when style is
+///     `.embeddings` or `.hybrid` and the index is ready) and call
+///     `HybridRetriever.search` to get paragraph-shaped hits. The
+///     answer prompt receives those paragraphs grouped by chapter.
 @MainActor
 final class BookChatViewModel: ObservableObject {
     /// Replayable transcript. The user-facing pane renders this
@@ -17,15 +28,34 @@ final class BookChatViewModel: ObservableObject {
     /// Surfaces transient failures (no API key, network error,
     /// content-filter refusal, etc.) so the pane can show a banner.
     @Published var errorMessage: String?
+    /// State of the per-book embedding index. The chat pane reads
+    /// this to render the "Indexing for chat-with-book…" badge while
+    /// it runs and to decide whether the next query can use the
+    /// hybrid retriever.
+    @Published private(set) var embeddingStatus: EmbeddingStatus = .idle
 
-    /// Shared keyword index. Built lazily on first send so opening
-    /// the editor stays cheap even on large books.
-    private var index: BookKeywordIndex?
+    /// Index lifecycle states surfaced to the UI. `.failed` carries
+    /// the user-facing message so the pane can show it inline.
+    enum EmbeddingStatus: Equatable {
+        case idle
+        case building
+        case ready
+        case disabled    // user picked .bm25 retrieval style
+        case failed(String)
+    }
+
+    /// BM25 index over chapters. Built lazily on first send so opening
+    /// the editor stays cheap for users who never use chat.
+    private var bm25Index: BookKeywordIndex?
+    /// Per-paragraph vector index; built asynchronously after init
+    /// or after `bookDidReload`. Nil until the build completes.
+    private var embeddingIndex: BookEmbeddingIndex?
     private(set) var book: EPUBBook
     private let bookTitle: String
     private let client: AnthropicAPIClient
     private let ollama: OllamaClient
     private let transcriptStore: ChatTranscriptStore
+    private let embeddingsStore: EmbeddingsSidecarStore
     private let epubURL: URL
 
     /// Selected chat backend. Resolved per-send so a Settings change
@@ -50,19 +80,49 @@ final class BookChatViewModel: ObservableObject {
             ?? ""
         return raw.isEmpty ? "gemma4:26b" : raw
     }
+
+    /// User's retrieval style. Read per-send so a Settings change
+    /// applies immediately.
+    private var retrievalStyle: HybridRetriever.Style {
+        let raw = UserDefaults.standard.string(
+            forKey: "humanist.chat.retrievalStyle"
+        ) ?? HybridRetriever.Style.hybrid.rawValue
+        return HybridRetriever.Style(rawValue: raw) ?? .hybrid
+    }
+
+    /// User's embedding-backend choice. Today only `.appleNL` is
+    /// wired; the other choices fall back to `.appleNL` until their
+    /// implementations land.
+    private var embeddingBackendChoice: EmbeddingBackendChoice {
+        let raw = UserDefaults.standard.string(
+            forKey: EmbeddingBackendChoice.userDefaultsKey
+        ) ?? EmbeddingBackendChoice.appleNL.rawValue
+        return EmbeddingBackendChoice(rawValue: raw) ?? .appleNL
+    }
+
     /// Outstanding stream task. Cancelled when the user closes the
     /// pane mid-stream or sends a follow-up too fast.
     private var streamTask: Task<Void, Never>?
+    /// Outstanding embedding-build task. Cancelled and replaced when
+    /// `bookDidReload` runs so we don't race two builds against
+    /// possibly-divergent paragraph numbering.
+    private var embeddingBuildTask: Task<Void, Never>?
+
+    /// Top-K BM25 chapters when the path is BM25-only. Mirrors the
+    /// pre-embedding behavior.
     private static let maxRetrievedChapters = 4
-    /// Per-chapter character cap on the context Claude sees. The
-    /// previous 8 KB cap was hiding answers in long essays — when
-    /// the user asked about Baudelaire in Foucault's *What Is
-    /// Enlightenment?* the chapter was retrieved but the relevant
-    /// passage sat past 8 KB into the body. Sonnet's window is
-    /// generous (≈200K tokens); 60 KB × 4 chapters ≈ 60K input
-    /// tokens stays well inside both the model's window and a
-    /// reasonable per-query cost (~$0.18).
+    /// Per-chapter character cap on the BM25-only context.
     private static let maxChapterChars = 60_000
+    /// Top-K paragraphs returned by hybrid / embeddings retrieval.
+    /// Higher than the chapter count because each paragraph is much
+    /// smaller — 12 paragraphs ≈ 12 KB, well under the cloud cost
+    /// budget and enough to cover the answer most of the time.
+    private static let maxRetrievedParagraphs = 12
+    /// Per-paragraph character cap. Trims abnormally long paragraphs
+    /// (one of the OCR pipeline's known failure modes — a missed
+    /// paragraph break can produce a 10 KB run-on). 4 KB is plenty
+    /// for any well-formed paragraph.
+    private static let maxParagraphChars = 4_000
 
     init(book: EPUBBook, epubURL: URL) {
         self.book = book
@@ -78,9 +138,13 @@ final class BookChatViewModel: ObservableObject {
         )
         self.ollama = OllamaClient()
         self.transcriptStore = ChatTranscriptStore()
+        self.embeddingsStore = EmbeddingsSidecarStore()
         // Restore prior transcript synchronously so the pane
         // doesn't flash empty before the load completes.
         self.messages = transcriptStore.read(for: epubURL)
+        // Kick off embedding indexing in the background; the
+        // pane shows progress via `embeddingStatus`.
+        startEmbeddingBuild()
     }
 
     deinit {
@@ -88,13 +152,15 @@ final class BookChatViewModel: ObservableObject {
         // on its next yield. Final transcript was persisted on
         // the last `appendAndPersist`.
         streamTask?.cancel()
+        embeddingBuildTask?.cancel()
     }
 
     /// Submit `input` as the next user turn. No-op on empty / while
-    /// already thinking. Builds the index if needed, runs retrieval,
-    /// dispatches to the configured backend (Cloud Haiku/Sonnet via
-    /// the Anthropic API, or local Ollama), appends the assistant
-    /// reply when the round-trip completes.
+    /// already thinking. Builds the BM25 index if needed, runs
+    /// retrieval through `HybridRetriever`, dispatches to the
+    /// configured backend (Cloud Haiku/Sonnet via the Anthropic API,
+    /// or local Ollama), appends the assistant reply when the
+    /// round-trip completes.
     func send() async {
         let query = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, !isThinking else { return }
@@ -104,17 +170,48 @@ final class BookChatViewModel: ObservableObject {
         let userMessage = BookChatMessage(role: .user, text: query)
         appendAndPersist(userMessage)
 
-        if index == nil {
-            index = buildIndex()
+        if bm25Index == nil {
+            bm25Index = buildBM25Index()
         }
-        let hits = index?.search(query: query, topK: Self.maxRetrievedChapters) ?? []
-        let context = renderContext(hits: hits)
-        let userPrompt = context + "\n\nQuestion: " + query
+        guard let bm25 = bm25Index else {
+            // Shouldn't happen — buildBM25Index returns a non-nil
+            // value even for an empty book.
+            isThinking = false
+            return
+        }
 
         isThinking = true
         let chosenBackend = backend
+        let style = retrievalStyle
+        let embeddingIndexSnapshot = embeddingIndex
         let task = Task { [weak self] in
             guard let self else { return }
+            // Embed the query if the style needs it. Failures fall
+            // back to BM25-only retrieval — the user still gets an
+            // answer rather than a banner.
+            let queryVector: [Float]?
+            if style != .bm25, let index = embeddingIndexSnapshot {
+                queryVector = await self.embedQuery(query, using: index.backend)
+            } else {
+                queryVector = nil
+            }
+
+            let retriever = HybridRetriever(
+                style: style,
+                bm25: bm25,
+                embeddings: embeddingIndexSnapshot,
+                queryVector: queryVector
+            )
+            let usedParagraphs = (style != .bm25) && (queryVector != nil) && (embeddingIndexSnapshot != nil)
+            let topK = usedParagraphs
+                ? Self.maxRetrievedParagraphs
+                : Self.maxRetrievedChapters
+            let hits = retriever.search(query: query, topK: topK)
+            let context = self.renderContext(
+                hits: hits, paragraphMode: usedParagraphs
+            )
+            let userPrompt = context + "\n\nQuestion: " + query
+
             switch chosenBackend {
             case .cloudHaiku, .cloudSonnet:
                 await self.runCloudSend(
@@ -131,7 +228,7 @@ final class BookChatViewModel: ObservableObject {
 
     private func runCloudSend(
         userPrompt: String,
-        allowedHits: [BookKeywordIndex.Hit],
+        allowedHits: [HybridRetriever.Hit],
         model: AnthropicModel
     ) async {
         defer {
@@ -174,7 +271,7 @@ final class BookChatViewModel: ObservableObject {
 
     private func runOllamaSend(
         userPrompt: String,
-        allowedHits: [BookKeywordIndex.Hit]
+        allowedHits: [HybridRetriever.Hit]
     ) async {
         defer {
             isThinking = false
@@ -218,8 +315,9 @@ final class BookChatViewModel: ObservableObject {
         transcriptStore.write(messages, for: epubURL)
     }
 
-    /// Wipe the transcript. Doesn't touch the keyword index — the
-    /// index is per-book, not per-session.
+    /// Wipe the transcript. Doesn't touch the keyword or embedding
+    /// indexes — they're per-book, not per-session, and rebuilding
+    /// the embedding index is expensive (~1 minute for NLEmbedding).
     func clear() {
         streamTask?.cancel()
         messages.removeAll()
@@ -228,17 +326,112 @@ final class BookChatViewModel: ObservableObject {
     }
 
     /// Called by the editor when the book reloads from disk (after
-    /// a save, after Bulk Re-OCR, etc.). Drop the keyword index
-    /// so the next query rebuilds against the freshest text;
-    /// keep the transcript so the user doesn't lose context.
+    /// a save, after Bulk Re-OCR, etc.). Drop the BM25 index and
+    /// rebuild the embedding index against the freshest text. The
+    /// sidecar's per-paragraph hashes mean unchanged paragraphs
+    /// skip re-embedding — a typical save (one chapter edited)
+    /// re-embeds ~1% of paragraphs, not the whole book.
     func bookDidReload(_ updated: EPUBBook) {
         self.book = updated
-        self.index = nil
+        self.bm25Index = nil
+        self.embeddingIndex = nil
+        startEmbeddingBuild()
+    }
+
+    // MARK: - Embedding pipeline
+
+    /// Resolve the user's chosen embedding backend. Until the
+    /// non-NLEmbedding paths land, anything other than `.appleNL`
+    /// silently falls back to `.appleNL` so the index still builds.
+    /// Returns nil only when the system can't even build the
+    /// NLEmbedding fallback (rare).
+    private func resolveEmbeddingBackend() -> (any EmbeddingBackend)? {
+        switch embeddingBackendChoice {
+        case .appleNL, .ollama, .voyage, .gemini:
+            // .ollama / .voyage / .gemini will dispatch to their
+            // own implementations once those backends are wired.
+            // Until then, fall through to NLEmbedding so the chat
+            // path keeps working — the Settings picker hides
+            // unwired choices behind a "coming soon" hint.
+            return NLSentenceEmbeddingBackend(language: .english)
+        }
+    }
+
+    /// Spawn the background indexing task. Re-entrant — cancels any
+    /// outstanding build first so we don't race two builds.
+    private func startEmbeddingBuild() {
+        // Honor user opt-out: if retrieval is BM25-only there's no
+        // point spending the embed budget. The Settings picker can
+        // flip this and a follow-up `bookDidReload` (or app restart)
+        // re-runs the build.
+        if retrievalStyle == .bm25 {
+            embeddingStatus = .disabled
+            return
+        }
+        embeddingBuildTask?.cancel()
+        embeddingStatus = .building
+        let url = epubURL
+        let store = embeddingsStore
+        let snapshot = book
+        let backend = resolveEmbeddingBackend()
+        guard let backend else {
+            embeddingStatus = .failed("No embedding backend available.")
+            return
+        }
+        embeddingBuildTask = Task { [weak self] in
+            do {
+                var sidecar = store.read(for: url)
+                    ?? EmbeddingsSidecar.empty(
+                        backend: backend.identifier,
+                        dimension: backend.dimension
+                    )
+                // Discard cached vectors when the backend or
+                // dimension changed — they're from a different
+                // vector space and aren't comparable.
+                if sidecar.backendIdentifier != backend.identifier
+                    || sidecar.dimension != backend.dimension {
+                    sidecar = EmbeddingsSidecar.empty(
+                        backend: backend.identifier,
+                        dimension: backend.dimension
+                    )
+                }
+                let index = try await BookEmbeddingIndex.build(
+                    for: snapshot, backend: backend, cache: &sidecar
+                )
+                store.write(sidecar, for: url)
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard let self else { return }
+                    self.embeddingIndex = index
+                    self.embeddingStatus = .ready
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.embeddingStatus = .failed(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    /// Embed a single query string. Returns nil on backend failure
+    /// (cosine path skips silently — we still have BM25).
+    private func embedQuery(
+        _ query: String, using backend: any EmbeddingBackend
+    ) async -> [Float]? {
+        do {
+            let vectors = try await backend.embed([query])
+            return vectors.first
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - retrieval
 
-    private func buildIndex() -> BookKeywordIndex {
+    private func buildBM25Index() -> BookKeywordIndex {
         let chapters: [BookKeywordIndex.Chapter] = book.spine.compactMap { id in
             guard let resource = book.resourcesByID[id],
                   let xhtml = resource.text else { return nil }
@@ -251,21 +444,62 @@ final class BookChatViewModel: ObservableObject {
         return BookKeywordIndex(chapters: chapters)
     }
 
-    private func renderContext(hits: [BookKeywordIndex.Hit]) -> String {
+    /// Paragraph-level rendering when hybrid / embeddings retrieval
+    /// returned hits with paragraph granularity. Chapter-level
+    /// rendering when BM25-only style was used.
+    private func renderContext(
+        hits: [HybridRetriever.Hit], paragraphMode: Bool
+    ) -> String {
         guard !hits.isEmpty else {
             return """
-            (No chapters in this book scored above zero on a keyword \
-            match for the question. Answer from the chapter list \
-            alone if possible; otherwise say you can't find a match.)
+            (No paragraphs in this book matched the question. Answer \
+            from the chapter list alone if possible; otherwise say \
+            you can't find a match.)
             """
         }
+        if paragraphMode {
+            return renderParagraphContext(hits: hits)
+        }
+        return renderChapterContext(hits: hits)
+    }
+
+    /// Render paragraph-level hits grouped by chapter so the model
+    /// can still cite `[chapter:N]` accurately. Within each chapter
+    /// the paragraphs appear in their best-rank order (already what
+    /// the retriever returns).
+    private func renderParagraphContext(hits: [HybridRetriever.Hit]) -> String {
+        var byChapter: [Int: [HybridRetriever.Hit]] = [:]
+        var chapterOrder: [Int] = []
+        for hit in hits {
+            if byChapter[hit.chapterIdx] == nil {
+                chapterOrder.append(hit.chapterIdx)
+            }
+            byChapter[hit.chapterIdx, default: []].append(hit)
+        }
+        var out = "Relevant paragraphs from \"\(bookTitle)\":\n\n"
+        for chapterIdx in chapterOrder {
+            guard let chapterHits = byChapter[chapterIdx] else { continue }
+            let title = chapterTitle(forChapterIndex: chapterIdx)
+                ?? "Chapter \(chapterIdx + 1)"
+            out += "[chapter:\(chapterIdx)] \(title)\n"
+            for hit in chapterHits {
+                let text = String(hit.text.prefix(Self.maxParagraphChars))
+                out += "  • \(text)\n"
+            }
+            out += "\n"
+        }
+        return out
+    }
+
+    /// Chapter-level rendering — used for BM25-only retrieval and
+    /// for hybrid fallback when the embedding index isn't ready yet.
+    private func renderChapterContext(hits: [HybridRetriever.Hit]) -> String {
         var out = "Available chapters from \"\(bookTitle)\":\n\n"
         for hit in hits {
-            let body = hit.chapter.text
-                .prefix(Self.maxChapterChars)
-            let title = hit.chapter.title?.nonEmpty
-                ?? "Chapter \(hit.chapterIndex + 1)"
-            out += "[chapter:\(hit.chapterIndex)] \(title)\n"
+            let body = hit.text.prefix(Self.maxChapterChars)
+            let title = chapterTitle(forChapterIndex: hit.chapterIdx)
+                ?? "Chapter \(hit.chapterIdx + 1)"
+            out += "[chapter:\(hit.chapterIdx)] \(title)\n"
             out += String(body)
             out += "\n\n---\n\n"
         }
@@ -273,6 +507,18 @@ final class BookChatViewModel: ObservableObject {
     }
 
     // MARK: - chapter parsing
+
+    /// Title for the chapter at the given spine index. Looks up the
+    /// resource and pulls the first `<h1>` / `<h2>` / `<title>`
+    /// inside its XHTML. Falls back to nil; the renderer substitutes
+    /// "Chapter N" in that case.
+    private func chapterTitle(forChapterIndex idx: Int) -> String? {
+        guard idx >= 0, idx < book.spine.count else { return nil }
+        let resourceID = book.spine[idx]
+        guard let resource = book.resourcesByID[resourceID],
+              let xhtml = resource.text else { return nil }
+        return chapterTitle(from: xhtml)
+    }
 
     /// Pull the chapter title from the first `<h1>` / `<h2>` / `<title>`
     /// in the XHTML. Falls back to nil; the renderer substitutes
@@ -332,9 +578,9 @@ final class BookChatViewModel: ObservableObject {
     /// `(chapterIndex, title)` pairs as `BookChatCitation` values
     /// for the message footer.
     private func parseCitations(
-        in text: String, allowedHits: [BookKeywordIndex.Hit]
+        in text: String, allowedHits: [HybridRetriever.Hit]
     ) -> CitationParse {
-        let allowedIndices = Set(allowedHits.map(\.chapterIndex))
+        let allowedIndices = Set(allowedHits.map(\.chapterIdx))
         var seen: [Int: BookChatCitation] = [:]
         let pattern = "\\[chapter:(\\d+)\\]"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
@@ -361,7 +607,7 @@ final class BookChatViewModel: ObservableObject {
                 }
                 continue
             }
-            let title = chapterTitleFromHits(idx, hits: allowedHits)
+            let title = chapterTitle(forChapterIndex: idx)
             seen[idx] = BookChatCitation(
                 chapterIndex: idx,
                 title: title ?? "Chapter \(idx + 1)",
@@ -398,12 +644,6 @@ final class BookChatViewModel: ObservableObject {
         return book.resourcesByID[book.spine[index]]
     }
 
-    private func chapterTitleFromHits(
-        _ idx: Int, hits: [BookKeywordIndex.Hit]
-    ) -> String? {
-        hits.first(where: { $0.chapterIndex == idx })?.chapter.title?.nonEmpty
-    }
-
     // MARK: - prompt
 
     private var systemPrompt: String {
@@ -412,20 +652,20 @@ final class BookChatViewModel: ObservableObject {
         The user has opened "\(bookTitle)" and is asking questions \
         about its contents.
 
-        For each question, you'll receive a small set of chapters \
-        retrieved from the book (the highest-scoring on a keyword \
-        match for the question). Answer the question using only \
-        the supplied chapter text.
+        For each question, you'll receive a small set of paragraphs \
+        retrieved from the book (the most relevant on a hybrid \
+        keyword + semantic match for the question). Answer the \
+        question using only the supplied text.
 
         When you reference a specific chapter in your answer, mark \
         the reference inline as `[chapter:N]` where N is the index \
         from the supplied chapter headers. The user's interface \
         renders these markers as clickable links to the chapter.
 
-        If the supplied chapters don't contain enough information to \
-        answer, say so plainly — don't guess. Quote brief passages \
-        when they directly support the answer; cite their chapter \
-        with `[chapter:N]`.
+        If the supplied paragraphs don't contain enough information \
+        to answer, say so plainly — don't guess. Quote brief \
+        passages when they directly support the answer; cite their \
+        chapter with `[chapter:N]`.
 
         Keep replies tight: a short paragraph or two is plenty for \
         most questions. The user is reading the answer in a sidebar \
