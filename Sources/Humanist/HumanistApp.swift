@@ -67,7 +67,13 @@ struct HumanistApp: App {
         // windows. The Document menu also attaches once here; its
         // items use `@FocusedObject` and disable themselves when no
         // editor is focused.
-        WindowGroup("Humanist") {
+        // `id: "launcher"` lets the Window menu's "Show Converter"
+        // chord reopen this WindowGroup via `openWindow(id:)` after
+        // the user has closed it with the red-X. Without an id,
+        // SwiftUI can't address the scene to reopen it; we'd have to
+        // rely on `NSApp.windows` which doesn't include closed
+        // windows.
+        WindowGroup("Humanist", id: "launcher") {
             ContentView()
                 .environmentObject(queueVM)
                 .environmentObject(jobStore)
@@ -418,12 +424,14 @@ private struct ImportEPUBCommand: View {
 }
 
 /// Window menu — Show Converter (⌘1), Show Library (⌘2),
-/// Show Editor (⌘3), Show Queue (⌘4). Single-instance scenes
-/// (Library, Queue) use SwiftUI's `openWindow(id:)`, which brings
-/// existing windows forward. Multi-instance scenes (Converter,
-/// Editor) use `WindowSwitcher` to find the most-recent window of
-/// the right kind in `NSApp.windows` rather than spawning a new
-/// instance every chord press.
+/// Show Editor (⌘3), Show Queue (⌘4). Each chord must work even
+/// when the target window was previously closed with the red-X:
+/// closed windows leave `NSApp.windows`, so a pure
+/// `WindowSwitcher` (which scans `NSApp.windows`) silently fails.
+/// We first try `WindowSwitcher` to reuse an existing instance
+/// without flicker; if that returns false, we fall through to
+/// SwiftUI's `openWindow(id:)` which reopens the scene from
+/// scratch.
 struct ShowWindowCommands: Commands {
     var body: some Commands {
         CommandGroup(before: .windowList) {
@@ -440,18 +448,15 @@ private struct ShowConverterButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("Show Converter") {
-            // Launcher's WindowGroup has no `id`, so SwiftUI's
-            // `openWindow` would create a fresh launcher rather
-            // than reveal the existing one. Title-match on
-            // "Humanist" (set by `WindowGroup("Humanist")`) and
-            // bring it forward.
+            // Try title-match first to reuse an existing window
+            // without flicker; otherwise reopen the WindowGroup
+            // via its id. Activate so a chord pressed while the
+            // user is in another app brings the window forward
+            // rather than just unhiding silently.
             if !WindowSwitcher.showWindow(withTitle: "Humanist") {
-                // No launcher in `NSApp.windows` — reopen via the
-                // dock-icon path. SwiftUI doesn't expose a direct
-                // "open new launcher" id, but `Bring All To Front`
-                // typically restores it from saved state.
-                NSApp.unhide(nil)
+                openWindow(id: "launcher")
             }
+            NSApp.activate(ignoringOtherApps: true)
         }
         .keyboardShortcut("1", modifiers: .command)
     }
@@ -460,18 +465,40 @@ private struct ShowConverterButton: View {
 private struct ShowLibraryButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        Button("Show Library") { openWindow(id: "library") }
-            .keyboardShortcut("2", modifiers: .command)
+        Button("Show Library") {
+            // Single-instance Window scene: `openWindow(id:)`
+            // reopens it if closed and brings it forward if open.
+            // WindowSwitcher's `NSApp.windows` scan is the cheaper
+            // path when the window already exists.
+            if !WindowSwitcher.showWindow(withTitle: "Humanist Library") {
+                openWindow(id: "library")
+            }
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        .keyboardShortcut("2", modifiers: .command)
     }
 }
 
 private struct ShowEditorButton: View {
+    @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("Show Editor") {
             // Editors are a multi-instance WindowGroup keyed by
-            // EPUB URL. Bring forward the most-recently-focused
-            // editor window via identifier match.
-            _ = WindowSwitcher.showWindow(matchingIdentifier: "editor")
+            // EPUB URL. First try to surface an open editor;
+            // failing that, reopen the most-recent EPUB from
+            // RecentsStore so a user who closed every editor
+            // (deliberately or by quitting) still gets back into
+            // their work. Last resort: silently no-op when no
+            // recents either — there's no editor we could meaningfully
+            // surface.
+            if WindowSwitcher.showWindow(matchingIdentifier: "editor") {
+                NSApp.activate(ignoringOtherApps: true)
+                return
+            }
+            if let url = RecentsStore.urls.first {
+                openWindow(id: "editor", value: url)
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
         .keyboardShortcut("3", modifiers: .command)
     }
@@ -480,8 +507,13 @@ private struct ShowEditorButton: View {
 private struct ShowQueueButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
-        Button("Show Queue") { openWindow(id: "queue") }
-            .keyboardShortcut("4", modifiers: .command)
+        Button("Show Queue") {
+            if !WindowSwitcher.showWindow(withTitle: "Humanist Queue") {
+                openWindow(id: "queue")
+            }
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        .keyboardShortcut("4", modifiers: .command)
     }
 }
 

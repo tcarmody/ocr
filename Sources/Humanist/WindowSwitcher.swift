@@ -22,9 +22,7 @@ enum WindowSwitcher {
         for window in NSApp.windows {
             guard let id = window.identifier?.rawValue,
                   id.contains(substring) else { continue }
-            // Skip miniaturized / hidden / already-released
-            // windows so the chord doesn't reveal a stale tab.
-            guard window.isVisible || window.isMiniaturized else { continue }
+            guard isReusable(window) else { continue }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
             if window.isMiniaturized { window.deminiaturize(nil) }
@@ -40,12 +38,28 @@ enum WindowSwitcher {
     @discardableResult
     static func showWindow(withTitle title: String) -> Bool {
         for window in NSApp.windows where window.title == title {
-            guard window.isVisible || window.isMiniaturized else { continue }
+            guard isReusable(window) else { continue }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
             if window.isMiniaturized { window.deminiaturize(nil) }
             return true
         }
         return false
+    }
+
+    /// A window that we can meaningfully surface. Excludes the
+    /// auxiliary panels SwiftUI leaves dangling in `NSApp.windows`
+    /// (status bars, popovers, transient hosting windows) so the
+    /// chord doesn't accidentally focus one of those. Closed
+    /// windows usually fail `isVisible && !isMiniaturized` here,
+    /// which is correct — the caller's fallback path then runs
+    /// `openWindow(id:)` to reopen the scene cleanly.
+    private static func isReusable(_ window: NSWindow) -> Bool {
+        if window.isMiniaturized { return true }
+        guard window.isVisible else { return false }
+        // SwiftUI hosting windows that aren't user-facing
+        // typically lack a non-empty title — exclude them so a
+        // title-keyed match doesn't pick them up accidentally.
+        return !window.title.isEmpty
     }
 }
