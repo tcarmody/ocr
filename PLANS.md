@@ -2627,6 +2627,204 @@ real friction.
 
 ---
 
+## R-EPUB-Import — Bring existing EPUBs into the library
+
+**Status**: not started. Today every book in the library got there
+through the PDF pipeline. Users with pre-existing EPUBs (already-
+edited books, books converted from documents they no longer have,
+books from other sources) can't get them into the library at all
+— they exist as files on disk that the editor can open but that
+don't appear in the catalog and can't participate in library chat.
+
+This is the gap the importer closes: take any existing EPUB, give
+it the structural marks Humanist relies on (paragraph anchors), put
+it under `Books/`, catalog it, and build its embedding sidecar so
+it joins the federated chat retrieval.
+
+### Why bother
+
+The library window has become a primary surface — bulk index,
+multi-book chat with first-class citation jumps, scope picker,
+exclusion. Every book added makes those surfaces more useful. But
+the only on-ramp today is "convert a PDF I have," which excludes
+the substantial set of books a user already owns as EPUBs.
+Importing should be as cheap and obvious as conversion.
+
+The importer also lets users round-trip Humanist EPUBs through
+external editors / tools without losing library state — re-import
+is idempotent.
+
+### Scope
+
+**`EPUBImporter` actor** — the orchestrator. Inputs: source EPUB
+URL, target URL, optional toggles for which AFM passes to run.
+Outputs: a Humanist-flavored EPUB at the target URL, a catalog
+entry, an embedding sidecar.
+
+Phases per book:
+
+1. **Unzip + parse** via existing `EPUBBook.open(epubURL:)`. No
+   re-architecture; the open path already handles standard EPUBs.
+2. **Inject paragraph anchors** via a new
+   `ParagraphAnchorInjector` — walks every spine resource's
+   XHTML, assigns `hu-p-{chapterIdx}-{paraIdx}` to `<p>` elements
+   that don't already have an `id`. Idempotent: re-importing an
+   already-anchored book is a no-op.
+3. **Optional `nav.xhtml` regeneration** — if the existing nav is
+   flat / missing / broken, build one from the spine + chapter
+   titles. Skipped when the source nav is well-formed.
+4. **Save back** via `EPUBBook.save()` to the configured Books
+   library directory.
+5. **Catalog** via `LibraryStore.recordConversion(...)` — same
+   entry shape, just `addedAt = now`.
+6. **Optional AFM passes** — chapter classification, metadata
+   extraction, coherence pass. Same factory pattern as the regular
+   pipeline; gated by the existing `localFeatures` toggles.
+   Cloud equivalents work too (when configured) for users who
+   want pro-level metadata / classification on imported books.
+7. **Build embedding sidecar** via `LibraryIndexBuilder.buildOne`
+   — hierarchy + entity passes run as part of the same call.
+   Imported book joins the federated index immediately.
+
+**`ParagraphAnchorInjector`** — XHTML-walking helper:
+- Parse via `XMLDocument` (already used elsewhere) or the same
+  lightweight regex approach the existing chat pipeline uses
+- Walk `<p>` elements in document order
+- Assign `id="hu-p-{chapter}-{idx}"` only to elements that don't
+  already have an `id`
+- Re-emit XHTML with minimum-disruption formatting (don't
+  reformat, just add the attribute)
+- Same posture as the chat-pane's paragraph-extractor
+  regex: pragmatic, isolated, easy to test
+
+### Architecture
+
+```
+Sources/Pipeline/
+├── EPUBImporter.swift             NEW — orchestrator
+└── ParagraphAnchorInjector.swift  NEW — XHTML walker
+
+Sources/Humanist/Library/
+└── ImportEPUBProgressSheet.swift  NEW — UI for batch imports
+```
+
+`EPUBImporter` reuses every existing engine (the AFM /
+Claude classifiers, the `LibraryIndexBuilder`, `EPUBBook.save`,
+`LibraryStore.recordConversion`). The new code is a thin
+orchestration layer + the anchor injector.
+
+### Settings + UI
+
+- **File → Import EPUB into Library…** menu command (⇧⌘I) —
+  opens an `NSOpenPanel` accepting `.epub`, multi-select for
+  batch import.
+- **Library window action** — "Import EPUB(s)…" menu item next
+  to the existing "Build Missing Indexes" / "Rebuild All
+  Indexes" entries.
+- **Drag-and-drop into Library window** — recognize `.epub`
+  files dropped on the table and route to the importer rather
+  than just opening one in an editor.
+- **Progress sheet** — reuse the
+  `LibraryIndexProgressSheet`-style pattern for batch imports
+  (current N of M, per-book failure list, cancel button).
+- **Settings → Library → Import section** — three toggles
+  mirroring the AFM features: "On import, run on-device
+  chapter classification / metadata extraction / coherence
+  pass." Defaults match the runtime AFM availability — on
+  when Apple Intelligence is enabled, off otherwise.
+
+### Edge cases
+
+- **Already-Humanist EPUBs** (re-import or round-trip): paragraph
+  injector is idempotent — anchors don't duplicate. Catalog
+  entry updates in-place rather than creating a duplicate row
+  (`LibraryStore.recordConversion` already does this via the
+  canonical-URL match).
+- **Whole-book-in-one-XHTML**: anchor injection still works;
+  treats the single spine entry as one "chapter." Editor's
+  existing Split / Merge commands handle restructuring later
+  if the user wants. Don't auto-split on import — too risky.
+- **DRM-protected EPUBs**: detect at unpack time (Adobe ADEPT,
+  Apple FairPlay, etc. fail to unzip cleanly); reject with a
+  clear error. We don't strip DRM.
+- **Malformed EPUBs**: pass through whatever `EPUBBook.open`
+  raises — same surface the conversion path uses.
+- **Existing `id` collisions**: `hu-p-` is namespaced with that
+  prefix, so non-Humanist `id="..."` values pass through
+  untouched.
+- **Naming collisions in Books library**: `import.epub` from two
+  different folders → same target filename. Resolution:
+  append `(2)` etc., same approach as `nextAvailableHref`.
+
+### Risks
+
+- **XHTML normalization drift** — the injector re-emits the
+  XHTML, which can lose formatting (whitespace, attribute
+  order) that some EPUB readers care about. Mitigation:
+  minimum-disruption injection (only add the `id` attribute on
+  `<p>` elements that need it; don't reformat anything else).
+- **Quality of imported EPUBs is whatever you put in.** AFM
+  coherence pass can clean up recurring OCR errors but won't
+  fix structural problems (missing chapter breaks, garbled
+  text). Document this — imported EPUBs aren't magically
+  improved.
+- **Editor surface gracefully degrades on PDF-less books**.
+  PDF pane shows "no source PDF," Re-OCR commands are inert,
+  searchable-PDF sibling not produced. Test that all five
+  panes load correctly without a paragraph-map sidecar.
+
+### Effort
+
+~2-3 days end-to-end:
+
+- ~1 day: `ParagraphAnchorInjector` + `EPUBImporter` + tests
+  (anchor idempotence, namespaced id collision avoidance,
+  whole-book-in-one-XHTML, malformed input handling).
+- ~0.5 day: UI surface (menu command, drag-drop, multi-select
+  picker, progress sheet).
+- ~0.5 day: Library cataloging + LibraryIndexBuilder
+  integration.
+- ~0.5 day: AFM-feature passes (classification + metadata +
+  coherence) on import — gated by the existing toggles.
+- ~0.5 day: Settings → Library → Import toggles + integration
+  tests on real EPUBs.
+
+### When to ship
+
+Anytime; orthogonal to chat / vision-mode work. Strong fit since
+R-Library-Chat-Plus shipped — the more books in the library, the
+more value from "import everything I've already got" rather than
+re-converting from missing PDFs. Particularly relevant for users
+with pre-existing book collections (academics, archivists,
+anyone with EPUBs that came from sources other than a PDF
+they still have).
+
+### What this isn't
+
+- **Not a re-OCR path.** EPUBs that came from bad OCR stay bad-
+  OCR'd until you run them through the regular PDF pipeline.
+  The coherence pass catches recurring errors but won't fix
+  systemic issues.
+- **Not a structural restructurer.** We import what's there. The
+  editor's existing Split / Merge / Move / Rename commands are
+  the path for fixing structure post-import.
+- **Not a way to convert *out* of Humanist's anchor scheme.**
+  Anchors stay on export; non-Humanist EPUB readers ignore the
+  `hu-p-` ids (no spec violation), so the EPUB is still
+  portable to other tools.
+
+### Dependencies
+
+- `EPUBBook.open` / `EPUBBook.save` (shipped) for the round-trip.
+- `LibraryStore.recordConversion` (shipped) for cataloging.
+- `LibraryIndexBuilder` (shipped) for embedding sidecar build.
+- AFM engines from L-Foundation-Models Phases 1+2 (shipped) for
+  the optional polish passes.
+- Editor's PDF-pane graceful-degradation path — likely already
+  works for most fields but worth a focused QA pass.
+
+---
+
 ## R-Chat-Graph-Lite — Hierarchical + entity graphs for chat retrieval
 
 **Status**: in progress. Hierarchy primitive + multi-book chat scope
