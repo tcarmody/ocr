@@ -2342,11 +2342,42 @@ require new infrastructure.
 
 ## R-Chat-Graph-Lite — Hierarchical + entity graphs for chat retrieval
 
-**Status**: not started. Successor to `R-Chat-Embeddings`. Adds two
-graph primitives that handle the queries embeddings can't:
-structural (variable-granularity retrieval) and exhaustive (every
-mention of an entity across the library), plus the multi-book chat
-scope that R-Chat-Embeddings deliberately deferred.
+**Status**: in progress. Hierarchy primitive + multi-book chat scope
+shipped (commits `189fe37` + `ae65e95`); BookEntityIndex /
+LibraryEntityIndex / four-way RRF fusion / Settings toggles still
+pending.
+
+### What landed so far
+
+- **BookHierarchyIndex** (`189fe37`): nav.xhtml → chapter/section
+  tree, with token-overlap title matching and `chapter N` /
+  `section N` structural-pattern detection. Cached in the per-book
+  sidecar (schema bumped to v2). System prompt gains a compact
+  table of contents preamble so the model can interpret structural
+  references without consuming retrieval budget.
+- **Multi-book chat scope** (`ae65e95`): `LibraryEmbeddingIndex`
+  federates per-book sidecars whose backend identifier + dimension
+  match the resolved backend; brute-force cosine across all sources.
+  Scope picker (segmented) at the top of the chat pane flips
+  between "Current book" (default, today's behavior) and "Whole
+  library". Library citations carry book + chapter; clicking opens
+  the cited book in a new editor window via `OpenRouter.open`.
+  EmbeddingsSidecar.Entry gained an optional `text` field so
+  library-scope queries don't have to unzip the cited EPUB on
+  every hit (with a fallback for older sidecars without text).
+
+### Still pending
+
+- BookEntityIndex via NLTagger (Primitive 2).
+- LibraryEntityIndex federation; entity-driven retrieval hits.
+- HybridRetriever extended to four-way RRF fusion (BM25 +
+  embeddings + hierarchy structural-match expansion + entities).
+- Settings toggles (use structural retrieval / use entity
+  retrieval) + alias dictionary editor.
+- Variable-granularity render — currently the hierarchy is used
+  for the TOC preamble and structural-query matching only;
+  whole-section context expansion when hits cluster in one
+  section is a follow-up.
 
 ### Why bother
 
