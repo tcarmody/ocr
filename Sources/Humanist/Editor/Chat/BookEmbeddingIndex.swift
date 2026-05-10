@@ -203,7 +203,8 @@ struct BookEmbeddingIndex {
                 chapterIdx: $0.chapterIdx,
                 paragraphIdx: $0.paragraphIdx,
                 textHash: $0.textHash,
-                vector: $0.vector
+                vector: $0.vector,
+                text: $0.text
             )
         }
         return BookEmbeddingIndex(paragraphs: allParagraphs, backend: backend)

@@ -11,12 +11,83 @@ struct ChatPaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            scopeStrip
+            Divider()
             transcript
             Divider()
             indexingStrip
             inputRow
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    /// Scope picker at the top of the chat pane. Lets the user flip
+    /// between "current book only" and "whole library" retrieval
+    /// without leaving the chat. The library row also surfaces an
+    /// "X of Y indexed for current backend" hint so the user knows
+    /// what's actually participating.
+    @ViewBuilder
+    private var scopeStrip: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Picker("Scope", selection: $vm.chatScope) {
+                    ForEach(ChatScope.allCases) { scope in
+                        Text(scope.displayName).tag(scope)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Spacer()
+            }
+            if vm.chatScope == .library {
+                libraryStatusLabel
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var libraryStatusLabel: some View {
+        switch vm.libraryStatus {
+        case .idle:
+            Text("Federated retrieval will build on the next message.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .building:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Building library index…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .ready(let indexed, let unindexed, let mismatch):
+            let total = indexed + unindexed + mismatch
+            Text(libraryReadySummary(
+                indexed: indexed, unindexed: unindexed,
+                mismatch: mismatch, total: total
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private func libraryReadySummary(
+        indexed: Int, unindexed: Int, mismatch: Int, total: Int
+    ) -> String {
+        var parts: [String] = []
+        parts.append("\(indexed) of \(total) books indexed")
+        if mismatch > 0 {
+            parts.append("\(mismatch) on a different backend")
+        }
+        if unindexed > 0 {
+            parts.append("\(unindexed) not yet indexed")
+        }
+        return parts.joined(separator: " · ")
     }
 
     /// Slim status strip above the input row. Only renders when the
@@ -219,9 +290,10 @@ private struct FlowingCitationRow: View {
                 onTap(citation)
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: "book.closed")
+                    Image(systemName: citation.bookEpubURL == nil
+                          ? "book.closed" : "books.vertical")
                         .imageScale(.small)
-                    Text(citation.title)
+                    Text(citationLabel(citation))
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -234,7 +306,24 @@ private struct FlowingCitationRow: View {
                 .foregroundStyle(Color.accentColor)
             }
             .buttonStyle(.plain)
-            .help("Open \(citation.title)")
+            .help(citationHelpText(citation))
         }
+    }
+
+    /// Library citations show "Book Title — ch. N"; per-book
+    /// citations show just the chapter title (the book is implicit
+    /// in the active editor window).
+    private func citationLabel(_ citation: BookChatCitation) -> String {
+        if let book = citation.bookTitle {
+            return "\(book) — ch. \(citation.chapterIndex + 1)"
+        }
+        return citation.title
+    }
+
+    private func citationHelpText(_ citation: BookChatCitation) -> String {
+        if citation.bookEpubURL != nil {
+            return "Open in a new editor window"
+        }
+        return "Open \(citation.title)"
     }
 }

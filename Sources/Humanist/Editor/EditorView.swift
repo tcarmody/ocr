@@ -468,7 +468,16 @@ struct EditorView: View {
                 ChatPaneView(
                     vm: chat,
                     onCitationTap: { citation in
-                        selectChapter(byResourceID: citation.resourceID)
+                        // Library-scope citations carry a source
+                        // book URL — open it in a new editor window
+                        // (or activate one already open). Per-book
+                        // citations stay in this window and just
+                        // select the chapter.
+                        if let bookURL = citation.bookEpubURL {
+                            OpenRouter.open(bookURL, openWindow: openWindow)
+                        } else {
+                            selectChapter(byResourceID: citation.resourceID)
+                        }
                     }
                 )
             } else {

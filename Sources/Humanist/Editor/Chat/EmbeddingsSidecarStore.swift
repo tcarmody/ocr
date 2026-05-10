@@ -40,6 +40,45 @@ struct EmbeddingsSidecar: Codable, Sendable {
         let paragraphIdx: Int
         let textHash: String
         let vector: [Float]
+        /// Verbatim paragraph text. Optional for backward
+        /// compatibility — early v2 sidecars (between the schema
+        /// bump and this add) don't carry it. Populated by
+        /// `BookEmbeddingIndex.build` going forward; library-scope
+        /// chat falls back to opening the book on disk when text
+        /// is missing.
+        ///
+        /// Storing the text here avoids a per-query EPUB unzip
+        /// when library-scope retrieval surfaces hits across books
+        /// the user doesn't have open. Cost is ~1-2 MB extra per
+        /// book on disk — small relative to the source EPUB.
+        let text: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case chapterIdx, paragraphIdx, textHash, vector, text
+        }
+
+        init(
+            chapterIdx: Int,
+            paragraphIdx: Int,
+            textHash: String,
+            vector: [Float],
+            text: String? = nil
+        ) {
+            self.chapterIdx = chapterIdx
+            self.paragraphIdx = paragraphIdx
+            self.textHash = textHash
+            self.vector = vector
+            self.text = text
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.chapterIdx = try c.decode(Int.self, forKey: .chapterIdx)
+            self.paragraphIdx = try c.decode(Int.self, forKey: .paragraphIdx)
+            self.textHash = try c.decode(String.self, forKey: .textHash)
+            self.vector = try c.decode([Float].self, forKey: .vector)
+            self.text = try c.decodeIfPresent(String.self, forKey: .text)
+        }
     }
 
     /// Empty sidecar with the given backend metadata. Used as the

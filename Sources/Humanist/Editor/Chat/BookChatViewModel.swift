@@ -33,6 +33,24 @@ final class BookChatViewModel: ObservableObject {
     /// it runs and to decide whether the next query can use the
     /// hybrid retriever.
     @Published private(set) var embeddingStatus: EmbeddingStatus = .idle
+    /// Retrieval scope — `.currentBook` (default) or `.library`.
+    /// Per-window: switching scope on one editor doesn't affect
+    /// chats running in other windows. Surfaced as a picker at the
+    /// top of the chat pane.
+    @Published var chatScope: ChatScope = .currentBook
+    /// Library-index lifecycle and statistics. The chat pane uses
+    /// this to render an "X of Y books indexed for current backend"
+    /// status row when scope is `.library`.
+    @Published private(set) var libraryStatus: LibraryStatus = .idle
+
+    enum LibraryStatus: Equatable {
+        case idle
+        case building
+        /// Ready to serve queries. `indexed` / `unindexed` /
+        /// `mismatch` mirror `LibraryEmbeddingIndex.Stats`.
+        case ready(indexed: Int, unindexed: Int, mismatch: Int)
+        case failed(String)
+    }
 
     /// Index lifecycle states surfaced to the UI. `.failed` carries
     /// the user-facing message so the pane can show it inline.
@@ -57,6 +75,16 @@ final class BookChatViewModel: ObservableObject {
     /// the rendered context, and (c) include a TOC preamble in the
     /// system prompt.
     private var hierarchyIndex: BookHierarchyIndex?
+    /// Federated index over the user's library — built lazily when
+    /// the chat scope flips to `.library`. Held until scope flips
+    /// back; rebuilt on the next library send so a re-indexed book
+    /// joins the federation without an app restart.
+    private var libraryIndex: LibraryEmbeddingIndex?
+    /// Per-book paragraph cache for library scope. When a hit's
+    /// sidecar entry has no cached `text`, we open the book on disk
+    /// to extract the paragraph; cache the extracted list so
+    /// further hits in the same book skip the unzip cost.
+    private var libraryParagraphCache: [URL: [ParagraphExtractor.Item]] = [:]
     private(set) var book: EPUBBook
     private let bookTitle: String
     private let client: AnthropicAPIClient
@@ -203,11 +231,8 @@ final class BookChatViewModel: ObservableObject {
     }
 
     /// Submit `input` as the next user turn. No-op on empty / while
-    /// already thinking. Builds the BM25 index if needed, runs
-    /// retrieval through `HybridRetriever`, dispatches to the
-    /// configured backend (Cloud Haiku/Sonnet via the Anthropic API,
-    /// or local Ollama), appends the assistant reply when the
-    /// round-trip completes.
+    /// already thinking. Routes to the per-book or library send
+    /// path based on `chatScope`.
     func send() async {
         let query = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, !isThinking else { return }
@@ -217,12 +242,21 @@ final class BookChatViewModel: ObservableObject {
         let userMessage = BookChatMessage(role: .user, text: query)
         appendAndPersist(userMessage)
 
+        switch chatScope {
+        case .currentBook:
+            await sendCurrentBook(query: query)
+        case .library:
+            await sendLibrary(query: query)
+        }
+    }
+
+    /// Per-book send path: BM25 + embedding hybrid retrieval scoped
+    /// to the open EPUB. Same flow R-Chat-Embeddings shipped.
+    private func sendCurrentBook(query: String) async {
         if bm25Index == nil {
             bm25Index = buildBM25Index()
         }
         guard let bm25 = bm25Index else {
-            // Shouldn't happen — buildBM25Index returns a non-nil
-            // value even for an empty book.
             isThinking = false
             return
         }
@@ -233,9 +267,6 @@ final class BookChatViewModel: ObservableObject {
         let embeddingIndexSnapshot = embeddingIndex
         let task = Task { [weak self] in
             guard let self else { return }
-            // Embed the query if the style needs it. Failures fall
-            // back to BM25-only retrieval — the user still gets an
-            // answer rather than a banner.
             let queryVector: [Float]?
             if style != .bm25, let index = embeddingIndexSnapshot {
                 queryVector = await self.embedQuery(query, using: index.backend)
@@ -267,6 +298,80 @@ final class BookChatViewModel: ObservableObject {
                 )
             case .localOllama:
                 await self.runOllamaSend(userPrompt: userPrompt, allowedHits: hits)
+            }
+        }
+        streamTask?.cancel()
+        streamTask = task
+    }
+
+    /// Library-scope send path: federates retrieval across every
+    /// indexed book. Builds the library index lazily on first use
+    /// and on backend change; resolves missing paragraph text by
+    /// opening the cited book on disk (cached per-session).
+    private func sendLibrary(query: String) async {
+        isThinking = true
+        let chosenBackend = backend
+        let task = Task { [weak self] in
+            guard let self else { return }
+            // Build library index if not yet built (or rebuild when
+            // the backend changed underneath us). Backend identity
+            // includes both the choice and dimension, so the
+            // library index is invalidated on either swap.
+            let resolution = await self.resolveEmbeddingBackend()
+            guard let backend = resolution.backend else {
+                await MainActor.run {
+                    self.appendAndPersist(BookChatMessage(
+                        role: .assistant,
+                        text: "Couldn't run library retrieval — no embedding backend available."
+                    ))
+                    self.isThinking = false
+                    self.streamTask = nil
+                }
+                return
+            }
+            let library = await self.buildOrReuseLibraryIndex(backend: backend)
+            guard library.totalParagraphCount > 0 else {
+                await MainActor.run {
+                    self.appendAndPersist(BookChatMessage(
+                        role: .assistant,
+                        text: "No books are indexed for the current backend yet. Open each book's chat pane once to build its index, or run a bulk index from the Library window."
+                    ))
+                    self.isThinking = false
+                    self.streamTask = nil
+                }
+                return
+            }
+            // Embed the query.
+            let queryVector = await self.embedQuery(query, using: backend)
+            guard let queryVector else {
+                await MainActor.run {
+                    self.appendAndPersist(BookChatMessage(
+                        role: .assistant,
+                        text: "Couldn't embed the query — falling back not yet wired for library scope."
+                    ))
+                    self.isThinking = false
+                    self.streamTask = nil
+                }
+                return
+            }
+            let hits = library.search(
+                queryVector: queryVector, topK: Self.maxRetrievedParagraphs
+            )
+            let resolved = await self.resolveLibraryHits(hits)
+            let context = self.renderLibraryContext(hits: resolved)
+            let userPrompt = context + "\n\nQuestion: " + query
+
+            switch chosenBackend {
+            case .cloudHaiku, .cloudSonnet:
+                await self.runLibraryCloudSend(
+                    userPrompt: userPrompt,
+                    allowedHits: resolved,
+                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                )
+            case .localOllama:
+                await self.runLibraryOllamaSend(
+                    userPrompt: userPrompt, allowedHits: resolved
+                )
             }
         }
         streamTask?.cancel()
@@ -516,6 +621,336 @@ final class BookChatViewModel: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    // MARK: - Library scope
+
+    /// One library hit with its text resolved (either from the
+    /// sidecar's cached text or by opening the cited book).
+    private struct ResolvedLibraryHit: Sendable {
+        let epubURL: URL
+        let bookTitle: String
+        let chapterIdx: Int
+        let paragraphIdx: Int
+        let text: String
+        let score: Double
+    }
+
+    /// Build or reuse the library-wide federated embedding index.
+    /// Rebuilds whenever the cached index's backend doesn't match
+    /// the resolved backend — happens on Settings backend change.
+    private func buildOrReuseLibraryIndex(
+        backend: any EmbeddingBackend
+    ) async -> LibraryEmbeddingIndex {
+        if let cached = libraryIndex,
+           cached.backend.identifier == backend.identifier,
+           cached.backend.dimension == backend.dimension {
+            return cached
+        }
+        await MainActor.run { self.libraryStatus = .building }
+        // Snapshot the catalog from the global LibraryStore. We
+        // don't persist a reference because the chat view-model
+        // outlives a single library snapshot and we want fresh
+        // entries on every rebuild.
+        let entries = await MainActor.run { LibraryStore().entries }
+        let index = LibraryEmbeddingIndex.build(
+            libraryEntries: entries,
+            backend: backend
+        )
+        await MainActor.run {
+            self.libraryIndex = index
+            self.libraryStatus = .ready(
+                indexed: index.stats.indexed,
+                unindexed: index.stats.unindexed,
+                mismatch: index.stats.backendMismatch
+            )
+        }
+        return index
+    }
+
+    /// Resolve text for each hit. Uses the sidecar's cached text
+    /// when present; otherwise opens the book on disk and extracts
+    /// paragraphs once per session (cached per-book).
+    private func resolveLibraryHits(
+        _ hits: [LibraryEmbeddingIndex.Hit]
+    ) async -> [ResolvedLibraryHit] {
+        var out: [ResolvedLibraryHit] = []
+        out.reserveCapacity(hits.count)
+        for hit in hits {
+            if let text = hit.text {
+                out.append(ResolvedLibraryHit(
+                    epubURL: hit.epubURL,
+                    bookTitle: hit.bookTitle,
+                    chapterIdx: hit.chapterIdx,
+                    paragraphIdx: hit.paragraphIdx,
+                    text: text,
+                    score: hit.score
+                ))
+                continue
+            }
+            // Fallback path: open the book on disk and extract its
+            // paragraphs. Cached per-book within the session so a
+            // burst of hits in one book pays the unzip cost once.
+            let paragraphs = await loadLibraryParagraphs(for: hit.epubURL)
+            guard let paragraph = paragraphs.first(where: {
+                $0.chapterIdx == hit.chapterIdx
+                    && $0.paragraphIdx == hit.paragraphIdx
+            }) else {
+                continue
+            }
+            out.append(ResolvedLibraryHit(
+                epubURL: hit.epubURL,
+                bookTitle: hit.bookTitle,
+                chapterIdx: hit.chapterIdx,
+                paragraphIdx: hit.paragraphIdx,
+                text: paragraph.text,
+                score: hit.score
+            ))
+        }
+        return out
+    }
+
+    /// Open the book at `url` (heavy: unzips into a temp dir) and
+    /// return its extracted paragraphs. Cached per-book per-session.
+    /// Errors silently → empty array; the missing-text path is
+    /// non-fatal (the chat just renders less context).
+    @MainActor
+    private func loadLibraryParagraphs(
+        for url: URL
+    ) async -> [ParagraphExtractor.Item] {
+        if let cached = libraryParagraphCache[url] { return cached }
+        let result = await Task.detached {
+            do {
+                let book = try EPUBBook.open(epubURL: url)
+                return ParagraphExtractor.extract(from: book)
+            } catch {
+                return [] as [ParagraphExtractor.Item]
+            }
+        }.value
+        libraryParagraphCache[url] = result
+        return result
+    }
+
+    /// Render the library context: paragraphs grouped by their
+    /// source book, with `[book:N chapter:M]` markers so the model
+    /// can cite. The book list at the top maps citation N → URL +
+    /// title; the chat path's citation parser uses that to build
+    /// `BookChatCitation` entries with `bookEpubURL` set.
+    private func renderLibraryContext(hits: [ResolvedLibraryHit]) -> String {
+        guard !hits.isEmpty else {
+            return """
+            (No matching paragraphs were found across the user's \
+            library. Either the question doesn't match anything in \
+            the indexed corpus, or no books have been indexed yet.)
+            """
+        }
+        // Stable book ordering: first appearance order in the hits
+        // list. The order doesn't affect retrieval but does affect
+        // the [book:N] index the model sees.
+        var bookIndex: [URL: Int] = [:]
+        var orderedBooks: [(url: URL, title: String)] = []
+        for hit in hits where bookIndex[hit.epubURL] == nil {
+            bookIndex[hit.epubURL] = orderedBooks.count
+            orderedBooks.append((url: hit.epubURL, title: hit.bookTitle))
+        }
+        var out = "Books in scope:\n"
+        for (idx, book) in orderedBooks.enumerated() {
+            out += "[book:\(idx)] \(book.title)\n"
+        }
+        out += "\nRelevant paragraphs:\n\n"
+        for hit in hits {
+            guard let bIdx = bookIndex[hit.epubURL] else { continue }
+            let text = String(hit.text.prefix(Self.maxParagraphChars))
+            out += "[book:\(bIdx) chapter:\(hit.chapterIdx)]\n  • \(text)\n\n"
+        }
+        return out
+    }
+
+    private func runLibraryCloudSend(
+        userPrompt: String,
+        allowedHits: [ResolvedLibraryHit],
+        model: AnthropicModel
+    ) async {
+        defer {
+            isThinking = false
+            streamTask = nil
+        }
+        let request = AnthropicMessageRequest(
+            model: model,
+            maxTokens: 1500,
+            system: .cached(libraryScopeSystemPrompt, ttl: .oneHour),
+            messages: [
+                Message(role: .user, content: .plain(userPrompt))
+            ],
+            thinking: .disabled
+        )
+        do {
+            let response = try await client.send(request)
+            try Task.checkCancellation()
+            let raw = response.firstText() ?? ""
+            let cited = parseLibraryCitations(in: raw, allowedHits: allowedHits)
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: cited.cleaned,
+                citations: cited.citations
+            ))
+        } catch is CancellationError {
+            return
+        } catch let error as AnthropicAPIError {
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: "Couldn't answer that — \(error.localizedDescription)."
+            ))
+        } catch {
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: "Couldn't answer that — \(error.localizedDescription)."
+            ))
+        }
+    }
+
+    private func runLibraryOllamaSend(
+        userPrompt: String,
+        allowedHits: [ResolvedLibraryHit]
+    ) async {
+        defer {
+            isThinking = false
+            streamTask = nil
+        }
+        let model = ollamaModel
+        do {
+            let raw = try await ollama.chat(
+                model: model,
+                system: libraryScopeSystemPrompt,
+                userMessage: userPrompt
+            )
+            try Task.checkCancellation()
+            let cited = parseLibraryCitations(in: raw, allowedHits: allowedHits)
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: cited.cleaned,
+                citations: cited.citations
+            ))
+        } catch is CancellationError {
+            return
+        } catch let error as OllamaError {
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: "Couldn't answer that — \(error.localizedDescription)."
+            ))
+        } catch {
+            appendAndPersist(BookChatMessage(
+                role: .assistant,
+                text: "Couldn't answer that — \(error.localizedDescription)."
+            ))
+        }
+    }
+
+    /// Library-scope citation parser. Recognizes `[book:N chapter:M]`
+    /// markers (in addition to the legacy `[chapter:N]` form, which
+    /// the model occasionally produces despite the system prompt's
+    /// guidance — fall back to "current book" semantics for those).
+    private func parseLibraryCitations(
+        in text: String, allowedHits: [ResolvedLibraryHit]
+    ) -> CitationParse {
+        // Reconstruct the [book:N] → URL/title mapping from the
+        // ordered list of distinct allowedHits books — same scheme
+        // as renderLibraryContext.
+        var bookByIndex: [Int: (url: URL, title: String)] = [:]
+        var seenBooks: [URL: Int] = [:]
+        for hit in allowedHits where seenBooks[hit.epubURL] == nil {
+            let idx = seenBooks.count
+            seenBooks[hit.epubURL] = idx
+            bookByIndex[idx] = (hit.epubURL, hit.bookTitle)
+        }
+        let pattern = "\\[book:(\\d+)\\s+chapter:(\\d+)\\]"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return CitationParse(cleaned: text, citations: [])
+        }
+        let nsText = text as NSString
+        let matches = regex.matches(
+            in: text,
+            range: NSRange(location: 0, length: nsText.length)
+        )
+        var cleaned = text
+        var seen: [String: BookChatCitation] = [:]
+        for match in matches.reversed() {
+            guard match.numberOfRanges == 3 else { continue }
+            let bookRaw = nsText.substring(with: match.range(at: 1))
+            let chapterRaw = nsText.substring(with: match.range(at: 2))
+            guard let bookIdx = Int(bookRaw),
+                  let chapterIdx = Int(chapterRaw),
+                  let bookEntry = bookByIndex[bookIdx]
+            else {
+                let nsRange = match.range(at: 0)
+                if let r = Range(nsRange, in: cleaned) {
+                    cleaned.removeSubrange(r)
+                }
+                continue
+            }
+            let key = "\(bookIdx)#\(chapterIdx)"
+            if seen[key] == nil {
+                seen[key] = BookChatCitation(
+                    chapterIndex: chapterIdx,
+                    title: bookEntry.title,
+                    resourceID: "",  // unknown without opening the book
+                    bookEpubURL: bookEntry.url,
+                    bookTitle: bookEntry.title
+                )
+            }
+            let nsRange = match.range(at: 0)
+            if let r = Range(nsRange, in: cleaned) {
+                cleaned.removeSubrange(r)
+            }
+        }
+        cleaned = cleaned.replacingOccurrences(
+            of: " {2,}", with: " ", options: .regularExpression
+        )
+        cleaned = cleaned.replacingOccurrences(
+            of: " ([.,;:!?])", with: "$1", options: .regularExpression
+        )
+        let citations = Array(seen.values)
+            .sorted { lhs, rhs in
+                if lhs.bookTitle ?? "" != rhs.bookTitle ?? "" {
+                    return (lhs.bookTitle ?? "") < (rhs.bookTitle ?? "")
+                }
+                return lhs.chapterIndex < rhs.chapterIndex
+            }
+        return CitationParse(cleaned: cleaned, citations: citations)
+    }
+
+    /// System prompt used in library scope. Differs from the per-
+    /// book prompt in that the model is told to cite `[book:N
+    /// chapter:M]` and to compare across books when the question
+    /// invites it.
+    private var libraryScopeSystemPrompt: String {
+        """
+        You are a research assistant embedded in an EPUB editor. \
+        The user has multiple books open across their library and \
+        is asking a question that may span more than one of them.
+
+        For each question, you'll receive a small set of paragraphs \
+        retrieved from across the user's library (the most relevant \
+        on a hybrid keyword + semantic match for the question), \
+        prefixed with a list of the source books. Each paragraph is \
+        labeled `[book:N chapter:M]` where N indexes into the books \
+        list and M indexes into that book's spine.
+
+        When you reference a source in your answer, cite it inline \
+        as `[book:N chapter:M]` using the same indices. The user's \
+        interface renders these markers as clickable links that \
+        open the cited book in a new editor window at the cited \
+        chapter.
+
+        Compare across books when the question invites it; quote \
+        brief passages with their citation when they directly \
+        support the answer. If the supplied paragraphs don't \
+        contain enough information to answer, say so plainly — \
+        don't guess.
+
+        Keep replies tight: a short paragraph or two is usually \
+        enough.
+        """
     }
 
     // MARK: - retrieval
