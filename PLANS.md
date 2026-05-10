@@ -2332,11 +2332,100 @@ Each item is independently shippable in 30 minutes to 2 hours.
   `maxParagraphChars=4000` are reasonable defaults but aren't
   surfaced. Hidden / advanced section in Settings → AI for power
   users. ~1 hour.
+- **Window-switcher menu commands** — `Window > Show Converter`
+  / `Show Library` / `Show Editor` shortcuts (e.g. `⌘1` / `⌘2` /
+  `⌘3`). The macOS Window menu lists every open window, but a
+  fast keyboard switch between the three "primary" surfaces
+  (converter / library / most-recent editor) is the usual
+  navigation move and deserves a top-level chord. `Show Library`
+  + `Show Queue` already exist in the menu; this rounds them
+  out and adds the converter + most-recent-editor entries. ~30
+  minutes, but synergizes with the library-chat surface below
+  since that becomes a frequent navigation target.
 
 ### When to ship
 
 Anytime; pick whichever items are biting hardest. None of them
 require new infrastructure.
+
+---
+
+## R-Library-Chat — First-class library window with embedded chat
+
+**Status**: not started. Today the only way to ask a cross-corpus
+question is to open a book and flip the chat pane's scope picker
+to "Whole library." The library *itself* is just a browser — list
+of EPUBs with thumbnails + metadata + bulk find/replace. Promoting
+the library window to a primary surface (alongside the converter
+and editor) with its own embedded chat pane removes the awkward
+"open a book to query the library" step.
+
+### Why bother
+
+The multi-book scope landed in `R-Chat-Graph-Lite` works, but it's
+discoverable only after opening a book. A corpus-level question
+("which books discuss X across my library?") reads as a corpus-level
+operation; it shouldn't require picking an arbitrary anchor book to
+get to the chat surface. A first-class library window with chat puts
+the surface where the user expects it and makes multi-book chat the
+default UX rather than a tucked-away mode.
+
+### Scope
+
+- **`LibraryChatViewModel`** — a thinner sibling of
+  `BookChatViewModel` that only knows how to do library-scope
+  retrieval. No current-book reference, no `bookDidReload`, no
+  per-book embedding index. Builds the `LibraryEmbeddingIndex` on
+  init; rebuilds when the backend changes; sends through the
+  existing library cloud / Ollama paths with the
+  `[book:N chapter:M]` citation format. Either factor common
+  helpers out of `BookChatViewModel` into a shared file or have
+  `BookChatViewModel`'s library send path stay the canonical
+  implementation and let `LibraryChatViewModel` delegate.
+
+- **Library window layout** — the existing browser (cover thumbnail
+  list + filter / search) stays as the primary content, with a
+  chat pane attached on the right (or as a sheet / drawer for
+  smaller windows). Pane is collapsible — power users who want
+  the full list view can hide chat. Scope picker is implicit
+  (always library) so the chat pane shows just the indexing /
+  status row, not a scope selector.
+
+- **Citation behavior** — same as today's library citations: a tap
+  routes through `OpenRouter.open` to surface the cited book in
+  its own editor window. The library window keeps its place as
+  the corpus-level command center.
+
+- **Window-switcher commands** — see the entry in `R-Chat-Polish`.
+  Belongs here because it makes the library window a first-class
+  navigation target alongside the converter and the most-recent
+  editor.
+
+### What this doesn't change
+
+- `BookChatViewModel`'s scope picker stays — a user reading a
+  specific book may still want library-scope retrieval anchored
+  in that editor window without window-switching. The two
+  surfaces are complementary.
+- The library catalog persistence (`LibraryStore`, `library.json`)
+  is unchanged; the chat pane consumes the same data the browser
+  does.
+
+### Effort
+
+~1-1.5 days end-to-end:
+- ~0.5 day: `LibraryChatViewModel` (factor or delegate).
+- ~0.5 day: library window layout — split view with collapsible
+  chat pane, accessibility, dark-mode sanity, theme integration.
+- ~0.5 day: window-switcher commands + Show Editor / Show
+  Converter / Show Library / Show Queue rounded out.
+
+### When to ship
+
+After the entity / four-way-fusion work in R-Chat-Graph-Lite
+finishes, or interleaved if the entity work hits a subtle
+problem. The library-chat surface doesn't depend on entities;
+it's an orthogonal UX promotion.
 
 ---
 
@@ -3385,20 +3474,28 @@ use; distribution is lower priority than correctness.
    R-Chat-Embeddings. ~4-5 days. All primitives extend the per-book
    embeddings sidecar; all run free / on-device. Citation graphs
    and full GraphRAG explicitly out of scope.
-2. **R-Chat-Polish** — small UX gaps in the chat / embedding
+2. **R-Library-Chat** — promote the library window to a first-
+   class surface with its own embedded chat pane so cross-corpus
+   questions don't require opening an anchor book first. ~1-1.5
+   days. Reuses the multi-book retrieval path; adds a
+   `LibraryChatViewModel` and a split-view layout in the library
+   window. Bundles the window-switcher menu commands (Show
+   Converter / Show Library / Show Editor / Show Queue) since the
+   library window becomes a primary navigation target.
+3. **R-Chat-Polish** — small UX gaps in the chat / embedding
    surface (bulk-index command, per-book rebuild button, fallback
    visibility, paragraph-level citation jumps, retrieval debug
-   surface, tunable knobs). Each item independently shippable in
-   30 minutes to 2 hours; pick whichever bites hardest. Can
-   interleave with other work.
-3. **Distribution polish** — see `RELEASES.md`. Need a Developer
+   surface, tunable knobs, window-switcher menu commands). Each
+   item independently shippable in 30 minutes to 2 hours; pick
+   whichever bites hardest. Can interleave with other work.
+4. **Distribution polish** — see `RELEASES.md`. Need a Developer
    ID Application certificate (Apple Developer Program, $99/yr),
    then notarization → DMG → GitHub Releases. ~3 days of work
    gated on the cert.
-4. **P-Greek-Quality** — ground-truth measurement of Tesseract
+5. **P-Greek-Quality** — ground-truth measurement of Tesseract
    polytonic-Greek CER. Pure measurement task; only needs
    implementation work if CER comes back > 5%.
-5. **Stretch / speculative items in Tier 8** if a specific need
+6. **Stretch / speculative items in Tier 8** if a specific need
    surfaces — Apple Foundation Models polish for chapter
    classification (macOS 26 ships them on-device), custom
    footnote styles, audio output via `AVSpeechSynthesizer`.
