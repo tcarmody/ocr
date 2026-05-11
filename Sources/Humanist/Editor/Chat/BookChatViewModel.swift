@@ -651,9 +651,8 @@ final class BookChatViewModel: ObservableObject {
             let response = try await client.send(request)
             try Task.checkCancellation()
             let raw = response.firstText() ?? ""
-            let withFollowUps = FollowUpParser.parse(raw)
             let cited = parseCitations(
-                in: withFollowUps.cleaned, allowedHits: allowedHits
+                in: raw, allowedHits: allowedHits
             )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
@@ -662,8 +661,6 @@ final class BookChatViewModel: ObservableObject {
                 retrievalDetail: Self.makeRetrievalDetail(
                     hits: allowedHits
                 ),
-                suggestedFollowUps: withFollowUps.followUps.isEmpty
-                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -696,9 +693,8 @@ final class BookChatViewModel: ObservableObject {
                 userMessage: userPrompt
             )
             try Task.checkCancellation()
-            let withFollowUps = FollowUpParser.parse(raw)
             let cited = parseCitations(
-                in: withFollowUps.cleaned, allowedHits: allowedHits
+                in: raw, allowedHits: allowedHits
             )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
@@ -707,8 +703,6 @@ final class BookChatViewModel: ObservableObject {
                 retrievalDetail: Self.makeRetrievalDetail(
                     hits: allowedHits
                 ),
-                suggestedFollowUps: withFollowUps.followUps.isEmpty
-                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -1289,9 +1283,8 @@ final class BookChatViewModel: ObservableObject {
             let response = try await client.send(request)
             try Task.checkCancellation()
             let raw = response.firstText() ?? ""
-            let withFollowUps = FollowUpParser.parse(raw)
             let cited = parseLibraryCitations(
-                in: withFollowUps.cleaned, allowedHits: allowedHits
+                in: raw, allowedHits: allowedHits
             )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
@@ -1300,8 +1293,6 @@ final class BookChatViewModel: ObservableObject {
                 retrievalDetail: Self.makeRetrievalDetail(
                     libraryHits: allowedHits
                 ),
-                suggestedFollowUps: withFollowUps.followUps.isEmpty
-                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -1334,9 +1325,8 @@ final class BookChatViewModel: ObservableObject {
                 userMessage: userPrompt
             )
             try Task.checkCancellation()
-            let withFollowUps = FollowUpParser.parse(raw)
             let cited = parseLibraryCitations(
-                in: withFollowUps.cleaned, allowedHits: allowedHits
+                in: raw, allowedHits: allowedHits
             )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
@@ -1345,8 +1335,6 @@ final class BookChatViewModel: ObservableObject {
                 retrievalDetail: Self.makeRetrievalDetail(
                     libraryHits: allowedHits
                 ),
-                suggestedFollowUps: withFollowUps.followUps.isEmpty
-                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -1819,21 +1807,8 @@ final class BookChatViewModel: ObservableObject {
             sidebar pane, not a full window.
             """
         }
-        return length + "\n\n" + Self.followUpInstructions
+        return length
     }
-
-    /// Asks the model to emit 2-3 follow-up questions inside a
-    /// `[follow-ups]…[/follow-ups]` block at the end of its
-    /// response. The chat pane parses and renders them as
-    /// one-click button row beneath the answer.
-    static let followUpInstructions = """
-        After your main answer, suggest 2-3 follow-up questions \
-        the user might naturally ask next. Format them inside \
-        `[follow-ups]…[/follow-ups]` markers (one question per \
-        line, no bullet markers needed). Pick questions that \
-        build on your answer rather than restating the user's \
-        original question.
-        """
 
     /// Compact table of contents the model sees as part of the
     /// system prompt. Lets it reason about structural references

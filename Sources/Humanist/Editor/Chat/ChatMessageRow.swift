@@ -8,11 +8,6 @@ import SwiftUI
 struct ChatMessageRow: View {
     let message: BookChatMessage
     let onCitationTap: (BookChatCitation) -> Void
-    /// Fired when the user clicks a model-suggested follow-up
-    /// question. Default is a no-op so callers that don't yet
-    /// thread the action can compile cleanly while picking it up
-    /// later.
-    var onFollowUpTap: (String) -> Void = { _ in }
     /// Optional citation-chip context-menu action for library-
     /// scope chats: "Exclude {Book Title} from chat." Hidden
     /// (no menu item) when nil or when the citation isn't a
@@ -64,64 +59,11 @@ struct ChatMessageRow: View {
                     onExcludeBook: onExcludeBook
                 )
             }
-            if let suggestions = message.suggestedFollowUps,
-               !suggestions.isEmpty {
-                followUpsRow(suggestions)
-            }
             if showRetrievalDetail,
                let detail = message.retrievalDetail,
                !detail.hits.isEmpty {
                 retrievalDetailView(detail)
             }
-        }
-    }
-
-    /// Render the model's suggested next questions as a wrapping
-    /// row of one-click buttons. Tapping a button sends the
-    /// question as the next user turn — the surrounding view's
-    /// `onFollowUpTap` handler does the actual send.
-    @ViewBuilder
-    private func followUpsRow(_ suggestions: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Follow-ups")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-            // ViewThatFits handles the common 2-3 case: side-by-
-            // side when the pane is wide enough, stacked when
-            // it's not.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 6) { followUpButtons(suggestions) }
-                VStack(alignment: .leading, spacing: 6) {
-                    followUpButtons(suggestions)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func followUpButtons(_ suggestions: [String]) -> some View {
-        ForEach(suggestions.indices, id: \.self) { idx in
-            Button {
-                onFollowUpTap(suggestions[idx])
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.turn.down.right")
-                        .imageScale(.small)
-                    Text(suggestions[idx])
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                }
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.10))
-                )
-                .foregroundStyle(.primary)
-            }
-            .buttonStyle(.plain)
-            .help("Send as the next question")
         }
     }
 

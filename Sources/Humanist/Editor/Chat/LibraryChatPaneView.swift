@@ -257,11 +257,6 @@ struct LibraryChatPaneView: View {
                         ChatMessageRow(
                             message: message,
                             onCitationTap: onCitationTap,
-                            onFollowUpTap: { question in
-                                guard !vm.isThinking else { return }
-                                vm.input = question
-                                Task { await vm.send() }
-                            },
                             onExcludeBook: { citation in
                                 guard let url = citation.bookEpubURL,
                                       let title = citation.bookTitle

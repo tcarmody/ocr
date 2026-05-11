@@ -232,16 +232,6 @@ struct ChatPaneView: View {
                         ChatMessageRow(
                             message: message,
                             onCitationTap: onCitationTap,
-                            onFollowUpTap: { question in
-                                // Populate the input field and
-                                // send immediately. Skips when
-                                // a previous send is still in
-                                // flight to avoid concurrent
-                                // streamTask races.
-                                guard !vm.isThinking else { return }
-                                vm.input = question
-                                Task { await vm.send() }
-                            },
                             onExcludeBook: { citation in
                                 guard let url = citation.bookEpubURL,
                                       let title = citation.bookTitle

@@ -631,17 +631,14 @@ final class LibraryChatViewModel: ObservableObject {
             let response = try await client.send(request)
             try Task.checkCancellation()
             let raw = response.firstText() ?? ""
-            let withFollowUps = FollowUpParser.parse(raw)
             let cited = parseCitations(
-                in: withFollowUps.cleaned, allowedHits: allowedHits
+                in: raw, allowedHits: allowedHits
             )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
                 citations: cited.citations,
                 retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits),
-                suggestedFollowUps: withFollowUps.followUps.isEmpty
-                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -673,17 +670,14 @@ final class LibraryChatViewModel: ObservableObject {
                 userMessage: userPrompt
             )
             try Task.checkCancellation()
-            let withFollowUps = FollowUpParser.parse(raw)
             let cited = parseCitations(
-                in: withFollowUps.cleaned, allowedHits: allowedHits
+                in: raw, allowedHits: allowedHits
             )
             appendAndPersist(BookChatMessage(
                 role: .assistant,
                 text: cited.cleaned,
                 citations: cited.citations,
                 retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits),
-                suggestedFollowUps: withFollowUps.followUps.isEmpty
-                    ? nil : withFollowUps.followUps
             ))
         } catch is CancellationError {
             return
@@ -861,7 +855,7 @@ final class LibraryChatViewModel: ObservableObject {
         } else {
             length = "Keep replies tight: a paragraph or two is usually enough."
         }
-        return length + "\n\n" + BookChatViewModel.followUpInstructions
+        return length
     }
 }
 
