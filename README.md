@@ -144,7 +144,7 @@ Each editor's chat pane and the dedicated library chat window share one engine. 
 The library window is a primary surface, not a sidebar. Every conversion lands here automatically. Cover thumbnails per row, sortable by title / language / added / last-opened, language filter, multi-selection.
 
 - **Collections sidebar** — durable named groupings ("Foucault corpus", "for the chapter on biopolitics"). Right-click any row → *Add to Collection ▸* to drop it into an existing group or create a new one from the current selection. Click a collection in the sidebar to filter the table to its members; the filter bar swaps "Chat with Selected" for "Chat with {Collection}" so the whole group seeds the next chat in one click.
-- **Import EPUB into Library…** (`⇧⌘I`) — multi-select picker brings existing `.epub` files into the catalog; folders work too (walked recursively for `.epub` descendants), and drag-drop on the Library window accepts both files and folders. Each source is opened, `<p>` paragraph anchors are injected where missing, the on-device AFM metadata extractor populates `<dc:title>` / `<dc:creator>` from the front matter when Apple Intelligence is available + the toggle is on, the result is repacked into the configured Books folder (or `~/Documents/Humanist Library/Books/`), catalogued, and its embedding sidecar is built so library chat sees it immediately. Re-import is idempotent — already-anchored books pass through unchanged.
+- **Import EPUB into Library…** (`⇧⌘I`) — multi-select picker brings existing `.epub` files into the catalog; folders work too (walked recursively for `.epub` descendants), and drag-drop on the Library window accepts both files and folders. Each source is opened, `<p>` paragraph anchors are injected where missing, the on-device AFM metadata extractor populates `<dc:title>` / `<dc:creator>` from the front matter when Apple Intelligence is available + the toggle is on, the on-device chapter classifier labels each `<body>` with the matching `epub:type` (preserving any publisher-set label), the result is repacked into the configured Books folder (or `~/Documents/Humanist Library/Books/`), catalogued, and its embedding sidecar is built so library chat sees it immediately. Re-import is idempotent — already-anchored books pass through unchanged.
 - **Bulk find / replace** across selected books — runs through `BulkEditor` over the EPUBs' XHTML resources.
 - **Bulk index** for the chat embeddings — walks every catalog entry and builds (or refreshes) its sidecar against the user's chosen backend, with cancellable progress and per-book failure list.
 - **Embedded chat pane** (`⌘/` to toggle) — see [Chat-with-book](#chat-with-book).
@@ -198,7 +198,7 @@ Cloud features only run when you flip Settings → AI → Processing Mode to Clo
 
 ```sh
 Scripts/run-app.sh          # release build + assemble .app + sign + open
-swift test                  # 881 unit tests across 89 test files
+swift test                  # 907 unit tests across 91 test files
 ```
 
 `Scripts/run-app.sh` is the only supported launch path. `swift run` / `swift build` produce a bare binary without the bundled `Resources/` directory — the editor's CodeMirror source pane and the Surya layout sidecar won't load.
@@ -241,7 +241,7 @@ ocr/
 │   │                                differ + validator
 │   └── AI/                          22 files: Anthropic + Ollama + Voyage + Gemini + Apple Foundation Models clients,
 │                                    embedding backends, settings, key stores
-├── Tests/                           881 unit tests across 89 test files
+├── Tests/                           907 unit tests across 91 test files
 ├── Resources/
 │   └── codemirror/                  Vendored CodeMirror 5 for the editor's source pane
 ├── Sidecars/
@@ -290,7 +290,7 @@ Storing chat / embedding state outside the EPUB keeps the file portable (a copy 
 - **R-Library-Chat-Plus Tier 2** — citation export, conversation export, pinned passages, ask-each-book mode.
 - **E-Vision-Modes** — Manuscript mode (Claude Opus 4.7, diplomatic transcription) and Early Print mode (Gemini 3 Pro, fluent normalization). Validation spike planned.
 - **L-Foundation-Models Phase 2.5 + 3** — on-device post-OCR cleanup + TOC parsing.
-- **R-EPUB-Import chapter classification / coherence on import** — title + author already lift out of front matter via AFM; the remaining engines need an XHTML → Chapter IR parser the import path doesn't have today.
+- **R-EPUB-Import coherence on import + year/publisher/ISBN write-back** — chapter classification ships via a minimal-Chapter sampler; coherence still needs a full XHTML → Chapter IR parser, and year/publisher/ISBN need `OPFReader.Metadata` extended to round-trip those fields.
 - **Distribution polish** — Developer ID cert, notarization, DMG, GitHub Releases. See [RELEASES.md](RELEASES.md).
 - **P-Greek-Quality** — measure Tesseract polytonic-Greek CER against hand-corrected ground truth.
 

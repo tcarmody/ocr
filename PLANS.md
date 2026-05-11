@@ -460,8 +460,12 @@ in Tier 6 — full write-up there):
   and AFM metadata extraction on import — title + author lift
   out of the first ~4 KB of stripped front-matter, write back
   through `OPFReader.Metadata`'s new public initializer.
-  Chapter classification + coherence pass still deferred for
-  imported EPUBs (needs XHTML → Chapter IR parser).
+  v1.2 adds AFM chapter classification on import via a
+  minimal-Chapter sampler + the new `BodyTypeInjector`
+  (`epub:type` written into the `<body>` opening tag,
+  publisher-set labels preserved). Coherence pass still
+  deferred for imported EPUBs (needs full XHTML → Chapter IR
+  parser + round-trip fidelity work).
 
 **Done — Cloud Phase 5**:
 - **`ClaudeTableExtractor`**: Sonnet-driven table structure behind
@@ -524,14 +528,20 @@ Drivers for the current ordering:
 
 ### Near-term — do these first
 
-1. **R-EPUB-Import: Chapter classification on import** (~0.5 day,
-   via the cheap-shortcut path documented in R-EPUB-Import's
-   "Deferred further" section). With a 1000-book import on the
-   horizon, getting `epub:type` labels onto every book pays
-   off in library chat citations + visible badges. The
-   minimal-Chapter shortcut (title + first ~5 paragraphs) is
-   enough for the classifier and skips the full XHTML →
-   Chapter IR project.
+1. ~~**R-EPUB-Import: Chapter classification on import**~~
+   shipped. `EPUBImporter` builds a minimal `Chapter` per spine
+   resource (title from first `<h1>` or `<title>`; opening text
+   from `<p>` / `<h2>`–`<h6>` / `<blockquote>` / `<li>` up to
+   ~800 chars), runs `AppleFoundationModelClassifier`, and
+   writes the returned label into each XHTML's `<body>` opening
+   tag via the new `BodyTypeInjector` in Pipeline. Existing
+   publisher-set `epub:type` attributes are preserved (the
+   injector is conservative — a publisher's "afterword" beats
+   the classifier's "appendix" guess). `xmlns:epub` namespace
+   inlined when the doc lacks it. 26 new tests across
+   `BodyTypeInjectorTests` + `EPUBImporterSamplerTests` cover
+   the title-extraction, opening-text-sampling, and tag-rewrite
+   edge cases.
 2. **R-EPUB-Import: Year / publisher / ISBN write-back** (~0.5
    day). AFM already extracts all five front-matter fields;
    today only title + author write back. Extend
@@ -2864,6 +2874,32 @@ place via canonical-URL match). 13 new
 - **Library window**: `tray.and.arrow.down` button next to the
   bulk-index menu in the filter bar.
 
+### What landed in v1.2
+
+- **AFM chapter classification on import** via the
+  cheap-shortcut path described in v1's deferral notes.
+  `EPUBImporter.buildMinimalChapter(from:)` extracts title
+  (first `<h1>` content, falling back to `<title>`) and ~800
+  chars of opening text from `<p>` / `<h2>`–`<h6>` /
+  `<blockquote>` / `<li>` elements (figures / tables / anchors
+  / footnotes excluded — they carry no classifier signal).
+  Per-resource classification happens between metadata
+  extraction and the save step.
+- **`BodyTypeInjector`** (Sources/Pipeline) — regex rewriter
+  that finds `<body...>` opening tags and inserts `epub:type`
+  preserving any existing attributes + the original tag casing.
+  Conservative: an existing `epub:type` on `<body>` is left in
+  place (a publisher's deliberate "afterword" beats the
+  classifier's "appendix" guess). Emits an `xmlns:epub`
+  declaration inline when the doc lacks one anywhere, so the
+  rewritten XHTML stays spec-valid.
+- **26 new tests** across `BodyTypeInjectorTests` (case
+  preservation, attribute preservation, namespace handling,
+  preserve-existing-label posture, the whitespace-around-`=`
+  edge case) and `EPUBImporterSamplerTests`
+  (`extractFirstTitle` / `extractOpeningText` /
+  `buildMinimalChapter`).
+
 ### What landed in the v1.1 follow-up
 
 - **Folder + drag-drop import**: `EPUBImporter.expandSources(_:)`
@@ -2894,16 +2930,17 @@ place via canonical-URL match). 13 new
 
 ### Deferred further
 
-- **Chapter classification on imported EPUBs**. The
-  `SemanticChapterClassifier` engine takes a `Chapter` IR.
-  Imported EPUBs only carry XHTML strings — the conversion
-  path builds Chapters during reflow, the import path never
-  does. Cheap shortcut: a *minimal* Chapter (just the title
-  from the first `<h1>` or the nav entry, plus the first ~5
-  paragraphs of stripped plain text) is enough for the
-  classifier — it doesn't read figures, tables, or footnotes.
-  Half a day of work; produces `epub:type` labels that drive
-  smart sectioning in chat citations + library row badges.
+- ~~**Chapter classification on imported EPUBs**~~ shipped via
+  the cheap-shortcut path. `EPUBImporter.buildMinimalChapter`
+  extracts title (first `<h1>` or `<title>`, inline tags
+  stripped) and ~800 chars of opening text from the first
+  paragraph-bearing elements (`<p>` / `<h2>`–`<h6>` /
+  `<blockquote>` / `<li>` — `<h1>` excluded since the title
+  step already captured it). The result feeds
+  `AppleFoundationModelClassifier`; the returned label is
+  written into the resource's `<body>` opening tag through the
+  new `BodyTypeInjector`. Conservative: existing publisher-set
+  `epub:type` attributes are preserved.
 - **Coherence pass on imported EPUBs**. `BookCoherenceAnalyzer`
   consumes `[Chapter]` AND emits modified `[Chapter]`. The
   apply step rewrites chapter content, which means a

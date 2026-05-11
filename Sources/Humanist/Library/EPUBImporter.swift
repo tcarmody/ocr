@@ -1,12 +1,17 @@
 import Foundation
 import AppKit
 import AI
+import Document
 import EPUB
 import Pipeline
 
 // `AISettings` lives in the AI module above; we read the user's
 // `localFeatures` snapshot to decide whether to invoke the AFM
-// metadata extractor at import time.
+// metadata extractor + chapter classifier at import time. The
+// classifier consumes a `Chapter` IR (`Document` module) built
+// from each spine resource's XHTML — a minimal sampler suffices
+// since the classifier reads only title + ~200 chars of opening
+// text.
 
 /// R-EPUB-Import. Take existing EPUBs (already-edited books, books
 /// converted from documents the user no longer has, books from other
@@ -249,6 +254,16 @@ final class EPUBImporter: ObservableObject {
         // round-trip those fields too.
         await runMetadataExtraction(on: book)
 
+        // 2.6. Optional AFM chapter classification. For each spine
+        // resource: build a minimal Chapter (title + opening
+        // text), run the classifier, write the returned
+        // `epub:type` label into the resource's `<body>` opening
+        // tag via `BodyTypeInjector`. Existing publisher-set
+        // `epub:type` attributes are preserved — see
+        // `BodyTypeInjector` doc for the conservative posture
+        // rationale.
+        await runChapterClassification(on: book)
+
         // 3. Save dirty resources back into the working directory.
         // No-ops cleanly when nothing changed (e.g. re-import).
         do {
@@ -399,6 +414,122 @@ final class EPUBImporter: ObservableObject {
             of: "\\s+", with: " ", options: .regularExpression
         )
         return out
+    }
+
+    // MARK: - AFM chapter classification
+
+    /// Walk every spine resource, build a minimal Chapter IR, ask
+    /// the AFM classifier for an `epub:type` label, and inject it
+    /// into the resource's `<body>` opening tag via
+    /// `BodyTypeInjector` when the classifier returns one.
+    ///
+    /// Silently skipped when:
+    ///  * the user's `localChapterClassification` toggle is off;
+    ///  * Apple Intelligence isn't available on the device;
+    ///  * a resource lacks enough text to classify (no `<h1>`
+    ///    title AND empty opening text).
+    ///
+    /// Conservative on per-resource failures: a single chapter
+    /// the classifier declines just leaves that body unlabeled.
+    /// One bad chapter doesn't abort the import.
+    private static func runChapterClassification(on book: EPUBBook) async {
+        let settings = AISettingsStore().load()
+        guard settings.localFeatures.localChapterClassification else { return }
+        guard case .available = AppleFoundationModelClient.availability
+        else { return }
+        let classifier = AppleFoundationModelClassifier()
+        for resourceID in book.spine {
+            guard let resource = book.resourcesByID[resourceID],
+                  resource.isText,
+                  let xhtml = resource.text
+            else { continue }
+            guard let chapter = buildMinimalChapter(from: xhtml)
+            else { continue }
+            guard let label = await classifier.classify(chapter: chapter)
+            else { continue }
+            let result = BodyTypeInjector.inject(label: label, into: xhtml)
+            if result.changed {
+                resource.text = result.xhtml  // marks the resource dirty
+            }
+        }
+    }
+
+    /// Build the smallest `Chapter` the classifier will accept:
+    /// title (first `<h1>` or `<title>` content stripped) + a
+    /// single paragraph block containing the first ~200 chars of
+    /// opening prose. The classifier's
+    /// `AppleFoundationModelClassifier.makeContext` reads only
+    /// `.title` and the leading paragraph/heading text, so figures,
+    /// tables, footnotes, and asides can be dropped without loss.
+    ///
+    /// Returns nil when neither a title nor any opening text is
+    /// extractable — there's nothing for the classifier to read.
+    static func buildMinimalChapter(from xhtml: String) -> Chapter? {
+        let title = extractFirstTitle(from: xhtml)
+        let opening = extractOpeningText(from: xhtml, maxChars: 800)
+        if title == nil, opening.isEmpty { return nil }
+        let blocks: [Block]
+        if opening.isEmpty {
+            blocks = []
+        } else {
+            blocks = [.paragraph(runs: [InlineRun(opening)])]
+        }
+        return Chapter(title: title, blocks: blocks)
+    }
+
+    /// First `<h1>...</h1>` content (stripped of inline tags), or
+    /// the `<title>...</title>` tag's content as a fallback. Nil
+    /// when neither is present or both are empty. Public for tests.
+    static func extractFirstTitle(from xhtml: String) -> String? {
+        for pattern in ["<h1\\b[^>]*>([\\s\\S]*?)</h1>",
+                        "<title\\b[^>]*>([\\s\\S]*?)</title>"] {
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern, options: [.caseInsensitive]
+            ) else { continue }
+            let ns = xhtml as NSString
+            guard let match = regex.firstMatch(
+                in: xhtml,
+                range: NSRange(location: 0, length: ns.length)
+            ), match.numberOfRanges == 2 else { continue }
+            let inner = ns.substring(with: match.range(at: 1))
+            let plain = stripXHTML(inner)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !plain.isEmpty { return plain }
+        }
+        return nil
+    }
+
+    /// Concatenate the visible prose of the first few paragraph-
+    /// bearing elements (`<p>` / `<h2>`–`<h6>` / `<blockquote>` /
+    /// `<li>`) until we hit `maxChars`. Mirrors
+    /// `AppleFoundationModelClassifier.openingText`'s posture but
+    /// works directly on XHTML rather than a `[Block]` stream.
+    static func extractOpeningText(
+        from xhtml: String, maxChars: Int
+    ) -> String {
+        let pattern = "<(p|h[2-6]|blockquote|li)\\b[^>]*>([\\s\\S]*?)</\\1>"
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern, options: [.caseInsensitive]
+        ) else { return "" }
+        let ns = xhtml as NSString
+        let matches = regex.matches(
+            in: xhtml,
+            range: NSRange(location: 0, length: ns.length)
+        )
+        var collected = ""
+        for match in matches {
+            guard match.numberOfRanges == 3 else { continue }
+            let inner = ns.substring(with: match.range(at: 2))
+            let plain = stripXHTML(inner)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if plain.isEmpty { continue }
+            if !collected.isEmpty { collected += " " }
+            collected += plain
+            if collected.count >= maxChars {
+                return String(collected.prefix(maxChars))
+            }
+        }
+        return collected
     }
 
     // MARK: - Destination resolution
