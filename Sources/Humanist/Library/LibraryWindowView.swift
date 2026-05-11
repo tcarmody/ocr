@@ -810,6 +810,21 @@ struct LibraryWindowView: View {
     @ViewBuilder
     private var filterBar: some View {
         HStack(spacing: 12) {
+            // Collections sidebar toggle — anchored to the leading
+            // edge, where the sidebar actually lives. Matches the
+            // macOS toolbar convention used by Mail, Notes, Finder.
+            // The chat toggle stays at the trailing edge for the
+            // mirror reason: the chat pane is on the right.
+            Button {
+                showCollectionsSidebar.toggle()
+            } label: {
+                Image(systemName: showCollectionsSidebar
+                      ? "sidebar.left"
+                      : "sidebar.leading")
+            }
+            .help(showCollectionsSidebar
+                  ? "Hide collections sidebar"
+                  : "Show collections sidebar")
             Text("\(displayedEntries.count) of \(library.entries.count)")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -820,50 +835,33 @@ struct LibraryWindowView: View {
             }
             searchField
             Spacer()
-            // R-Bulk-Editor: cross-book find/replace driven from
-            // the current multi-selection. Visible only when at
-            // least one row is selected; sheet opens on click.
+            // R-Bulk-Editor. Find/replace across the selection.
+            // Icon-only — the action belongs in the right-side icon
+            // group with import / index / sidebar / chat for a
+            // uniform "auxiliary actions" posture. Hover tooltip
+            // carries the verbose label.
             if !selection.isEmpty {
                 Button {
                     showBulkEdit = true
                 } label: {
-                    Label("Bulk Edit Selected…", systemImage: "pencil.and.list.clipboard")
+                    Image(systemName: "pencil.and.list.clipboard")
                 }
-                .help("Run find/replace across the selected books")
-                Button {
-                    chatWithSelected()
-                } label: {
-                    Label(
-                        "Chat with Selected (\(selection.count))",
-                        systemImage: "bubble.left.and.text.bubble.right"
-                    )
-                }
-                .help("Scope the library chat to the selected books")
-                Button(role: .destructive) {
-                    requestRemove(selectedEntries)
-                } label: {
-                    Label(
-                        "Remove \(selection.count)…",
-                        systemImage: "trash"
-                    )
-                }
-                .help("Remove the selected books from the library (or move to Trash)")
-            } else if let collection = activeCollection,
-                      !collection.bookIDs.isEmpty {
-                // No row selection, but the table is filtered to a
-                // collection — offer a one-click "chat with the
-                // whole collection" shortcut so the user doesn't
-                // have to select-all first.
-                Button {
-                    chatWithCollection(collection)
-                } label: {
-                    Label(
-                        "Chat with \(collection.name) (\(collection.bookIDs.count))",
-                        systemImage: "bubble.left.and.text.bubble.right"
-                    )
-                }
-                .help("Scope the library chat to this collection")
+                .help("Bulk edit \(selection.count) selected book\(selection.count == 1 ? "" : "s") — find/replace across them")
             }
+            // "Remove from Library" was previously a destructive
+            // filter-bar button when 1+ rows were selected. Removed
+            // in favor of the row context menu (right-click → Remove
+            // from Library…) which already supports multi-select and
+            // works the same way the user removes Finder files —
+            // less filter-bar clutter, no behavior loss. The ⌫
+            // keyboard shortcut is still wired on the table.
+            //
+            // "Chat with Selected" / "Chat with [Collection]" were
+            // also previously filter-bar text buttons here. They've
+            // been folded into the right-side chat icon's smart
+            // click action so the filter bar reads as a single row
+            // of uniform icons instead of a row of truncated
+            // long-label buttons.
             if !availableLanguages.isEmpty {
                 Picker("Language", selection: $languageFilter) {
                     Text("All Languages").tag(String?.none)
@@ -904,34 +902,57 @@ struct LibraryWindowView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("Build embedding indexes for every book")
-            // Collections sidebar reveal. Lives next to the chat
-            // toggle for symmetry: both are auxiliary panes.
+            // Chat-pane button — does triple duty depending on
+            // context, so the filter bar only needs one chat
+            // affordance:
+            //   * selection non-empty → open chat pane + scope to
+            //     selection (`chatWithSelected` reveals the pane
+            //     internally; same for `chatWithCollection`)
+            //   * active collection with books → scope to collection
+            //   * neither → toggle pane visibility
+            // The tooltip changes to match the about-to-happen
+            // action so the user knows what each click will do.
             Button {
-                showCollectionsSidebar.toggle()
-            } label: {
-                Image(systemName: showCollectionsSidebar
-                      ? "sidebar.left"
-                      : "sidebar.leading")
-            }
-            .help(showCollectionsSidebar
-                  ? "Hide collections sidebar"
-                  : "Show collections sidebar")
-            // Chat-pane reveal toggle. Lives in the filter bar
-            // because that's where every other library-window
-            // affordance lives; users expect "show / hide chat"
-            // to be one click away rather than buried in a menu.
-            Button {
-                showChatPane.toggle()
+                chatIconAction()
             } label: {
                 Image(systemName: showChatPane
                       ? "bubble.left.and.text.bubble.right.fill"
                       : "bubble.left.and.text.bubble.right")
             }
-            .help(showChatPane
-                  ? "Hide library chat pane"
-                  : "Show library chat pane")
+            .help(chatIconHelp)
             .keyboardShortcut("/", modifiers: [.command])
         }
+    }
+
+    /// Smart click for the consolidated chat button. Honors the
+    /// selection / collection scope before falling through to
+    /// toggle, so a single click does the right thing in every
+    /// state without the user having to find a separate "Chat
+    /// with Selected" button on the left.
+    private func chatIconAction() {
+        if !selection.isEmpty {
+            chatWithSelected()
+        } else if let collection = activeCollection,
+                  !collection.bookIDs.isEmpty {
+            chatWithCollection(collection)
+        } else {
+            showChatPane.toggle()
+        }
+    }
+
+    /// Tooltip for the chat icon, matched to whatever
+    /// `chatIconAction` will do on click.
+    private var chatIconHelp: String {
+        if !selection.isEmpty {
+            return "Chat with \(selection.count) selected book\(selection.count == 1 ? "" : "s")"
+        }
+        if let collection = activeCollection,
+           !collection.bookIDs.isEmpty {
+            return "Chat with \(collection.name) (\(collection.bookIDs.count) book\(collection.bookIDs.count == 1 ? "" : "s"))"
+        }
+        return showChatPane
+            ? "Hide library chat pane"
+            : "Show library chat pane"
     }
 
     // MARK: - collections sidebar
