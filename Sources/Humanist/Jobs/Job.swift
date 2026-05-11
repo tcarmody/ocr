@@ -152,6 +152,16 @@ struct ConversionOptions: Codable, Equatable {
     /// enum's raw string so the JSON encode stays forward-
     /// compatible if cases are added later.
     var manuscriptHand: ManuscriptHand
+    /// E-Vision-Modes / Early Print track. Routes per-page OCR
+    /// through Sonnet 4.6 with a normalizing-posture prompt for
+    /// 15th–18th c. printed material. Per-job; mutually
+    /// exclusive with `useClaudePageOCR` + `useManuscriptMode`
+    /// at the launcher.
+    var useEarlyPrintMode: Bool
+    /// Typeface selector for early-print mode (auto /
+    /// romanAntiqua / blackletterFraktur / italic). Effective
+    /// only when `useEarlyPrintMode` is true.
+    var earlyPrintTypeface: EarlyPrintTypeface
     /// Skip the embedded-text trust path and re-OCR every page.
     /// Per-job because some PDFs ship with bad embedded text
     /// layers (broken `ToUnicode`, mojibake) that the trust scorer
@@ -211,6 +221,8 @@ struct ConversionOptions: Codable, Equatable {
         useClaudePageOCR: Bool = false,
         useManuscriptMode: Bool = false,
         manuscriptHand: ManuscriptHand = .auto,
+        useEarlyPrintMode: Bool = false,
+        earlyPrintTypeface: EarlyPrintTypeface = .auto,
         forceOCR: Bool = false,
         privateMode: Bool = false,
         emitDebugLog: Bool = false,
@@ -225,6 +237,8 @@ struct ConversionOptions: Codable, Equatable {
         self.useClaudePageOCR = useClaudePageOCR
         self.useManuscriptMode = useManuscriptMode
         self.manuscriptHand = manuscriptHand
+        self.useEarlyPrintMode = useEarlyPrintMode
+        self.earlyPrintTypeface = earlyPrintTypeface
         self.forceOCR = forceOCR
         self.privateMode = privateMode
         self.emitDebugLog = emitDebugLog
@@ -246,6 +260,8 @@ struct ConversionOptions: Codable, Equatable {
         case useCloudEnhancedOCR  // legacy alias for useClaudePageOCR
         case useManuscriptMode
         case manuscriptHand
+        case useEarlyPrintMode
+        case earlyPrintTypeface
         case forceOCR
         case privateMode
         case emitDebugLog
@@ -282,6 +298,15 @@ struct ConversionOptions: Codable, Equatable {
             self.manuscriptHand = parsed
         } else {
             self.manuscriptHand = .auto
+        }
+        self.useEarlyPrintMode = try c.decodeIfPresent(
+            Bool.self, forKey: .useEarlyPrintMode
+        ) ?? false
+        if let raw = try c.decodeIfPresent(String.self, forKey: .earlyPrintTypeface),
+           let parsed = EarlyPrintTypeface(rawValue: raw) {
+            self.earlyPrintTypeface = parsed
+        } else {
+            self.earlyPrintTypeface = .auto
         }
         self.forceOCR = try c.decodeIfPresent(Bool.self, forKey: .forceOCR) ?? false
         self.privateMode = try c.decodeIfPresent(
@@ -320,6 +345,8 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(useClaudePageOCR, forKey: .useClaudePageOCR)
         try c.encode(useManuscriptMode, forKey: .useManuscriptMode)
         try c.encode(manuscriptHand.rawValue, forKey: .manuscriptHand)
+        try c.encode(useEarlyPrintMode, forKey: .useEarlyPrintMode)
+        try c.encode(earlyPrintTypeface.rawValue, forKey: .earlyPrintTypeface)
         try c.encode(forceOCR, forKey: .forceOCR)
         try c.encode(privateMode, forKey: .privateMode)
         try c.encode(emitDebugLog, forKey: .emitDebugLog)

@@ -6,7 +6,7 @@ Native macOS app (macOS 26+) for turning PDFs and other documents into well-form
 
 - **Converts almost anything into clean EPUB 3.** Drop PDFs, Word documents, RTF, HTML, ODT, plain text, or Markdown onto the launcher and you get a properly-structured EPUB out the other end — real chapter navigation, table of contents, EPUB 3 popup footnotes, figures with captions, italic / bold preservation, semantic `epub:type` labels for front-matter and back-matter sections.
 
-- **Reads scanned books faithfully.** The OCR pipeline cascades through Apple Vision → Surya layout analysis → Tesseract for classical scripts → optional Claude Sonnet for the hardest regions. Polytonic Greek, classical Latin, and mixed-script academic prose all survive. Two-up scans get auto-split. Scanner artifacts (long-s, ligatures, missing diacritics) get normalized through the typography pass and an optional Cloud cleanup step. **Manuscript mode** (Claude Opus 4.7) handles handwritten material with hand-family-specific prompts: 16th–17th c. secretary hand (diplomatic transcription, abbreviation expansion in italics), 18th c. round hand (copperplate; period spelling preserved), 19th–early 20th c. cursive, and modern handwriting.
+- **Reads scanned books faithfully.** The OCR pipeline cascades through Apple Vision → Surya layout analysis → Tesseract for classical scripts → optional Claude Sonnet for the hardest regions. Polytonic Greek, classical Latin, and mixed-script academic prose all survive. Two-up scans get auto-split. Scanner artifacts (long-s, ligatures, missing diacritics) get normalized through the typography pass and an optional Cloud cleanup step. **Early Print mode** (Sonnet 4.6 with a normalizing-posture prompt) handles 15th–18th c. printed books — silently modernizes long-s, u/v, i/j, and standard ligatures; preserves period spelling; covers Roman / Blackletter (Fraktur) / Italic typefaces. **Manuscript mode** (Claude Opus 4.7) handles handwritten material with hand-family-specific prompts: 16th–17th c. secretary hand (diplomatic transcription, abbreviation expansion in italics), 18th c. round hand (copperplate; period spelling preserved), 19th–early 20th c. cursive, and modern handwriting.
 
 - **Gives you a real editor for the result.** Five-pane editor (original PDF, XHTML source, live preview, WYSIWYG, chat) with cross-pane synchronization at page and paragraph granularity. Find / replace across all chapters, formatting toolbar, spell check, footnote manager, chapter split / merge / move / rename with automatic internal-link rewriting, customizable per-book styling, EPUB validation via epubcheck.
 
@@ -198,7 +198,7 @@ Cloud features only run when you flip Settings → AI → Processing Mode to Clo
 
 ```sh
 Scripts/run-app.sh          # release build + assemble .app + sign + open
-swift test                  # 953 unit tests across 96 test files
+swift test                  # 960 unit tests across 96 test files
 ```
 
 `Scripts/run-app.sh` is the only supported launch path. `swift run` / `swift build` produce a bare binary without the bundled `Resources/` directory — the editor's CodeMirror source pane and the Surya layout sidecar won't load.
@@ -241,7 +241,7 @@ ocr/
 │   │                                differ + validator
 │   └── AI/                          22 files: Anthropic + Ollama + Voyage + Gemini + Apple Foundation Models clients,
 │                                    embedding backends, settings, key stores
-├── Tests/                           953 unit tests across 96 test files
+├── Tests/                           960 unit tests across 96 test files
 ├── Resources/
 │   └── codemirror/                  Vendored CodeMirror 5 for the editor's source pane
 ├── Sidecars/
@@ -285,10 +285,9 @@ Storing chat / embedding state outside the EPUB keeps the file portable (a copy 
 
 ## Plans
 
-[PLANS.md](PLANS.md) tracks remaining work in detail with a top-of-doc Sequencing section anchoring priorities to current drivers. The core conversion pipeline, editor, library, multi-book chat, on-device classification (Apple Foundation Models Phases 1+2), R-Library-Chat-Plus Tier 1 (Chat with Selected, Collections, Suggested follow-ups, Long-form synthesis, Per-book exclusion), R-EPUB-Import v1.3 (anchors, drag-drop / folder import, AFM metadata + classification, year/publisher/ISBN write-back, 1000-book bulk hardening), R-Library-Sync Phases A + B (catalog + embedding-sidecar portability across machines), and E-Vision-Modes Manuscript v1 (Claude Opus 4.7 with hand-specific prompts) are all shipped. Active items:
+[PLANS.md](PLANS.md) tracks remaining work in detail with a top-of-doc Sequencing section anchoring priorities to current drivers. The core conversion pipeline, editor, library, multi-book chat, on-device classification (Apple Foundation Models Phases 1+2), R-Library-Chat-Plus Tier 1 (Chat with Selected, Collections, Suggested follow-ups, Long-form synthesis, Per-book exclusion), R-EPUB-Import v1.3 (anchors, drag-drop / folder import, AFM metadata + classification, year/publisher/ISBN write-back, 1000-book bulk hardening), R-Library-Sync Phases A + B (catalog + embedding-sidecar portability across machines), and E-Vision-Modes v1 (Manuscript + Early Print sub-modes) are all shipped. Active items:
 
 - **R-Library-Chat-Plus Tier 2** — citation export, conversation export, pinned passages, ask-each-book mode.
-- **E-Vision-Modes — Early Print track** — Gemini-routed mode for early-printed material with period orthography. Manuscript track (Claude Opus 4.7 with diplomatic/round-hand/cursive/contemporary sub-modes) shipped.
 - **L-Foundation-Models Phase 2.5 + 3** — on-device post-OCR cleanup + TOC parsing.
 - **R-EPUB-Import coherence on import** — chapter classification + year/publisher/ISBN already ship; coherence still needs a full XHTML → Chapter IR parser plus round-trip fidelity work.
 - **Distribution polish** — Developer ID cert, notarization, DMG, GitHub Releases. See [RELEASES.md](RELEASES.md).

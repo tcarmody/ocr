@@ -34,17 +34,23 @@ public struct ClaudePageOCREngine: Sendable {
     /// is shared; mode picks the model + appends mode-specific
     /// instructions to the system prompt.
     ///
-    /// `.typeset` is the original Sonnet path for printed /
-    /// typeset material. `.manuscript(hand:)` routes to Opus
-    /// 4.7 with a hand-family-specific prompt — see
-    /// `ManuscriptHand` for the four sub-modes.
+    /// `.typeset` is the original Sonnet path for plain modern
+    /// printed / typeset material. `.earlyPrint(typeface:)`
+    /// stays on Sonnet but layers on a normalizing-posture prompt
+    /// tuned for 15th–18th c. printed books (long-s, ligatures,
+    /// u/v + i/j interchange). `.manuscript(hand:)` routes to
+    /// Opus 4.7 with a diplomatic-posture prompt for handwritten
+    /// material. The three are mutually exclusive at the
+    /// launcher; the engine factory picks one per conversion.
     public enum Mode: Sendable, Equatable {
         case typeset
+        case earlyPrint(typeface: EarlyPrintTypeface)
         case manuscript(hand: ManuscriptHand)
 
         var defaultModel: AnthropicModel {
             switch self {
             case .typeset: return .sonnet4_6
+            case .earlyPrint: return .sonnet4_6
             case .manuscript: return .opus4_7
             }
         }
@@ -290,6 +296,8 @@ public struct ClaudePageOCREngine: Sendable {
         switch mode {
         case .typeset:
             return baseSystemPrompt
+        case .earlyPrint(let typeface):
+            return baseSystemPrompt + "\n\n" + typeface.promptAddendum
         case .manuscript(let hand):
             return baseSystemPrompt + "\n\n" + hand.promptAddendum
         }

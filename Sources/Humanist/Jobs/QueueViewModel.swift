@@ -74,6 +74,15 @@ final class QueueViewModel: ObservableObject {
     /// accordingly. Specific cases (diplomatic / roundHand /
     /// cursive / contemporaryInformal) load a tuned prompt.
     @Published var manuscriptHand: ManuscriptHand = .auto
+    /// E-Vision-Modes / Early Print track. Routes per-page OCR
+    /// through Sonnet 4.6 with a normalizing-posture prompt for
+    /// 15th–18th c. printed material. Mutually exclusive with
+    /// `useClaudePageOCR` + `useManuscriptMode` at the UI layer.
+    /// Per-session toggle.
+    @Published var useEarlyPrintMode: Bool = false
+    /// Typeface selector for early-print mode. Defaults to
+    /// `.auto` — model identifies the typeface and transcribes.
+    @Published var earlyPrintTypeface: EarlyPrintTypeface = .auto
     /// Force-OCR override for new conversions in this session.
     /// Promoted from Settings to a launcher toggle since it's
     /// inherently per-conversion (some PDFs need it; most don't).
@@ -223,6 +232,8 @@ final class QueueViewModel: ObservableObject {
                 useClaudePageOCR: useClaudePageOCR,
                 useManuscriptMode: useManuscriptMode,
                 manuscriptHand: manuscriptHand,
+                useEarlyPrintMode: useEarlyPrintMode,
+                earlyPrintTypeface: earlyPrintTypeface,
                 forceOCR: forceOCR,
                 privateMode: privateMode,
                 emitDebugLog: emitDebugLog,

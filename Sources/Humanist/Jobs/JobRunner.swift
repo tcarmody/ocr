@@ -240,6 +240,9 @@ final class JobRunner: ObservableObject {
             useManuscriptMode: !job.options.privateMode
                 && job.options.useManuscriptMode,
             manuscriptHand: job.options.manuscriptHand,
+            useEarlyPrintMode: !job.options.privateMode
+                && job.options.useEarlyPrintMode,
+            earlyPrintTypeface: job.options.earlyPrintTypeface,
             emitSiblingTextOutputs: job.options.emitSiblingTextOutputs,
             emitSiblingDocuments: job.options.emitSiblingDocuments,
             forceOCRPageRanges: PageRangeParser.parse(

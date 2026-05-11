@@ -443,33 +443,48 @@ in Tier 6 — full write-up there):
   `LibraryStoreTests` cover the mutations + the legacy-load
   + membership-pruning paths.
 
-**Done — Manuscript-mode OCR** (E-Vision-Modes Manuscript v1):
-- **`ClaudePageOCREngine.Mode`**: enum with `.typeset` (Sonnet
-  4.6, original Claude-OCR path) and `.manuscript(hand:)` (Opus
-  4.7, hand-specific prompt). Branches the model + the system
-  prompt; the base XHTML output schema stays shared.
-- **`ManuscriptHand`** enum + four tuned prompt addenda
-  (diplomatic / roundHand / cursive / contemporaryInformal) +
-  an Auto generic prompt. Diplomatic preserves original
-  spelling and expands scribal abbreviations with `<em>`
-  italics; roundHand keeps period spelling + period
+**Done — Manuscript + Early Print OCR** (E-Vision-Modes v1):
+- **`ClaudePageOCREngine.Mode`**: three-way enum.
+  `.typeset` (Sonnet 4.6, original Claude OCR path),
+  `.earlyPrint(typeface:)` (Sonnet 4.6, normalizing-posture
+  prompt for 15th–18th c. printed books), `.manuscript(hand:)`
+  (Opus 4.7, diplomatic-posture prompt for handwriting).
+  Branches model + system-prompt addendum; the base XHTML
+  output schema stays shared. Engine factory routes based on
+  three launcher flags (`useClaudePageOCR`, `useEarlyPrintMode`,
+  `useManuscriptMode`); manuscript wins when flags collide.
+- **`ManuscriptHand`** (5 cases): auto / diplomatic /
+  roundHand / cursive / contemporaryInformal. Diplomatic
+  preserves original spelling + expands scribal abbreviations
+  with `<em>`; roundHand keeps period spelling +
   capitalization; cursive does light normalization with
   strikethrough preservation; contemporaryInformal is
-  reading-friendly. All four share `[?word?]` / `[illegible]`
-  uncertainty markers.
-- **`opus4_7` model constant** added to `AnthropicModel` with
-  the existing $5/$25 per-million pricing entry.
-- **Launcher UI**: "Manuscript ($$$$)" toggle next to "Claude
-  OCR ($$$)" (mutually exclusive — picking one clears the
-  other); a Hand: picker row appears when the toggle is on.
-  Per-job, snapshotted into `Job.options`, not persisted to
-  Settings (manuscript is the exception, not the routine).
+  reading-friendly.
+- **`EarlyPrintTypeface`** (4 cases): auto / romanAntiqua /
+  blackletterFraktur / italic. Fluent normalization across
+  all: silent long-s → s, u↔v + i↔j per modern convention,
+  standard ligature expansion. Preserves period spelling +
+  capitalization otherwise. Blackletter prompt covers
+  German-specific characters (eszett ß, round-r ꝛ, umlauts).
+- **Pivoted from Gemini for Early Print** — the model wasn't
+  the lever; the prompt's normalizing vs. diplomatic posture
+  is. Sonnet + tuned prompt delivers the same contrast at
+  fraction of implementation cost.
+- **`opus4_7` model constant** added to `AnthropicModel`;
+  pricing entry already existed.
+- **Launcher UI**: three mutually-exclusive toggles in row 2
+  ("Claude OCR ($$$)", "Early Print ($$$)", "Manuscript
+  ($$$$)") with sub-picker row that appears below for
+  Manuscript (Hand:) or Early Print (Typeface:). Per-job,
+  not persisted to Settings.
 - **Codable round-trip**: `ConversionOptions` adds
-  `useManuscriptMode` + `manuscriptHand` with `decodeIfPresent`
-  so legacy queued jobs still load.
-- **10 new `ManuscriptModeTests`** cover the Mode → model
-  routing, prompt composition, per-hand distinctness, and
-  display-name conventions.
+  `useManuscriptMode` / `manuscriptHand` / `useEarlyPrintMode`
+  / `earlyPrintTypeface` with `decodeIfPresent` so legacy
+  queued jobs still load.
+- **17 new `ManuscriptModeTests`** cover the three-way Mode →
+  model routing, prompt composition, per-hand + per-typeface
+  distinctness, normalization-posture invariant for Early
+  Print, German-specific blackletter conventions.
 
 **Done — Multi-machine sidecar + alias sync** (R-Library-Sync Phase B):
 - **`EmbeddingsSidecarStore` API change**: `libraryID: UUID?`
@@ -709,16 +724,19 @@ Drivers for the current ordering:
    18 new tests across `EmbeddingsSidecarStoreKeyingTests` +
    `LibrarySyncTests` cover the writeURL routing, read
    fallback chain, write+read round-trip, and migration steps.
-5. ~~**E-Vision-Modes — Manuscript track v1**~~ shipped. New
-   `Mode` parameter on `ClaudePageOCREngine` routes to either
-   typeset (Sonnet 4.6, original behavior) or manuscript (Opus
-   4.7, hand-specific prompt). Four sub-modes plus Auto:
-   diplomatic / roundHand / cursive / contemporaryInformal.
-   Launcher toggle + Hand picker; per-job. Validation spike
-   deferred per user direction — will tune prompts from real
-   testing rather than a synthetic spike. 10 new
-   `ManuscriptModeTests` cover the Mode routing, prompt
-   composition, per-hand distinctness invariants.
+5. ~~**E-Vision-Modes — Manuscript + Early Print tracks v1**~~
+   shipped. `ClaudePageOCREngine.Mode` enum routes one of three
+   ways: `.typeset` (Sonnet 4.6, original behavior),
+   `.earlyPrint(typeface:)` (Sonnet 4.6 + normalizing-posture
+   prompt for 15th–18th c. printed material; four typefaces),
+   or `.manuscript(hand:)` (Opus 4.7 + diplomatic-posture prompt
+   for handwriting; five hands). Pivoted from Gemini for Early
+   Print — prompt is the lever, not the model; Sonnet+prompt
+   delivers the same contrast at fraction of implementation
+   cost. Three mutually-exclusive launcher toggles + sub-picker
+   row. 17 new `ManuscriptModeTests` cover all three Mode
+   branches, prompt composition, per-hand + per-typeface
+   distinctness, three-way Mode space.
 
 ### Soon — pick up when the near-term cools
 
@@ -727,9 +745,6 @@ Drivers for the current ordering:
    workflow items now that the library is big enough to drive
    serious questions. Pinned passages and ask-each-book mode
    are still useful but lower priority than the export pair.
-7. **E-Vision-Modes — Early Print mode**. Once the manuscript
-   track is shipping working output, the Gemini-driven
-   early-print path becomes the natural next swing.
 8. **R-EPUB-Import: Coherence pass on imports**. Lower priority
    than v1's chapter-classification follow-up because clean
    EPUBs rarely have the recurring-OCR-error patterns the
@@ -3910,27 +3925,44 @@ RRF fusion + library federation is the natural next pass.
 
 ## E-Vision-Modes — Manuscript mode (Claude) + Early Print mode (Gemini)
 
-**Status**: Manuscript track v1 shipped. Early Print track still
-not started.
+**Status**: Manuscript track v1 + Early Print track v1 shipped.
 
-Manuscript v1 wires Claude Opus 4.7 into the existing
-`ClaudePageOCREngine` via a new `Mode` parameter
-(`.typeset` = Sonnet 4.6, current; `.manuscript(hand:)` = Opus
-4.7 + hand-specific prompt). Four hand sub-modes plus an Auto
-default: `diplomatic` (16th–17th c. secretary hand),
-`roundHand` (18th c. copperplate), `cursive` (19th–early 20th
-c.), `contemporaryInformal` (modern handwriting). The launcher
-shows a "Manuscript ($$$$)" toggle next to "Claude OCR ($$$)"
-(mutually exclusive at the UI layer) and reveals a Hand: picker
-when on. Per-job; intentionally not a Settings default.
+Both tracks wire through the existing `ClaudePageOCREngine` via
+a `Mode` enum:
 
-Validation spike was deferred per user direction (testing
-priority). Build worked from prompt-engineering hunches grounded
-in paleographic conventions; will tune based on real material.
+- `.typeset` (Sonnet 4.6) — original Claude OCR path for modern
+  printed material with no orthography quirks.
+- `.earlyPrint(typeface: EarlyPrintTypeface)` (Sonnet 4.6) —
+  same model as typeset, different prompt: fluent normalization
+  of long-s, u/v, i/j, standard ligatures; preserves period
+  spelling otherwise; skips catchwords + signature marks. Four
+  typeface sub-modes: auto / romanAntiqua / blackletterFraktur
+  (German + early English incunabula, eszett / round-r / umlaut
+  handling) / italic.
+- `.manuscript(hand: ManuscriptHand)` (Opus 4.7) — Opus-routed
+  diplomatic transcription for handwritten material. Five sub-
+  modes: auto / diplomatic (16th–17th c. secretary) / roundHand
+  (18th c. copperplate) / cursive (19th–early 20th c.) /
+  contemporaryInformal.
 
-Early Print track (Gemini Pro for early-printed material that's
-typeset but uses period orthography Sonnet hasn't been tuned on)
-remains future work.
+Pivoted from the original "Gemini Pro for Early Print" spec —
+the model wasn't the real lever; the prompt's normalizing vs.
+diplomatic posture is. Sonnet with a tuned prompt delivers the
+same user-visible contrast at a fraction of the implementation
+cost (reuses every line of prefix cache, batch dispatch, error
+handling, capture-sink plumbing). Model swap to Gemini later is
+a one-line change if testing data justifies it.
+
+Launcher shows three mutually-exclusive toggles in row 2 —
+"Claude OCR ($$$)", "Early Print ($$$)", "Manuscript ($$$$)" —
+with a sub-picker row that appears below when Early Print
+(Typeface:) or Manuscript (Hand:) is on. Per-job;
+intentionally not Settings defaults.
+
+Validation spike deferred per user direction (testing priority).
+Prompts grounded in paleographic + early-printing conventions;
+each sub-mode addendum is independently tunable based on real
+tester feedback.
 
 ### Why two modes (not one)
 

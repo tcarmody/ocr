@@ -133,6 +133,19 @@ public actor PDFToEPUBPipeline {
         /// generic prompt; the four specific cases bundle a
         /// script style + transcription policy.
         public var manuscriptHand: ManuscriptHand
+        /// E-Vision-Modes / Early Print track. When true (Cloud
+        /// mode + API key required), page OCR routes through
+        /// `ClaudePageOCREngine` in early-print mode (Sonnet 4.6
+        /// with normalizing-posture prompt for 15th–18th c.
+        /// printed books). Mutually exclusive with
+        /// `useClaudePageOCR` and `useManuscriptMode` at the
+        /// launcher layer; the engine factory falls back to
+        /// `.typeset` when nothing is set.
+        public var useEarlyPrintMode: Bool
+        /// Typeface selector for early-print mode (auto / roman /
+        /// blackletter / italic). Effective only when
+        /// `useEarlyPrintMode` is true.
+        public var earlyPrintTypeface: EarlyPrintTypeface
         /// Tier 9 / V-Outputs. When true, the conversion writes
         /// Write `.txt` and `.md` siblings next to the EPUB.
         /// Cheap (text files are small). Default true.
@@ -206,6 +219,8 @@ public actor PDFToEPUBPipeline {
             useClaudePageOCR: Bool = false,
             useManuscriptMode: Bool = false,
             manuscriptHand: ManuscriptHand = .auto,
+            useEarlyPrintMode: Bool = false,
+            earlyPrintTypeface: EarlyPrintTypeface = .auto,
             emitSiblingTextOutputs: Bool = true,
             emitSiblingDocuments: Bool = false,
             forceOCRPageRanges: [ClosedRange<Int>] = [],
@@ -235,6 +250,8 @@ public actor PDFToEPUBPipeline {
             self.useClaudePageOCR = useClaudePageOCR
             self.useManuscriptMode = useManuscriptMode
             self.manuscriptHand = manuscriptHand
+            self.useEarlyPrintMode = useEarlyPrintMode
+            self.earlyPrintTypeface = earlyPrintTypeface
             self.emitSiblingTextOutputs = emitSiblingTextOutputs
             self.emitSiblingDocuments = emitSiblingDocuments
             self.forceOCRPageRanges = forceOCRPageRanges
@@ -475,11 +492,22 @@ public actor PDFToEPUBPipeline {
         options: Options, budget: ClaudeCallBudget,
         captureSink: ClaudePageOCREngine.CaptureSink? = nil
     ) -> ClaudePageOCREngine? {
-        guard options.useClaudePageOCR || options.useManuscriptMode
+        guard options.useClaudePageOCR
+            || options.useManuscriptMode
+            || options.useEarlyPrintMode
         else { return nil }
-        let mode: ClaudePageOCREngine.Mode = options.useManuscriptMode
-            ? .manuscript(hand: options.manuscriptHand)
-            : .typeset
+        let mode: ClaudePageOCREngine.Mode
+        if options.useManuscriptMode {
+            // Manuscript is the most specific intent (handwritten
+            // material needs Opus); wins over earlyPrint/typeset.
+            mode = .manuscript(hand: options.manuscriptHand)
+        } else if options.useEarlyPrintMode {
+            // Early print stays on Sonnet but with the
+            // normalizing-posture prompt.
+            mode = .earlyPrint(typeface: options.earlyPrintTypeface)
+        } else {
+            mode = .typeset
+        }
         return makeClaudeEngine(
             options: options, budget: budget, feature: \.hardRegionOCR
         ) { ClaudePageOCREngine(

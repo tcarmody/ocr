@@ -108,4 +108,82 @@ final class ManuscriptModeTests: XCTestCase {
             XCTAssertNotEqual(name, hand.rawValue)
         }
     }
+
+    // MARK: - Early Print
+
+    func test_earlyPrint_mode_uses_sonnet_by_default() {
+        for face in EarlyPrintTypeface.allCases {
+            let mode: ClaudePageOCREngine.Mode = .earlyPrint(typeface: face)
+            XCTAssertEqual(mode.defaultModel, .sonnet4_6,
+                "early print \(face) should stay on Sonnet (same cost tier as Claude OCR)")
+        }
+    }
+
+    func test_earlyPrint_systemPrompt_appends_typeface_addendum() {
+        for face in EarlyPrintTypeface.allCases {
+            let prompt = ClaudePageOCREngine.systemPrompt(
+                for: .earlyPrint(typeface: face)
+            )
+            XCTAssertTrue(prompt.hasPrefix(ClaudePageOCREngine.baseSystemPrompt),
+                "\(face) should start with the base prompt")
+            XCTAssertTrue(prompt.contains(face.promptAddendum),
+                "\(face) should contain its addendum")
+        }
+    }
+
+    func test_each_typeface_has_distinct_promptAddendum() {
+        // Same invariant as the Manuscript hand test: no two
+        // typefaces collapse to the same prompt.
+        let addenda = EarlyPrintTypeface.allCases.map(\.promptAddendum)
+        XCTAssertEqual(Set(addenda).count, addenda.count,
+            "every typeface should produce a unique prompt addendum")
+    }
+
+    func test_earlyPrint_prompts_call_out_normalization_posture() {
+        // The defining contrast between Early Print and Manuscript:
+        // fluent normalization vs. diplomatic preservation. Every
+        // Early Print prompt should mention long-s normalization.
+        for face in EarlyPrintTypeface.allCases {
+            XCTAssertTrue(
+                face.promptAddendum.lowercased().contains("long-s"),
+                "\(face) should mention long-s handling (defining Early Print convention)"
+            )
+        }
+    }
+
+    func test_blackletter_prompt_mentions_german_specific_features() {
+        let prompt = ManuscriptHand.diplomatic.promptAddendum  // unrelated comparison just for sanity
+        XCTAssertFalse(prompt.contains("eszett"),
+            "secretary-hand prompt shouldn't talk about German eszett")
+        let blackletter = EarlyPrintTypeface.blackletterFraktur.promptAddendum
+        XCTAssertTrue(blackletter.lowercased().contains("eszett")
+            || blackletter.contains("ß"),
+            "blackletter prompt should cover German-specific characters")
+    }
+
+    func test_earlyPrint_typefaces_all_have_displayName() {
+        for face in EarlyPrintTypeface.allCases {
+            XCTAssertFalse(face.displayName.isEmpty)
+            XCTAssertNotEqual(face.displayName, face.rawValue,
+                "displayName should read like a UI label, not the enum case")
+        }
+    }
+
+    // MARK: - Three-way Mode space
+
+    func test_three_modes_are_distinguishable() {
+        // The three Mode cases all produce different system
+        // prompts. Belt-and-suspenders since the prompt-composition
+        // tests above already cover each separately.
+        let typeset = ClaudePageOCREngine.systemPrompt(for: .typeset)
+        let early = ClaudePageOCREngine.systemPrompt(
+            for: .earlyPrint(typeface: .auto)
+        )
+        let manuscript = ClaudePageOCREngine.systemPrompt(
+            for: .manuscript(hand: .auto)
+        )
+        XCTAssertNotEqual(typeset, early)
+        XCTAssertNotEqual(typeset, manuscript)
+        XCTAssertNotEqual(early, manuscript)
+    }
 }

@@ -251,30 +251,57 @@ struct ContentView: View {
                     get: { queue.useClaudePageOCR },
                     set: { newValue in
                         queue.useClaudePageOCR = newValue
-                        // Manuscript mode and Claude OCR drive the
-                        // same engine; only one should be on at a
-                        // time. Pick the more recent intent.
-                        if newValue { queue.useManuscriptMode = false }
+                        // Three cloud-OCR engines, same plumbing,
+                        // mutually exclusive: picking one clears
+                        // the others.
+                        if newValue {
+                            queue.useManuscriptMode = false
+                            queue.useEarlyPrintMode = false
+                        }
                     }
                 ))
                     .toggleStyle(.checkbox)
                     .help("""
-                        Sonnet OCRs each page end-to-end. Replaces the \
-                        Vision/Surya/Tesseract cascade with one call \
-                        per page; produces structured paragraphs, \
-                        headings, footnotes, and language spans \
-                        directly. Best quality for hard scripts, \
-                        complex multi-column layouts, and dense \
-                        academic prose. Requires Cloud mode + API key \
-                        (configure in Settings); inert otherwise. \
+                        Sonnet OCRs each modern printed page end-to-\
+                        end. Replaces the Vision/Surya/Tesseract \
+                        cascade with one call per page; produces \
+                        structured paragraphs, headings, footnotes, \
+                        language spans directly. Best for modern \
+                        printed material with hard scripts or dense \
+                        academic prose. Requires Cloud mode + API \
+                        key (configure in Settings); inert otherwise. \
                         Costs ≈ $15–25 per book at current Sonnet \
                         pricing.
+                        """)
+                Toggle("Early Print ($$$)", isOn: Binding(
+                    get: { queue.useEarlyPrintMode },
+                    set: { newValue in
+                        queue.useEarlyPrintMode = newValue
+                        if newValue {
+                            queue.useClaudePageOCR = false
+                            queue.useManuscriptMode = false
+                        }
+                    }
+                ))
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Sonnet OCRs each page with a normalizing prompt \
+                        tuned for 15th–18th c. printed books: silently \
+                        modernize long-s, u/v, i/j, and standard \
+                        ligatures; preserve period spelling otherwise; \
+                        skip catchwords and signature marks. Same cost \
+                        tier as Claude OCR. Pick a typeface in the row \
+                        below; "Auto" lets the model identify Roman vs \
+                        Blackletter from the page.
                         """)
                 Toggle("Manuscript ($$$$)", isOn: Binding(
                     get: { queue.useManuscriptMode },
                     set: { newValue in
                         queue.useManuscriptMode = newValue
-                        if newValue { queue.useClaudePageOCR = false }
+                        if newValue {
+                            queue.useClaudePageOCR = false
+                            queue.useEarlyPrintMode = false
+                        }
                     }
                 ))
                     .toggleStyle(.checkbox)
@@ -299,14 +326,29 @@ struct ContentView: View {
             }
             .font(.callout)
 
-            // Manuscript hand picker — only visible when the
-            // Manuscript toggle above is on. Per-job, per-conversion.
+            // Manuscript / Early Print sub-pickers. Only one is
+            // ever visible at a time since the two toggles are
+            // mutually exclusive. Per-job; not persisted to
+            // Settings.
             if queue.useManuscriptMode {
                 HStack(spacing: 14) {
                     Spacer(minLength: 0)
                     Picker("Hand:", selection: $queue.manuscriptHand) {
                         ForEach(ManuscriptHand.allCases, id: \.self) { hand in
                             Text(hand.displayName).tag(hand)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                    Spacer(minLength: 0)
+                }
+                .font(.callout)
+            } else if queue.useEarlyPrintMode {
+                HStack(spacing: 14) {
+                    Spacer(minLength: 0)
+                    Picker("Typeface:", selection: $queue.earlyPrintTypeface) {
+                        ForEach(EarlyPrintTypeface.allCases, id: \.self) { face in
+                            Text(face.displayName).tag(face)
                         }
                     }
                     .pickerStyle(.menu)
