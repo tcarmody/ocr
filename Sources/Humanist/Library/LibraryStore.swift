@@ -11,37 +11,74 @@ import EPUB  // canonicalForFile
 /// Entries are written when a conversion finishes successfully,
 /// updated on every editor-open of the resulting EPUB, and pruned
 /// only by explicit user action (Remove from Library) — the file
-/// itself isn't touched. Stored at
-/// `~/Library/Application Support/Humanist/library.json`, mirroring
-/// `JobStore`'s persistence convention.
+/// itself isn't touched.
 ///
-/// R-Library-Chat-Plus Collections: the store also persists named
-/// groupings of books (`BookCollection`). Chat scope and the library
-/// browser both read from `collections` to filter / scope retrieval.
-/// The file format grew a wrapper (`StoredPayload`) but reads still
-/// accept the legacy bare-array shape so pre-Collections libraries
-/// load unchanged.
+/// R-Library-Chat-Plus Collections: the store persists named
+/// groupings of books (`BookCollection`).
+///
+/// R-Library-Sync (Phase A): the catalog file lives in
+/// `~/Library/Application Support/Humanist/library.json` by
+/// default. When the user enables "Share library across machines"
+/// in Settings + has a configured output root, the file moves to
+/// `<outputRoot>/.humanist/library.json` so a cloud-synced folder
+/// can carry the catalog between Macs. Entry epub URLs additionally
+/// store a `relativePath` from the output root when applicable, so
+/// the same JSON resolves correctly on each machine even when the
+/// absolute home-dir / iCloud-path differs.
 @MainActor
 final class LibraryStore: ObservableObject {
     @Published private(set) var entries: [LibraryEntry] = []
     @Published private(set) var collections: [BookCollection] = []
 
+    /// Where the JSON actually lives on disk. Set at init based on
+    /// `shareAcrossMachines` + output-root state. Stays stable
+    /// across reads/writes for the store's lifetime — toggling the
+    /// sync setting at runtime requires app relaunch (the
+    /// migration helper performs the move + reload cleanly there).
     let storeURL: URL
+
+    /// True when the store is currently reading + writing under an
+    /// output-root location. Drives entry-resolution to prefer
+    /// `relativePath` over the stored absolute URL on load.
+    let sharingAcrossMachines: Bool
 
     init(storeURL: URL? = nil) {
         if let storeURL {
             self.storeURL = storeURL
+            self.sharingAcrossMachines = false
         } else {
-            let support = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first ?? FileManager.default.temporaryDirectory
-            let dir = support.appendingPathComponent("Humanist", isDirectory: true)
+            let resolved = LibraryStore.resolveStoreURL()
+            self.storeURL = resolved.url
+            self.sharingAcrossMachines = resolved.sharing
+        }
+        load()
+    }
+
+    /// Resolve where library.json should live. Honors the
+    /// `shareAcrossMachines` Settings toggle: when on + an output
+    /// root is configured, returns `<outputRoot>/.humanist/library.json`.
+    /// Otherwise the historical Application Support location.
+    static func resolveStoreURL() -> (url: URL, sharing: Bool) {
+        let shareEnabled = UserDefaults.standard.bool(
+            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
+        )
+        if shareEnabled,
+           let root = ConversionOutputResolver.currentRoot() {
+            let dir = root
+                .appendingPathComponent(".humanist", isDirectory: true)
             try? FileManager.default.createDirectory(
                 at: dir, withIntermediateDirectories: true
             )
-            self.storeURL = dir.appendingPathComponent("library.json")
+            return (dir.appendingPathComponent("library.json"), true)
         }
-        load()
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        let dir = support.appendingPathComponent("Humanist", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true
+        )
+        return (dir.appendingPathComponent("library.json"), false)
     }
 
     // MARK: - persistence
@@ -60,10 +97,18 @@ final class LibraryStore: ObservableObject {
         } else {
             return
         }
+        // R-Library-Sync resolution: when sharing is on + the
+        // entry has a `relativePath`, rewrite the in-memory
+        // `epubURL` to the current machine's `<root>/<relativePath>`
+        // before the existence check. This is the load-bearing
+        // step that makes a synced catalog portable across Macs.
+        let resolved = sharingAcrossMachines
+            ? loadedEntries.map(Self.resolveAgainstOutputRoot)
+            : loadedEntries
         // Drop entries whose .epub no longer exists on disk so the
         // window doesn't show dead rows. Same posture as
         // RecentsStore.urls.
-        let filtered = loadedEntries.filter {
+        let filtered = resolved.filter {
             FileManager.default.fileExists(atPath: $0.epubURL.path)
         }
         let liveIDs = Set(filtered.map(\.id))
@@ -87,13 +132,57 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// Rewrite `entry.epubURL` to point at the current machine's
+    /// `<outputRoot>/<relativePath>` when both are available.
+    /// Falls through unchanged when the entry has no relative
+    /// path or no root is configured. Exposed `internal` for the
+    /// portability-invariant tests.
+    static func resolveAgainstOutputRoot(
+        _ entry: LibraryEntry
+    ) -> LibraryEntry {
+        guard let rel = entry.relativePath, !rel.isEmpty,
+              let root = ConversionOutputResolver.currentRoot()
+        else { return entry }
+        var copy = entry
+        copy.epubURL = root.appendingPathComponent(rel)
+            .canonicalForFile
+        return copy
+    }
+
     private func save() {
-        let payload = StoredPayload(entries: entries, collections: collections)
+        // Recompute `relativePath` against the current root on
+        // every save so a moved file or a freshly-configured root
+        // gets picked up. Stored as forward slashes regardless of
+        // platform — paths inside the JSON are filesystem-portable.
+        let withRelative = entries.map(Self.populateRelativePath)
+        let payload = StoredPayload(entries: withRelative, collections: collections)
         // Default date strategy (number-of-seconds-since-reference-
         // date) matches the default JSONDecoder, so the persistence
         // round-trip is symmetric without further configuration.
         guard let data = try? JSONEncoder().encode(payload) else { return }
         try? data.write(to: storeURL, options: .atomic)
+    }
+
+    /// Compute `entry.relativePath` against the current output
+    /// root if the EPUB sits under it. Falls through with the
+    /// existing `relativePath` (preserved) when the EPUB lives
+    /// outside the root — important so a user who toggles sync
+    /// off and back on doesn't lose path data they already have.
+    private static func populateRelativePath(
+        _ entry: LibraryEntry
+    ) -> LibraryEntry {
+        guard let root = ConversionOutputResolver.currentRoot() else {
+            return entry
+        }
+        let rootPath = root.canonicalForFile.path
+        let entryPath = entry.epubURL.canonicalForFile.path
+        guard entryPath.hasPrefix(rootPath + "/") else {
+            return entry
+        }
+        let relative = String(entryPath.dropFirst(rootPath.count + 1))
+        var copy = entry
+        copy.relativePath = relative
+        return copy
     }
 
     // MARK: - mutations: entries
@@ -238,6 +327,17 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
     /// `OpenRouter` / Library row click). Nil until the first open
     /// after conversion.
     var lastOpened: Date?
+    /// R-Library-Sync. Path RELATIVE to the configured conversion
+    /// output root, when the EPUB sits under it (e.g.
+    /// `Books/Foucault.epub`). Stored alongside the absolute URL
+    /// so callers that don't care about sync keep working. When
+    /// `LibraryStore` loads in sharing-across-machines mode, the
+    /// in-memory `epubURL` is recomputed from
+    /// `<currentRoot>/<relativePath>` so a catalog created on
+    /// machine A resolves correctly on machine B even when the
+    /// absolute root path differs (different home dir / iCloud
+    /// container).
+    var relativePath: String?
 
     init(
         id: UUID = UUID(),
@@ -245,7 +345,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         title: String,
         languages: [String] = [],
         addedAt: Date,
-        lastOpened: Date? = nil
+        lastOpened: Date? = nil,
+        relativePath: String? = nil
     ) {
         self.id = id
         self.epubURL = epubURL
@@ -253,6 +354,29 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.languages = languages
         self.addedAt = addedAt
         self.lastOpened = lastOpened
+        self.relativePath = relativePath
+    }
+
+    // MARK: - Codable (decodeIfPresent for relativePath)
+
+    /// Custom decoder so libraries written before R-Library-Sync
+    /// (which had no `relativePath` field) decode cleanly. The
+    /// default synthesized init would fail on the missing key —
+    /// `decodeIfPresent` lets the new field default to nil for
+    /// pre-existing entries; subsequent saves repopulate it.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.epubURL = try c.decode(URL.self, forKey: .epubURL)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.languages = try c.decode([String].self, forKey: .languages)
+        self.addedAt = try c.decode(Date.self, forKey: .addedAt)
+        self.lastOpened = try c.decodeIfPresent(Date.self, forKey: .lastOpened)
+        self.relativePath = try c.decodeIfPresent(String.self, forKey: .relativePath)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, epubURL, title, languages, addedAt, lastOpened, relativePath
     }
 }
 

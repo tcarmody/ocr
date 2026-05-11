@@ -443,6 +443,33 @@ in Tier 6 — full write-up there):
   `LibraryStoreTests` cover the mutations + the legacy-load
   + membership-pruning paths.
 
+**Done — Multi-machine catalog portability** (R-Library-Sync Phase A):
+- **`relativePath` on `LibraryEntry`** — populated when the EPUB
+  sits under the configured output root. Persisted alongside the
+  absolute URL via `decodeIfPresent` so legacy catalogs round-
+  trip cleanly.
+- **`LibraryStore.resolveAgainstOutputRoot(_:)`** — rewrites each
+  loaded entry's `epubURL` to `<currentRoot>/<relativePath>` when
+  sharing is on. The portability invariant: same JSON, different
+  root, correct local paths.
+- **In-root catalog location** — `<outputRoot>/.humanist/library.json`
+  when sharing is on. `LibraryStore.resolveStoreURL()` picks the
+  destination at init based on the Settings toggle.
+- **`LibrarySyncMigration.run()`** — one-shot copy of the catalog
+  from Application Support to the in-root location, with idempotent
+  re-runs and a backup left behind. Surfaces a clear message in
+  the Settings activation flow (moved / already-migrated /
+  rootMissing / nothingToMigrate / failed).
+- **Settings → Conversion → Library sync** section gates the
+  toggle on a configured output folder + documents the relaunch-
+  to-apply step. Phase B (sidecar UUID rekey) is named so testers
+  understand library chat won't recognize indexes on the second
+  machine until that ships.
+- **8 new `LibrarySyncTests`** cover the relativePath round-trip,
+  the resolution-against-new-root invariant, no-op behavior when
+  no root is configured, and the migration's three terminal
+  states.
+
 **Done — Existing-EPUB on-ramp** (R-EPUB-Import v1):
 - **`EPUBImporter`** + **`ParagraphAnchorInjector`** +
   `ImportEPUBProgressSheet` + `BookSidecarBuilder` (split out
@@ -597,10 +624,24 @@ Drivers for the current ordering:
    and the `CoverImageCache` decodes thumbnails lazily, so
    performance should hold up; revisit if a real soak surfaces
    issues.
-4. **R-Library-Sync** (~2-3 days). Second Mac is real. Sequencing
-   note: this entry calls for the sidecar rekey (sha256 → UUID)
-   that the R-EPUB-Import chapter-classification work would
-   touch — landing them adjacent means the rekey happens once.
+4. **R-Library-Sync Phase A**: ~~catalog + collections portability~~
+   shipped. `LibraryEntry` carries a `relativePath` from the
+   configured output root when applicable; `LibraryStore` reads
+   the catalog from `<outputRoot>/.humanist/library.json` and
+   rewrites in-memory `epubURL`s against the current machine's
+   root on load when "Share library across machines" is on in
+   Settings → Conversion. `LibrarySyncMigration` copies the
+   Application Support catalog into place on first activation
+   (idempotent + leaves a backup behind). 8 new
+   `LibrarySyncTests` cover the portability invariant, the
+   record-conversion auto-populate of relativePath, the
+   backward-compat decode of legacy entries, and the migration
+   states.
+   **Phase B (next session)**: sidecar UUID rekey so embedding
+   / hierarchy / entity indexes travel with the catalog. Today
+   sidecars are keyed by absolute-path SHA-256, which differs
+   across machines — library chat treats books as un-indexed on
+   the second Mac until *Build Missing Indexes* runs there.
 5. **E-Vision-Modes — Manuscript track only, validation spike
    first** (~1-2 days for the spike). Tester driver. Build the
    manuscript path (Claude Opus 4.7, diplomatic transcription)
@@ -3227,13 +3268,23 @@ they still have).
 
 ## R-Library-Sync — Multi-machine library sharing via a cloud folder
 
-**Status**: not started. Today a user with two Macs can drop their
-output root in iCloud Drive / Dropbox / SyncThing and both
-machines will see the same EPUB files in `Books/`, but the
-catalog rows, collections, chat history, and embedding sidecars
-are all per-machine. Each Mac maintains its own siloed view of a
-shared file pool. This entry scopes what a real shared-library
-mode looks like.
+**Status**: Phase A shipped, Phase B not started.
+
+Phase A (catalog portability) carries `library.json` + collections
+across machines: a `Share library across machines` toggle in
+Settings → Conversion moves the catalog from `~/Library/Application
+Support/Humanist/` to `<outputRoot>/.humanist/library.json` and
+threads a `relativePath` through each `LibraryEntry` so the same
+JSON resolves correctly on each Mac. The migration is idempotent
+(re-flipping the toggle is a no-op) and leaves the Application
+Support copy in place as a backup.
+
+Phase B (sidecar UUID rekey) is the heavier piece. Today's
+embedding / hierarchy / entity sidecars are keyed by canonical
+absolute-path SHA-256; different roots produce different hashes
+even for the same EPUB. After Phase A the catalog row's UUID is
+already portable; Phase B switches the sidecar store to key by
+that UUID so the indexes travel too.
 
 ### Why bother
 

@@ -14,6 +14,14 @@ struct ConversionSettingsView: View {
     @AppStorage(ConversionSettingsKeys.skipIndexingOnImport)
     private var skipIndexingOnImport: Bool = false
 
+    @AppStorage(ConversionSettingsKeys.shareLibraryAcrossMachines)
+    private var shareLibraryAcrossMachines: Bool = false
+
+    /// Set by `runShareMigration()` so the activation sheet
+    /// surfaces the outcome (moved / already-migrated / failed /
+    /// root missing). Nil = no activation in flight.
+    @State private var shareMigrationMessage: String?
+
     // Conversion defaults — read by `QueueViewModel.init` on launch
     // to seed the launcher's per-conversion toggles. Same UserDefaults
     // domain is read by `Scripts/auto-scan-input.sh` to pass
@@ -75,6 +83,9 @@ struct ConversionSettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if !outputFolderPath.isEmpty {
+                libraryShareSection
+            }
         }
         .padding(20)
         .frame(width: 560, alignment: .leading)
@@ -106,6 +117,59 @@ struct ConversionSettingsView: View {
                 Button("Reset to factory defaults", action: resetConversionDefaults)
                     .controlSize(.small)
             }
+        }
+    }
+
+    /// R-Library-Sync Phase A. Toggle that flips
+    /// `shareLibraryAcrossMachines`; first activation runs
+    /// `LibrarySyncMigration.run()` and prompts a relaunch.
+    @ViewBuilder
+    private var libraryShareSection: some View {
+        Section("Library sync") {
+            Toggle(
+                "Share library across machines",
+                isOn: Binding(
+                    get: { shareLibraryAcrossMachines },
+                    set: { newValue in
+                        shareLibraryAcrossMachines = newValue
+                        if newValue {
+                            runShareMigration()
+                        }
+                    }
+                )
+            )
+            Text("""
+                Phase A — catalog + collections only. When on, `library.json` lives in `<output folder>/.humanist/library.json` instead of `~/Library/Application Support/`, and book paths inside store as relative-to-root so the same catalog resolves correctly on a second Mac sharing the folder via iCloud / Dropbox / SyncThing. Per-book chat history, the conversion queue, and per-app preferences stay machine-local.
+
+                **Phase B (planned):** sidecar (embedding / hierarchy / entity) rekeying to portable UUIDs so library chat doesn't need to re-index on each machine. Until that ships, run *Build Missing Indexes* on the second Mac to materialize embeddings there.
+
+                Toggling this requires an app relaunch to take effect.
+                """)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let msg = shareMigrationMessage {
+                Text(msg)
+                    .font(.callout)
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func runShareMigration() {
+        let result = LibrarySyncMigration.run()
+        switch result {
+        case .moved:
+            shareMigrationMessage = "Catalog moved to your output folder. Quit and reopen Humanist to start using the shared library."
+        case .alreadyMigrated:
+            shareMigrationMessage = "Shared catalog already in place under your output folder. Quit and reopen Humanist if this is a fresh activation."
+        case .nothingToMigrate:
+            shareMigrationMessage = "No existing library to migrate. Future conversions will write into the shared location after relaunch."
+        case .rootMissing:
+            shareMigrationMessage = "Pick an output folder above first — the shared library lives under it."
+        case .failed(let message):
+            shareMigrationMessage = "Migration failed: \(message)"
         }
     }
 

@@ -22,6 +22,14 @@ public enum ConversionSettingsKeys {
     /// to run the bulk-index command overnight separately rather
     /// than block the import on per-book embedding work.
     public static let skipIndexingOnImport = "humanist.conversion.skipIndexingOnImport"
+    /// R-Library-Sync Phase A. When on + an output root is
+    /// configured, `library.json` lives in
+    /// `<outputRoot>/.humanist/library.json` and entries store a
+    /// `relativePath` from the root so the catalog resolves
+    /// correctly on a second machine sharing the folder via iCloud
+    /// / Dropbox / SyncThing. Off (the default) keeps the file in
+    /// `~/Library/Application Support/Humanist/` per machine.
+    public static let shareLibraryAcrossMachines = "humanist.library.shareAcrossMachines"
 
     /// Initial values for the launcher's per-conversion toggles.
     /// `QueueViewModel.init` seeds its `@Published` properties from

@@ -14,7 +14,7 @@ Native macOS app (macOS 26+) for turning PDFs and other documents into well-form
 
 - **Library-scope chat with first-class navigation.** The library window has its own chat pane that pulls across every indexed book. Cite a passage and one click opens that book in a new editor. Scope to a selection ("compare these five books on X"), save recurring scopes as named **collections** ("Foucault corpus"), exclude a book that keeps misfiring, or chat against your whole catalog. Bulk-index command pre-builds embeddings for every book in one go.
 
-- **Organizes a personal library.** Every conversion is catalogued. Cover thumbnails, language filter, sortable columns, durable named **collections** as a sidebar, cross-book bulk find / replace, multi-selection that drives both bulk editing and chat scoping. **Import existing EPUBs** (`⇧⌘I`, drag-drop, or a whole folder full of subfolders) that didn't come from a PDF conversion — anchors get injected, on-device AFM extracts title + author from the front matter when Apple Intelligence is available, the book lands in the Books folder, and it joins the federated chat right away.
+- **Organizes a personal library.** Every conversion is catalogued. Cover thumbnails, language filter, sortable columns, durable named **collections** as a sidebar, cross-book bulk find / replace, multi-selection that drives both bulk editing and chat scoping. **Import existing EPUBs** (`⇧⌘I`, drag-drop, or a whole folder full of subfolders) that didn't come from a PDF conversion — anchors get injected, on-device AFM extracts title + author from the front matter when Apple Intelligence is available, the book lands in the Books folder, and it joins the federated chat right away. The catalog can also **sync across Macs** via a cloud folder: enable *Share library across machines* in Settings → Conversion and `library.json` moves into the output root with per-entry relative paths, so the same catalog resolves correctly on a second machine. (Phase A: catalog + collections. Phase B will carry the embedding sidecars too; until then, run *Build Missing Indexes* once on the second Mac.)
 
 - **Runs entirely offline if you want.** Private mode is the default — Vision, Surya, Tesseract handle everything on the device. On macOS 26+ with Apple Intelligence enabled, Private mode *also* gets free on-device chapter classification, front-matter metadata extraction, and a coherence pass for recurring OCR errors via Apple's Foundation Models framework. Local chat backend (Ollama + Gemma 4 26B MoE) keeps the chat pane on-device too.
 
@@ -198,7 +198,7 @@ Cloud features only run when you flip Settings → AI → Processing Mode to Clo
 
 ```sh
 Scripts/run-app.sh          # release build + assemble .app + sign + open
-swift test                  # 925 unit tests across 93 test files
+swift test                  # 933 unit tests across 94 test files
 ```
 
 `Scripts/run-app.sh` is the only supported launch path. `swift run` / `swift build` produce a bare binary without the bundled `Resources/` directory — the editor's CodeMirror source pane and the Surya layout sidecar won't load.
@@ -241,7 +241,7 @@ ocr/
 │   │                                differ + validator
 │   └── AI/                          22 files: Anthropic + Ollama + Voyage + Gemini + Apple Foundation Models clients,
 │                                    embedding backends, settings, key stores
-├── Tests/                           925 unit tests across 93 test files
+├── Tests/                           933 unit tests across 94 test files
 ├── Resources/
 │   └── codemirror/                  Vendored CodeMirror 5 for the editor's source pane
 ├── Sidecars/
@@ -285,10 +285,11 @@ Storing chat / embedding state outside the EPUB keeps the file portable (a copy 
 
 ## Plans
 
-[PLANS.md](PLANS.md) tracks remaining work in detail. The core conversion pipeline, editor, library, multi-book chat, on-device classification (Apple Foundation Models Phases 1+2), R-Library-Chat-Plus Tier 1 (Chat with Selected, Collections, Suggested follow-ups, Long-form synthesis, Per-book exclusion), and R-EPUB-Import v1 are all shipped. Active items:
+[PLANS.md](PLANS.md) tracks remaining work in detail with a top-of-doc Sequencing section anchoring priorities to current drivers. The core conversion pipeline, editor, library, multi-book chat, on-device classification (Apple Foundation Models Phases 1+2), R-Library-Chat-Plus Tier 1 (Chat with Selected, Collections, Suggested follow-ups, Long-form synthesis, Per-book exclusion), R-EPUB-Import v1.3 (anchors, drag-drop / folder import, AFM metadata + classification, year/publisher/ISBN write-back, 1000-book bulk hardening), and R-Library-Sync Phase A (catalog portability) are all shipped. Active items:
 
+- **R-Library-Sync Phase B** — embedding / hierarchy / entity sidecar UUID rekey so library chat indexes travel with the catalog across machines.
 - **R-Library-Chat-Plus Tier 2** — citation export, conversation export, pinned passages, ask-each-book mode.
-- **E-Vision-Modes** — Manuscript mode (Claude Opus 4.7, diplomatic transcription) and Early Print mode (Gemini 3 Pro, fluent normalization). Validation spike planned.
+- **E-Vision-Modes** — Manuscript mode (Claude Opus 4.7, diplomatic transcription) first; Early Print mode (Gemini 3 Pro) follows once Manuscript ships.
 - **L-Foundation-Models Phase 2.5 + 3** — on-device post-OCR cleanup + TOC parsing.
 - **R-EPUB-Import coherence on import** — chapter classification + year/publisher/ISBN already ship; coherence still needs a full XHTML → Chapter IR parser plus round-trip fidelity work.
 - **Distribution polish** — Developer ID cert, notarization, DMG, GitHub Releases. See [RELEASES.md](RELEASES.md).
