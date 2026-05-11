@@ -290,6 +290,11 @@ final class LibraryStore: ObservableObject {
     /// `endBulkUpdate()`. Saves are also deferred to a single
     /// write at end-of-bulk. Nil means "not in bulk mode."
     private var pendingEntries: [LibraryEntry]?
+    /// Staged-collections buffer. Same rationale as
+    /// `pendingEntries` — keeps `remove(_:)` and similar multi-
+    /// collection mutations from firing N+1 publishes through
+    /// every observer. Nil means "not in bulk mode."
+    private var pendingCollections: [BookCollection]?
 
     /// Begin a bulk-update window. Callers MUST pair this with
     /// `endBulkUpdate()` on every exit path (success, cancellation,
@@ -302,17 +307,29 @@ final class LibraryStore: ObservableObject {
         if pendingEntries == nil {
             pendingEntries = entries
         }
+        if pendingCollections == nil {
+            pendingCollections = collections
+        }
     }
 
     /// Commit pending mutations from the bulk window. Fires a
-    /// single @Published republish on `entries` and a single
-    /// save() to disk. Safe to call when not in bulk mode — it's
-    /// a no-op then. Idempotent on re-call within the same bulk.
+    /// single @Published republish on `entries` and on
+    /// `collections` (if either was staged) and a single save() to
+    /// disk. Safe to call when not in bulk mode — it's a no-op
+    /// then. Idempotent on re-call within the same bulk.
     func endBulkUpdate() {
-        guard let pending = pendingEntries else { return }
-        pendingEntries = nil
-        entries = pending  // single publish for the whole batch
-        save()
+        var didStage = false
+        if let pendingE = pendingEntries {
+            pendingEntries = nil
+            entries = pendingE
+            didStage = true
+        }
+        if let pendingC = pendingCollections {
+            pendingCollections = nil
+            collections = pendingC
+            didStage = true
+        }
+        if didStage { save() }
     }
 
     /// Route a closure-shaped mutation against either the staged
@@ -332,6 +349,25 @@ final class LibraryStore: ObservableObject {
             return op(&pendingEntries!)
         }
         let result = op(&entries)
+        save()
+        return result
+    }
+
+    /// Companion helper for `collections`. Same routing rule:
+    /// bulk-mode writes land in the staged buffer, normal-mode
+    /// writes fire one @Published publish and one save() per
+    /// call. Used by mutations like `remove(_:)` that touch
+    /// multiple collections in a single user action — without
+    /// this, a remove with N collections would fire N publishes
+    /// through every observer.
+    @discardableResult
+    private func mutateCollections<T>(
+        _ op: (inout [BookCollection]) -> T
+    ) -> T {
+        if pendingCollections != nil {
+            return op(&pendingCollections!)
+        }
+        let result = op(&collections)
         save()
         return result
     }
@@ -497,12 +533,26 @@ final class LibraryStore: ObservableObject {
     /// Remove an entry from the library. The .epub file itself is
     /// untouched — we only forget about it. Also drops the entry's
     /// id from every collection so we don't carry dangling refs.
+    ///
+    /// Wraps the entries + collections mutations in a bulk window
+    /// so the user sees one publish, not N+1 (one per entries
+    /// removal + one per collection touched). At library scale
+    /// with many auto-collections, the cascade through every
+    /// `@EnvironmentObject library` observer added up to seconds
+    /// of UI thrash per removal — particularly painful when the
+    /// removal happened while a long-running chat send was
+    /// already in flight on the main actor.
     func remove(_ id: UUID) {
-        entries.removeAll { $0.id == id }
-        for idx in collections.indices {
-            collections[idx].bookIDs.removeAll { $0 == id }
+        beginBulkUpdate()
+        defer { endBulkUpdate() }
+        mutateEntries { entries in
+            entries.removeAll { $0.id == id }
         }
-        save()
+        mutateCollections { collections in
+            for idx in collections.indices {
+                collections[idx].bookIDs.removeAll { $0 == id }
+            }
+        }
     }
 
     // MARK: - mutations: collections
