@@ -2995,6 +2995,271 @@ they still have).
 
 ---
 
+## R-Library-Sync — Multi-machine library sharing via a cloud folder
+
+**Status**: not started. Today a user with two Macs can drop their
+output root in iCloud Drive / Dropbox / SyncThing and both
+machines will see the same EPUB files in `Books/`, but the
+catalog rows, collections, chat history, and embedding sidecars
+are all per-machine. Each Mac maintains its own siloed view of a
+shared file pool. This entry scopes what a real shared-library
+mode looks like.
+
+### Why bother
+
+Real workflows: research at the office, edit at home; a multi-Mac
+household; quick failover to a backup machine when the primary
+is in for repair. The user already has the obvious instinct
+("just point both at the same folder") and Humanist already has
+all the right plumbing in pieces — what's missing is making the
+on-disk shapes location-portable instead of absolute-path-locked.
+
+The current "lite sharing" path (share `Books/`, accept that each
+machine indexes / chats independently) is useful but expensive:
+re-indexing a 200-book library against a Cloud embedding backend
+costs real money, and re-asking "which books discuss biopolitics?"
+re-reads the same answers from scratch.
+
+### Today's failure modes (what breaks when you share a folder)
+
+- **`library.json` lives in `~/Library/Application Support/`**,
+  outside the shared output root. Each machine has its own
+  catalog file. Even symlinking it doesn't help by itself —
+- **`LibraryEntry.epubURL` is canonical-absolute**. Machine A's
+  rows reference `/Users/tim/Documents/Humanist Library/Books/X.epub`;
+  machine B (different home dir, or just a different output
+  folder) sees those paths as nonexistent. `recordConversion`'s
+  dedup-by-canonical-URL match never fires, and `OpenRouter.open`
+  fails on missing files.
+- **Sidecar files keyed by absolute-path SHA-256**.
+  `~/Library/Application Support/Humanist/{Chats,Embeddings}/<sha256>.json`
+  hashes the canonical EPUB path. Different path → different
+  hash → both machines treat the same EPUB as a fresh book on
+  first open. Library chat sees zero indexed books on machine B
+  even though machine A built every sidecar.
+- **Alias dictionary, queue snapshot, recents** all live in
+  Application Support, all per-machine. Some of those should
+  stay per-machine (queue, recents); others (aliases) should
+  travel with the library.
+- **iCloud lazy-download**: opening a book on machine B when
+  iCloud hasn't materialized the file yet — `EPUBBook.open`
+  fails with a not-found error. Surfacing a useful message ("not
+  yet downloaded from iCloud, try again in a moment") is part
+  of the design.
+
+### Scope: three independent decisions
+
+**Decision 1 — Where catalog state lives.**
+
+Move `library.json` (catalog + collections) into the output root
+when one is configured. Path: `<outputRoot>/.humanist/library.json`
+or `<outputRoot>/Humanist Library.json` — visible vs hidden is a
+taste call; the dotfile form keeps the user's folder browsing
+uncluttered. Application Support stays the fallback when no
+output root is set (current behavior). On launch, if both files
+exist, the in-root one wins — that's the source of truth a user
+who opted into sync expects.
+
+**Decision 2 — How book identity flows.**
+
+Store EPUB references as a *relative path from the output root*
+when the file lives inside it; fall back to canonical-absolute
+when it doesn't. The migration helper rewrites existing
+absolute paths in place when the first launch under the new
+shape detects them sitting under the configured root.
+
+`LibraryEntry.epubURL` becomes a `LibraryEntry.epubLocation`
+that's either `.relative(String)` or `.absolute(URL)` — `Codable`
+on a tagged-union shape. The resolver method on `LibraryStore`
+returns the absolute URL by combining with `currentRoot()` for
+the relative case.
+
+**Decision 3 — Sidecar storage keys.**
+
+Switch `EmbeddingsSidecarStore` and `ChatTranscriptStore` from
+"path SHA-256 → file" to "`LibraryEntry.id` (UUID) → file". The
+UUID is already stable across machines (it's in the synced
+catalog). Sidecar files live in `<outputRoot>/.humanist/embeddings/<uuid>.json`
+when sync is active; Application Support is the fallback.
+
+This turns "book identity" from a filesystem fact into a catalog
+fact. A book imported on machine A gets a UUID; sharing the
+catalog shares the UUID; sidecar lookup on machine B finds the
+same file via the same UUID.
+
+### Per-machine vs shared classification
+
+| File / state | Shared | Per-machine |
+|---|---|---|
+| `library.json` catalog + collections | ✓ | |
+| Per-EPUB sidecars in META-INF | ✓ (in EPUB) | |
+| Embedding + hierarchy + entity sidecars | ✓ | |
+| Alias dictionary | ✓ | |
+| Per-book chat transcripts | | ✓ |
+| Library chat transcript | | ✓ |
+| Conversion queue snapshot | | ✓ |
+| Recents (last 10 menu) | | ✓ |
+| Job runner state | | ✓ |
+| Apple Foundation Models output folder | | ✓ |
+| All `@AppStorage` settings (AI / chat / conversion / appearance) | | ✓ |
+
+Rationale for chat transcripts staying per-machine: the
+conversation you had on your office Mac is *your* conversation;
+syncing it to a household Mac the kids also use is the wrong
+default. The embedding *index* is expensive to rebuild and is
+the right thing to share; the *transcript* is cheap context and
+the right thing to keep local. Settings stay local too —
+"Private mode" might be on at home and off at the office; same
+for cost caps.
+
+### Architecture sketch
+
+```
+Sources/Humanist/Library/
+├── LibraryStore.swift              CHANGED — Codable EpubLocation enum;
+│                                    catalog file path resolution; one-time
+│                                    migration; @Published flag for whether
+│                                    the store is in shared mode.
+├── EpubLocation.swift              NEW — tagged-union .relative / .absolute,
+│                                    Codable, resolver helpers.
+└── LibraryMigration.swift          NEW — one-shot migration that rewrites
+                                     absolute → relative for files inside the
+                                     output root and renames sidecar files
+                                     from sha256-keyed to UUID-keyed.
+
+Sources/Humanist/Editor/Chat/
+├── EmbeddingsSidecarStore.swift    CHANGED — key by LibraryEntry.id when
+│                                    sync mode is active; sha256-keyed
+│                                    fallback for legacy unshared libraries.
+└── ChatTranscriptStore.swift       CHANGED — same key migration but
+                                     transcripts stay in Application Support
+                                     (per-machine).
+```
+
+### Settings
+
+A single `Sync library catalog across machines` toggle in Settings
+→ Conversion. Effective only when an output root is configured;
+flipping it on triggers the migration helper. Surface a one-time
+sheet on first activation explaining what travels vs what stays
+local, with an opt-out and a "where do I find my chat history if
+I roll back?" line.
+
+No multi-master conflict resolution — last-writer-wins on
+`library.json` via atomic writes. iCloud handles the
+"machine B's queued changes apply when it comes online" case;
+collisions are rare for a single user across two machines and not
+worth a CRDT.
+
+### Migration
+
+One-shot, triggered when the user flips the sync toggle on:
+
+1. Snapshot the current catalog.
+2. For each entry whose `epubURL` sits under the configured
+   output root, rewrite it as a relative path.
+3. For each existing sidecar in `Application Support/Humanist/{Chats,Embeddings}/`,
+   look up the matching `LibraryEntry` by old-path SHA-256, and
+   rename / move the file to UUID-keyed shape (embeddings →
+   `<root>/.humanist/embeddings/<uuid>.json`; chats stay in
+   Application Support but switch to UUID-keyed filenames).
+4. Move `library.json` from Application Support to the output
+   root. Leave the old one behind for one launch as a backup;
+   delete on the next confirmed successful launch.
+5. Mark the migration done via a UserDefaults flag so re-runs
+   are no-ops.
+
+### Risks
+
+- **iCloud lazy-download race**: opening a book whose data
+  isn't materialized yet. Mitigation: detect the
+  `NSFileProviderItemFlags.downloading` state and surface a
+  "waiting on iCloud" indicator; if `EPUBBook.open` fails with a
+  not-found error, hint at the iCloud cause specifically rather
+  than the generic missing-file message.
+- **InputFolderScanner FS-event storms** under cloud sync. The
+  watcher already debounces 400ms; cloud sync can produce
+  rapid-fire events as files appear. Verify the debounce holds;
+  consider extending to 1s for sync mode.
+- **Conflicting catalogs after offline edits on both machines**:
+  e.g., machine A adds book to "Foucault" collection while
+  machine B adds different book to same collection, offline.
+  iCloud picks last-writer-wins, one set of edits is lost.
+  Acceptable for v1 — document the limitation and recommend
+  not editing collections on both machines while one is
+  offline. CRDT or three-way merge is a v2 problem.
+- **Embedding sidecars built with different backends**: machine
+  A indexed against Voyage; machine B's Settings have Apple
+  NLEmbedding. Sidecar dimension / backend mismatch is already
+  handled today (federation drops mismatched books) but worth
+  testing in the sync scenario specifically.
+- **The "different home dir" canonical URL trap**:
+  `URL.canonicalForFile` expands `/var` → `/private/var` on
+  macOS; relative paths sidestep this completely, which is one
+  of the reasons to switch.
+
+### Effort
+
+~2-3 days end-to-end:
+
+- ~0.5 day: `EpubLocation` enum, Codable, resolver helpers,
+  `LibraryStore` API updates.
+- ~0.5 day: Sidecar stores migrate to UUID keying with sha256
+  fallback for unmigrated catalogs.
+- ~0.5 day: One-shot migration helper + safety net (backup of
+  the old library.json + sidecars).
+- ~0.5 day: Settings toggle + first-activation explanation
+  sheet + iCloud-not-ready surfacing.
+- ~0.5 day: Tests — migration round-trip, relative-path
+  resolution, sidecar key migration, mixed local + shared
+  catalogs (some books outside the output root).
+- ~0.5 day: Manual two-machine soak — set up iCloud Drive,
+  add books on one, verify catalog + collections + chat
+  index visible on the other.
+
+### When to ship
+
+After R-EPUB-Import follow-up's deferred items (chapter
+classification + coherence on import) settle — those touch the
+sidecar build path that this entry rekeys. Sequencing the rekey
+before the deferred AFM work means two migrations; sequencing
+after is one combined change.
+
+Strong fit when a second Mac enters the picture (which the user
+has explicitly raised as a use case). Doesn't help users with
+exactly one machine, so it's not on the critical path for the
+"first paid customer" feature set.
+
+### What this isn't
+
+- **Not real-time collaborative editing.** Two users editing
+  the same EPUB at the same time has all the merge problems of
+  any text editor; out of scope. iCloud serializes file writes
+  in practice; that's good enough for a single user across two
+  machines.
+- **Not cross-user sharing.** Sync within one Apple ID's
+  iCloud or one shared Dropbox account. Different users
+  (different Apple IDs) is a "publish + import" workflow, not
+  sync.
+- **Not iCloud-specific.** The implementation reads + writes
+  files; whatever syncs the folder (iCloud, Dropbox,
+  SyncThing, a network share, even rsync via cron) just works.
+
+### Dependencies
+
+- Configured output folder feature (shipped) — sync only
+  activates when a root is set.
+- `LibraryEntry.id` UUIDs (shipped) — the sidecar rekey
+  depends on these being stable across machines, which they
+  are: created at `recordConversion` time and persisted.
+- `EmbeddingsSidecarStore` (shipped) — gains an optional
+  alternate storage root + UUID-keyed filename strategy.
+- A one-shot migration helper — new code, but a familiar
+  shape (the LibraryStore catalog-format wrapper from
+  Collections used the same "read legacy, write new" pattern).
+
+---
+
 ## R-Chat-Graph-Lite — Hierarchical + entity graphs for chat retrieval
 
 **Status**: substantively complete. Hierarchy primitive, multi-book
