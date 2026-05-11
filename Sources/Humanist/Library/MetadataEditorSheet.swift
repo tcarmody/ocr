@@ -39,6 +39,12 @@ struct MetadataEditorSheet: View {
     @State private var languagesText: String = ""
     @State private var conversionType: BookConversionType? = nil
     @State private var genre: BookGenre? = nil
+    /// Online-lookup sheet trigger. Driven from the "Look up
+    /// online…" button in the header — opens a child sheet that
+    /// searches Open Library and, on user pick, calls back into
+    /// `applyCandidate` to populate the editor's @State fields.
+    /// The user still has to click Save to commit.
+    @State private var showOnlineLookup: Bool = false
 
     @FocusState private var titleFocused: Bool
 
@@ -54,6 +60,17 @@ struct MetadataEditorSheet: View {
         }
         .frame(width: 460)
         .onAppear(perform: hydrate)
+        .sheet(isPresented: $showOnlineLookup) {
+            MetadataLookupSheet(
+                initialTitle: title,
+                initialAuthor: author.isEmpty ? nil : author,
+                onAccept: { candidate in
+                    applyCandidate(candidate)
+                    showOnlineLookup = false
+                },
+                onCancel: { showOnlineLookup = false }
+            )
+        }
     }
 
     private var header: some View {
@@ -70,6 +87,13 @@ struct MetadataEditorSheet: View {
                     .truncationMode(.middle)
             }
             Spacer()
+            Button {
+                showOnlineLookup = true
+            } label: {
+                Label("Look up online…", systemImage: "magnifyingglass.circle")
+            }
+            .controlSize(.small)
+            .help("Search Open Library for matching metadata and pre-fill these fields")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
@@ -124,6 +148,29 @@ struct MetadataEditorSheet: View {
         conversionType = initialConversionType
         genre = initialGenre
         DispatchQueue.main.async { titleFocused = true }
+    }
+
+    /// Fold a picked online candidate into the editor's @State.
+    /// Overwrites title + author + language unconditionally — the
+    /// user explicitly chose this candidate, so the catalog's old
+    /// values are intentionally replaced. Genre / Type stay
+    /// untouched (the online source doesn't know about them).
+    /// Language merges into the existing comma-separated text only
+    /// when the source returned one; otherwise leaves whatever
+    /// the user already had.
+    private func applyCandidate(_ candidate: MetadataCandidate) {
+        title = candidate.title
+        author = candidate.author ?? ""
+        if let lang = candidate.language, !lang.isEmpty {
+            let existing = languagesText
+                .split(separator: ",", omittingEmptySubsequences: true)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            // Put the source's language first; preserve any
+            // additional codes the user had typed in.
+            let merged = [lang] + existing.filter { $0 != lang }
+            languagesText = merged.joined(separator: ", ")
+        }
     }
 
     private func commit() {
