@@ -140,6 +140,18 @@ final class EPUBImporter: ObservableObject {
         // two interacting flags).
         let effectiveBackend: (any EmbeddingBackend)? = skipIndexing
             ? nil : indexBackend
+        // Register with the coordinator if we're going to write to
+        // sidecars. A skipIndexing run only touches catalog + EPUB
+        // files (sidecars deferred to a later bulk-index pass), so
+        // chat reads can safely proceed during it — no token in
+        // that branch.
+        let token: VectorIndexCoordinator.Token? = effectiveBackend != nil
+            ? VectorIndexCoordinator.shared.begin(
+                sources.count == 1
+                    ? "Importing 1 book"
+                    : "Importing \(sources.count) books"
+              )
+            : nil
         task = Task { [weak self] in
             for (idx, source) in sources.enumerated() {
                 if Task.isCancelled { break }
@@ -177,9 +189,10 @@ final class EPUBImporter: ObservableObject {
                 }
             }
             await MainActor.run {
-                guard let self else { return }
+                guard let self else { token?.release(); return }
                 self.status = Task.isCancelled ? .cancelled : .completed
                 self.currentTitle = ""
+                token?.release()
             }
         }
     }

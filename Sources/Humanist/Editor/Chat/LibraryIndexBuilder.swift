@@ -64,6 +64,16 @@ final class LibraryIndexBuilder: ObservableObject {
         skippedExistingCount = 0
         let store = EmbeddingsSidecarStore()
         let snapshot = entries
+        // Register with the shared coordinator so any chat send
+        // attempted during the bulk run is told to wait. Released
+        // in the task's completion block (and via the token's
+        // deinit safety net if the task is cancelled before it
+        // can run the cleanup).
+        let token = VectorIndexCoordinator.shared.begin(
+            forceRebuild
+                ? "Rebuilding library indexes"
+                : "Indexing library books"
+        )
         task = Task { [weak self] in
             for (idx, entry) in snapshot.enumerated() {
                 if Task.isCancelled { break }
@@ -88,9 +98,10 @@ final class LibraryIndexBuilder: ObservableObject {
                 }
             }
             await MainActor.run {
-                guard let self else { return }
+                guard let self else { token.release(); return }
                 self.status = Task.isCancelled ? .cancelled : .completed
                 self.currentBookTitle = ""
+                token.release()
             }
         }
     }

@@ -12,12 +12,22 @@ import SwiftUI
 ///    degraded (e.g. Voyage key rotated → NLEmbedding)
 struct LibraryChatPaneView: View {
     @ObservedObject var vm: LibraryChatViewModel
+    /// Shared coordinator — observed so the chat pane can show a
+    /// "wait for indexing" banner and disable the send button
+    /// while a bulk indexer or importer is in flight. Reading from
+    /// sidecars during a write gives inconsistent results, so
+    /// blocking the user here matches the model.
+    @ObservedObject private var indexCoordinator
+        = VectorIndexCoordinator.shared
     let onCitationTap: (BookChatCitation) -> Void
     @State private var showRetrievalDetail: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
             statusStrip
+            if !indexCoordinator.isStable {
+                indexBusyBanner
+            }
             Divider()
             transcript
             Divider()
@@ -25,6 +35,29 @@ struct LibraryChatPaneView: View {
             inputRow
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    /// Banner shown when something is actively mutating the vector
+    /// index (bulk indexer, EPUB importer with sidecar build, etc.)
+    /// — chat reads are gated until it clears. Distinct visual
+    /// posture from `mainStatusRow` so the user sees this as a
+    /// transient block, not a permanent state.
+    @ViewBuilder
+    private var indexBusyBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.mini)
+            Text(indexCoordinator.activeDescription
+                 ?? "Library indexing in progress")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("Send disabled")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.yellow.opacity(0.12))
     }
 
     // MARK: - status strip
@@ -314,6 +347,7 @@ struct LibraryChatPaneView: View {
             text: $vm.input,
             placeholder: "Ask a question across your library…",
             isThinking: vm.isThinking,
+            isBlocked: !indexCoordinator.isStable,
             onSend: { Task { await vm.send() } }
         )
     }

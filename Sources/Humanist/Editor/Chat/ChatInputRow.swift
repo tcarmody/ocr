@@ -18,7 +18,28 @@ struct ChatInputRow: View {
     @Binding var text: String
     let placeholder: String
     let isThinking: Bool
+    /// External "send is unavailable" signal — e.g. the library
+    /// vector index is being rebuilt and chat reads would race the
+    /// writer. Kept separate from `isThinking` because the meaning
+    /// is different (thinking = our in-flight LLM call vs blocked
+    /// = a different system holding the resource), and only the
+    /// library chat pane wires this; per-book chat leaves it false.
+    let isBlocked: Bool
     let onSend: () -> Void
+
+    init(
+        text: Binding<String>,
+        placeholder: String,
+        isThinking: Bool,
+        isBlocked: Bool = false,
+        onSend: @escaping () -> Void
+    ) {
+        self._text = text
+        self.placeholder = placeholder
+        self.isThinking = isThinking
+        self.isBlocked = isBlocked
+        self.onSend = onSend
+    }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -50,7 +71,8 @@ struct ChatInputRow: View {
             }
             .buttonStyle(.borderless)
             .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty
-                      || isThinking)
+                      || isThinking
+                      || isBlocked)
             .keyboardShortcut(.return, modifiers: [.command])
         }
         .padding(.horizontal, 12)

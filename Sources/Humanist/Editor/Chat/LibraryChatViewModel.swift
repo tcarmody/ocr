@@ -235,6 +235,19 @@ final class LibraryChatViewModel: ObservableObject {
     func send() async {
         let query = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, !isThinking else { return }
+        // Refuse to send while the vector index is being mutated.
+        // Reading sidecars concurrently with a writer gives garbage
+        // results (mismatched dimensions, partial JSON, missing
+        // entries that were just added), and the writer's per-book
+        // publish storm thrashes the view tree at the same time.
+        // The chat pane surfaces this via the coordinator's banner
+        // separately — this guard is the last line of defense.
+        if !VectorIndexCoordinator.shared.isStable {
+            let desc = VectorIndexCoordinator.shared.activeDescription
+                ?? "Library indexing is in progress"
+            errorMessage = "\(desc) — wait for it to finish before sending."
+            return
+        }
         input = ""
         errorMessage = nil
         fallbackNote = nil
@@ -410,21 +423,32 @@ final class LibraryChatViewModel: ObservableObject {
            cached.backend.dimension == backend.dimension {
             return cached
         }
-        await MainActor.run { self.libraryStatus = .building }
-        let entries = await MainActor.run { LibraryStore().entries }
-        let index = LibraryEmbeddingIndex.build(
-            libraryEntries: entries, backend: backend
-        )
-        let entityIndex = LibraryEntityIndex.build(libraryEntries: entries)
-        await MainActor.run {
-            self.libraryIndex = index
-            self.libraryEntityIndex = entityIndex
-            self.libraryStatus = .ready(
-                indexed: index.stats.indexed,
-                unindexed: index.stats.unindexed,
-                mismatch: index.stats.backendMismatch
+        libraryStatus = .building
+        // Snapshot entries on the MainActor (LibraryStore is
+        // @MainActor-isolated) and then run the heavy disk-IO on a
+        // detached task. Both `LibraryEmbeddingIndex.build` and
+        // `LibraryEntityIndex.build` do per-book sidecar JSON reads
+        // — at library scale (2k+ books) that's gigabytes of
+        // synchronous IO; doing it on the main thread freezes the UI
+        // for ~30+ seconds and trips a hang report. Detached task
+        // hops to the cooperative thread pool so the UI keeps
+        // rendering. Results hop back to MainActor for the state
+        // writes (compiler enforces this because self is @MainActor).
+        let entries = LibraryStore().entries
+        let (index, entityIndex) = await Task.detached(priority: .userInitiated) {
+            let idx = LibraryEmbeddingIndex.build(
+                libraryEntries: entries, backend: backend
             )
-        }
+            let entityIdx = LibraryEntityIndex.build(libraryEntries: entries)
+            return (idx, entityIdx)
+        }.value
+        libraryIndex = index
+        libraryEntityIndex = entityIndex
+        libraryStatus = .ready(
+            indexed: index.stats.indexed,
+            unindexed: index.stats.unindexed,
+            mismatch: index.stats.backendMismatch
+        )
         return index
     }
 

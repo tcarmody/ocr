@@ -1128,28 +1128,30 @@ final class BookChatViewModel: ObservableObject {
            cached.backend.dimension == backend.dimension {
             return cached
         }
-        await MainActor.run { self.libraryStatus = .building }
-        // Snapshot the catalog from the global LibraryStore. We
-        // don't persist a reference because the chat view-model
-        // outlives a single library snapshot and we want fresh
-        // entries on every rebuild.
-        let entries = await MainActor.run { LibraryStore().entries }
-        let index = LibraryEmbeddingIndex.build(
-            libraryEntries: entries,
-            backend: backend
-        )
-        let entityIndex = LibraryEntityIndex.build(
-            libraryEntries: entries
-        )
-        await MainActor.run {
-            self.libraryIndex = index
-            self.libraryEntityIndex = entityIndex
-            self.libraryStatus = .ready(
-                indexed: index.stats.indexed,
-                unindexed: index.stats.unindexed,
-                mismatch: index.stats.backendMismatch
+        libraryStatus = .building
+        // Snapshot entries on MainActor (LibraryStore is @MainActor),
+        // then run the heavy per-book sidecar reads on a detached
+        // task. At library scale this is gigabytes of synchronous
+        // IO — on main thread it freezes the UI for ~30s and trips
+        // a system hang report. Detached task keeps the UI live.
+        let entries = LibraryStore().entries
+        let (index, entityIndex) = await Task.detached(priority: .userInitiated) {
+            let idx = LibraryEmbeddingIndex.build(
+                libraryEntries: entries,
+                backend: backend
             )
-        }
+            let entityIdx = LibraryEntityIndex.build(
+                libraryEntries: entries
+            )
+            return (idx, entityIdx)
+        }.value
+        libraryIndex = index
+        libraryEntityIndex = entityIndex
+        libraryStatus = .ready(
+            indexed: index.stats.indexed,
+            unindexed: index.stats.unindexed,
+            mismatch: index.stats.backendMismatch
+        )
         return index
     }
 

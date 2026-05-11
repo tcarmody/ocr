@@ -55,20 +55,36 @@ struct LibraryWindowView: View {
     @AppStorage("humanist.library.showCollectionsSidebar")
     private var showCollectionsSidebar: Bool = false
 
-    /// Collapse state for each top-level sidebar section. Persisted
-    /// per app so the user's last-used arrangement sticks across
-    /// launches. Default to expanded — first-launch users with no
-    /// collections won't see the sections at all (each group is
-    /// guarded by `isEmpty`), so the expanded default only matters
-    /// once content exists.
-    @AppStorage("humanist.library.expandMyCollections")
-    private var expandMyCollections: Bool = true
-    @AppStorage("humanist.library.expandAutoType")
-    private var expandAutoType: Bool = true
-    @AppStorage("humanist.library.expandAutoAuthor")
-    private var expandAutoAuthor: Bool = true
-    @AppStorage("humanist.library.expandAutoGenre")
-    private var expandAutoGenre: Bool = true
+    /// Expanded state for each top-level sidebar section. Backed by
+    /// `@State` (not `@AppStorage`) — reads happen during render and
+    /// must not go through a publisher; the previous @AppStorage +
+    /// `Section(_, isExpanded:)` combination produced a render loop
+    /// inside `List(selection:)` (each render re-evaluated the
+    /// AppStorage binding, which re-published, which re-rendered
+    /// the List, etc.). Initial value is hydrated from UserDefaults
+    /// once at view init; subsequent changes are persisted via an
+    /// explicit `.onChange` modifier so the publish path is
+    /// triggered only on user toggle, not on every render.
+    @State private var expandMyCollections: Bool = Self.loadExpandFlag(
+        "expandMyCollections")
+    @State private var expandAutoType: Bool = Self.loadExpandFlag(
+        "expandAutoType")
+    @State private var expandAutoAuthor: Bool = Self.loadExpandFlag(
+        "expandAutoAuthor")
+    @State private var expandAutoGenre: Bool = Self.loadExpandFlag(
+        "expandAutoGenre")
+
+    private static func loadExpandFlag(_ key: String) -> Bool {
+        UserDefaults.standard.object(
+            forKey: "humanist.library.\(key)"
+        ) as? Bool ?? true
+    }
+
+    private static func saveExpandFlag(_ key: String, _ value: Bool) {
+        UserDefaults.standard.set(
+            value, forKey: "humanist.library.\(key)"
+        )
+    }
 
     /// Active collection filter. `nil` = "All Books." Stored as the
     /// collection's UUID so it survives `LibraryStore` mutations
@@ -77,27 +93,34 @@ struct LibraryWindowView: View {
     /// filter doesn't surprise the user after a restart.
     @State private var activeCollectionID: UUID? = nil
 
-    /// Library chat session. Built lazily on first reveal — the
-    /// federated index isn't free, and a user who never opens the
-    /// chat pane shouldn't pay for it.
-    @StateObject private var chatVM = LibraryChatViewModel()
+    /// Library chat session. Held by `@State` rather than
+    /// `@StateObject` so the Library window itself does NOT
+    /// subscribe to the chat VM's publishes — only the chat pane
+    /// (which observes it via @ObservedObject locally) re-renders
+    /// on each message append / status flip. Without this
+    /// decoupling, every streamed-token publish during a chat send
+    /// re-renders the entire 2k-row Library table + sidebar,
+    /// trashing the SelectionOverlay layer and stalling the main
+    /// thread until macOS files a hang report.
+    @State private var chatVM = LibraryChatViewModel()
 
-    /// Bulk-index runner — walks every catalog entry and builds /
-    /// refreshes its embedding sidecar so library chat has
-    /// something to retrieve from. Lazy state because most users
-    /// never invoke it.
-    @StateObject private var indexBuilder = LibraryIndexBuilder()
+    /// Bulk-index runner. Same decoupling rationale as `chatVM`:
+    /// the indexer publishes per-book progress updates (~5 per
+    /// book × thousands of books = thousands of publishes per
+    /// run); the Library window must not re-render on each one.
+    /// The progress sheet observes via @ObservedObject locally.
+    @State private var indexBuilder = LibraryIndexBuilder()
     @State private var showIndexProgress = false
     /// Surfaced when a bulk-index attempt couldn't resolve the
     /// embedding backend. Plain banner; same posture as the
     /// fallback note in the chat panes.
     @State private var indexBuildError: String?
 
-    /// R-EPUB-Import. Brings existing EPUBs into the library —
-    /// inject paragraph anchors, route to the Books folder, catalog,
-    /// build the embedding sidecar. Lazy state for the same reason
-    /// as `indexBuilder` (most users never invoke it).
-    @StateObject private var importer = EPUBImporter()
+    /// R-EPUB-Import. Decoupled from the window's render path for
+    /// the same reason as `chatVM` and `indexBuilder` — a bulk
+    /// import publishes per-book progress; the window must not
+    /// cascade those into full re-renders.
+    @State private var importer = EPUBImporter()
     @State private var showImportProgress = false
     @State private var importError: String?
 
@@ -920,39 +943,84 @@ struct LibraryWindowView: View {
                         return false
                     }
                 if !userCollections.isEmpty {
-                    Section("My Collections", isExpanded: $expandMyCollections) {
-                        ForEach(userCollections) { collection in
-                            collectionRow(collection)
-                                .tag(UUID?.some(collection.id))
-                        }
-                    }
+                    collapsibleSection(
+                        title: "My Collections",
+                        expanded: $expandMyCollections,
+                        persistKey: "expandMyCollections",
+                        rows: userCollections
+                    )
                 }
                 if !autoByType.isEmpty {
-                    Section("Auto: by Type", isExpanded: $expandAutoType) {
-                        ForEach(autoByType) { collection in
-                            collectionRow(collection)
-                                .tag(UUID?.some(collection.id))
-                        }
-                    }
+                    collapsibleSection(
+                        title: "Auto: by Type",
+                        expanded: $expandAutoType,
+                        persistKey: "expandAutoType",
+                        rows: autoByType
+                    )
                 }
                 if !autoByAuthor.isEmpty {
-                    Section("Auto: by Author", isExpanded: $expandAutoAuthor) {
-                        ForEach(autoByAuthor) { collection in
-                            collectionRow(collection)
-                                .tag(UUID?.some(collection.id))
-                        }
-                    }
+                    collapsibleSection(
+                        title: "Auto: by Author",
+                        expanded: $expandAutoAuthor,
+                        persistKey: "expandAutoAuthor",
+                        rows: autoByAuthor
+                    )
                 }
                 if !autoByGenre.isEmpty {
-                    Section("Auto: by Genre", isExpanded: $expandAutoGenre) {
-                        ForEach(autoByGenre) { collection in
-                            collectionRow(collection)
-                                .tag(UUID?.some(collection.id))
-                        }
-                    }
+                    collapsibleSection(
+                        title: "Auto: by Genre",
+                        expanded: $expandAutoGenre,
+                        persistKey: "expandAutoGenre",
+                        rows: autoByGenre
+                    )
                 }
             }
             .listStyle(.sidebar)
+        }
+    }
+
+    /// Collapsible Section built manually instead of via the
+    /// `Section(_, isExpanded:)` API. The header is a tappable HStack
+    /// with a chevron; tapping toggles `expanded` (which is plain
+    /// `@State`, NOT `@AppStorage`, so render-time reads don't
+    /// trigger a publisher). Content rows are conditionally
+    /// rendered, so the collapsed state truly removes them from the
+    /// view tree — the list virtualizes correctly on giant sidebars.
+    /// Persists via the explicit `saveExpandFlag` write on toggle,
+    /// keeping the publish path off the render path entirely.
+    @ViewBuilder
+    private func collapsibleSection(
+        title: String,
+        expanded: Binding<Bool>,
+        persistKey: String,
+        rows: [BookCollection]
+    ) -> some View {
+        Section {
+            if expanded.wrappedValue {
+                ForEach(rows) { collection in
+                    collectionRow(collection)
+                        .tag(UUID?.some(collection.id))
+                }
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.right")
+                    .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
+                    .animation(.snappy, value: expanded.wrappedValue)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(title)
+                Spacer()
+                Text("\(rows.count)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                expanded.wrappedValue.toggle()
+                Self.saveExpandFlag(persistKey, expanded.wrappedValue)
+            }
         }
     }
 
