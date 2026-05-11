@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-10)
+## Status snapshot (as of 2026-05-11)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -494,6 +494,153 @@ in Tier 6 — full write-up there):
   bidi rendering edge cases and the per-script Tesseract
   weaknesses. Revisit if a Hebrew / Syriac / Coptic project comes
   up — design notes are still in the P9 section below.
+
+---
+
+## Sequencing (as of 2026-05-11)
+
+What to work on next, in priority order. The first block is
+driven by concrete, currently-felt user needs; the second block
+is the "nice to have, build when you reach for it" tier;
+everything else is deferred indefinitely unless the situation
+changes.
+
+Drivers for the current ordering:
+- **Multi-Mac use is real**, not theoretical — the user is
+  already running into pain wanting one library visible from
+  two machines.
+- **Sharing is for testers only** today; a tester needs a
+  working `.app` bundle but doesn't need notarization, Sparkle,
+  or a hosted DMG.
+- **Manuscript material is on the testing roadmap; classical
+  Greek isn't** — the manuscript track wins inside
+  `E-Vision-Modes`; the Greek-quality spike drops further down.
+- **~1,000 existing EPUBs are queued for import**. That number
+  pushes everything that turns a raw-imported EPUB into a
+  first-class library row way up — without metadata
+  extraction + chapter classification on import, a thousand
+  catalog rows show filenames instead of titles, and library
+  chat sees a thousand un-classified books.
+
+### Near-term — do these first
+
+1. **R-EPUB-Import: Chapter classification on import** (~0.5 day,
+   via the cheap-shortcut path documented in R-EPUB-Import's
+   "Deferred further" section). With a 1000-book import on the
+   horizon, getting `epub:type` labels onto every book pays
+   off in library chat citations + visible badges. The
+   minimal-Chapter shortcut (title + first ~5 paragraphs) is
+   enough for the classifier and skips the full XHTML →
+   Chapter IR project.
+2. **R-EPUB-Import: Year / publisher / ISBN write-back** (~0.5
+   day). AFM already extracts all five front-matter fields;
+   today only title + author write back. Extend
+   `OPFReader.Metadata` + `EPUBBookSaver.upsertSimpleDC` so the
+   remaining three travel to `<dc:date>` / `<dc:publisher>` /
+   `<dc:identifier>` — see R-EPUB-Import's deferred-further
+   block for the ISBN/unique-identifier wrinkle.
+3. **1000-book bulk-import soak**. Stress-test the importer at
+   the scale the user actually has on disk:
+    - Verify the Library window's table doesn't choke at 1000
+      rows.
+    - Verify the AFM metadata pass scales (rough estimate:
+      1-3 s/book × 1000 = 17-50 min wall time; surface
+      progress + a cancel button that actually works).
+    - Verify "skip if output EPUB exists" handles re-runs after
+      an interrupted batch.
+    - Consider an "Import without indexing" toggle — bulk-index
+      already exists for the user to run overnight separately.
+4. **R-Library-Sync** (~2-3 days). Second Mac is real. Sequencing
+   note: this entry calls for the sidecar rekey (sha256 → UUID)
+   that the R-EPUB-Import chapter-classification work would
+   touch — landing them adjacent means the rekey happens once.
+5. **E-Vision-Modes — Manuscript track only, validation spike
+   first** (~1-2 days for the spike). Tester driver. Build the
+   manuscript path (Claude Opus 4.7, diplomatic transcription)
+   end-to-end before scoping the Early Print path — the
+   architecture overlaps but the prompts and post-processing
+   diverge enough to warrant separate validation. Defer the
+   Early Print track until the manuscript track produces real
+   output the tester accepts.
+
+### Soon — pick up when the near-term cools
+
+6. **R-Library-Chat-Plus Tier 2 — citation export +
+   conversation export** (~6-9 hrs combined). Real research-
+   workflow items now that the library is big enough to drive
+   serious questions. Pinned passages and ask-each-book mode
+   are still useful but lower priority than the export pair.
+7. **E-Vision-Modes — Early Print mode**. Once the manuscript
+   track is shipping working output, the Gemini-driven
+   early-print path becomes the natural next swing.
+8. **R-EPUB-Import: Coherence pass on imports**. Lower priority
+   than v1's chapter-classification follow-up because clean
+   EPUBs rarely have the recurring-OCR-error patterns the
+   coherence pass exists to catch. Worth building if the
+   1000-book corpus surfaces enough errors to justify the
+   ~2-day XHTML → Chapter IR + round-trip-fidelity testing.
+9. **L-Foundation-Models Phase 2.5** (on-device post-OCR
+   cleanup). Useful for Private-mode conversion runs; not
+   load-bearing for import workflows.
+
+### Earn when you need it
+
+10. **P10 distribution polish** (Developer ID + DMG +
+    Sparkle). For tester sharing, the current ad-hoc-signed
+    bundle is fine. Earns priority when "first non-tester user"
+    enters the picture or when tester install friction becomes
+    real.
+11. **R-Library-Chat-Plus Tier 2 — pinned passages,
+    ask-each-book mode**. Build if a research workflow makes
+    these specifically painful.
+12. **T-CI** (GitHub Actions running `swift test`). ~half day.
+    Earns priority when a regression slips through that the
+    test suite would have caught.
+13. **P-Surya-Pool, P-Vision-Concurrency, P-Shared-Memory**.
+    Performance work — earns priority when "Surya is slow" is
+    the bottleneck. Today it isn't.
+14. **L-Foundation-Models Phase 3** (TOC parsing). Deferred
+    until AFM's 8K-token context proves workable on full TOCs
+    of long books — the chunking strategy is real complexity.
+15. **R-Library-Chat-Plus Tiers 3 + 4** (comparative-prompt
+    presets, multiple chat threads, knowledge-graph view,
+    per-book chat history surfacing, multi-model A/B). Each
+    has design rationale in its tier; build only if a recurring
+    real-use friction surfaces.
+16. **Section-level granularity** (R-Chat-Graph-Lite's only
+    remaining item). Chapter-level expansion already works;
+    finer cut is opt-in only.
+
+### Deferred indefinitely
+
+These are documented for the runway and so a future picker-upper
+sees the reasoning, but they're not on the build path unless the
+situation that defers them changes.
+
+- **P9 — RTL languages (Hebrew, Syriac, Coptic)**. Working
+  corpus doesn't need them; bidi rendering edge cases +
+  per-script Tesseract weakness aren't worth the lift.
+- **Cloud Phase 8 — per-book mode override**. Obsoleted by the
+  Private Mode toggle that already ships per-job override.
+- **P-Greek-Quality**. Tester preference is for manuscript,
+  not classical Greek. Revisit if a polytonic Greek project
+  comes up; the validation methodology in the
+  P-Greek-Quality section stays valid.
+- **O-Telemetry**. The original plan said no telemetry; that
+  posture still fits a personal / tester-shared app. Earns a
+  rethink only when the user-base shape changes.
+- **T-Snapshot-EPUBs, T-Memory-Regression, T-Real-Corpus**.
+  Real test-coverage gaps but not load-bearing for the
+  immediate work. Earn priority when a specific regression
+  hits or when the user-base size makes regression-shape
+  failures expensive.
+
+When something changes that should re-shuffle this list (a tester
+asks for an early-print book, the second Mac use case stops
+being daily, P10 becomes urgent because someone outside the
+testing circle wants the app), update this section before
+anything else — the rest of PLANS.md is design rationale; this
+section is decisions.
 
 ---
 
