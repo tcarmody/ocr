@@ -126,6 +126,17 @@ final class LibraryChatViewModel: ObservableObject {
     private let ollama: OllamaClient
     private let transcriptURL: URL
 
+    /// Live library reference passed in by the Library window after
+    /// init. The VM uses this for catalog snapshots during the
+    /// federated-index build path; without it, the build path would
+    /// have to allocate a fresh `LibraryStore()` per send, which
+    /// runs the full `load()` (JSON decode + 2k `fileExists` calls
+    /// + relativePath rewrites) synchronously on the main thread —
+    /// several seconds per chat send for an iCloud catalog. With a
+    /// live reference, catalog access is free. Optional so unit
+    /// tests / non-Library-window callers still work.
+    weak var library: LibraryStore?
+
     private var libraryIndex: LibraryEmbeddingIndex?
     private var libraryEntityIndex: LibraryEntityIndex?
     private var streamTask: Task<Void, Never>?
@@ -424,17 +435,24 @@ final class LibraryChatViewModel: ObservableObject {
             return cached
         }
         libraryStatus = .building
-        // Snapshot entries on the MainActor (LibraryStore is
-        // @MainActor-isolated) and then run the heavy disk-IO on a
-        // detached task. Both `LibraryEmbeddingIndex.build` and
-        // `LibraryEntityIndex.build` do per-book sidecar JSON reads
-        // — at library scale (2k+ books) that's gigabytes of
-        // synchronous IO; doing it on the main thread freezes the UI
-        // for ~30+ seconds and trips a hang report. Detached task
-        // hops to the cooperative thread pool so the UI keeps
-        // rendering. Results hop back to MainActor for the state
-        // writes (compiler enforces this because self is @MainActor).
-        let entries = LibraryStore().entries
+        // Snapshot entries from the live LibraryStore (zero-cost
+        // — just a published array read), then run the heavy
+        // per-book sidecar disk-IO on a detached task. Both
+        // `LibraryEmbeddingIndex.build` and `LibraryEntityIndex
+        // .build` do per-book sidecar JSON reads — at library
+        // scale (2k+ books) that's gigabytes of synchronous IO;
+        // doing it on the main thread freezes the UI for ~30s and
+        // trips a hang report. Detached task hops to the
+        // cooperative thread pool so the UI keeps rendering;
+        // results hop back to MainActor for the state writes
+        // (compiler-enforced via @MainActor on self).
+        //
+        // Falls back to a fresh LibraryStore() when no live
+        // reference is attached (unit tests / standalone usage).
+        // That fallback path does pay the load() cost on main —
+        // acceptable for tests; the Library window always wires
+        // the live reference so the production path is free.
+        let entries = (library?.entries) ?? LibraryStore().entries
         let (index, entityIndex) = await Task.detached(priority: .userInitiated) {
             let idx = LibraryEmbeddingIndex.build(
                 libraryEntries: entries, backend: backend

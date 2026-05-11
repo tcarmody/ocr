@@ -133,6 +133,16 @@ final class BookChatViewModel: ObservableObject {
     private var libraryParagraphCache: [URL: [ParagraphExtractor.Item]] = [:]
     private(set) var book: EPUBBook
     private let bookTitle: String
+    /// Live library reference attached by EditorViewModel after
+    /// init. Used by the federated-index build path to snapshot
+    /// the catalog without re-instantiating `LibraryStore()` (which
+    /// runs `load()` on main and blocks the UI for several seconds
+    /// at library scale). Same rationale as the matching property
+    /// on `LibraryChatViewModel`. Optional + weak so unit tests
+    /// don't need to provide one and so the editor's lifecycle
+    /// doesn't depend on the chat VM holding a strong ref.
+    weak var library: LibraryStore?
+
     private let client: AnthropicAPIClient
     private let ollama: OllamaClient
     private let transcriptStore: ChatTranscriptStore
@@ -1129,12 +1139,16 @@ final class BookChatViewModel: ObservableObject {
             return cached
         }
         libraryStatus = .building
-        // Snapshot entries on MainActor (LibraryStore is @MainActor),
-        // then run the heavy per-book sidecar reads on a detached
-        // task. At library scale this is gigabytes of synchronous
-        // IO — on main thread it freezes the UI for ~30s and trips
-        // a system hang report. Detached task keeps the UI live.
-        let entries = LibraryStore().entries
+        // Snapshot entries from the live LibraryStore (the
+        // injected `library` property) and run the heavy per-book
+        // sidecar reads on a detached task. At library scale this
+        // is gigabytes of synchronous IO — on the main thread it
+        // freezes the UI for ~30s and trips a hang report. The
+        // detached task keeps the UI live; reading from the live
+        // store avoids the seconds-of-main-thread `load()` that a
+        // fresh `LibraryStore()` would trigger. Fallback to a
+        // fresh instance only when no live reference is wired.
+        let entries = (library?.entries) ?? LibraryStore().entries
         let (index, entityIndex) = await Task.detached(priority: .userInitiated) {
             let idx = LibraryEmbeddingIndex.build(
                 libraryEntries: entries,

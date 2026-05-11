@@ -16,7 +16,10 @@ struct HumanistApp: App {
     @StateObject private var jobRunner: JobRunner
     @StateObject private var queueVM: QueueViewModel
     @StateObject private var library = LibraryStore()
-    @StateObject private var coverCache = CoverImageCache()
+    /// `@State` (not `@StateObject`) because `CoverImageCache` is
+    /// now `@Observable`; the wrapper for view-tree-stable storage
+    /// of an @Observable class is plain @State.
+    @State private var coverCache = CoverImageCache()
 
     init() {
         let store = JobStore()
@@ -126,7 +129,7 @@ struct HumanistApp: App {
         Window("Humanist Library", id: "library") {
             LibraryWindowView()
                 .environmentObject(library)
-                .environmentObject(coverCache)
+                .environment(coverCache)
                 .humanistChrome()
         }
         .commandsRemoved()

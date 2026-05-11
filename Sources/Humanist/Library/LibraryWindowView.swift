@@ -14,7 +14,14 @@ import EPUB  // EPUBBook + EPUBBookSaver + OPFReader.Metadata for the metadata d
 /// the table and unlock a "Chat with this collection" affordance.
 struct LibraryWindowView: View {
     @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var coverCache: CoverImageCache
+    /// `@Environment(Type.self)` (the Observation-framework
+    /// accessor) rather than `@EnvironmentObject` because
+    /// `CoverImageCache` is now `@Observable`. The key behavior
+    /// change: this view's body no longer subscribes to the cache
+    /// just by declaring access. Per-row thumbnail subviews that
+    /// actually call `coverCache.image(for:)` are the ones that
+    /// re-render on cover decodes — the window itself stays put.
+    @Environment(CoverImageCache.self) private var coverCache
     @Environment(\.openWindow) private var openWindow
 
     @State private var sortOrder: [KeyPathComparator<LibraryEntry>] = [
@@ -305,6 +312,13 @@ struct LibraryWindowView: View {
         }
         .navigationTitle("Humanist Library")
         .frame(minWidth: 620, minHeight: 380)
+        // Wire the live LibraryStore into the chat VM so its
+        // federated-index build path doesn't allocate a fresh
+        // `LibraryStore()` per send. Idempotent — re-running on
+        // re-appear is fine.
+        .onAppear {
+            chatVM.library = library
+        }
         // R-EPUB-Import: drag-drop entry point. Accepts individual
         // `.epub` files and folders (walked recursively). The
         // `EPUBImporter.expandSources` helper handles both shapes

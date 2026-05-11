@@ -395,7 +395,16 @@ final class EditorViewModel: ObservableObject {
     /// them).
     private func ensureChatViewModel() {
         guard chatViewModel == nil, let book = book else { return }
-        chatViewModel = BookChatViewModel(book: book, epubURL: book.sourceURL)
+        let vm = BookChatViewModel(book: book, epubURL: book.sourceURL)
+        // Hand the chat VM the live library reference (set on
+        // `OpenRouter` at app launch). Without this, the
+        // federated-index build path inside the chat VM would
+        // allocate a fresh `LibraryStore()` per send and run
+        // load() on the main thread — seconds of blocking work at
+        // library scale. Weak ref on the VM side, so no retain
+        // cycle even if the editor outlives the library.
+        vm.library = OpenRouter.library
+        chatViewModel = vm
     }
 
     init(epubURL: URL) {
