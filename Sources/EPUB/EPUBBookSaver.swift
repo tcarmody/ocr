@@ -227,10 +227,18 @@ public struct EPUBBookSaver {
         }
     }
 
-    /// Replace `<dc:title>`, `<dc:creator>`, `<dc:language>` with the
-    /// values from `metadata`. Any other dc:* or meta children are
-    /// left in place — we're surgically updating the three fields
-    /// the model represents, not rebuilding the metadata block.
+    /// Surgically update the six modeled `<dc:*>` fields from
+    /// `metadata`. Other dc:* / meta children pass through
+    /// untouched — we're not rebuilding the metadata block, just
+    /// upserting our slots.
+    ///
+    /// ISBN gets special treatment: never overwrite the package's
+    /// `unique-identifier` element (the publishing identity that
+    /// `<package unique-identifier="…">` references), even if it's
+    /// the only `<dc:identifier>` in the doc. We add the ISBN as
+    /// a *separate* `<dc:identifier>urn:isbn:…</dc:identifier>`
+    /// sibling — same shape the conversion path's `OPFWriter`
+    /// emits, so round-trips through Humanist stay consistent.
     private func updateMetadataInPlace(
         in root: XMLElement, with metadata: OPFReader.Metadata
     ) {
@@ -240,6 +248,14 @@ public struct EPUBBookSaver {
         upsertSimpleDC(metadataEl, localName: "title", value: metadata.title)
         upsertSimpleDC(metadataEl, localName: "creator", value: metadata.author)
         upsertSimpleDC(metadataEl, localName: "language", value: metadata.language)
+        upsertSimpleDC(metadataEl, localName: "date", value: metadata.year)
+        upsertSimpleDC(metadataEl, localName: "publisher", value: metadata.publisher)
+        upsertISBNIdentifier(
+            in: metadataEl,
+            packageUniqueIdentifierID: root
+                .attribute(forName: "unique-identifier")?.stringValue,
+            value: metadata.isbn
+        )
     }
 
     /// Update the *first* `<dc:{localName}>` child to the given value,
@@ -263,6 +279,73 @@ public struct EPUBBookSaver {
         } else {
             existing.first?.detach()
         }
+    }
+
+    /// Upsert the ISBN as a `<dc:identifier>urn:isbn:VALUE</dc:identifier>`
+    /// sibling element. Looks for an existing ISBN-shaped
+    /// identifier (URN-prefixed value or `scheme="ISBN"`
+    /// attribute) and updates it in place; otherwise appends a
+    /// new element. The package's `unique-identifier` element
+    /// (matched by `id == packageUniqueIdentifierID`) is
+    /// excluded from match candidates so the publishing identity
+    /// is never silently replaced — even if the only existing
+    /// `<dc:identifier>` is ISBN-shaped, we add a new one
+    /// alongside it.
+    ///
+    /// Nil / empty `value` drops a previously-added Humanist
+    /// ISBN element (URN-prefixed). Doesn't touch
+    /// scheme-attributed identifiers in the deletion path —
+    /// those were likely publisher-set and shouldn't disappear
+    /// just because the model lost the value.
+    private func upsertISBNIdentifier(
+        in metadataEl: XMLElement,
+        packageUniqueIdentifierID: String?,
+        value: String?
+    ) {
+        let allIdentifiers = (metadataEl.children ?? []).compactMap {
+            node -> XMLElement? in
+            guard let el = node as? XMLElement,
+                  el.localName == "identifier" else { return nil }
+            // Skip the package's identity identifier.
+            if let id = el.attribute(forName: "id")?.stringValue,
+               id == packageUniqueIdentifierID {
+                return nil
+            }
+            return el
+        }
+        // Find an existing ISBN-bearing identifier — by URN prefix
+        // or by scheme attribute (with or without opf: prefix,
+        // case-insensitive).
+        let isbnIdentifier = allIdentifiers.first { el in
+            let raw = (el.stringValue ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            if raw.hasPrefix("urn:isbn:") { return true }
+            let scheme = (el.attribute(forName: "opf:scheme")?.stringValue
+                ?? el.attribute(forName: "scheme")?.stringValue
+                ?? "").lowercased()
+            return scheme == "isbn"
+        }
+
+        guard let value = value, !value.isEmpty else {
+            // Drop only URN-shaped (Humanist-emitted) elements;
+            // leave publisher-set scheme="ISBN" attributes alone
+            // so the EPUB's original metadata isn't degraded.
+            if let target = isbnIdentifier,
+               (target.stringValue ?? "")
+                .lowercased().hasPrefix("urn:isbn:") {
+                target.detach()
+            }
+            return
+        }
+
+        let urnValue = "urn:isbn:\(value)"
+        if let target = isbnIdentifier {
+            target.stringValue = urnValue
+            return
+        }
+        let el = XMLElement(name: "dc:identifier", stringValue: urnValue)
+        metadataEl.addChild(el)
     }
 
     /// EPUB 3 mandates a `<meta property="dcterms:modified">` whose

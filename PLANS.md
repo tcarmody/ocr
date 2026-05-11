@@ -463,9 +463,13 @@ in Tier 6 — full write-up there):
   v1.2 adds AFM chapter classification on import via a
   minimal-Chapter sampler + the new `BodyTypeInjector`
   (`epub:type` written into the `<body>` opening tag,
-  publisher-set labels preserved). Coherence pass still
-  deferred for imported EPUBs (needs full XHTML → Chapter IR
-  parser + round-trip fidelity work).
+  publisher-set labels preserved). v1.3 extends
+  `OPFReader.Metadata` with year / publisher / ISBN slots and
+  teaches `EPUBBookSaver` to write them — ISBN goes in as a
+  separate `<dc:identifier>urn:isbn:…</dc:identifier>` so the
+  package's unique-identifier stays untouched. Coherence pass
+  still deferred for imported EPUBs (needs full XHTML →
+  Chapter IR parser + round-trip fidelity work).
 
 **Done — Cloud Phase 5**:
 - **`ClaudeTableExtractor`**: Sonnet-driven table structure behind
@@ -542,13 +546,22 @@ Drivers for the current ordering:
    `BodyTypeInjectorTests` + `EPUBImporterSamplerTests` cover
    the title-extraction, opening-text-sampling, and tag-rewrite
    edge cases.
-2. **R-EPUB-Import: Year / publisher / ISBN write-back** (~0.5
-   day). AFM already extracts all five front-matter fields;
-   today only title + author write back. Extend
-   `OPFReader.Metadata` + `EPUBBookSaver.upsertSimpleDC` so the
-   remaining three travel to `<dc:date>` / `<dc:publisher>` /
-   `<dc:identifier>` — see R-EPUB-Import's deferred-further
-   block for the ISBN/unique-identifier wrinkle.
+2. ~~**R-EPUB-Import: Year / publisher / ISBN write-back**~~
+   shipped. `OPFReader.Metadata` gained `year` / `publisher` /
+   `isbn` slots; the reader parses `<dc:date>` (extracting the
+   year prefix from bare-year or ISO-timestamp shapes),
+   `<dc:publisher>`, and `<dc:identifier>` (URN-shaped or
+   `scheme="ISBN"`/`opf:scheme="ISBN"`, with hyphen stripping
+   to digits). `EPUBBookSaver.updateMetadataInPlace` upserts
+   year + publisher via the existing `upsertSimpleDC` helper;
+   ISBN goes through a new `upsertISBNIdentifier` that adds a
+   *separate* `<dc:identifier>urn:isbn:VALUE</dc:identifier>`
+   sibling element — the package's `unique-identifier`
+   (`<dc:identifier id="bookid">`) is excluded from the match
+   candidates so the publishing identity is never silently
+   replaced. 11 new `OPFMetadataExtendedTests` cover the
+   parse + save round-trip + the ISBN-doesn't-clobber-unique-id
+   invariant.
 3. **1000-book bulk-import soak**. Stress-test the importer at
    the scale the user actually has on disk:
     - Verify the Library window's table doesn't choke at 1000
@@ -2874,6 +2887,34 @@ place via canonical-URL match). 13 new
 - **Library window**: `tray.and.arrow.down` button next to the
   bulk-index menu in the filter bar.
 
+### What landed in v1.3
+
+- **Year / publisher / ISBN round-trip**. `OPFReader.Metadata`
+  gained three new fields; the reader extracts a 4-digit year
+  prefix from `<dc:date>` (tolerating ISO-timestamp shapes),
+  the publisher from `<dc:publisher>`, and the ISBN from any
+  `<dc:identifier>` that's URN-shaped (`urn:isbn:…`) or
+  carries an explicit `scheme="ISBN"` / `opf:scheme="ISBN"`
+  attribute. The package's `unique-identifier` element is
+  excluded — it's identity, not bibliographic ISBN, even when
+  ISBN-shaped.
+- **`upsertISBNIdentifier`** in `EPUBBookSaver`. Writes the
+  ISBN as a *new* `<dc:identifier>urn:isbn:VALUE</dc:identifier>`
+  sibling next to the existing identifiers (matches the
+  conversion path's `OPFWriter` output shape). When a
+  URN-shaped Humanist-emitted ISBN already exists, updates it
+  in place. The package's unique-identifier is never a
+  candidate so it survives every save.
+- **`EPUBImporter.applyMetadata`** now passes all five
+  extracted fields through — title + author + year +
+  publisher + ISBN.
+- **11 new `OPFMetadataExtendedTests`** cover the parse
+  shapes (bare year, ISO timestamp, URN ISBN, scheme-attr
+  ISBN, hyphen stripping), the read-side skip-package-unique-id
+  invariant, and the save-side round-trip (year + publisher
+  back, ISBN as separate identifier, in-place update on
+  re-save, unique-identifier preserved).
+
 ### What landed in v1.2
 
 - **AFM chapter classification on import** via the
@@ -2953,37 +2994,18 @@ place via canonical-URL match). 13 new
   ~2 days plus fidelity tests. Skipping the parser means
   skipping the feature — coherence needs the full text to
   rewrite recurring errors.
-- **Year / publisher / ISBN write-back**. AFM already extracts
-  all five fields (title / author / year / publisher / isbn).
-  Title + author write back today; the other three are
-  dropped on the floor because `OPFReader.Metadata` only
-  models three slots. The PDF conversion path doesn't have
-  this gap — it generates the OPF from scratch via
-  `EPUBBuilder` and emits `<dc:date>` / `<dc:publisher>` /
-  `<dc:identifier>` directly from `Book`. The importer edits
-  an existing OPF through `EPUBBookSaver.updateMetadataInPlace`,
-  which only knows the three modeled fields.
-
-  To fix:
-   1. Add `year`, `publisher`, `isbn` to `OPFReader.Metadata`
-      + parse `<dc:date>` / `<dc:publisher>` / `<dc:identifier>`
-      on load.
-   2. Teach `EPUBBookSaver.updateMetadataInPlace` to upsert
-      them — the existing `upsertSimpleDC` helper already
-      handles arbitrary `dc:*` localnames, so it's mostly
-      additional call lines.
-   3. ISBN wrinkle: `<dc:identifier>` is *also* the EPUB's
-      `unique-identifier` (publishing id, referenced from
-      `<package unique-identifier="...">`). Adding the ISBN
-      means either a *second* `<dc:identifier opf:scheme="ISBN">`
-      child (cleanest, EPUB-spec compliant), or a
-      `<meta property="dcterms:identifier">` sibling. Don't
-      overwrite the existing `<dc:identifier>` — that breaks
-      `unique-identifier` resolution and some readers refuse
-      the EPUB.
-
-  ~Half day of plumbing + tests covering the ISBN case
-  specifically.
+- ~~**Year / publisher / ISBN write-back**~~ shipped. AFM
+  extracts all five front-matter fields; all five now write
+  back. `OPFReader.Metadata` carries `year` / `publisher` /
+  `isbn` slots; the reader parses `<dc:date>` (year prefix
+  only — accepts bare year or full ISO timestamp),
+  `<dc:publisher>`, and `<dc:identifier>` (URN-shaped or
+  scheme-attributed, with hyphen stripping). The saver writes
+  ISBN as a new `<dc:identifier>urn:isbn:VALUE</dc:identifier>`
+  sibling — same shape the conversion path emits — and
+  explicitly excludes the package's `unique-identifier`
+  element from match candidates so the publishing identity
+  stays untouched.
 - **Settings → Library → Import section** with per-feature
   toggles. The existing `localFeatures.*` toggles already
   apply on import; when chapter-classification / coherence

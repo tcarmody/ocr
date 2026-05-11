@@ -21,15 +21,38 @@ public struct OPFReader {
         public let title: String?
         public let author: String?
         public let language: String?
+        /// Four-digit publication year. Parsed from `<dc:date>` —
+        /// EPUB allows full ISO timestamps (`2003-04-15T00:00:00Z`)
+        /// as well as bare years (`2003`); we extract the year
+        /// prefix and discard the rest.
+        public let year: String?
+        /// Publisher name from `<dc:publisher>`.
+        public let publisher: String?
+        /// Normalized ISBN (digit-only, hyphens stripped). Parsed
+        /// from any `<dc:identifier>` whose value carries the
+        /// `urn:isbn:` URN prefix or whose `opf:scheme` /
+        /// `scheme` attribute is "ISBN" (case-insensitive). The
+        /// package's *unique-identifier* (the `<dc:identifier
+        /// id="bookid">` referenced by `<package
+        /// unique-identifier="…">`) is deliberately not parsed as
+        /// the ISBN even if it happens to be ISBN-shaped — it's
+        /// the publishing identity and not necessarily an ISBN.
+        public let isbn: String?
 
         public init(
             title: String? = nil,
             author: String? = nil,
-            language: String? = nil
+            language: String? = nil,
+            year: String? = nil,
+            publisher: String? = nil,
+            isbn: String? = nil
         ) {
             self.title = title
             self.author = author
             self.language = language
+            self.year = year
+            self.publisher = publisher
+            self.isbn = isbn
         }
     }
 
@@ -117,13 +140,85 @@ public struct OPFReader {
         let title = firstText(doc: doc, localName: "title")
         let author = firstText(doc: doc, localName: "creator")
         let language = firstText(doc: doc, localName: "language")
-        return Metadata(title: title, author: author, language: language)
+        let year = firstText(doc: doc, localName: "date").flatMap(parseYearPrefix)
+        let publisher = firstText(doc: doc, localName: "publisher")
+        let isbn = parseISBN(doc: doc)
+        return Metadata(
+            title: title, author: author, language: language,
+            year: year, publisher: publisher, isbn: isbn
+        )
     }
 
     private func firstText(doc: XMLDocument, localName: String) -> String? {
         let nodes = (try? doc.nodes(forXPath: "//*[local-name()='\(localName)']")) ?? []
         for n in nodes {
             if let s = n.stringValue, !s.isEmpty { return s }
+        }
+        return nil
+    }
+
+    /// Extract the four-digit year prefix from a `<dc:date>` value.
+    /// Accepts `2003`, `2003-04-15`, `2003-04-15T00:00:00Z`, etc.
+    /// Returns nil when no year prefix is present.
+    private func parseYearPrefix(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 4 else { return nil }
+        let head = String(trimmed.prefix(4))
+        return head.allSatisfy(\.isNumber) ? head : nil
+    }
+
+    /// Find the first ISBN among the OPF's `<dc:identifier>`
+    /// elements. Recognized forms:
+    ///   * value starts with `urn:isbn:` (Humanist's own emit
+    ///     shape; also widely used in the wild)
+    ///   * `opf:scheme` / `scheme` attribute equals `ISBN`
+    ///     (case-insensitive)
+    /// Skips the package's `unique-identifier` so a publishing
+    /// id that happens to be ISBN-shaped isn't promoted to the
+    /// ISBN slot — that one is identity, not bibliographic data.
+    /// Returns the value with hyphens / whitespace stripped.
+    private func parseISBN(doc: XMLDocument) -> String? {
+        let uniqueIdentifierID = packageUniqueIdentifierID(doc: doc)
+        let nodes = (try? doc.nodes(forXPath:
+            "//*[local-name()='identifier']")) ?? []
+        for n in nodes {
+            guard let el = n as? XMLElement else { continue }
+            // Skip the package's identity identifier.
+            if let id = el.attribute(forName: "id")?.stringValue,
+               id == uniqueIdentifierID {
+                continue
+            }
+            let value = (el.stringValue ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            let scheme = (el.attribute(forName: "opf:scheme")?.stringValue
+                ?? el.attribute(forName: "scheme")?.stringValue
+                ?? "").lowercased()
+            let isISBNScheme = scheme == "isbn"
+            let isURN = value.lowercased().hasPrefix("urn:isbn:")
+            guard isISBNScheme || isURN else { continue }
+            // Strip the URN prefix + hyphens / whitespace so the
+            // returned value is the bare digit sequence.
+            var stripped = value
+            if isURN {
+                stripped = String(stripped.dropFirst("urn:isbn:".count))
+            }
+            stripped = stripped.filter { $0.isNumber || $0 == "X" || $0 == "x" }
+            guard !stripped.isEmpty else { continue }
+            return stripped.uppercased()
+        }
+        return nil
+    }
+
+    private func packageUniqueIdentifierID(doc: XMLDocument) -> String? {
+        let pkgs = (try? doc.nodes(forXPath:
+            "//*[local-name()='package']")) ?? []
+        for n in pkgs {
+            if let el = n as? XMLElement,
+               let v = el.attribute(forName: "unique-identifier")?
+                .stringValue {
+                return v
+            }
         }
         return nil
     }

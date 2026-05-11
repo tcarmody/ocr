@@ -356,11 +356,20 @@ final class EPUBImporter: ObservableObject {
         // the OPF originally carried otherwise. The user can
         // always rename / re-author the book in the editor if AFM
         // gets it wrong.
+        //
+        // Year / publisher / ISBN flow through too now that
+        // `OPFReader.Metadata` carries them and the saver knows
+        // how to upsert each (ISBN as a separate
+        // `<dc:identifier>urn:isbn:…</dc:identifier>` so the
+        // package's unique-identifier stays untouched).
         let existing = book.metadata
         let updated = OPFReader.Metadata(
             title: result.title ?? existing.title,
             author: result.author ?? existing.author,
-            language: existing.language
+            language: existing.language,
+            year: result.year ?? existing.year,
+            publisher: result.publisher ?? existing.publisher,
+            isbn: result.isbn ?? existing.isbn
         )
         // No-op when nothing actually changed — avoid marking the
         // book dirty (and triggering a save) when the OPF already
