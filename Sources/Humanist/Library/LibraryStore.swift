@@ -150,17 +150,60 @@ final class LibraryStore: ObservableObject {
     }
 
     /// Heuristic backfill for legacy entries without a stamped
-    /// `conversionType`. Treats an EPUB with a sibling .pdf at
-    /// the same basename as `.print` (the OCR pipeline's dominant
-    /// path); everything else as `.digital`. Imperfect but
-    /// good-enough for collections — the user can re-convert or
-    /// re-import to overwrite the stamp.
+    /// `conversionType`. An EPUB whose basename matches a PDF on
+    /// disk (somewhere reasonable) is `.print`; otherwise
+    /// `.digital`. Imperfect — the user can re-convert / re-import
+    /// to overwrite — but covers the common layouts:
+    ///
+    ///  * Sibling: PDF + EPUB in the same directory.
+    ///  * Configured output root: PDFs at `<root>/foo.pdf`,
+    ///    EPUBs at `<root>/Books/foo.epub` (the canonical layout
+    ///    when a configured output folder is set). Also accepts
+    ///    the `.split.pdf` variant Humanist's split-PDF tool
+    ///    emits, since `<root>/Books/foo.epub` was likely
+    ///    produced from `<root>/foo.split.pdf`.
     static func inferConversionType(for epubURL: URL) -> BookConversionType {
         let pdfSibling = epubURL
             .deletingPathExtension()
             .appendingPathExtension("pdf")
         if FileManager.default.fileExists(atPath: pdfSibling.path) {
             return .print
+        }
+        // Check at the configured output root — the
+        // PDFs-at-root + EPUBs-under-Books/ layout that most
+        // Humanist users have once an output folder is set.
+        if let root = ConversionOutputResolver.currentRoot() {
+            let basename = epubURL
+                .deletingPathExtension()
+                .lastPathComponent
+            // Direct match: <root>/<basename>.pdf
+            let direct = root
+                .appendingPathComponent(basename)
+                .appendingPathExtension("pdf")
+            if FileManager.default.fileExists(atPath: direct.path) {
+                return .print
+            }
+            // `.split` variant: the EPUB at
+            // `Books/Foo.split.epub` came from `Foo.split.pdf`,
+            // which itself was a split off `Foo.pdf`. Either is
+            // evidence of a print source.
+            let stripped = basename
+                .replacingOccurrences(of: ".split", with: "")
+            if stripped != basename {
+                let strippedPDF = root
+                    .appendingPathComponent(stripped)
+                    .appendingPathExtension("pdf")
+                if FileManager.default.fileExists(atPath: strippedPDF.path) {
+                    return .print
+                }
+            }
+            // Reverse: EPUB has no `.split` but the PDF does.
+            let splitPDF = root
+                .appendingPathComponent(basename + ".split")
+                .appendingPathExtension("pdf")
+            if FileManager.default.fileExists(atPath: splitPDF.path) {
+                return .print
+            }
         }
         return .digital
     }
@@ -281,6 +324,38 @@ final class LibraryStore: ObservableObject {
         else { return }
         entries[idx].genre = genre
         save()
+    }
+
+    /// R-Auto-Collections backfill mutator. Updates whichever
+    /// metadata fields are non-nil on `update`; leaves the rest
+    /// untouched. Used by the Refresh backfill flow to populate
+    /// missing author / title / conversionType from OPF re-reads
+    /// without overwriting fields that were already stamped.
+    /// Returns true when the entry actually changed.
+    @discardableResult
+    func backfillMetadata(
+        for entryID: UUID,
+        title: String? = nil,
+        author: String? = nil,
+        conversionType: BookConversionType? = nil
+    ) -> Bool {
+        guard let idx = entries.firstIndex(where: { $0.id == entryID })
+        else { return false }
+        var changed = false
+        if let title, !title.isEmpty, entries[idx].title != title {
+            entries[idx].title = title
+            changed = true
+        }
+        if let author, !author.isEmpty, entries[idx].author == nil {
+            entries[idx].author = author
+            changed = true
+        }
+        if let conversionType, entries[idx].conversionType != conversionType {
+            entries[idx].conversionType = conversionType
+            changed = true
+        }
+        if changed { save() }
+        return changed
     }
 
     /// Bump `lastOpened` for `epubURL`. No-op if the entry doesn't

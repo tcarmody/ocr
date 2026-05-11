@@ -99,6 +99,17 @@ struct LibraryWindowView: View {
     @State private var classifyDone: Bool = false
     @State private var classifyTask: Task<Void, Never>?
 
+    /// Progress state for the OPF-metadata backfill that runs
+    /// when the user clicks Refresh on a library with unstamped
+    /// authors / out-of-date conversionTypes. Same shape as the
+    /// classify state; separate so the two operations can run
+    /// independently and the UI can label each correctly.
+    @State private var showRefreshProgress: Bool = false
+    @State private var refreshCurrent: Int = 0
+    @State private var refreshTotal: Int = 0
+    @State private var refreshDone: Bool = false
+    @State private var refreshTask: Task<Void, Never>?
+
     var body: some View {
         HSplitView {
             if showCollectionsSidebar {
@@ -164,7 +175,15 @@ struct LibraryWindowView: View {
             )
         }
         .sheet(isPresented: $showClassifyProgress) {
-            ClassifyGenresProgressSheet(
+            AsyncWorkProgressSheet(
+                workingIcon: "wand.and.stars",
+                workingTitle: "Classifying Genres…",
+                doneTitle: "Classification Complete",
+                noopMessage: "No books needed classification — every entry already has a genre stamp.",
+                progressLabel: { c, t in "Book \(c) of \(t)" },
+                doneSummary: { c, t in
+                    "Classified \(c) of \(t) book\(t == 1 ? "" : "s"). Auto-collections refreshed."
+                },
                 current: classifyCurrent,
                 total: classifyTotal,
                 done: classifyDone,
@@ -174,6 +193,27 @@ struct LibraryWindowView: View {
                     showClassifyProgress = false
                 },
                 onDismiss: { showClassifyProgress = false }
+            )
+        }
+        .sheet(isPresented: $showRefreshProgress) {
+            AsyncWorkProgressSheet(
+                workingIcon: "arrow.triangle.2.circlepath",
+                workingTitle: "Reading Book Metadata…",
+                doneTitle: "Refresh Complete",
+                noopMessage: "Catalog metadata is already complete — collections refreshed.",
+                progressLabel: { c, t in "Book \(c) of \(t)" },
+                doneSummary: { c, t in
+                    "Updated \(c) of \(t) book\(t == 1 ? "" : "s") from OPF metadata. Auto-collections refreshed."
+                },
+                current: refreshCurrent,
+                total: refreshTotal,
+                done: refreshDone,
+                onCancel: {
+                    refreshTask?.cancel()
+                    refreshTask = nil
+                    showRefreshProgress = false
+                },
+                onDismiss: { showRefreshProgress = false }
             )
         }
         .sheet(item: $renameContext) { ctx in
@@ -240,6 +280,46 @@ struct LibraryWindowView: View {
         )
         if !showChatPane {
             showChatPane = true
+        }
+    }
+
+    /// R-Auto-Collections. Refresh runs the OPF metadata
+    /// backfill first (cheap re-evaluation of conversionType
+    /// from a smarter heuristic, plus expensive author/title
+    /// reads from OPF for entries that don't have an author
+    /// stamp yet), then regenerates auto-collections. For a
+    /// fresh library where every entry's already stamped, this
+    /// is fast — the candidates filter returns empty and the
+    /// refresh runs synchronously. For a 1000+ book library
+    /// that came from earlier-version data, the backfill is
+    /// slow (per-book EPUB unzip) — surfaces via a progress
+    /// sheet with cancel.
+    private func startRefresh() {
+        // Cheap path: if nothing to backfill, just regenerate
+        // collections synchronously without showing a sheet.
+        let candidates = library.entries.filter {
+            $0.author == nil || $0.conversionType == .digital
+        }
+        if candidates.isEmpty {
+            LibraryAutoCollections.refresh(library: library)
+            return
+        }
+        refreshCurrent = 0
+        refreshTotal = candidates.count
+        refreshDone = false
+        showRefreshProgress = true
+        refreshTask?.cancel()
+        refreshTask = Task {
+            _ = await LibraryAutoCollections.backfillMissingMetadata(
+                library: library,
+                progress: { current, total in
+                    refreshCurrent = current
+                    refreshTotal = total
+                }
+            )
+            LibraryAutoCollections.refresh(library: library)
+            refreshDone = true
+            refreshTask = nil
         }
     }
 
@@ -518,12 +598,12 @@ struct LibraryWindowView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    LibraryAutoCollections.refresh(library: library)
+                    startRefresh()
                 } label: {
                     Image(systemName: "arrow.triangle.2.circlepath")
                 }
                 .buttonStyle(.borderless)
-                .help("Refresh auto-generated collections (by Type, by Author, by Genre).")
+                .help("Refresh auto-collections. Reads OPF metadata from books that need an author or up-to-date Type stamp, then regenerates the by-Type / by-Author / by-Genre buckets. Use Classify (wand icon) to add genres via on-device AFM.")
                 Button {
                     startClassifyMissingGenres()
                 } label: {
@@ -960,12 +1040,20 @@ private struct RenameCollectionSheet: View {
     }
 }
 
-/// R-Auto-Collections Phase 2 progress sheet for the
-/// classify-missing-genres backfill. Sibling to
-/// `LibraryIndexProgressSheet` and `ImportEPUBProgressSheet` —
-/// same shape: progress bar + counter + cancel during the run,
-/// Done button afterward.
-private struct ClassifyGenresProgressSheet: View {
+/// R-Auto-Collections shared progress sheet. Same shape as
+/// `LibraryIndexProgressSheet` / `ImportEPUBProgressSheet` —
+/// progress bar + counter + cancel during the run, Done button
+/// after. Parameterized so both the Refresh (OPF metadata
+/// backfill) and Classify (AFM genre) flows can reuse it
+/// without duplicating SwiftUI.
+private struct AsyncWorkProgressSheet: View {
+    let workingIcon: String
+    let workingTitle: String
+    let doneTitle: String
+    let noopMessage: String
+    let progressLabel: (Int, Int) -> String
+    let doneSummary: (Int, Int) -> String
+
     let current: Int
     let total: Int
     let done: Bool
@@ -975,25 +1063,26 @@ private struct ClassifyGenresProgressSheet: View {
     var body: some View {
         VStack(spacing: 16) {
             HStack(spacing: 8) {
-                Image(systemName: done ? "checkmark.circle.fill" : "wand.and.stars")
-                    .foregroundStyle(done ? .green : .accentColor)
+                Image(systemName: done ? "checkmark.circle.fill" : workingIcon)
+                    .foregroundStyle(done ? .green : Color.accentColor)
                     .font(.title2)
-                Text(done ? "Classification Complete" : "Classifying Genres…")
+                Text(done ? doneTitle : workingTitle)
                     .font(.headline)
                 Spacer()
             }
             if total == 0 {
-                Text("No books needed classification — every entry already has a genre stamp.")
+                Text(noopMessage)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if done {
-                Text("Classified \(current) of \(total) book\(total == 1 ? "" : "s"). Auto-collections refreshed.")
+                Text(doneSummary(current, total))
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 ProgressView(value: Double(current), total: Double(max(total, 1)))
-                Text("Book \(current) of \(total)")
+                Text(progressLabel(current, total))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

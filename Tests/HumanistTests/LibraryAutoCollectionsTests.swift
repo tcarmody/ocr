@@ -360,6 +360,140 @@ final class LibraryAutoCollectionsTests: XCTestCase {
         XCTAssertEqual(store.entries[0].genre, .philosophy)
     }
 
+    // MARK: - Improved conversionType heuristic
+
+    func test_inferConversionType_detects_sibling_PDF() {
+        // EPUB + matching PDF in the same directory → .print
+        let url = tempDir.appendingPathComponent("book.epub")
+        try? Data().write(to: url)
+        try? Data().write(to: tempDir.appendingPathComponent("book.pdf"))
+        XCTAssertEqual(
+            LibraryStore.inferConversionType(for: url),
+            .print
+        )
+    }
+
+    func test_inferConversionType_detects_PDF_at_outputRoot() {
+        // EPUB at <root>/Books/foo.epub + PDF at <root>/foo.pdf
+        // → .print. This is the layout actual Humanist libraries
+        // end up with once an output folder is set.
+        let root = tempDir.appendingPathComponent("Library")
+        let books = root.appendingPathComponent("Books")
+        try? FileManager.default.createDirectory(
+            at: books, withIntermediateDirectories: true
+        )
+        UserDefaults.standard.set(root.path,
+            forKey: ConversionSettingsKeys.outputFolderPath)
+        defer {
+            UserDefaults.standard.removeObject(
+                forKey: ConversionSettingsKeys.outputFolderPath
+            )
+        }
+
+        let pdf = root.appendingPathComponent("foo.pdf")
+        let epub = books.appendingPathComponent("foo.epub")
+        try? Data().write(to: pdf)
+        try? Data().write(to: epub)
+
+        XCTAssertEqual(
+            LibraryStore.inferConversionType(for: epub),
+            .print,
+            "should find PDF at root when EPUB is in Books/"
+        )
+    }
+
+    func test_inferConversionType_handles_split_PDF_variant() {
+        // EPUB basename has no .split, but the source PDF was
+        // named foo.split.pdf (Humanist's split-PDF tool output).
+        let root = tempDir.appendingPathComponent("Library")
+        let books = root.appendingPathComponent("Books")
+        try? FileManager.default.createDirectory(
+            at: books, withIntermediateDirectories: true
+        )
+        UserDefaults.standard.set(root.path,
+            forKey: ConversionSettingsKeys.outputFolderPath)
+        defer {
+            UserDefaults.standard.removeObject(
+                forKey: ConversionSettingsKeys.outputFolderPath
+            )
+        }
+
+        let splitPDF = root.appendingPathComponent("foo.split.pdf")
+        let epub = books.appendingPathComponent("foo.epub")
+        try? Data().write(to: splitPDF)
+        try? Data().write(to: epub)
+
+        XCTAssertEqual(
+            LibraryStore.inferConversionType(for: epub),
+            .print,
+            "should recognize the .split.pdf source-PDF variant"
+        )
+    }
+
+    func test_inferConversionType_falls_back_to_digital_when_no_PDF() {
+        let root = tempDir.appendingPathComponent("Library")
+        let books = root.appendingPathComponent("Books")
+        try? FileManager.default.createDirectory(
+            at: books, withIntermediateDirectories: true
+        )
+        UserDefaults.standard.set(root.path,
+            forKey: ConversionSettingsKeys.outputFolderPath)
+        defer {
+            UserDefaults.standard.removeObject(
+                forKey: ConversionSettingsKeys.outputFolderPath
+            )
+        }
+        let epub = books.appendingPathComponent("foo.epub")
+        try? Data().write(to: epub)
+        XCTAssertEqual(
+            LibraryStore.inferConversionType(for: epub),
+            .digital
+        )
+    }
+
+    // MARK: - backfillMetadata mutator
+
+    func test_backfillMetadata_only_writes_nonnil_changed_fields() {
+        let store = makeStore()
+        addEntry(store, title: "Old", type: .print)
+        let id = store.entries[0].id
+
+        // nil author → no change
+        let changed1 = store.backfillMetadata(for: id, author: nil)
+        XCTAssertFalse(changed1)
+        XCTAssertNil(store.entries[0].author)
+
+        // setting author → change
+        let changed2 = store.backfillMetadata(for: id, author: "Foucault")
+        XCTAssertTrue(changed2)
+        XCTAssertEqual(store.entries[0].author, "Foucault")
+
+        // re-setting same author → no change
+        let changed3 = store.backfillMetadata(for: id, author: "Foucault")
+        XCTAssertFalse(changed3)
+    }
+
+    func test_backfillMetadata_preserves_existing_author_against_overwrite() {
+        // If an entry already has an author stamp, backfill
+        // doesn't replace it — the user might have edited or the
+        // earlier stamp came from a more authoritative source.
+        let store = makeStore()
+        addEntry(store, title: "X", author: "Original", type: .print)
+        let id = store.entries[0].id
+        let changed = store.backfillMetadata(for: id, author: "Different")
+        XCTAssertFalse(changed)
+        XCTAssertEqual(store.entries[0].author, "Original")
+    }
+
+    func test_backfillMetadata_updates_conversionType_when_provided() {
+        let store = makeStore()
+        addEntry(store, title: "X", type: .digital)
+        let id = store.entries[0].id
+        let changed = store.backfillMetadata(for: id, conversionType: .print)
+        XCTAssertTrue(changed)
+        XCTAssertEqual(store.entries[0].conversionType, .print)
+    }
+
     func test_LibraryEntry_decodes_legacy_JSON_without_genre() {
         // Pre-Phase-2 JSON has no `genre` key. decodeIfPresent
         // should leave it nil so existing libraries open clean.

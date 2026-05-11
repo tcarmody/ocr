@@ -178,6 +178,72 @@ enum LibraryAutoCollections {
             }
     }
 
+    // MARK: - Metadata backfill (author + title + conversionType re-stamp)
+
+    /// Walk every entry that's missing an author stamp (the
+    /// dominant gap for a library that pre-dates AFM metadata
+    /// extraction), open each EPUB, read OPF metadata, and save
+    /// title + author back to the catalog. Also re-runs the
+    /// conversionType heuristic for entries currently stamped
+    /// `.digital` — the v1 heuristic only checked sibling PDFs,
+    /// which missed the common "PDFs at root, EPUBs in Books/"
+    /// layout. Idempotent: re-runs on already-populated entries
+    /// are no-ops.
+    ///
+    /// Cancellable mid-walk via `Task.checkCancellation()`. The
+    /// progress callback fires after each book — drives a
+    /// progress sheet in the caller.
+    @discardableResult
+    static func backfillMissingMetadata(
+        library: LibraryStore,
+        progress: (@MainActor (Int, Int) -> Void)? = nil
+    ) async -> Int {
+        let candidates = library.entries.filter {
+            $0.author == nil || $0.conversionType == .digital
+        }
+        let total = candidates.count
+        guard total > 0 else { return 0 }
+        var updated = 0
+        for (idx, entry) in candidates.enumerated() {
+            if Task.isCancelled { break }
+            await progress?(idx, total)
+            // Re-evaluate conversionType from the smarter
+            // heuristic before opening the EPUB — cheap, no I/O
+            // beyond fileExists checks.
+            let inferredType = await MainActor.run {
+                LibraryStore.inferConversionType(for: entry.epubURL)
+            }
+            let didChangeType = inferredType != .digital
+                && entry.conversionType == .digital
+
+            // Open + read OPF only if author is missing. Heavy
+            // (full unzip) but reliable; iCloud's lazy download
+            // pays the per-file cost on first access either way.
+            var titleFromOPF: String? = nil
+            var authorFromOPF: String? = nil
+            if entry.author == nil {
+                if let book = try? EPUBBook.open(epubURL: entry.epubURL) {
+                    titleFromOPF = book.metadata.title?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    authorFromOPF = book.metadata.author?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+
+            let changed = await MainActor.run {
+                library.backfillMetadata(
+                    for: entry.id,
+                    title: titleFromOPF,
+                    author: authorFromOPF,
+                    conversionType: didChangeType ? inferredType : nil
+                )
+            }
+            if changed { updated += 1 }
+        }
+        await progress?(total, total)
+        return updated
+    }
+
     // MARK: - Genre backfill
 
     /// R-Auto-Collections Phase 2. Walk every catalog entry
