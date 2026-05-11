@@ -61,6 +61,13 @@ final class EPUBImporter: ObservableObject {
     @Published private(set) var failures: [Failure] = []
     /// Successfully-imported destination URLs in import order.
     @Published private(set) var imported: [URL] = []
+    /// Books skipped because their destination already had an EPUB
+    /// + a catalog row + (when indexing is requested) a matching
+    /// sidecar. Surfaced separately from `imported` so the user
+    /// can tell "I re-ran a batch after interruption" apart from
+    /// "all my books are fresh imports." Critical at 1000-book
+    /// scale where partial re-runs are common.
+    @Published private(set) var skippedExisting: Int = 0
 
     struct Failure: Identifiable {
         let id = UUID()
@@ -106,10 +113,17 @@ final class EPUBImporter: ObservableObject {
     /// built against the right vector space. Nil skips the indexing
     /// step (book still appears in the catalog; chat won't retrieve
     /// from it until a separate index pass runs).
+    ///
+    /// `skipIndexing` is the explicit "don't build sidecars now"
+    /// flag — useful for large batches where the user prefers to
+    /// run the bulk-index command overnight separately. Defaults
+    /// to off so single-import / small-batch behavior is
+    /// unchanged.
     func start(
         sources: [URL],
         library: LibraryStore,
-        indexBackend: (any EmbeddingBackend)?
+        indexBackend: (any EmbeddingBackend)?,
+        skipIndexing: Bool = false
     ) {
         guard status != .running else { return }
         status = .running
@@ -118,7 +132,14 @@ final class EPUBImporter: ObservableObject {
         currentTitle = ""
         failures = []
         imported = []
+        skippedExisting = 0
         let store = EmbeddingsSidecarStore()
+        // Snapshot effective backend up front. When the user
+        // requested skipIndexing, drop the backend entirely so
+        // downstream code stays a single path (one knob instead of
+        // two interacting flags).
+        let effectiveBackend: (any EmbeddingBackend)? = skipIndexing
+            ? nil : indexBackend
         task = Task { [weak self] in
             for (idx, source) in sources.enumerated() {
                 if Task.isCancelled { break }
@@ -131,12 +152,21 @@ final class EPUBImporter: ObservableObject {
                     let result = try await Self.importOne(
                         source: source,
                         library: library,
-                        backend: indexBackend,
+                        backend: effectiveBackend,
                         sidecarStore: store
                     )
                     await MainActor.run {
-                        self?.imported.append(result.destinationURL)
+                        if result.alreadyImported {
+                            self?.skippedExisting += 1
+                        } else {
+                            self?.imported.append(result.destinationURL)
+                        }
                     }
+                } catch is CancellationError {
+                    // Mid-book cancel — bubble out of the loop.
+                    // The task-cancel branch in the completion
+                    // block handles status transitions.
+                    break
                 } catch {
                     await MainActor.run {
                         self?.failures.append(Failure(
@@ -211,14 +241,20 @@ final class EPUBImporter: ObservableObject {
     // MARK: - Per-book orchestration
 
     /// Per-book result. Surfaces the destination URL for the catalog
-    /// row + caller's success accounting.
+    /// row + a flag distinguishing fresh imports from skipped re-runs.
     private struct ImportResult {
         let destinationURL: URL
+        let alreadyImported: Bool
     }
 
     /// Open + anchor + save + repack + catalog + index in one shot.
     /// Pure async; no UI work. The caller (`start`) does the
     /// main-actor progress publishing around each call.
+    ///
+    /// Throws `CancellationError` when the task is cancelled
+    /// between major steps, so a user pressing Cancel mid-batch
+    /// can stop within seconds rather than waiting for the
+    /// current book's full pipeline to finish.
     private static func importOne(
         source: URL,
         library: LibraryStore,
@@ -229,6 +265,26 @@ final class EPUBImporter: ObservableObject {
             throw ImportError.sourceMissing(source)
         }
 
+        // 0. Quick-skip path: resolve where the import would land,
+        // then short-circuit when (a) a real EPUB already exists
+        // at that path AND (b) the catalog already lists it AND
+        // (c) either we're not indexing or the sidecar already
+        // matches the configured backend. At 1000-book scale this
+        // turns "re-run after interruption" from hours-of-rework
+        // into seconds-of-FS-checks.
+        let destination = try await MainActor.run {
+            try Self.destinationURL(for: source, library: library)
+        }
+        if await shouldSkipExistingImport(
+            destination: destination,
+            library: library,
+            backend: backend,
+            sidecarStore: sidecarStore
+        ) {
+            return ImportResult(destinationURL: destination, alreadyImported: true)
+        }
+        try Task.checkCancellation()
+
         // 1. Open via the EPUBBook in-memory model. Unzips into a
         // temp directory; the book owns its lifecycle.
         let book: EPUBBook
@@ -237,22 +293,24 @@ final class EPUBImporter: ObservableObject {
         } catch {
             throw ImportError.openFailed(underlying: error)
         }
+        try Task.checkCancellation()
 
         // 2. Inject paragraph anchors. Idempotent — already-anchored
         // books pass through unchanged. Marks touched resources
         // dirty so the saver flushes them.
         _ = ParagraphAnchorInjector.injectAnchors(in: book)
+        try Task.checkCancellation()
 
         // 2.5. Optional AFM metadata pass. Reads the user's
         // `localMetadataExtraction` toggle off the same AISettings
         // snapshot the conversion pipeline reads; gated on AFM
         // availability + a non-stub front-matter. Writes title +
-        // author into `book.metadata` (which then round-trips
-        // through `EPUBBookSaver.updateMetadataInPlace`). Year /
-        // publisher / ISBN aren't part of `OPFReader.Metadata`
-        // today — a future iteration that extends the model can
-        // round-trip those fields too.
+        // author + year + publisher + ISBN into `book.metadata`;
+        // the saver upserts each `<dc:*>` field on flush. ISBN
+        // adds as a separate `<dc:identifier>` so the package's
+        // unique-identifier stays untouched.
         await runMetadataExtraction(on: book)
+        try Task.checkCancellation()
 
         // 2.6. Optional AFM chapter classification. For each spine
         // resource: build a minimal Chapter (title + opening
@@ -263,6 +321,7 @@ final class EPUBImporter: ObservableObject {
         // `BodyTypeInjector` doc for the conservative posture
         // rationale.
         await runChapterClassification(on: book)
+        try Task.checkCancellation()
 
         // 3. Save dirty resources back into the working directory.
         // No-ops cleanly when nothing changed (e.g. re-import).
@@ -272,13 +331,10 @@ final class EPUBImporter: ObservableObject {
             throw ImportError.saveFailed(underlying: error)
         }
 
-        // 4. Pick a destination URL inside the library's Books
-        // folder. Collisions resolve via `(2)` / `(3)` etc.
-        let destination = try await MainActor.run {
-            try Self.destinationURL(for: source, library: library)
-        }
-
-        // 5. Repack working directory → destination EPUB.
+        // 5. Repack working directory → destination EPUB. (Step
+        // numbering preserves the v1 commentary; destination
+        // resolution moved earlier as part of the skip-existing
+        // short-circuit so the path is decided before any work.)
         do {
             try EPUBRepacker().repack(
                 workingDirectory: book.workingDirectory,
@@ -287,6 +343,7 @@ final class EPUBImporter: ObservableObject {
         } catch {
             throw ImportError.repackFailed(underlying: error)
         }
+        try Task.checkCancellation()
 
         // 6. Catalog. Title + language come from the OPF (resolved
         // via the in-memory book's metadata). `recordConversion`
@@ -315,7 +372,44 @@ final class EPUBImporter: ObservableObject {
             )
         }
 
-        return ImportResult(destinationURL: destination)
+        return ImportResult(destinationURL: destination, alreadyImported: false)
+    }
+
+    /// Decide whether a source can short-circuit the full import
+    /// pipeline. Returns true only when ALL three conditions hold:
+    ///   * a real file exists at `destination`,
+    ///   * the catalog already lists a row pointing at it,
+    ///   * either no backend was requested (caller is in
+    ///     skip-indexing mode) OR the persisted sidecar matches
+    ///     the requested backend's identifier + dimension and is
+    ///     non-empty.
+    /// Exposed `internal` for tests; not part of the importer's
+    /// public surface.
+    static func shouldSkipExistingImport(
+        destination: URL,
+        library: LibraryStore,
+        backend: (any EmbeddingBackend)?,
+        sidecarStore: EmbeddingsSidecarStore
+    ) async -> Bool {
+        guard FileManager.default.fileExists(atPath: destination.path)
+        else { return false }
+        let canonicalDest = destination.canonicalForFile
+        let cataloged = await MainActor.run {
+            library.entries.contains {
+                $0.epubURL.canonicalForFile == canonicalDest
+            }
+        }
+        guard cataloged else { return false }
+        guard let backend else {
+            // skip-indexing path — file + catalog row is enough.
+            return true
+        }
+        guard let sidecar = sidecarStore.read(for: destination),
+              sidecar.backendIdentifier == backend.identifier,
+              sidecar.dimension == backend.dimension,
+              !sidecar.paragraphs.isEmpty
+        else { return false }
+        return true
     }
 
     // MARK: - AFM metadata pass

@@ -11,6 +11,9 @@ struct ConversionSettingsView: View {
     @AppStorage(ConversionSettingsKeys.autoScanInputFolder)
     private var autoScanInputFolder: Bool = false
 
+    @AppStorage(ConversionSettingsKeys.skipIndexingOnImport)
+    private var skipIndexingOnImport: Bool = false
+
     // Conversion defaults — read by `QueueViewModel.init` on launch
     // to seed the launcher's per-conversion toggles. Same UserDefaults
     // domain is read by `Scripts/auto-scan-input.sh` to pass
@@ -59,6 +62,18 @@ struct ConversionSettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+            Section("EPUB import") {
+                Toggle(
+                    "Skip embedding index build on import",
+                    isOn: $skipIndexingOnImport
+                )
+                Text("""
+                    Useful for bulk imports (hundreds or thousands of books): the importer still injects paragraph anchors, runs on-device metadata + chapter classification, and catalogs each book — but skips the per-book embedding sidecar build that library chat needs for retrieval. Run *Build Missing Indexes* from the Library window (Refresh menu) once the import finishes to fill the sidecars in overnight.
+                    """)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(20)

@@ -253,6 +253,11 @@ struct LibraryWindowView: View {
             importError = "No `.epub` files found in the selection."
             return
         }
+        // Read the skip-indexing toggle at start-time so a mid-
+        // batch Settings change doesn't reshape an in-flight run.
+        let skipIndexing = UserDefaults.standard.bool(
+            forKey: ConversionSettingsKeys.skipIndexingOnImport
+        )
         Task {
             // Backend resolution is best-effort. Imports proceed
             // either way; the user sees a friendly note on the
@@ -261,7 +266,8 @@ struct LibraryWindowView: View {
             importer.start(
                 sources: sources,
                 library: library,
-                indexBackend: resolution.backend
+                indexBackend: resolution.backend,
+                skipIndexing: skipIndexing
             )
             showImportProgress = true
         }

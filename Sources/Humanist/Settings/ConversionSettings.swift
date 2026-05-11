@@ -14,6 +14,14 @@ public enum ConversionSettingsKeys {
     /// current default settings. Effective only when an output root
     /// is configured — no root means no `Input/` folder to watch.
     public static let autoScanInputFolder = "humanist.conversion.autoScanInputFolder"
+    /// When true, `EPUBImporter.start` is invoked with
+    /// `skipIndexing: true` — the import path runs through anchor
+    /// injection + AFM metadata + chapter classification + catalog
+    /// but skips the embedding-sidecar build. Useful for bulk
+    /// imports (hundreds–thousands of books) where the user prefers
+    /// to run the bulk-index command overnight separately rather
+    /// than block the import on per-book embedding work.
+    public static let skipIndexingOnImport = "humanist.conversion.skipIndexingOnImport"
 
     /// Initial values for the launcher's per-conversion toggles.
     /// `QueueViewModel.init` seeds its `@Published` properties from

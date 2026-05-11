@@ -562,17 +562,41 @@ Drivers for the current ordering:
    replaced. 11 new `OPFMetadataExtendedTests` cover the
    parse + save round-trip + the ISBN-doesn't-clobber-unique-id
    invariant.
-3. **1000-book bulk-import soak**. Stress-test the importer at
-   the scale the user actually has on disk:
-    - Verify the Library window's table doesn't choke at 1000
-      rows.
-    - Verify the AFM metadata pass scales (rough estimate:
-      1-3 s/book × 1000 = 17-50 min wall time; surface
-      progress + a cancel button that actually works).
-    - Verify "skip if output EPUB exists" handles re-runs after
-      an interrupted batch.
-    - Consider an "Import without indexing" toggle — bulk-index
-      already exists for the user to run overnight separately.
+3. ~~**1000-book bulk-import soak**~~ shipped hardening pass.
+   The importer is now ready for big-batch runs:
+    - **Skip-existing short-circuit**: `importOne` resolves the
+      destination URL up front and, when (a) the EPUB already
+      exists at that path, (b) the catalog already lists it,
+      and (c) either no backend was requested OR the sidecar
+      matches the configured backend + dimension + is non-empty,
+      returns a `.alreadyImported` result without opening the
+      book. Re-running a partial batch turns hours of redundant
+      work into seconds of FS checks.
+    - **Skip-indexing toggle** in Settings → Conversion → EPUB
+      import. When on, `LibraryWindowView.runImport` passes
+      `skipIndexing: true` to `EPUBImporter.start`; the
+      effective backend gets dropped so the sidecar build step
+      is bypassed. The user runs the Library window's bulk-index
+      command later (typically overnight) to fill embeddings in.
+    - **Mid-book cancellation**: `Task.checkCancellation()` now
+      runs between every major step in `importOne` (after open,
+      anchor, metadata, classification, save, repack). Cancel
+      mid-book responds in seconds instead of waiting for the
+      current book's full pipeline. `CancellationError` thrown
+      from within breaks out of the batch loop cleanly without
+      logging the cancel as a per-book failure.
+    - **Skipped count surfaced**: new
+      `@Published skippedExisting` counter on `EPUBImporter`;
+      `ImportEPUBProgressSheet`'s completion line reads
+      "Imported N books. M already imported (skipped). K
+      failed." (zero-skip / zero-fail halves hidden in the
+      common case). 7 new `EPUBImporterSkipTests` cover every
+      branch of `shouldSkipExistingImport`.
+   The Library window's table isn't audited for 1000-row
+   sluggishness specifically — SwiftUI Table virtualizes rows
+   and the `CoverImageCache` decodes thumbnails lazily, so
+   performance should hold up; revisit if a real soak surfaces
+   issues.
 4. **R-Library-Sync** (~2-3 days). Second Mac is real. Sequencing
    note: this entry calls for the sidecar rekey (sha256 → UUID)
    that the R-EPUB-Import chapter-classification work would

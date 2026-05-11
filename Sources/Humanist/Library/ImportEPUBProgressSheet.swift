@@ -62,13 +62,11 @@ struct ImportEPUBProgressSheet: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             case .completed:
-                let imported = importer.imported.count
-                let failed = importer.failures.count
-                Text("Imported \(imported) book\(imported == 1 ? "" : "s"). \(failed) failed.")
+                Text(summaryText(prefix: "Imported"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             case .cancelled:
-                Text("Cancelled at book \(importer.current) of \(importer.total).")
+                Text("Cancelled at book \(importer.current) of \(importer.total). " + summaryText(prefix: "Imported"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             case .failed(let message):
@@ -77,6 +75,22 @@ struct ImportEPUBProgressSheet: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    /// One-line counter that reads naturally whether or not the
+    /// run had skips or failures. Hides the zero-skip / zero-fail
+    /// halves so the common case ("imported N books.") stays
+    /// crisp.
+    private func summaryText(prefix: String) -> String {
+        let imported = importer.imported.count
+        var line = "\(prefix) \(imported) book\(imported == 1 ? "" : "s")."
+        if importer.skippedExisting > 0 {
+            line += " \(importer.skippedExisting) already imported (skipped)."
+        }
+        if !importer.failures.isEmpty {
+            line += " \(importer.failures.count) failed."
+        }
+        return line
     }
 
     @ViewBuilder
