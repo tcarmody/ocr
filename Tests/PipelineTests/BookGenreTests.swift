@@ -109,6 +109,8 @@ final class BookGenreTests: XCTestCase {
         XCTAssertTrue(BookGenre.allCases.contains(.scienceLifeSciences))
         XCTAssertTrue(BookGenre.allCases.contains(.philosophy))
         XCTAssertTrue(BookGenre.allCases.contains(.fictionFantasy))
+        XCTAssertTrue(BookGenre.allCases.contains(.literaryCriticism))
+        XCTAssertTrue(BookGenre.allCases.contains(.literaryTheory))
         XCTAssertTrue(BookGenre.allCases.contains(.uncategorized))
     }
 

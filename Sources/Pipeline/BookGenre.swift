@@ -52,6 +52,8 @@ public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
     case history
     case biographyMemoir
     case linguistics
+    case literaryCriticism  // close readings, author studies, period studies
+    case literaryTheory     // structuralism, post-structuralism, hermeneutics, etc.
     case arts  // art history, criticism, music, performing arts
 
     // MARK: - Social Sciences
@@ -96,6 +98,8 @@ public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
         case .history: return "History"
         case .biographyMemoir: return "Biography & Memoir"
         case .linguistics: return "Linguistics"
+        case .literaryCriticism: return "Literary Criticism"
+        case .literaryTheory: return "Literary Theory"
         case .arts: return "Arts"
         case .socialScienceEconomics, .socialSciencePolitics,
              .socialSciencePsychology, .socialScienceGeneral:

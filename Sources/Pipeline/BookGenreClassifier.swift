@@ -79,7 +79,9 @@ public struct BookGenreClassifier: Sendable {
         case technologyComputing, technologyEngineering, technologyGeneral
         // Humanities
         case philosophy, religion, history
-        case biographyMemoir, linguistics, arts
+        case biographyMemoir, linguistics
+        case literaryCriticism, literaryTheory
+        case arts
         // Social Sciences
         case socialScienceEconomics, socialSciencePolitics
         case socialSciencePsychology, socialScienceGeneral
@@ -126,7 +128,7 @@ public struct BookGenreClassifier: Sendable {
           * Mathematics — algebra, calculus, geometry, statistics, number theory, etc.
           * Science sub-genres: Physics, Chemistry, Life Sciences (biology, medicine, ecology), Earth & Astronomy (geology, oceanography, astronomy), General (popular / multi-disciplinary science).
           * Technology sub-genres: Computing (programming, software, CS, AI), Engineering (mechanical, electrical, civil), General (broader tech / industry / how-things-work).
-          * Philosophy, Religion, History, Biography & Memoir, Linguistics, Arts (art history / criticism / music / performing arts).
+          * Philosophy, Religion, History, Biography & Memoir, Linguistics, Literary Criticism (close readings of specific authors / works / periods), Literary Theory (structuralism, post-structuralism, hermeneutics, narratology, reader-response, etc.), Arts (art history / criticism of visual or performing arts / music).
           * Social Science sub-genres: Economics, Politics, Psychology, General (sociology, anthropology, etc.).
           * Reference (dictionaries, encyclopedias, manuals), Education (textbooks, study guides), How-to (cookbooks, hobby manuals, self-help, practical guides), Travel, Children's books.
 
@@ -136,6 +138,8 @@ public struct BookGenreClassifier: Sendable {
           * A memoir by a scientist → Biography & Memoir — not Science.
           * A technical-manual cookbook → How-to — not Reference.
           * Poetry collections → Poetry — even when the author is a philosopher or scientist.
+          * A close reading of a specific novel / poet / period → Literary Criticism. A book *about* how to read literature in general, or about a theoretical school (Derrida on grammatology, Iser on reception, etc.) → Literary Theory. When in doubt between the two, pick Literary Criticism for author-focused or work-focused studies and Literary Theory for method-focused or framework-focused work.
+          * Philosophy of language / aesthetics that treats literature only incidentally → Philosophy. Reserve Literary Theory for books where the analysis of literature is the primary object.
           * When in doubt between a specific sub-genre and the family's *General, pick *General — better a slightly less specific tag than a wrong specific one.
 
         Pick `uncategorized` ONLY when no case fits at all. Never guess between unrelated genres; never invent labels.
