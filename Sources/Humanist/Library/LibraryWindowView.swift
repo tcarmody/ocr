@@ -466,6 +466,13 @@ struct LibraryWindowView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
+                    LibraryAutoCollections.refresh(library: library)
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh auto-generated collections (by Type, by Author).")
+                Button {
                     newCollectionSheet = NewCollectionContext(memberIDs: [])
                 } label: {
                     Image(systemName: "plus")
@@ -485,9 +492,37 @@ struct LibraryWindowView: View {
                     .contextMenu {
                         Button("Show All Books") { activeCollectionID = nil }
                     }
-                if !library.collections.isEmpty {
+                let userCollections = library.collections
+                    .filter { $0.autoSource == nil }
+                let autoByType = library.collections
+                    .filter {
+                        if case .byType = $0.autoSource { return true }
+                        return false
+                    }
+                let autoByAuthor = library.collections
+                    .filter {
+                        if case .byAuthor = $0.autoSource { return true }
+                        return false
+                    }
+                if !userCollections.isEmpty {
                     Section("My Collections") {
-                        ForEach(library.collections) { collection in
+                        ForEach(userCollections) { collection in
+                            collectionRow(collection)
+                                .tag(UUID?.some(collection.id))
+                        }
+                    }
+                }
+                if !autoByType.isEmpty {
+                    Section("Auto: by Type") {
+                        ForEach(autoByType) { collection in
+                            collectionRow(collection)
+                                .tag(UUID?.some(collection.id))
+                        }
+                    }
+                }
+                if !autoByAuthor.isEmpty {
+                    Section("Auto: by Author") {
+                        ForEach(autoByAuthor) { collection in
                             collectionRow(collection)
                                 .tag(UUID?.some(collection.id))
                         }
@@ -512,22 +547,28 @@ struct LibraryWindowView: View {
                     .monospacedDigit()
             }
         } icon: {
-            Image(systemName: "rectangle.stack")
+            Image(systemName: collection.rowIcon)
         }
         .contextMenu {
             Button("Chat with This Collection") {
                 chatWithCollection(collection)
             }
             .disabled(collection.bookIDs.isEmpty)
-            Divider()
-            Button("Rename…") {
-                renameContext = RenameContext(id: collection.id, name: collection.name)
-            }
-            Button("Delete", role: .destructive) {
-                if activeCollectionID == collection.id {
-                    activeCollectionID = nil
+            // Rename + Delete don't apply to auto-collections —
+            // a refresh would regenerate them. Hide the menu items
+            // when the collection has an autoSource so the user
+            // doesn't reach for an action that won't stick.
+            if collection.autoSource == nil {
+                Divider()
+                Button("Rename…") {
+                    renameContext = RenameContext(id: collection.id, name: collection.name)
                 }
-                library.deleteCollection(collection.id)
+                Button("Delete", role: .destructive) {
+                    if activeCollectionID == collection.id {
+                        activeCollectionID = nil
+                    }
+                    library.deleteCollection(collection.id)
+                }
             }
         }
     }

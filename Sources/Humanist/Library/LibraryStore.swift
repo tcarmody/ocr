@@ -97,6 +97,22 @@ final class LibraryStore: ObservableObject {
         } else {
             return
         }
+        // R-Auto-Collections Phase 1: backfill conversionType on
+        // legacy entries that pre-date the stamping. Cheap
+        // heuristic: an EPUB with a .pdf sibling at the same
+        // basename was almost certainly produced via the OCR
+        // pipeline (.print is the dominant case; manuscript +
+        // early-print are rare enough that the user can re-
+        // convert + restamp if they care). No sibling PDF →
+        // .digital (imported or document-ingest). Re-stamping
+        // happens automatically as soon as the user re-converts
+        // / re-imports the book.
+        loadedEntries = loadedEntries.map { entry in
+            guard entry.conversionType == nil else { return entry }
+            var copy = entry
+            copy.conversionType = Self.inferConversionType(for: entry.epubURL)
+            return copy
+        }
         // R-Library-Sync resolution: when sharing is on + the
         // entry has a `relativePath`, rewrite the in-memory
         // `epubURL` to the current machine's `<root>/<relativePath>`
@@ -130,6 +146,22 @@ final class LibraryStore: ObservableObject {
             // pruned wrapper back so the next launch starts clean.
             save()
         }
+    }
+
+    /// Heuristic backfill for legacy entries without a stamped
+    /// `conversionType`. Treats an EPUB with a sibling .pdf at
+    /// the same basename as `.print` (the OCR pipeline's dominant
+    /// path); everything else as `.digital`. Imperfect but
+    /// good-enough for collections — the user can re-convert or
+    /// re-import to overwrite the stamp.
+    static func inferConversionType(for epubURL: URL) -> BookConversionType {
+        let pdfSibling = epubURL
+            .deletingPathExtension()
+            .appendingPathExtension("pdf")
+        if FileManager.default.fileExists(atPath: pdfSibling.path) {
+            return .print
+        }
+        return .digital
     }
 
     /// Rewrite `entry.epubURL` to point at the current machine's
@@ -189,10 +221,20 @@ final class LibraryStore: ObservableObject {
 
     /// Record a successful conversion. If the same `epubURL` is
     /// already in the library (re-conversion), update its title +
-    /// languages in place rather than duplicating; the original
-    /// `addedAt` is preserved so the row's history is honest.
+    /// languages + (when supplied) conversionType + author in
+    /// place rather than duplicating; the original `addedAt` is
+    /// preserved so the row's history is honest.
+    ///
+    /// `conversionType` and `author` are optional so existing
+    /// callers (e.g. auto-catalog on editor open) that don't have
+    /// the provenance handy can omit them; the auto-collection
+    /// generator's backfill heuristic fills in the rest.
     func recordConversion(
-        epubURL: URL, title: String, languages: [String]
+        epubURL: URL,
+        title: String,
+        languages: [String],
+        conversionType: BookConversionType? = nil,
+        author: String? = nil
     ) {
         let canonical = epubURL.canonicalForFile
         if let idx = entries.firstIndex(where: {
@@ -200,13 +242,24 @@ final class LibraryStore: ObservableObject {
         }) {
             entries[idx].title = title
             entries[idx].languages = languages
+            // Only overwrite when the caller provided a value —
+            // existing stamps survive re-conversions where the
+            // caller didn't bother to re-derive provenance.
+            if let conversionType {
+                entries[idx].conversionType = conversionType
+            }
+            if let author {
+                entries[idx].author = author
+            }
         } else {
             entries.append(LibraryEntry(
                 epubURL: canonical,
                 title: title,
                 languages: languages,
                 addedAt: Date(),
-                lastOpened: nil
+                lastOpened: nil,
+                conversionType: conversionType,
+                author: author
             ))
         }
         save()
@@ -288,6 +341,16 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
+    /// Wholesale replace the collections list. Used exclusively
+    /// by `LibraryAutoCollections.refresh` to re-materialize
+    /// auto-collections while preserving user-created ones (the
+    /// caller composes the desired final list and hands it back
+    /// here in one shot). No partial-state intermediate save.
+    func replaceCollections(_ newCollections: [BookCollection]) {
+        collections = newCollections
+        save()
+    }
+
     func removeFromCollection(_ collectionID: UUID, bookIDs: [UUID]) {
         guard let idx = collections.firstIndex(where: { $0.id == collectionID })
         else { return }
@@ -338,6 +401,17 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
     /// absolute root path differs (different home dir / iCloud
     /// container).
     var relativePath: String?
+    /// R-Auto-Collections Phase 1. What produced this book —
+    /// stamped at conversion / import time by the writer. Nil
+    /// for pre-feature entries (filled in by the load-time
+    /// backfill heuristic where possible).
+    var conversionType: BookConversionType?
+    /// R-Auto-Collections Phase 1. Author derived from
+    /// `<dc:creator>` at catalog time. Stored alongside `title`
+    /// so the auto-collection generator can group without
+    /// re-opening every EPUB. Nil when no creator was present
+    /// in the OPF.
+    var author: String?
 
     init(
         id: UUID = UUID(),
@@ -346,7 +420,9 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         languages: [String] = [],
         addedAt: Date,
         lastOpened: Date? = nil,
-        relativePath: String? = nil
+        relativePath: String? = nil,
+        conversionType: BookConversionType? = nil,
+        author: String? = nil
     ) {
         self.id = id
         self.epubURL = epubURL
@@ -355,6 +431,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.addedAt = addedAt
         self.lastOpened = lastOpened
         self.relativePath = relativePath
+        self.conversionType = conversionType
+        self.author = author
     }
 
     // MARK: - Codable (decodeIfPresent for relativePath)
@@ -373,10 +451,18 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.addedAt = try c.decode(Date.self, forKey: .addedAt)
         self.lastOpened = try c.decodeIfPresent(Date.self, forKey: .lastOpened)
         self.relativePath = try c.decodeIfPresent(String.self, forKey: .relativePath)
+        if let raw = try c.decodeIfPresent(String.self, forKey: .conversionType),
+           let parsed = BookConversionType(rawValue: raw) {
+            self.conversionType = parsed
+        } else {
+            self.conversionType = nil
+        }
+        self.author = try c.decodeIfPresent(String.self, forKey: .author)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, epubURL, title, languages, addedAt, lastOpened, relativePath
+        case conversionType, author
     }
 }
 
@@ -394,16 +480,104 @@ struct BookCollection: Identifiable, Codable, Equatable, Hashable {
     var name: String
     var bookIDs: [UUID]
     var createdAt: Date
+    /// R-Auto-Collections. nil for user-created collections (the
+    /// historical case). When set, this collection was produced
+    /// by the auto-collection generator and gets regenerated on
+    /// every "Refresh auto-collections" run — user edits don't
+    /// survive. UI groups auto-collections under their own
+    /// sidebar sections.
+    var autoSource: AutoCollectionSource?
 
     init(
         id: UUID = UUID(),
         name: String,
         bookIDs: [UUID] = [],
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        autoSource: AutoCollectionSource? = nil
     ) {
         self.id = id
         self.name = name
         self.bookIDs = bookIDs
         self.createdAt = createdAt
+        self.autoSource = autoSource
+    }
+
+    // MARK: - Codable (decodeIfPresent for autoSource)
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.bookIDs = try c.decode([UUID].self, forKey: .bookIDs)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.autoSource = try c.decodeIfPresent(
+            AutoCollectionSource.self, forKey: .autoSource
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, bookIDs, createdAt, autoSource
+    }
+
+    /// SF Symbol name for sidebar rendering. Auto-collections get
+    /// a category-specific icon so the user can distinguish a
+    /// machine-generated grouping from a hand-curated one at a
+    /// glance.
+    var rowIcon: String {
+        switch autoSource {
+        case nil: return "rectangle.stack"
+        case .byType: return "tag"
+        case .byAuthor: return "person"
+        }
+    }
+}
+
+/// R-Auto-Collections. Tags a `BookCollection` as auto-generated
+/// + records what produced it. Cases mirror the auto-collection
+/// taxonomy (Type / Author / Genre — Genre arrives in Phase 2).
+///
+/// Codable as a tagged union via a single string discriminator;
+/// keeps the JSON round-trip stable as new cases land.
+enum AutoCollectionSource: Codable, Equatable, Hashable, Sendable {
+    case byType(BookConversionType)
+    case byAuthor(String)
+    // Phase 2: case byGenre(BookGenre)
+
+    private enum DiscriminatorKey: String, CodingKey {
+        case kind, value
+    }
+
+    private enum Kind: String, Codable {
+        case byType, byAuthor
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: DiscriminatorKey.self)
+        switch self {
+        case .byType(let t):
+            try c.encode(Kind.byType, forKey: .kind)
+            try c.encode(t.rawValue, forKey: .value)
+        case .byAuthor(let name):
+            try c.encode(Kind.byAuthor, forKey: .kind)
+            try c.encode(name, forKey: .value)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: DiscriminatorKey.self)
+        let kind = try c.decode(Kind.self, forKey: .kind)
+        switch kind {
+        case .byType:
+            let raw = try c.decode(String.self, forKey: .value)
+            guard let t = BookConversionType(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .value, in: c,
+                    debugDescription: "Unknown BookConversionType: \(raw)"
+                )
+            }
+            self = .byType(t)
+        case .byAuthor:
+            self = .byAuthor(try c.decode(String.self, forKey: .value))
+        }
     }
 }

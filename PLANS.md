@@ -443,6 +443,33 @@ in Tier 6 — full write-up there):
   `LibraryStoreTests` cover the mutations + the legacy-load
   + membership-pruning paths.
 
+**Done — Auto-generated Collections Phase 1** (R-Auto-Collections):
+- **`BookConversionType`** enum (print / earlyPrint / manuscript
+  / digital) stamped on `LibraryEntry.conversionType` at
+  conversion (JobRunner) + import (EPUBImporter) time.
+  Sibling-PDF heuristic backfills legacy entries on load.
+- **`LibraryEntry.author`** field populated from `<dc:creator>`
+  at catalog time alongside title.
+- **`AutoCollectionSource`** discriminator on
+  `BookCollection`: `.byType` or `.byAuthor` for auto-
+  generated, nil for manual.
+- **`LibraryAutoCollections.refresh(library:)`** materializes
+  Type + Author collections from current catalog state.
+  Configurable author threshold (Settings → Conversion;
+  default 3). Idempotent — re-runs preserve auto-collection
+  ids so SwiftUI selection survives refresh. User-created
+  collections never touched.
+- **Library window sidebar** grows three grouped sections:
+  "My Collections", "Auto: by Type", "Auto: by Author".
+  Auto-collections get category icons + hide
+  Rename/Delete (regeneration would clobber edits).
+- **10 new `LibraryAutoCollectionsTests`** cover bucketing,
+  threshold honoring, idempotent ID preservation,
+  user-collection survival, Codable legacy decode.
+
+**Phase 2 (Genre via AFM)** scoped, not started. See
+R-Auto-Collections section.
+
 **Done — Manuscript + Early Print OCR** (E-Vision-Modes v1):
 - **`ClaudePageOCREngine.Mode`**: three-way enum.
   `.typeset` (Sonnet 4.6, original Claude OCR path),
@@ -740,7 +767,15 @@ Drivers for the current ordering:
 
 ### Soon — pick up when the near-term cools
 
-6. **R-Library-Chat-Plus Tier 2 — citation export +
+6. **R-Auto-Collections Phase 2 — Genre via AFM** (~1 day).
+   Phase 1 (Type + Author) shipped; Phase 2 layers on
+   `BookGenreClassifier` (on-device AFM, closed-enum
+   `@Generable` constraint, same shape as Phase-1 chapter
+   classifier) + `BookGenre` enum (~15 top-level cases plus
+   Fiction sub-genres) + a fourth sidebar section
+   "Auto: by Genre". Will document as L-Foundation-Models
+   Phase 4 when shipped.
+7. **R-Library-Chat-Plus Tier 2 — citation export +
    conversation export** (~6-9 hrs combined). Real research-
    workflow items now that the library is big enough to drive
    serious questions. Pinned passages and ask-each-book mode
@@ -3621,6 +3656,142 @@ exactly one machine, so it's not on the critical path for the
 - A one-shot migration helper — new code, but a familiar
   shape (the LibraryStore catalog-format wrapper from
   Collections used the same "read legacy, write new" pattern).
+
+---
+
+## R-Auto-Collections — Generate Collections from catalog metadata
+
+**Status**: Phase 1 (Type + Author) shipped. Phase 2 (Genre via
+AFM) scoped, not started.
+
+### Why bother
+
+A 1000-book library is too big to organize manually. Three
+natural pivots emerge from the metadata we already have:
+
+- **Type**: Print / Manuscript / Early Print / Digital. The
+  conversion or import path that produced the book is a
+  stable, useful category. Especially valuable for a user
+  doing serious research across material types.
+- **Author**: When the catalog carries 3+ books by the same
+  person, "all my Foucault" is a real workflow.
+- **Genre**: Poetry / Philosophy / History / Fiction (with
+  sub-genres) / etc. Less clean than Type or Author (requires
+  classification) but the most user-recognizable filing
+  taxonomy.
+
+The user creates manual `BookCollection`s today via R-Library-
+Chat-Plus Tier 1. Auto-collections layer on as a parallel set
+of system-generated groupings.
+
+### Phase 1 — Type + Author (shipped)
+
+Deterministic, no model needed.
+
+- `BookConversionType` enum: `print` / `earlyPrint` /
+  `manuscript` / `digital`. Stamped on `LibraryEntry.conversionType`
+  at conversion (JobRunner) and import (EPUBImporter) time.
+- Backfill heuristic during `LibraryStore.load`: legacy
+  entries without a stamp get `.print` when a sibling .pdf
+  exists, `.digital` otherwise.
+- `LibraryEntry.author` field — populated from
+  `<dc:creator>` at catalog time alongside title.
+- `AutoCollectionSource` discriminator on `BookCollection`:
+  `.byType(BookConversionType)` or `.byAuthor(String)`. Manual
+  collections have `nil`.
+- `LibraryAutoCollections.refresh(library:)` regenerates auto-
+  collections from current catalog state. Author threshold
+  configurable via Settings → Conversion (default 3).
+  Idempotent — re-runs preserve auto-collection ids so
+  SwiftUI selection state doesn't bounce.
+- Library window sidebar grows three sections: "My
+  Collections", "Auto: by Type", "Auto: by Author".
+  Auto-collections get a category-specific icon (tag for
+  type, person for author) and their context menu hides
+  Rename/Delete (a refresh would regenerate them anyway).
+- "Refresh auto-collections" button next to the New
+  Collection button in the sidebar header.
+
+10 new `LibraryAutoCollectionsTests` cover type bucketing,
+author-threshold honoring, idempotent re-runs preserving ids,
+user-collection preservation, drop-when-empty, Codable
+round-trip with legacy decoding fallback.
+
+### Phase 2 — Genre via AFM (planned)
+
+Single classifier added to the same family as L-Foundation-
+Models Phase 1 (chapter classification) and Phase 2 (metadata
+extraction). Documented in L-Foundation-Models as **Phase 4:
+Genre classification** when shipped.
+
+**Scope**:
+- `BookGenre` enum: closed taxonomy with single-sublevel
+  hierarchy. Draft top-level set (~15 cases):
+  - poetry, drama, philosophy, religion, history,
+    biographyMemoir, science, socialScience, reference,
+    education, arts, travel, howTo, children, uncategorized
+  - **Fiction sub-genres** (single sublevel only):
+    fictionLiterary, fictionFantasy, fictionScienceFiction,
+    fictionMystery, fictionRomance, fictionHorror,
+    fictionHistorical
+  - Flat enum (not nested) for AFM's schema-guided
+    constraint; computed `topLevel` property reconstructs
+    the hierarchy for sidebar display.
+- `BookGenreClassifier` — new AFM-based engine modeled on
+  `AppleFoundationModelClassifier`. Schema-guided closed
+  enum; input = title + author + ~200 chars opening text;
+  output = one `BookGenre` case (or nil for uncategorized).
+- `LibraryEntry.genre: BookGenre?` field. Stamped at
+  conversion / import time alongside the existing AFM
+  metadata + chapter classifier passes — same gating
+  (`AppleFoundationModelClient.availability` + opt-in
+  Settings toggle).
+- `AutoCollectionSource.byGenre(BookGenre)` case added.
+- `LibraryAutoCollections.refresh` learns to materialize
+  genre collections: one collection per non-empty top-level
+  genre + one per Fiction sub-genre. Sidebar grows a fourth
+  section: "Auto: by Genre".
+- Settings: toggle to disable genre auto-classification (for
+  users who don't want AFM running on every book).
+
+**Why AFM, not Haiku**: closed-enum classification with small
+input is exactly AFM's sweet spot (mirrors Phase 1 chapter
+classifier). Free + on-device fits the "once per book across a
+1000-book library" cadence. Haiku's marginal world-knowledge
+advantage doesn't outweigh ~$1/library cost when the bucket-
+level decision is robust to small label errors.
+
+**Timing**: classify at conversion / import time (free pass).
+On-demand refresh ("Regenerate genre" command) for back-fill
+on existing libraries — walks unstamped entries, runs the
+classifier, persists. ~30-50 minutes for 1000 books at AFM's
+2-3 sec/book pace; surface progress + cancel.
+
+**Effort**: ~1 day end-to-end. The classifier is a copy-paste
+of the chapter classifier with a different `@Generable` enum.
+Plumbing (stamp + auto-collection generation + sidebar) is
+incremental on Phase 1's existing scaffolding.
+
+**Not in scope**: open-string-tag genres (drift over time);
+deeper hierarchy (single sublevel only per user direction);
+per-book genre override UI (the classifier's call stands;
+re-running with a different prompt or model is the path if
+needed).
+
+### Open questions for Phase 2
+
+- Should the classifier's "uncategorized" output materialize
+  a collection ("Uncategorized") or be silently dropped?
+  Probably drop; the user can see uncategorized books in
+  "All Books" + the absence of a genre row implicitly tells
+  them.
+- Re-classification on book metadata change (title / author
+  updated after a re-import) — opt-in or automatic? Probably
+  automatic at the next refresh; the classifier is cheap.
+- Confidence threshold? AFM returns a single label; we don't
+  get a confidence score back. Could read the model's
+  uncertainty by asking for two top candidates, but adds
+  complexity. v1 takes the single answer.
 
 ---
 

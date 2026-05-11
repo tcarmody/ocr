@@ -31,6 +31,13 @@ public enum ConversionSettingsKeys {
     /// `~/Library/Application Support/Humanist/` per machine.
     public static let shareLibraryAcrossMachines = "humanist.library.shareAcrossMachines"
 
+    /// R-Auto-Collections. Minimum book count for an author to
+    /// generate an auto-author collection. A 1000-book library
+    /// wants probably 5+; a 50-book library wants 2+. Default 3.
+    /// Read at auto-collection refresh time; changes take effect
+    /// on the next refresh.
+    public static let autoAuthorThreshold = "humanist.library.autoAuthorThreshold"
+
     /// Initial values for the launcher's per-conversion toggles.
     /// `QueueViewModel.init` seeds its `@Published` properties from
     /// these on app launch; the user can override per-session in

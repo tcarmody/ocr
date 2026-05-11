@@ -14,7 +14,7 @@ Native macOS app (macOS 26+) for turning PDFs and other documents into well-form
 
 - **Library-scope chat with first-class navigation.** The library window has its own chat pane that pulls across every indexed book. Cite a passage and one click opens that book in a new editor. Scope to a selection ("compare these five books on X"), save recurring scopes as named **collections** ("Foucault corpus"), exclude a book that keeps misfiring, or chat against your whole catalog. Bulk-index command pre-builds embeddings for every book in one go.
 
-- **Organizes a personal library.** Every conversion is catalogued. Cover thumbnails, language filter, sortable columns, durable named **collections** as a sidebar, cross-book bulk find / replace, multi-selection that drives both bulk editing and chat scoping. **Import existing EPUBs** (`⇧⌘I`, drag-drop, or a whole folder full of subfolders) that didn't come from a PDF conversion — anchors get injected, on-device AFM extracts title + author from the front matter when Apple Intelligence is available, the book lands in the Books folder, and it joins the federated chat right away. The catalog can also **sync across Macs** via a cloud folder: enable *Share library across machines* in Settings → Conversion and the catalog, embedding sidecars, and alias dictionary all move into `<output folder>/.humanist/`. Both Macs see the same library — same books, same chat indexes, same custom vocabulary. Auto-catalog on editor-open means every EPUB you open joins the library automatically.
+- **Organizes a personal library.** Every conversion is catalogued. Cover thumbnails, language filter, sortable columns, durable named **collections** as a sidebar, cross-book bulk find / replace, multi-selection that drives both bulk editing and chat scoping. **Auto-generated collections** — Print / Manuscript / Early Print / Digital buckets by conversion type, and one per author with 3+ books in your library (threshold configurable). One click in the sidebar header to refresh; user-curated collections stay untouched. **Import existing EPUBs** (`⇧⌘I`, drag-drop, or a whole folder full of subfolders) that didn't come from a PDF conversion — anchors get injected, on-device AFM extracts title + author from the front matter when Apple Intelligence is available, the book lands in the Books folder, and it joins the federated chat right away. The catalog can also **sync across Macs** via a cloud folder: enable *Share library across machines* in Settings → Conversion and the catalog, embedding sidecars, and alias dictionary all move into `<output folder>/.humanist/`. Both Macs see the same library — same books, same chat indexes, same custom vocabulary. Auto-catalog on editor-open means every EPUB you open joins the library automatically.
 
 - **Runs entirely offline if you want.** Private mode is the default — Vision, Surya, Tesseract handle everything on the device. On macOS 26+ with Apple Intelligence enabled, Private mode *also* gets free on-device chapter classification, front-matter metadata extraction, and a coherence pass for recurring OCR errors via Apple's Foundation Models framework. Local chat backend (Ollama + Gemma 4 26B MoE) keeps the chat pane on-device too.
 
@@ -198,7 +198,7 @@ Cloud features only run when you flip Settings → AI → Processing Mode to Clo
 
 ```sh
 Scripts/run-app.sh          # release build + assemble .app + sign + open
-swift test                  # 960 unit tests across 96 test files
+swift test                  # 970 unit tests across 97 test files
 ```
 
 `Scripts/run-app.sh` is the only supported launch path. `swift run` / `swift build` produce a bare binary without the bundled `Resources/` directory — the editor's CodeMirror source pane and the Surya layout sidecar won't load.
@@ -241,7 +241,7 @@ ocr/
 │   │                                differ + validator
 │   └── AI/                          22 files: Anthropic + Ollama + Voyage + Gemini + Apple Foundation Models clients,
 │                                    embedding backends, settings, key stores
-├── Tests/                           960 unit tests across 96 test files
+├── Tests/                           970 unit tests across 97 test files
 ├── Resources/
 │   └── codemirror/                  Vendored CodeMirror 5 for the editor's source pane
 ├── Sidecars/

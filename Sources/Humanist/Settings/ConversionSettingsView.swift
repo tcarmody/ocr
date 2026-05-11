@@ -24,6 +24,9 @@ struct ConversionSettingsView: View {
     @AppStorage(ConversionSettingsKeys.shareLibraryAcrossMachines)
     private var shareLibraryAcrossMachines: Bool = false
 
+    @AppStorage(ConversionSettingsKeys.autoAuthorThreshold)
+    private var autoAuthorThreshold: Int = 0  // resolves to default 3 when 0
+
     /// Set by `runShareMigration()` so the activation sheet
     /// surfaces the outcome (moved / already-migrated / failed /
     /// root missing). Nil = no activation in flight.
@@ -80,6 +83,28 @@ struct ConversionSettingsView: View {
                 helpText("""
                     Useful for bulk imports (hundreds or thousands of books): the importer still injects paragraph anchors, runs on-device metadata + chapter classification, and catalogs each book — but skips the per-book embedding sidecar build that library chat needs for retrieval. Run *Build Missing Indexes* from the Library window (Refresh menu) once the import finishes to fill the sidecars in overnight.
                     """)
+            }
+            Section("Auto-generated collections") {
+                HStack {
+                    Text("Author threshold:")
+                    Spacer()
+                    Stepper(
+                        value: Binding(
+                            get: {
+                                autoAuthorThreshold > 0
+                                    ? autoAuthorThreshold
+                                    : LibraryAutoCollections.defaultAuthorThreshold
+                            },
+                            set: { autoAuthorThreshold = $0 }
+                        ),
+                        in: 2...20
+                    ) {
+                        Text("\(autoAuthorThreshold > 0 ? autoAuthorThreshold : LibraryAutoCollections.defaultAuthorThreshold)")
+                            .monospacedDigit()
+                            .frame(minWidth: 24, alignment: .trailing)
+                    }
+                }
+                helpText("Minimum number of books by the same author before an auto-author collection is generated. A larger library wants a higher threshold; default 3.")
             }
             if !outputFolderPath.isEmpty {
                 libraryShareSection

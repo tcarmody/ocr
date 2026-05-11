@@ -352,11 +352,19 @@ final class EPUBImporter: ObservableObject {
         let title = book.displayTitle
         let languages = book.metadata.language
             .flatMap { $0.isEmpty ? nil : [$0] } ?? []
+        let author = book.metadata.author
+            .flatMap { $0.isEmpty ? nil : $0 }
         let libraryID: UUID? = await MainActor.run {
+            // R-Auto-Collections Phase 1: imports have no OCR
+            // pipeline behind them — they're digital sources by
+            // definition. Stamp as .digital + carry through
+            // whatever author the AFM metadata pass populated.
             library.recordConversion(
                 epubURL: destination,
                 title: title,
-                languages: languages
+                languages: languages,
+                conversionType: .digital,
+                author: author
             )
             // Read back the entry's UUID so the sidecar build can
             // key by it under R-Library-Sync Phase B.

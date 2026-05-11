@@ -314,10 +314,23 @@ final class JobRunner: ObservableObject {
             // Title falls back to the source PDF's basename — a
             // future iteration can read the actual book title from
             // the OPF metadata.
+            //
+            // R-Auto-Collections Phase 1: stamp the conversionType
+            // so the auto-collection generator can bucket by Type
+            // without re-deriving provenance from job options.
+            // Manuscript wins over Early Print which wins over the
+            // plain Print path — same priority order the engine
+            // factory uses.
+            let convType: BookConversionType = {
+                if job.options.useManuscriptMode { return .manuscript }
+                if job.options.useEarlyPrintMode { return .earlyPrint }
+                return .print
+            }()
             library?.recordConversion(
                 epubURL: job.outputURL,
                 title: job.sourceURL.deletingPathExtension().lastPathComponent,
-                languages: job.options.languages
+                languages: job.options.languages,
+                conversionType: convType
             )
         } catch is CancellationError {
             store.update(jobID) { mutable in
@@ -399,10 +412,16 @@ final class JobRunner: ObservableObject {
                 mutable.finishedAt = Date()
                 mutable.progress = JobProgress(completedPages: 1, totalPages: 1)
             }
+            // R-Auto-Collections Phase 1: document-ingest path
+            // (txt / md / rtf / docx / odt / html → EPUB) is by
+            // definition a born-digital source — no scan, no OCR.
+            // Stamp as .digital.
             library?.recordConversion(
                 epubURL: outputURL,
                 title: book.title,
-                languages: job.options.languages
+                languages: job.options.languages,
+                conversionType: .digital,
+                author: book.author
             )
             _ = storeRef
         } catch is CancellationError {
