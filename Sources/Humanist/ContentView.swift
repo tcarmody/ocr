@@ -12,7 +12,7 @@ import Pipeline
 /// and resume on next launch.
 struct ContentView: View {
     @EnvironmentObject private var queue: QueueViewModel
-    @EnvironmentObject private var store: JobStore
+    @Environment(JobStore.self) private var store
     @EnvironmentObject private var runner: JobRunner
     @State private var isTargeted = false
     @State private var showingWelcome = false
@@ -639,7 +639,7 @@ struct ContentView: View {
 
 private struct JobRow: View {
     let job: Job
-    @EnvironmentObject private var store: JobStore
+    @Environment(JobStore.self) private var store
     @EnvironmentObject private var runner: JobRunner
     @Environment(\.openWindow) private var openWindow
 

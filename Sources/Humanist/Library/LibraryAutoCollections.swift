@@ -203,6 +203,14 @@ enum LibraryAutoCollections {
         }
         let total = candidates.count
         guard total > 0 else { return 0 }
+        // Batch publishes: a 1000-book backfill would otherwise
+        // republish `library.entries` 1000 times, cascading into a
+        // full Library-window re-render per book. begin/end bracket
+        // holds them; one publish fires at the end of the loop.
+        // The loop's only early exit is `break` on Task.isCancelled,
+        // which falls through to the post-loop endBulkUpdate below
+        // — no thrown errors here, so a defer-Task isn't needed.
+        await MainActor.run { library.beginBulkUpdate() }
         var updated = 0
         for (idx, entry) in candidates.enumerated() {
             if Task.isCancelled { break }
@@ -240,6 +248,7 @@ enum LibraryAutoCollections {
             }
             if changed { updated += 1 }
         }
+        await MainActor.run { library.endBulkUpdate() }
         await progress?(total, total)
         return updated
     }
@@ -278,6 +287,12 @@ enum LibraryAutoCollections {
         guard total > 0 else {
             return GenreClassificationResult(classified: 0, stampedUncategorized: 0)
         }
+        // Batch publishes — same rationale as backfillMissingMetadata.
+        // The classify loop stamps `setGenre` (or `.uncategorized`)
+        // on every visited entry; without bulk mode that's `total`
+        // publishes, each cascading through every observer of the
+        // catalog. One publish at end of loop instead.
+        await MainActor.run { library.beginBulkUpdate() }
         var classified = 0
         var declined = 0
         for (idx, entry) in needsClassification.enumerated() {
@@ -304,6 +319,7 @@ enum LibraryAutoCollections {
                 declined += 1
             }
         }
+        await MainActor.run { library.endBulkUpdate() }
         await progress?(total, total)
         return GenreClassificationResult(
             classified: classified,

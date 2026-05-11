@@ -1,5 +1,5 @@
 import Foundation
-import Combine
+import Observation
 
 /// Persistent JSON-backed queue. One file in
 /// `~/Library/Application Support/Humanist/queue.json` — small enough
@@ -9,9 +9,19 @@ import Combine
 /// Recovery: any job left in `.running` when the app died (e.g. crash
 /// mid-batch) is rolled back to `.queued` on next launch so the runner
 /// re-processes it instead of leaving a phantom in-flight entry.
+///
+/// `@Observable` (Swift Observation framework) instead of the older
+/// `ObservableObject` / `@Published` pair: SwiftUI now subscribes
+/// views to the *specific* properties they read, so a view that
+/// only reads `jobs.count` doesn't re-render on per-job progress
+/// ticks that don't change the count. Critical when the queue is
+/// observed by a `Table` window during a bulk run — under the old
+/// `@Published jobs` shape, every job-state change re-rendered the
+/// entire Table.
 @MainActor
-final class JobStore: ObservableObject {
-    @Published private(set) var jobs: [Job] = []
+@Observable
+final class JobStore {
+    private(set) var jobs: [Job] = []
 
     let storeURL: URL
 

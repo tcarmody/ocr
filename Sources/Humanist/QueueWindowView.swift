@@ -12,7 +12,7 @@ import PDFIngest
 /// brings the existing window to the front (the `Window` scene
 /// in HumanistApp.swift handles single-instance routing).
 struct QueueWindowView: View {
-    @EnvironmentObject private var store: JobStore
+    @Environment(JobStore.self) private var store
     @EnvironmentObject private var runner: JobRunner
     @Environment(\.openWindow) private var openWindow
 

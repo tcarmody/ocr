@@ -261,6 +261,63 @@ final class LibraryStore: ObservableObject {
         return copy
     }
 
+    // MARK: - bulk-update mode
+
+    /// Staged-entries buffer used during bulk operations. When
+    /// non-nil, `mutateEntries(_:)` routes writes here instead of
+    /// the published `entries` array — so a 1000-book import that
+    /// would otherwise fire 1000 publishes (each one re-rendering
+    /// every observer of LibraryStore, including the Library
+    /// window's 2k-row Table) fires exactly one publish at
+    /// `endBulkUpdate()`. Saves are also deferred to a single
+    /// write at end-of-bulk. Nil means "not in bulk mode."
+    private var pendingEntries: [LibraryEntry]?
+
+    /// Begin a bulk-update window. Callers MUST pair this with
+    /// `endBulkUpdate()` on every exit path (success, cancellation,
+    /// thrown error) so the staged entries get committed. The
+    /// recommended idiom is `defer { library.endBulkUpdate() }`
+    /// at the top of the bulk loop. Nested begin/end pairs share
+    /// the same buffer — the first begin snapshots, subsequent
+    /// begins are no-ops; only the outermost end commits.
+    func beginBulkUpdate() {
+        if pendingEntries == nil {
+            pendingEntries = entries
+        }
+    }
+
+    /// Commit pending mutations from the bulk window. Fires a
+    /// single @Published republish on `entries` and a single
+    /// save() to disk. Safe to call when not in bulk mode — it's
+    /// a no-op then. Idempotent on re-call within the same bulk.
+    func endBulkUpdate() {
+        guard let pending = pendingEntries else { return }
+        pendingEntries = nil
+        entries = pending  // single publish for the whole batch
+        save()
+    }
+
+    /// Route a closure-shaped mutation against either the staged
+    /// buffer (bulk mode) or `entries` directly (normal mode). The
+    /// closure does reads + writes against an `inout [LibraryEntry]`;
+    /// the helper picks the right target and handles the save side
+    /// effect outside bulk mode. Discardable result so callers can
+    /// signal "did I change anything" back through the same path.
+    @discardableResult
+    private func mutateEntries<T>(
+        _ op: (inout [LibraryEntry]) -> T
+    ) -> T {
+        if pendingEntries != nil {
+            // Force-unwrap is safe: we just checked non-nil and
+            // we're @MainActor-isolated, so no other actor can
+            // null it between check and use.
+            return op(&pendingEntries!)
+        }
+        let result = op(&entries)
+        save()
+        return result
+    }
+
     // MARK: - mutations: entries
 
     /// Record a successful conversion. If the same `epubURL` is
@@ -282,36 +339,37 @@ final class LibraryStore: ObservableObject {
         genre: BookGenre? = nil
     ) {
         let canonical = epubURL.canonicalForFile
-        if let idx = entries.firstIndex(where: {
-            $0.epubURL.canonicalForFile == canonical
-        }) {
-            entries[idx].title = title
-            entries[idx].languages = languages
-            // Only overwrite when the caller provided a value —
-            // existing stamps survive re-conversions where the
-            // caller didn't bother to re-derive provenance.
-            if let conversionType {
-                entries[idx].conversionType = conversionType
+        mutateEntries { entries in
+            if let idx = entries.firstIndex(where: {
+                $0.epubURL.canonicalForFile == canonical
+            }) {
+                entries[idx].title = title
+                entries[idx].languages = languages
+                // Only overwrite when the caller provided a value —
+                // existing stamps survive re-conversions where the
+                // caller didn't bother to re-derive provenance.
+                if let conversionType {
+                    entries[idx].conversionType = conversionType
+                }
+                if let author {
+                    entries[idx].author = author
+                }
+                if let genre {
+                    entries[idx].genre = genre
+                }
+            } else {
+                entries.append(LibraryEntry(
+                    epubURL: canonical,
+                    title: title,
+                    languages: languages,
+                    addedAt: Date(),
+                    lastOpened: nil,
+                    conversionType: conversionType,
+                    author: author,
+                    genre: genre
+                ))
             }
-            if let author {
-                entries[idx].author = author
-            }
-            if let genre {
-                entries[idx].genre = genre
-            }
-        } else {
-            entries.append(LibraryEntry(
-                epubURL: canonical,
-                title: title,
-                languages: languages,
-                addedAt: Date(),
-                lastOpened: nil,
-                conversionType: conversionType,
-                author: author,
-                genre: genre
-            ))
         }
-        save()
     }
 
     /// R-Auto-Collections Phase 2. Stamp the genre on an existing
@@ -320,10 +378,11 @@ final class LibraryStore: ObservableObject {
     /// `recordConversion` because the genre arrives after the
     /// initial catalog write.
     func setGenre(_ genre: BookGenre, for entryID: UUID) {
-        guard let idx = entries.firstIndex(where: { $0.id == entryID })
-        else { return }
-        entries[idx].genre = genre
-        save()
+        mutateEntries { entries in
+            guard let idx = entries.firstIndex(where: { $0.id == entryID })
+            else { return }
+            entries[idx].genre = genre
+        }
     }
 
     /// R-Auto-Collections backfill mutator. Updates whichever
@@ -339,22 +398,27 @@ final class LibraryStore: ObservableObject {
         author: String? = nil,
         conversionType: BookConversionType? = nil
     ) -> Bool {
-        guard let idx = entries.firstIndex(where: { $0.id == entryID })
-        else { return false }
+        // `mutateEntries` always saves on the non-bulk path; we
+        // want save-only-when-changed semantics preserved. Detect
+        // change inside the closure and short-circuit the trip
+        // through the helper when nothing actually moved.
         var changed = false
-        if let title, !title.isEmpty, entries[idx].title != title {
-            entries[idx].title = title
-            changed = true
+        mutateEntries { entries in
+            guard let idx = entries.firstIndex(where: { $0.id == entryID })
+            else { return }
+            if let title, !title.isEmpty, entries[idx].title != title {
+                entries[idx].title = title
+                changed = true
+            }
+            if let author, !author.isEmpty, entries[idx].author == nil {
+                entries[idx].author = author
+                changed = true
+            }
+            if let conversionType, entries[idx].conversionType != conversionType {
+                entries[idx].conversionType = conversionType
+                changed = true
+            }
         }
-        if let author, !author.isEmpty, entries[idx].author == nil {
-            entries[idx].author = author
-            changed = true
-        }
-        if let conversionType, entries[idx].conversionType != conversionType {
-            entries[idx].conversionType = conversionType
-            changed = true
-        }
-        if changed { save() }
         return changed
     }
 
@@ -374,8 +438,6 @@ final class LibraryStore: ObservableObject {
         conversionType: BookConversionType?,
         genre: BookGenre?
     ) -> Bool {
-        guard let idx = entries.firstIndex(where: { $0.id == entryID })
-        else { return false }
         let cleanedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanedTitle.isEmpty else { return false }
         let cleanedAuthor: String? = {
@@ -385,13 +447,18 @@ final class LibraryStore: ObservableObject {
         let cleanedLanguages = languages
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        entries[idx].title = cleanedTitle
-        entries[idx].author = cleanedAuthor
-        entries[idx].languages = cleanedLanguages
-        entries[idx].conversionType = conversionType
-        entries[idx].genre = genre
-        save()
-        return true
+        var didFind = false
+        mutateEntries { entries in
+            guard let idx = entries.firstIndex(where: { $0.id == entryID })
+            else { return }
+            entries[idx].title = cleanedTitle
+            entries[idx].author = cleanedAuthor
+            entries[idx].languages = cleanedLanguages
+            entries[idx].conversionType = conversionType
+            entries[idx].genre = genre
+            didFind = true
+        }
+        return didFind
     }
 
     /// Bump `lastOpened` for `epubURL`. No-op if the entry doesn't
@@ -401,11 +468,12 @@ final class LibraryStore: ObservableObject {
     /// in this app," not "every EPUB I ever opened."
     func recordOpen(_ epubURL: URL) {
         let canonical = epubURL.canonicalForFile
-        guard let idx = entries.firstIndex(where: {
-            $0.epubURL.canonicalForFile == canonical
-        }) else { return }
-        entries[idx].lastOpened = Date()
-        save()
+        mutateEntries { entries in
+            guard let idx = entries.firstIndex(where: {
+                $0.epubURL.canonicalForFile == canonical
+            }) else { return }
+            entries[idx].lastOpened = Date()
+        }
     }
 
     /// Remove an entry from the library. The .epub file itself is

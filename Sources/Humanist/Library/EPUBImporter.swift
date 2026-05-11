@@ -152,6 +152,16 @@ final class EPUBImporter: ObservableObject {
                     : "Importing \(sources.count) books"
               )
             : nil
+        // Batch publishes: a 1000-book bulk import otherwise fires
+        // 1000 individual `library.entries` republishes, each one
+        // re-rendering every observer (Library window's 2k-row
+        // Table + sidebar + chat pane). begin/end pairs hold the
+        // publishes until the loop completes; the importer's own
+        // per-book progress updates surface on the progress sheet
+        // independently. Skip the bulk window for single-source
+        // imports — one publish is cheaper than the buffer swap.
+        let useBulk = sources.count > 1
+        if useBulk { library.beginBulkUpdate() }
         task = Task { [weak self] in
             for (idx, source) in sources.enumerated() {
                 if Task.isCancelled { break }
@@ -189,6 +199,7 @@ final class EPUBImporter: ObservableObject {
                 }
             }
             await MainActor.run {
+                if useBulk { library.endBulkUpdate() }
                 guard let self else { token?.release(); return }
                 self.status = Task.isCancelled ? .cancelled : .completed
                 self.currentTitle = ""

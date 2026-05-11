@@ -6,9 +6,13 @@ import Layout  // SuryaConnection.shared for E-Warm
 @main
 struct HumanistApp: App {
     /// Persistent job queue shared across the launcher's lifetime.
-    /// `@StateObject` so the store survives view-tree rebuilds; the
-    /// runner observes the same store and processes serially.
-    @StateObject private var jobStore = JobStore()
+    /// `@State` (not `@StateObject`) because `JobStore` is now an
+    /// `@Observable` class — SwiftUI subscribes through the
+    /// Observation framework rather than ObservableObject, and
+    /// `@State` is the documented ownership wrapper for the
+    /// @Observable pattern. The store survives view-tree rebuilds
+    /// the same way @StateObject did.
+    @State private var jobStore = JobStore()
     @StateObject private var jobRunner: JobRunner
     @StateObject private var queueVM: QueueViewModel
     @StateObject private var library = LibraryStore()
@@ -22,7 +26,7 @@ struct HumanistApp: App {
         // Use `_` initializers to wire StateObjects from outside the
         // property wrapper's default-value path. The store/runner pair
         // is built once and shared across all three.
-        _jobStore  = StateObject(wrappedValue: store)
+        _jobStore  = State(wrappedValue: store)
         _library   = StateObject(wrappedValue: lib)
         _jobRunner = StateObject(wrappedValue: runner)
         _queueVM   = StateObject(wrappedValue: vm)
@@ -76,7 +80,7 @@ struct HumanistApp: App {
         WindowGroup("Humanist", id: "launcher") {
             ContentView()
                 .environmentObject(queueVM)
-                .environmentObject(jobStore)
+                .environment(jobStore)
                 .environmentObject(jobRunner)
                 .environmentObject(library)
                 .frame(minWidth: 620, minHeight: 520)
@@ -110,7 +114,7 @@ struct HumanistApp: App {
         // environmentObject (App scenes don't auto-propagate).
         Window("Humanist Queue", id: "queue") {
             QueueWindowView()
-                .environmentObject(jobStore)
+                .environment(jobStore)
                 .environmentObject(jobRunner)
                 .humanistChrome()
         }
