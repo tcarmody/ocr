@@ -467,8 +467,46 @@ in Tier 6 — full write-up there):
   threshold honoring, idempotent ID preservation,
   user-collection survival, Codable legacy decode.
 
-**Phase 2 (Genre via AFM)** scoped, not started. See
-R-Auto-Collections section.
+**Done — Auto-Collections Phase 2** (R-Auto-Collections /
+L-Foundation-Models Phase 4):
+- **`BookGenre`** enum (32 cases): poetry, drama; 7 fiction
+  sub-genres (Literary / Fantasy / Sci-Fi / Mystery / Romance
+  / Historical / General); mathematics; 5 science sub-genres
+  (Physics / Chemistry / Life Sciences / Earth & Astronomy /
+  General); 3 technology sub-genres (Computing / Engineering
+  / General); philosophy, religion, history, biographyMemoir,
+  linguistics, arts; 4 social-science sub-genres; reference,
+  education, howTo, travel, children, uncategorized.
+  Computed `topLevel` / `leafName` / `collectionName`
+  properties so sub-genres render as "Fiction: Fantasy" while
+  single-level genres stay plain ("Philosophy").
+- **`BookGenreClassifier`** in Pipeline — AFM-backed,
+  schema-guided enum constraint, takes title + author +
+  ~600-char opening text, returns one `BookGenre`. Instruction
+  text covers disambiguation cues for tricky cases (historical
+  fiction vs. history, scientist memoir vs. science, etc.).
+- **LibraryEntry.genre** field with `decodeIfPresent` legacy
+  fallback. `recordConversion` carries it through; new
+  `setGenre(_:for:)` mutator powers the backfill flow.
+- **EPUBImporter** runs the classifier alongside the existing
+  metadata + chapter passes; same AFM gating, same cost
+  shape. Books imported get classified at import time.
+- **`LibraryAutoCollections.classifyMissingGenres`** backfill
+  for the historical catalog: walks unstamped entries, opens
+  each EPUB, samples front matter, classifies. Progress
+  callback + cancellable. ~30-50 min for 1000 books on AFM's
+  2-3 s/book pace.
+- **Library window UI**: "Classify missing genres" button
+  (`wand.and.stars`) next to the existing Refresh button.
+  Progress sheet (`ClassifyGenresProgressSheet`) mirrors the
+  bulk-index sheet's shape. Fourth sidebar section
+  "Auto: by Genre" sorts by top-level then leaf so the flat
+  list still reads grouped.
+- **16 new tests** across `BookGenreTests` (taxonomy
+  invariants, computed-property correctness, JSON round-trip)
+  and 5 new tests added to `LibraryAutoCollectionsTests`
+  (genre-collection generation, sort order, `setGenre` mutation,
+  legacy LibraryEntry decode without genre).
 
 **Done — Manuscript + Early Print OCR** (E-Vision-Modes v1):
 - **`ClaudePageOCREngine.Mode`**: three-way enum.
@@ -767,14 +805,19 @@ Drivers for the current ordering:
 
 ### Soon — pick up when the near-term cools
 
-6. **R-Auto-Collections Phase 2 — Genre via AFM** (~1 day).
-   Phase 1 (Type + Author) shipped; Phase 2 layers on
-   `BookGenreClassifier` (on-device AFM, closed-enum
-   `@Generable` constraint, same shape as Phase-1 chapter
-   classifier) + `BookGenre` enum (~15 top-level cases plus
-   Fiction sub-genres) + a fourth sidebar section
-   "Auto: by Genre". Will document as L-Foundation-Models
-   Phase 4 when shipped.
+6. ~~**R-Auto-Collections Phase 2 — Genre via AFM**~~ shipped.
+   `BookGenre` enum (32 cases — Poetry / Drama / Fiction (7
+   sub-genres) / Mathematics / Science (5 sub-genres) /
+   Technology (3 sub-genres including Computing) / six
+   humanities top-levels / Social Science (4 sub-genres) /
+   five practical top-levels). `BookGenreClassifier` mirrors
+   the Phase-1 chapter classifier shape: schema-guided
+   `@Generable` constraint, AFM on-device, free. EPUBImporter
+   runs it alongside the existing metadata + chapter passes;
+   library backfill via a new "Classify missing genres" button
+   (`wand.and.stars` icon) walks the catalog with a progress
+   sheet + cancel. "Auto: by Genre" sidebar section sorts by
+   top-level then leaf so the flat list still reads grouped.
 7. **R-Library-Chat-Plus Tier 2 — citation export +
    conversation export** (~6-9 hrs combined). Real research-
    workflow items now that the library is big enough to drive
@@ -3661,8 +3704,9 @@ exactly one machine, so it's not on the critical path for the
 
 ## R-Auto-Collections — Generate Collections from catalog metadata
 
-**Status**: Phase 1 (Type + Author) shipped. Phase 2 (Genre via
-AFM) scoped, not started.
+**Status**: Phases 1 + 2 shipped. Type / Author / Genre auto-
+collections all materialize from catalog metadata; Genre runs
+through Apple Foundation Models (Phase 4 of L-Foundation-Models).
 
 ### Why bother
 
@@ -3717,12 +3761,12 @@ author-threshold honoring, idempotent re-runs preserving ids,
 user-collection preservation, drop-when-empty, Codable
 round-trip with legacy decoding fallback.
 
-### Phase 2 — Genre via AFM (planned)
+### Phase 2 — Genre via AFM (shipped)
 
-Single classifier added to the same family as L-Foundation-
-Models Phase 1 (chapter classification) and Phase 2 (metadata
-extraction). Documented in L-Foundation-Models as **Phase 4:
-Genre classification** when shipped.
+Closed-taxonomy classifier added as the third AFM use case
+alongside Phase 1 (chapter classification) and Phase 2
+(metadata extraction). Documented as **L-Foundation-Models
+Phase 4: Genre classification**.
 
 **Scope**:
 - `BookGenre` enum: closed taxonomy with single-sublevel
@@ -4404,6 +4448,23 @@ gap, on-device, free, no key.
   and `localCoherencePass` (both default on). Settings UI shows
   three toggles + descriptions under the Local AI section when
   Apple Intelligence is available.
+
+### What landed in Phase 4 (Genre classification)
+
+- `BookGenreClassifier` in Pipeline — schema-guided
+  `@Generable` enum constraint, takes title + author + ~600
+  chars opening text, returns one `BookGenre` case. Closed
+  taxonomy of 32 cases spanning humanities + technical
+  material (math, science sub-genres, technology including
+  Computing). Mirrors Phase-1 chapter classifier shape exactly.
+- Powers R-Auto-Collections Phase 2: EPUBImporter runs at
+  import time; `LibraryAutoCollections.classifyMissingGenres`
+  handles backfill via the Library window's
+  `wand.and.stars` button + progress sheet.
+- Same AFM gating as Phase 1 + 2 (availability check +
+  `localChapterClassification` toggle reused for now — a
+  separate "auto-classify genres" toggle is v1.1 if anyone
+  wants finer control).
 
 ### Still pending
 

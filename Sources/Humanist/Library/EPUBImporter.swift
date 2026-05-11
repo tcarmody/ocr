@@ -354,17 +354,32 @@ final class EPUBImporter: ObservableObject {
             .flatMap { $0.isEmpty ? nil : [$0] } ?? []
         let author = book.metadata.author
             .flatMap { $0.isEmpty ? nil : $0 }
+        // R-Auto-Collections Phase 2: run the genre classifier
+        // alongside the metadata + chapter passes — same AFM
+        // gating, same cost model (free, on-device). Sampling
+        // reuses the front-matter helpers already used for
+        // metadata extraction.
+        let genre = await runGenreClassification(
+            on: book, title: title, author: author
+        )
+        try Task.checkCancellation()
+
         let libraryID: UUID? = await MainActor.run {
             // R-Auto-Collections Phase 1: imports have no OCR
             // pipeline behind them — they're digital sources by
             // definition. Stamp as .digital + carry through
             // whatever author the AFM metadata pass populated.
+            // Phase 2 layers on the genre stamp from the
+            // classifier; nil when AFM declined or wasn't
+            // available — the backfill command picks those up
+            // later.
             library.recordConversion(
                 epubURL: destination,
                 title: title,
                 languages: languages,
                 conversionType: .digital,
-                author: author
+                author: author,
+                genre: genre
             )
             // Read back the entry's UUID so the sidecar build can
             // key by it under R-Library-Sync Phase B.
@@ -533,6 +548,37 @@ final class EPUBImporter: ObservableObject {
             of: "\\s+", with: " ", options: .regularExpression
         )
         return out
+    }
+
+    // MARK: - AFM genre classification
+
+    /// R-Auto-Collections Phase 2. Classify the book's genre via
+    /// the AFM closed-enum classifier. Same gating as the
+    /// metadata + chapter passes (AISettings toggle + AFM
+    /// availability + non-stub front-matter). Returns nil when
+    /// any guard fails — the catalog row's `genre` stays nil and
+    /// the backfill command (`LibraryAutoCollections
+    /// .classifyMissingGenres`) picks it up later.
+    private static func runGenreClassification(
+        on book: EPUBBook,
+        title: String,
+        author: String?
+    ) async -> BookGenre? {
+        let settings = AISettingsStore().load()
+        // Re-use the chapter-classification toggle — same on-
+        // device cost shape and the user opted into AFM for
+        // similar work. A separate "auto-classify genres" toggle
+        // is a v1.1 if anyone wants finer control.
+        guard settings.localFeatures.localChapterClassification else { return nil }
+        guard case .available = AppleFoundationModelClient.availability
+        else { return nil }
+        let opening = sampleFrontMatterText(from: book)
+        guard opening.count >= 80 else { return nil }
+        return await BookGenreClassifier().classify(
+            title: title,
+            author: author,
+            openingText: opening
+        )
     }
 
     // MARK: - AFM chapter classification

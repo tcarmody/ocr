@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import EPUB
+import Pipeline
 @testable import Humanist
 
 /// R-Auto-Collections Phase 1: `LibraryAutoCollections.refresh`
@@ -259,6 +260,9 @@ final class LibraryAutoCollectionsTests: XCTestCase {
         for source in [
             AutoCollectionSource.byType(.manuscript),
             AutoCollectionSource.byAuthor("Foucault"),
+            AutoCollectionSource.byGenre(.philosophy),
+            AutoCollectionSource.byGenre(.fictionFantasy),
+            AutoCollectionSource.byGenre(.technologyComputing),
         ] {
             let data = try! JSONEncoder().encode(source)
             let back = try! JSONDecoder().decode(
@@ -266,5 +270,110 @@ final class LibraryAutoCollectionsTests: XCTestCase {
             )
             XCTAssertEqual(source, back)
         }
+    }
+
+    // MARK: - Phase 2: Genre
+
+    /// Helper for genre tests: add entry with a stamped genre.
+    private func addEntry(
+        _ store: LibraryStore,
+        title: String,
+        genre: BookGenre,
+        type: BookConversionType = .print
+    ) {
+        let url = makeEPUBStub(name: title)
+        store.recordConversion(
+            epubURL: url, title: title, languages: [],
+            conversionType: type, genre: genre
+        )
+    }
+
+    func test_refresh_creates_genre_collections_grouped_by_topLevel() {
+        let store = makeStore()
+        addEntry(store, title: "Iliad", genre: .poetry)
+        addEntry(store, title: "Foucault", genre: .philosophy)
+        addEntry(store, title: "Tolkien", genre: .fictionFantasy)
+        addEntry(store, title: "Asimov", genre: .fictionScienceFiction)
+        addEntry(store, title: "CLR", genre: .technologyComputing)
+        addEntry(store, title: "Knuth", genre: .technologyComputing)
+
+        let result = LibraryAutoCollections.refresh(library: store)
+        XCTAssertEqual(result.genreCount, 5,
+            "5 distinct genres present → 5 auto-genre collections")
+        let genreColls = store.collections.filter {
+            if case .byGenre = $0.autoSource { return true } else { return false }
+        }
+        let names = Set(genreColls.map(\.name))
+        XCTAssertTrue(names.contains("Poetry"))
+        XCTAssertTrue(names.contains("Philosophy"))
+        XCTAssertTrue(names.contains("Fiction: Fantasy"))
+        XCTAssertTrue(names.contains("Fiction: Science Fiction"))
+        XCTAssertTrue(names.contains("Technology: Computing"))
+    }
+
+    func test_refresh_skips_uncategorized_genre() {
+        let store = makeStore()
+        addEntry(store, title: "A", genre: .uncategorized)
+        addEntry(store, title: "B", genre: .philosophy)
+        LibraryAutoCollections.refresh(library: store)
+        let genreColls = store.collections.filter {
+            if case .byGenre = $0.autoSource { return true } else { return false }
+        }
+        XCTAssertEqual(genreColls.count, 1,
+            "uncategorized entries should not produce a collection")
+        XCTAssertEqual(genreColls.first?.name, "Philosophy")
+    }
+
+    func test_refresh_sorts_genre_collections_by_topLevel_then_leaf() {
+        // The sidebar reads a flat list but the order should
+        // group same-topLevel together. Verify the sort order in
+        // the resulting collections list.
+        let store = makeStore()
+        addEntry(store, title: "A", genre: .fictionMystery)
+        addEntry(store, title: "B", genre: .sciencePhysics)
+        addEntry(store, title: "C", genre: .fictionFantasy)
+        addEntry(store, title: "D", genre: .scienceChemistry)
+
+        LibraryAutoCollections.refresh(library: store)
+        let names = store.collections
+            .compactMap { c -> String? in
+                if case .byGenre = c.autoSource { return c.name }
+                return nil
+            }
+        // Fiction comes before Science alphabetically; within
+        // each, sub-genres sort alphabetically by leaf name.
+        XCTAssertEqual(names, [
+            "Fiction: Fantasy",
+            "Fiction: Mystery",
+            "Science: Chemistry",
+            "Science: Physics",
+        ])
+    }
+
+    func test_setGenre_stamps_existing_entry() {
+        let store = makeStore()
+        let url = makeEPUBStub(name: "Untagged")
+        store.recordConversion(epubURL: url, title: "Untagged", languages: [])
+        let id = store.entries[0].id
+        XCTAssertNil(store.entries[0].genre)
+        store.setGenre(.philosophy, for: id)
+        XCTAssertEqual(store.entries[0].genre, .philosophy)
+    }
+
+    func test_LibraryEntry_decodes_legacy_JSON_without_genre() {
+        // Pre-Phase-2 JSON has no `genre` key. decodeIfPresent
+        // should leave it nil so existing libraries open clean.
+        let entry = LibraryEntry(
+            epubURL: tempDir.appendingPathComponent("legacy.epub"),
+            title: "Legacy", languages: [], addedAt: Date()
+        )
+        let data = try! JSONEncoder().encode([entry])
+        // Strip the genre key.
+        var json = try! JSONSerialization.jsonObject(with: data) as! [[String: Any]]
+        json[0].removeValue(forKey: "genre")
+        let stripped = try! JSONSerialization.data(withJSONObject: json)
+        let decoded = try! JSONDecoder().decode([LibraryEntry].self, from: stripped)
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertNil(decoded[0].genre)
     }
 }

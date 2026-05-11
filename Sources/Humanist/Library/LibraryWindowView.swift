@@ -89,6 +89,16 @@ struct LibraryWindowView: View {
     /// sidebar context menu fires "Rename…".
     @State private var renameContext: RenameContext?
 
+    /// R-Auto-Collections Phase 2. Progress state for the
+    /// "Classify missing genres" backfill. Surfaces as a sheet
+    /// when `showClassifyProgress` is true; `classifyTask` lets
+    /// the user cancel mid-run.
+    @State private var showClassifyProgress: Bool = false
+    @State private var classifyCurrent: Int = 0
+    @State private var classifyTotal: Int = 0
+    @State private var classifyDone: Bool = false
+    @State private var classifyTask: Task<Void, Never>?
+
     var body: some View {
         HSplitView {
             if showCollectionsSidebar {
@@ -151,6 +161,19 @@ struct LibraryWindowView: View {
                     newCollectionSheet = nil
                 },
                 onCancel: { newCollectionSheet = nil }
+            )
+        }
+        .sheet(isPresented: $showClassifyProgress) {
+            ClassifyGenresProgressSheet(
+                current: classifyCurrent,
+                total: classifyTotal,
+                done: classifyDone,
+                onCancel: {
+                    classifyTask?.cancel()
+                    classifyTask = nil
+                    showClassifyProgress = false
+                },
+                onDismiss: { showClassifyProgress = false }
             )
         }
         .sheet(item: $renameContext) { ctx in
@@ -217,6 +240,35 @@ struct LibraryWindowView: View {
         )
         if !showChatPane {
             showChatPane = true
+        }
+    }
+
+    /// R-Auto-Collections Phase 2. Kick off the AFM genre
+    /// backfill — walks every entry without a stamped `genre`,
+    /// classifies via `BookGenreClassifier`, persists, refreshes
+    /// auto-collections at the end. Cancellable mid-run.
+    private func startClassifyMissingGenres() {
+        let missing = library.entries.filter { $0.genre == nil }.count
+        classifyCurrent = 0
+        classifyTotal = missing
+        classifyDone = false
+        showClassifyProgress = true
+        guard missing > 0 else {
+            classifyDone = true
+            return
+        }
+        classifyTask?.cancel()
+        classifyTask = Task {
+            _ = await LibraryAutoCollections.classifyMissingGenres(
+                library: library,
+                progress: { current, total in
+                    classifyCurrent = current
+                    classifyTotal = total
+                }
+            )
+            LibraryAutoCollections.refresh(library: library)
+            classifyDone = true
+            classifyTask = nil
         }
     }
 
@@ -471,7 +523,17 @@ struct LibraryWindowView: View {
                     Image(systemName: "arrow.triangle.2.circlepath")
                 }
                 .buttonStyle(.borderless)
-                .help("Refresh auto-generated collections (by Type, by Author).")
+                .help("Refresh auto-generated collections (by Type, by Author, by Genre).")
+                Button {
+                    startClassifyMissingGenres()
+                } label: {
+                    Image(systemName: "wand.and.stars")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!LibraryAutoCollections.isClassifierAvailable())
+                .help(LibraryAutoCollections.isClassifierAvailable()
+                      ? "Classify missing genres via Apple Foundation Models. Runs the closed-taxonomy classifier on every book without a genre stamp; slow at library scale."
+                      : "Apple Intelligence isn't available on this device — genre classification needs it.")
                 Button {
                     newCollectionSheet = NewCollectionContext(memberIDs: [])
                 } label: {
@@ -504,6 +566,11 @@ struct LibraryWindowView: View {
                         if case .byAuthor = $0.autoSource { return true }
                         return false
                     }
+                let autoByGenre = library.collections
+                    .filter {
+                        if case .byGenre = $0.autoSource { return true }
+                        return false
+                    }
                 if !userCollections.isEmpty {
                     Section("My Collections") {
                         ForEach(userCollections) { collection in
@@ -523,6 +590,14 @@ struct LibraryWindowView: View {
                 if !autoByAuthor.isEmpty {
                     Section("Auto: by Author") {
                         ForEach(autoByAuthor) { collection in
+                            collectionRow(collection)
+                                .tag(UUID?.some(collection.id))
+                        }
+                    }
+                }
+                if !autoByGenre.isEmpty {
+                    Section("Auto: by Genre") {
+                        ForEach(autoByGenre) { collection in
                             collectionRow(collection)
                                 .tag(UUID?.some(collection.id))
                         }
@@ -882,5 +957,57 @@ private struct RenameCollectionSheet: View {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         onCommit(trimmed)
+    }
+}
+
+/// R-Auto-Collections Phase 2 progress sheet for the
+/// classify-missing-genres backfill. Sibling to
+/// `LibraryIndexProgressSheet` and `ImportEPUBProgressSheet` —
+/// same shape: progress bar + counter + cancel during the run,
+/// Done button afterward.
+private struct ClassifyGenresProgressSheet: View {
+    let current: Int
+    let total: Int
+    let done: Bool
+    let onCancel: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 8) {
+                Image(systemName: done ? "checkmark.circle.fill" : "wand.and.stars")
+                    .foregroundStyle(done ? .green : .accentColor)
+                    .font(.title2)
+                Text(done ? "Classification Complete" : "Classifying Genres…")
+                    .font(.headline)
+                Spacer()
+            }
+            if total == 0 {
+                Text("No books needed classification — every entry already has a genre stamp.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if done {
+                Text("Classified \(current) of \(total) book\(total == 1 ? "" : "s"). Auto-collections refreshed.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView(value: Double(current), total: Double(max(total, 1)))
+                Text("Book \(current) of \(total)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                if done {
+                    Button("Done", action: onDismiss)
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel", role: .destructive, action: onCancel)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 }

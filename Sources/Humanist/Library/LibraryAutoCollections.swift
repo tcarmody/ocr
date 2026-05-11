@@ -1,4 +1,7 @@
 import Foundation
+import AI         // AppleFoundationModelClient
+import EPUB
+import Pipeline  // BookGenreClassifier
 
 /// R-Auto-Collections Phase 1. Generate `BookCollection` rows from
 /// `LibraryEntry` metadata — no model needed.
@@ -40,6 +43,7 @@ enum LibraryAutoCollections {
         desired.append(contentsOf: authorCollections(
             from: entries, threshold: threshold
         ))
+        desired.append(contentsOf: genreCollections(from: entries))
 
         // Merge with existing auto-collections by autoSource —
         // reuse ids where possible so the user's UI selection
@@ -80,6 +84,9 @@ enum LibraryAutoCollections {
             }.count,
             authorCount: desired.filter {
                 if case .byAuthor = $0.autoSource { return true } else { return false }
+            }.count,
+            genreCount: desired.filter {
+                if case .byGenre = $0.autoSource { return true } else { return false }
             }.count,
             authorThreshold: threshold
         )
@@ -143,6 +150,127 @@ enum LibraryAutoCollections {
         author.split(separator: " ").last.map(String.init) ?? author
     }
 
+    private static func genreCollections(
+        from entries: [LibraryEntry]
+    ) -> [BookCollection] {
+        var byGenre: [BookGenre: [UUID]] = [:]
+        for entry in entries {
+            guard let g = entry.genre, g != .uncategorized else { continue }
+            byGenre[g, default: []].append(entry.id)
+        }
+        // Sort by top-level (so all Fiction together, all Science
+        // together, etc.) then by leaf name. The sidebar then
+        // reads grouped without needing nested sections.
+        return byGenre
+            .map { ($0.key, $0.value) }
+            .sorted { lhs, rhs in
+                if lhs.0.topLevel != rhs.0.topLevel {
+                    return lhs.0.topLevel < rhs.0.topLevel
+                }
+                return lhs.0.leafName < rhs.0.leafName
+            }
+            .map { genre, ids in
+                BookCollection(
+                    name: genre.collectionName,
+                    bookIDs: ids,
+                    autoSource: .byGenre(genre)
+                )
+            }
+    }
+
+    // MARK: - Genre backfill
+
+    /// R-Auto-Collections Phase 2. Walk every catalog entry
+    /// without a `genre` stamp, sample its front matter, and run
+    /// the AFM classifier. Slow at library scale (1000 books × ~2
+    /// s/book = ~30 min); cancellable.
+    ///
+    /// `progress` is called on the main actor with `(current,
+    /// total)` after each book — drives a progress sheet in the
+    /// caller. Returns the count of newly-classified books.
+    @discardableResult
+    static func classifyMissingGenres(
+        library: LibraryStore,
+        progress: (@MainActor (Int, Int) -> Void)? = nil
+    ) async -> Int {
+        guard case .available = AppleFoundationModelClient.availability
+        else { return 0 }
+        let classifier = BookGenreClassifier()
+        let needsClassification = library.entries.filter { $0.genre == nil }
+        let total = needsClassification.count
+        guard total > 0 else { return 0 }
+        var classified = 0
+        for (idx, entry) in needsClassification.enumerated() {
+            if Task.isCancelled { break }
+            await progress?(idx, total)
+            guard let genre = await classifyOne(entry: entry, using: classifier)
+            else { continue }
+            await MainActor.run {
+                library.setGenre(genre, for: entry.id)
+            }
+            classified += 1
+        }
+        await progress?(total, total)
+        return classified
+    }
+
+    /// Open the book, sample front-matter prose, classify. Mirrors
+    /// `EPUBImporter`'s metadata-extraction sampler shape. Returns
+    /// nil when the EPUB can't be opened or the classifier
+    /// declines.
+    private static func classifyOne(
+        entry: LibraryEntry,
+        using classifier: BookGenreClassifier
+    ) async -> BookGenre? {
+        guard let book = try? EPUBBook.open(epubURL: entry.epubURL)
+        else { return nil }
+        let opening = sampleFrontMatterText(from: book)
+        return await classifier.classify(
+            title: entry.title,
+            author: entry.author,
+            openingText: opening
+        )
+    }
+
+    /// First ~600 chars of stripped front-matter prose from the
+    /// first two spine resources. Same posture as
+    /// `EPUBImporter.sampleFrontMatterText`. Kept inline to avoid
+    /// cross-target dependencies.
+    private static func sampleFrontMatterText(
+        from book: EPUBBook, maxChars: Int = 600
+    ) -> String {
+        var collected = ""
+        for resourceID in book.spine.prefix(2) {
+            guard let resource = book.resourcesByID[resourceID],
+                  resource.isText,
+                  let xhtml = resource.text else { continue }
+            let plain = stripTags(xhtml)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if plain.isEmpty { continue }
+            if !collected.isEmpty { collected += "\n" }
+            collected += plain
+            if collected.count >= maxChars {
+                return String(collected.prefix(maxChars))
+            }
+        }
+        return collected
+    }
+
+    private static func stripTags(_ s: String) -> String {
+        var out = s.replacingOccurrences(
+            of: "<[^>]+>", with: " ", options: .regularExpression
+        )
+        out = out.replacingOccurrences(of: "&nbsp;", with: " ")
+        out = out.replacingOccurrences(of: "&amp;", with: "&")
+        out = out.replacingOccurrences(of: "&lt;", with: "<")
+        out = out.replacingOccurrences(of: "&gt;", with: ">")
+        out = out.replacingOccurrences(of: "&quot;", with: "\"")
+        out = out.replacingOccurrences(
+            of: "\\s+", with: " ", options: .regularExpression
+        )
+        return out
+    }
+
     // MARK: - Settings
 
     /// Read the configured threshold. Falls back to 3 when unset
@@ -161,6 +289,20 @@ extension LibraryAutoCollections {
     struct RefreshResult: Sendable, Equatable {
         let typeCount: Int
         let authorCount: Int
+        let genreCount: Int
         let authorThreshold: Int
+    }
+}
+
+extension LibraryAutoCollections {
+    /// Hook for the AI module — the classifier sits behind
+    /// `AppleFoundationModelClient.availability` which we
+    /// re-export for the backfill flow.
+    @MainActor
+    static func isClassifierAvailable() -> Bool {
+        if case .available = AppleFoundationModelClient.availability {
+            return true
+        }
+        return false
     }
 }

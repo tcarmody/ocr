@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import EPUB  // canonicalForFile
+import Pipeline  // BookGenre
 
 /// R-Library. JSON-backed list of every EPUB the user has
 /// converted in this app, surfaced through the dedicated Library
@@ -234,7 +235,8 @@ final class LibraryStore: ObservableObject {
         title: String,
         languages: [String],
         conversionType: BookConversionType? = nil,
-        author: String? = nil
+        author: String? = nil,
+        genre: BookGenre? = nil
     ) {
         let canonical = epubURL.canonicalForFile
         if let idx = entries.firstIndex(where: {
@@ -251,6 +253,9 @@ final class LibraryStore: ObservableObject {
             if let author {
                 entries[idx].author = author
             }
+            if let genre {
+                entries[idx].genre = genre
+            }
         } else {
             entries.append(LibraryEntry(
                 epubURL: canonical,
@@ -259,9 +264,22 @@ final class LibraryStore: ObservableObject {
                 addedAt: Date(),
                 lastOpened: nil,
                 conversionType: conversionType,
-                author: author
+                author: author,
+                genre: genre
             ))
         }
+        save()
+    }
+
+    /// R-Auto-Collections Phase 2. Stamp the genre on an existing
+    /// catalog row. Used by the backfill command which classifies
+    /// missing genres post-hoc — separate from
+    /// `recordConversion` because the genre arrives after the
+    /// initial catalog write.
+    func setGenre(_ genre: BookGenre, for entryID: UUID) {
+        guard let idx = entries.firstIndex(where: { $0.id == entryID })
+        else { return }
+        entries[idx].genre = genre
         save()
     }
 
@@ -412,6 +430,14 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
     /// re-opening every EPUB. Nil when no creator was present
     /// in the OPF.
     var author: String?
+    /// R-Auto-Collections Phase 2. AFM-classified genre. nil
+    /// when the entry hasn't been classified yet, or when the
+    /// classifier returned `.uncategorized` (no auto-collection
+    /// row for those — they appear in All Books only). The
+    /// classifier runs on-import via `EPUBImporter` and via the
+    /// backfill command `LibraryAutoCollections
+    /// .classifyMissingGenres`.
+    var genre: BookGenre?
 
     init(
         id: UUID = UUID(),
@@ -422,7 +448,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         lastOpened: Date? = nil,
         relativePath: String? = nil,
         conversionType: BookConversionType? = nil,
-        author: String? = nil
+        author: String? = nil,
+        genre: BookGenre? = nil
     ) {
         self.id = id
         self.epubURL = epubURL
@@ -433,6 +460,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.relativePath = relativePath
         self.conversionType = conversionType
         self.author = author
+        self.genre = genre
     }
 
     // MARK: - Codable (decodeIfPresent for relativePath)
@@ -458,11 +486,17 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
             self.conversionType = nil
         }
         self.author = try c.decodeIfPresent(String.self, forKey: .author)
+        if let raw = try c.decodeIfPresent(String.self, forKey: .genre),
+           let parsed = BookGenre(rawValue: raw) {
+            self.genre = parsed
+        } else {
+            self.genre = nil
+        }
     }
 
     enum CodingKeys: String, CodingKey {
         case id, epubURL, title, languages, addedAt, lastOpened, relativePath
-        case conversionType, author
+        case conversionType, author, genre
     }
 }
 
@@ -528,6 +562,7 @@ struct BookCollection: Identifiable, Codable, Equatable, Hashable {
         case nil: return "rectangle.stack"
         case .byType: return "tag"
         case .byAuthor: return "person"
+        case .byGenre: return "book"
         }
     }
 }
@@ -541,14 +576,14 @@ struct BookCollection: Identifiable, Codable, Equatable, Hashable {
 enum AutoCollectionSource: Codable, Equatable, Hashable, Sendable {
     case byType(BookConversionType)
     case byAuthor(String)
-    // Phase 2: case byGenre(BookGenre)
+    case byGenre(BookGenre)
 
     private enum DiscriminatorKey: String, CodingKey {
         case kind, value
     }
 
     private enum Kind: String, Codable {
-        case byType, byAuthor
+        case byType, byAuthor, byGenre
     }
 
     func encode(to encoder: Encoder) throws {
@@ -560,6 +595,9 @@ enum AutoCollectionSource: Codable, Equatable, Hashable, Sendable {
         case .byAuthor(let name):
             try c.encode(Kind.byAuthor, forKey: .kind)
             try c.encode(name, forKey: .value)
+        case .byGenre(let g):
+            try c.encode(Kind.byGenre, forKey: .kind)
+            try c.encode(g.rawValue, forKey: .value)
         }
     }
 
@@ -578,6 +616,15 @@ enum AutoCollectionSource: Codable, Equatable, Hashable, Sendable {
             self = .byType(t)
         case .byAuthor:
             self = .byAuthor(try c.decode(String.self, forKey: .value))
+        case .byGenre:
+            let raw = try c.decode(String.self, forKey: .value)
+            guard let g = BookGenre(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .value, in: c,
+                    debugDescription: "Unknown BookGenre: \(raw)"
+                )
+            }
+            self = .byGenre(g)
         }
     }
 }
