@@ -30,8 +30,29 @@ import OCR
 ///     don't run for pages that take this path. Surya layout still
 ///     runs (figures, table bboxes); figure extraction is unchanged.
 public struct ClaudePageOCREngine: Sendable {
+    /// What the engine is reading. The base XHTML-output contract
+    /// is shared; mode picks the model + appends mode-specific
+    /// instructions to the system prompt.
+    ///
+    /// `.typeset` is the original Sonnet path for printed /
+    /// typeset material. `.manuscript(hand:)` routes to Opus
+    /// 4.7 with a hand-family-specific prompt — see
+    /// `ManuscriptHand` for the four sub-modes.
+    public enum Mode: Sendable, Equatable {
+        case typeset
+        case manuscript(hand: ManuscriptHand)
+
+        var defaultModel: AnthropicModel {
+            switch self {
+            case .typeset: return .sonnet4_6
+            case .manuscript: return .opus4_7
+            }
+        }
+    }
+
     public let client: AnthropicAPIClient
     public let budget: ClaudeCallBudget
+    public var mode: Mode
     public var model: AnthropicModel
     public var maxOutputTokens: Int
     /// Optional per-page response sink. Each call to `recognize` /
@@ -45,16 +66,23 @@ public struct ClaudePageOCREngine: Sendable {
     /// content runs 1500-3000 output tokens; headroom matters because
     /// truncated XHTML mid-tag is a parser pathology we want to
     /// avoid).
+    ///
+    /// `mode` selects the Sonnet typeset path (default) or the
+    /// Opus manuscript path; the `model` parameter inherits the
+    /// mode's default if not specified, so callers usually pass
+    /// just `mode:` and let the model follow.
     public init(
         client: AnthropicAPIClient,
         budget: ClaudeCallBudget,
-        model: AnthropicModel = .sonnet4_6,
+        mode: Mode = .typeset,
+        model: AnthropicModel? = nil,
         maxOutputTokens: Int = 8192,
         captureSink: CaptureSink? = nil
     ) {
         self.client = client
         self.budget = budget
-        self.model = model
+        self.mode = mode
+        self.model = model ?? mode.defaultModel
         self.maxOutputTokens = maxOutputTokens
         self.captureSink = captureSink
     }
@@ -115,7 +143,8 @@ public struct ClaudePageOCREngine: Sendable {
         try Task.checkCancellation()
         guard let request = Self.buildRequest(
             pageImage: pageImage, languages: languages,
-            model: model, maxOutputTokens: maxOutputTokens
+            model: model, mode: mode,
+            maxOutputTokens: maxOutputTokens
         ) else {
             throw PageOCRError.pngEncodeFailed
         }
@@ -170,7 +199,8 @@ public struct ClaudePageOCREngine: Sendable {
     ) -> AnthropicMessageRequest? {
         Self.buildRequest(
             pageImage: pageImage, languages: languages,
-            model: model, maxOutputTokens: maxOutputTokens
+            model: model, mode: mode,
+            maxOutputTokens: maxOutputTokens
         )
     }
 
@@ -223,6 +253,7 @@ public struct ClaudePageOCREngine: Sendable {
         pageImage: CGImage,
         languages: [BCP47],
         model: AnthropicModel,
+        mode: Mode,
         maxOutputTokens: Int
     ) -> AnthropicMessageRequest? {
         guard let (png, _) = Self.encodeForAnthropic(pageImage) else { return nil }
@@ -234,8 +265,11 @@ public struct ClaudePageOCREngine: Sendable {
             // for every page in the book, so the first page writes
             // the cache and pages 2..N hit it. 1h TTL fits a 400-
             // page book that runs across multiple cache-window
-            // boundaries.
-            system: .cached(Self.systemPrompt, ttl: .oneHour),
+            // boundaries. The mode-specific prompt block (typeset
+            // vs. manuscript hand) is appended to the base; the
+            // cache key changes with mode so each book's prefix
+            // cache stays clean.
+            system: .cached(systemPrompt(for: mode), ttl: .oneHour),
             messages: [
                 Message(role: .user, content: .blocks([
                     .image(mediaType: .png, base64Data: base64),
@@ -249,12 +283,27 @@ public struct ClaudePageOCREngine: Sendable {
         )
     }
 
+    /// Compose the system prompt for the active mode. Typeset gets
+    /// `baseSystemPrompt` verbatim; manuscript modes get the base
+    /// prompt + the hand-specific addendum from `ManuscriptHand`.
+    static func systemPrompt(for mode: Mode) -> String {
+        switch mode {
+        case .typeset:
+            return baseSystemPrompt
+        case .manuscript(let hand):
+            return baseSystemPrompt + "\n\n" + hand.promptAddendum
+        }
+    }
+
     // MARK: - Prompts
 
-    /// Short stable system prompt. The XHTML schema is small enough
-    /// that listing it inline beats a long behavioral description;
-    /// each rule is one bullet.
-    static let systemPrompt = """
+    /// Short stable base system prompt — XHTML output schema +
+    /// what-to-skip + reading-order rules shared by every mode.
+    /// Mode-specific addenda layer on via
+    /// `systemPrompt(for:)`. Manuscript modes still benefit
+    /// from this base prompt's XHTML / footnote / reading-order
+    /// rules; only the transcription policy is mode-specific.
+    static let baseSystemPrompt = """
         You are transcribing a single page of a book into a clean XHTML body fragment.
 
         OUTPUT REQUIREMENTS:

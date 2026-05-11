@@ -119,6 +119,20 @@ public actor PDFToEPUBPipeline {
         /// Phase 3 will wire it into the user-visible "Claude OCR"
         /// toggle as the new default behavior.
         public var useClaudePageOCR: Bool
+        /// E-Vision-Modes / Manuscript track. When true (and Cloud
+        /// mode + an API key are configured), every page routes
+        /// through `ClaudePageOCREngine` in manuscript mode
+        /// (Claude Opus 4.7) instead of the typeset Sonnet path.
+        /// Per-job; the launcher's "Manuscript mode" toggle is
+        /// the only surface that flips this. Mutually exclusive
+        /// with `useClaudePageOCR` at the launcher layer — both
+        /// drive the same engine; manuscript wins when both are on.
+        public var useManuscriptMode: Bool
+        /// Hand-family selector for manuscript mode. Effective
+        /// only when `useManuscriptMode` is true. `.auto` is the
+        /// generic prompt; the four specific cases bundle a
+        /// script style + transcription policy.
+        public var manuscriptHand: ManuscriptHand
         /// Tier 9 / V-Outputs. When true, the conversion writes
         /// Write `.txt` and `.md` siblings next to the EPUB.
         /// Cheap (text files are small). Default true.
@@ -190,6 +204,8 @@ public actor PDFToEPUBPipeline {
             anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
             disableLocalCascadeEscalation: Bool = false,
             useClaudePageOCR: Bool = false,
+            useManuscriptMode: Bool = false,
+            manuscriptHand: ManuscriptHand = .auto,
             emitSiblingTextOutputs: Bool = true,
             emitSiblingDocuments: Bool = false,
             forceOCRPageRanges: [ClosedRange<Int>] = [],
@@ -217,6 +233,8 @@ public actor PDFToEPUBPipeline {
             self.anthropicAPIKeyProvider = anthropicAPIKeyProvider
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
             self.useClaudePageOCR = useClaudePageOCR
+            self.useManuscriptMode = useManuscriptMode
+            self.manuscriptHand = manuscriptHand
             self.emitSiblingTextOutputs = emitSiblingTextOutputs
             self.emitSiblingDocuments = emitSiblingDocuments
             self.forceOCRPageRanges = forceOCRPageRanges
@@ -441,21 +459,31 @@ public actor PDFToEPUBPipeline {
     /// Build the "Claude does the page" engine. Layered on top of the
     /// generic factory: same `.cloud` + key + `hardRegionOCR` gates
     /// (reusing that feature flag for billing/budget purposes), plus
-    /// the user's explicit `useClaudePageOCR` opt-in. When non-nil the
-    /// per-page loop skips Vision / cascade / region-aware reflow and
-    /// uses Sonnet to produce structured XHTML directly. `captureSink`
-    /// receives the raw Sonnet response per page (or sentinel marker
-    /// for refusal / empty / API error) when the caller wants to dump
-    /// them in the conversion's debug log; nil disables capture.
+    /// the user's explicit `useClaudePageOCR` or `useManuscriptMode`
+    /// opt-in. When non-nil the per-page loop skips Vision / cascade
+    /// / region-aware reflow and uses the configured Claude model to
+    /// produce structured XHTML directly. `captureSink` receives the
+    /// raw response per page (or sentinel marker for refusal / empty
+    /// / API error) when the caller wants to dump them in the
+    /// conversion's debug log; nil disables capture.
+    ///
+    /// Manuscript wins when both flags are on at the launcher layer
+    /// — the two settings drive the same engine; routing to Opus
+    /// (handwriting) is the more specific intent than routing to
+    /// Sonnet (printed cascade-bypass).
     static func makeClaudePageOCREngine(
         options: Options, budget: ClaudeCallBudget,
         captureSink: ClaudePageOCREngine.CaptureSink? = nil
     ) -> ClaudePageOCREngine? {
-        guard options.useClaudePageOCR else { return nil }
+        guard options.useClaudePageOCR || options.useManuscriptMode
+        else { return nil }
+        let mode: ClaudePageOCREngine.Mode = options.useManuscriptMode
+            ? .manuscript(hand: options.manuscriptHand)
+            : .typeset
         return makeClaudeEngine(
             options: options, budget: budget, feature: \.hardRegionOCR
         ) { ClaudePageOCREngine(
-            client: $0, budget: $1, captureSink: captureSink
+            client: $0, budget: $1, mode: mode, captureSink: captureSink
         ) }
     }
 

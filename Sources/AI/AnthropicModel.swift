@@ -37,6 +37,14 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// alias above.
     public static let haiku4_5_20251001 = AnthropicModel(rawValue: "claude-haiku-4-5-20251001")
 
+    /// Opus 4.7 — highest-capability tier, used by
+    /// `ClaudePageOCREngine` in Manuscript mode for handwritten
+    /// material (secretary hand, round hand, 19th-c. cursive,
+    /// contemporary informal). Significantly more expensive than
+    /// Sonnet for typeset OCR, but the gap in handwriting
+    /// recognition justifies the routing.
+    public static let opus4_7 = AnthropicModel(rawValue: "claude-opus-4-7")
+
     /// Per-million-token pricing in USD. Used by `ConversionStats` to
     /// produce ≈-cost estimates for the post-conversion summary.
     /// Treat as estimates, not invoices — Anthropic's billing is the

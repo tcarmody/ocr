@@ -142,6 +142,16 @@ struct ConversionOptions: Codable, Equatable {
     /// Persisted under the legacy key `useCloudEnhancedOCR` so
     /// existing queued jobs still load (see `CodingKeys`).
     var useClaudePageOCR: Bool
+    /// E-Vision-Modes / Manuscript track. Routes per-page OCR
+    /// through Claude Opus 4.7 with hand-specific prompts instead
+    /// of the Sonnet typeset path. Per-job; the launcher exposes
+    /// this as the "Manuscript mode" toggle alongside Claude OCR.
+    var useManuscriptMode: Bool
+    /// Hand-family selector for manuscript mode (auto / diplomatic /
+    /// roundHand / cursive / contemporaryInformal). Stored as the
+    /// enum's raw string so the JSON encode stays forward-
+    /// compatible if cases are added later.
+    var manuscriptHand: ManuscriptHand
     /// Skip the embedded-text trust path and re-OCR every page.
     /// Per-job because some PDFs ship with bad embedded text
     /// layers (broken `ToUnicode`, mojibake) that the trust scorer
@@ -199,6 +209,8 @@ struct ConversionOptions: Codable, Equatable {
         languages: [String] = ["en"],
         useSuryaOCR: Bool = false,
         useClaudePageOCR: Bool = false,
+        useManuscriptMode: Bool = false,
+        manuscriptHand: ManuscriptHand = .auto,
         forceOCR: Bool = false,
         privateMode: Bool = false,
         emitDebugLog: Bool = false,
@@ -211,6 +223,8 @@ struct ConversionOptions: Codable, Equatable {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
         self.useClaudePageOCR = useClaudePageOCR
+        self.useManuscriptMode = useManuscriptMode
+        self.manuscriptHand = manuscriptHand
         self.forceOCR = forceOCR
         self.privateMode = privateMode
         self.emitDebugLog = emitDebugLog
@@ -230,6 +244,8 @@ struct ConversionOptions: Codable, Equatable {
         case useHighAccuracyOCR  // legacy alias for useSuryaOCR
         case useClaudePageOCR
         case useCloudEnhancedOCR  // legacy alias for useClaudePageOCR
+        case useManuscriptMode
+        case manuscriptHand
         case forceOCR
         case privateMode
         case emitDebugLog
@@ -257,6 +273,15 @@ struct ConversionOptions: Codable, Equatable {
             self.useClaudePageOCR = try c.decodeIfPresent(
                 Bool.self, forKey: .useCloudEnhancedOCR
             ) ?? false
+        }
+        self.useManuscriptMode = try c.decodeIfPresent(
+            Bool.self, forKey: .useManuscriptMode
+        ) ?? false
+        if let raw = try c.decodeIfPresent(String.self, forKey: .manuscriptHand),
+           let parsed = ManuscriptHand(rawValue: raw) {
+            self.manuscriptHand = parsed
+        } else {
+            self.manuscriptHand = .auto
         }
         self.forceOCR = try c.decodeIfPresent(Bool.self, forKey: .forceOCR) ?? false
         self.privateMode = try c.decodeIfPresent(
@@ -293,6 +318,8 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(languages, forKey: .languages)
         try c.encode(useSuryaOCR, forKey: .useSuryaOCR)
         try c.encode(useClaudePageOCR, forKey: .useClaudePageOCR)
+        try c.encode(useManuscriptMode, forKey: .useManuscriptMode)
+        try c.encode(manuscriptHand.rawValue, forKey: .manuscriptHand)
         try c.encode(forceOCR, forKey: .forceOCR)
         try c.encode(privateMode, forKey: .privateMode)
         try c.encode(emitDebugLog, forKey: .emitDebugLog)

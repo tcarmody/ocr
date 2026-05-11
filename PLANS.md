@@ -443,6 +443,34 @@ in Tier 6 — full write-up there):
   `LibraryStoreTests` cover the mutations + the legacy-load
   + membership-pruning paths.
 
+**Done — Manuscript-mode OCR** (E-Vision-Modes Manuscript v1):
+- **`ClaudePageOCREngine.Mode`**: enum with `.typeset` (Sonnet
+  4.6, original Claude-OCR path) and `.manuscript(hand:)` (Opus
+  4.7, hand-specific prompt). Branches the model + the system
+  prompt; the base XHTML output schema stays shared.
+- **`ManuscriptHand`** enum + four tuned prompt addenda
+  (diplomatic / roundHand / cursive / contemporaryInformal) +
+  an Auto generic prompt. Diplomatic preserves original
+  spelling and expands scribal abbreviations with `<em>`
+  italics; roundHand keeps period spelling + period
+  capitalization; cursive does light normalization with
+  strikethrough preservation; contemporaryInformal is
+  reading-friendly. All four share `[?word?]` / `[illegible]`
+  uncertainty markers.
+- **`opus4_7` model constant** added to `AnthropicModel` with
+  the existing $5/$25 per-million pricing entry.
+- **Launcher UI**: "Manuscript ($$$$)" toggle next to "Claude
+  OCR ($$$)" (mutually exclusive — picking one clears the
+  other); a Hand: picker row appears when the toggle is on.
+  Per-job, snapshotted into `Job.options`, not persisted to
+  Settings (manuscript is the exception, not the routine).
+- **Codable round-trip**: `ConversionOptions` adds
+  `useManuscriptMode` + `manuscriptHand` with `decodeIfPresent`
+  so legacy queued jobs still load.
+- **10 new `ManuscriptModeTests`** cover the Mode → model
+  routing, prompt composition, per-hand distinctness, and
+  display-name conventions.
+
 **Done — Multi-machine sidecar + alias sync** (R-Library-Sync Phase B):
 - **`EmbeddingsSidecarStore` API change**: `libraryID: UUID?`
   parameter routes writes to UUID-keyed paths when set
@@ -681,14 +709,16 @@ Drivers for the current ordering:
    18 new tests across `EmbeddingsSidecarStoreKeyingTests` +
    `LibrarySyncTests` cover the writeURL routing, read
    fallback chain, write+read round-trip, and migration steps.
-5. **E-Vision-Modes — Manuscript track only, validation spike
-   first** (~1-2 days for the spike). Tester driver. Build the
-   manuscript path (Claude Opus 4.7, diplomatic transcription)
-   end-to-end before scoping the Early Print path — the
-   architecture overlaps but the prompts and post-processing
-   diverge enough to warrant separate validation. Defer the
-   Early Print track until the manuscript track produces real
-   output the tester accepts.
+5. ~~**E-Vision-Modes — Manuscript track v1**~~ shipped. New
+   `Mode` parameter on `ClaudePageOCREngine` routes to either
+   typeset (Sonnet 4.6, original behavior) or manuscript (Opus
+   4.7, hand-specific prompt). Four sub-modes plus Auto:
+   diplomatic / roundHand / cursive / contemporaryInformal.
+   Launcher toggle + Hand picker; per-job. Validation spike
+   deferred per user direction — will tune prompts from real
+   testing rather than a synthetic spike. 10 new
+   `ManuscriptModeTests` cover the Mode routing, prompt
+   composition, per-hand distinctness invariants.
 
 ### Soon — pick up when the near-term cools
 
@@ -3880,11 +3910,27 @@ RRF fusion + library federation is the natural next pass.
 
 ## E-Vision-Modes — Manuscript mode (Claude) + Early Print mode (Gemini)
 
-**Status**: not started. Two new per-conversion modes that route
-pages through a flagship vision model with a content-tuned prompt
-instead of the default printed-book pipeline. Different models for
-different content types because their training priors point in
-different directions.
+**Status**: Manuscript track v1 shipped. Early Print track still
+not started.
+
+Manuscript v1 wires Claude Opus 4.7 into the existing
+`ClaudePageOCREngine` via a new `Mode` parameter
+(`.typeset` = Sonnet 4.6, current; `.manuscript(hand:)` = Opus
+4.7 + hand-specific prompt). Four hand sub-modes plus an Auto
+default: `diplomatic` (16th–17th c. secretary hand),
+`roundHand` (18th c. copperplate), `cursive` (19th–early 20th
+c.), `contemporaryInformal` (modern handwriting). The launcher
+shows a "Manuscript ($$$$)" toggle next to "Claude OCR ($$$)"
+(mutually exclusive at the UI layer) and reveals a Hand: picker
+when on. Per-job; intentionally not a Settings default.
+
+Validation spike was deferred per user direction (testing
+priority). Build worked from prompt-engineering hunches grounded
+in paleographic conventions; will tune based on real material.
+
+Early Print track (Gemini Pro for early-printed material that's
+typeset but uses period orthography Sonnet hasn't been tuned on)
+remains future work.
 
 ### Why two modes (not one)
 

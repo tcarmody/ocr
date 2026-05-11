@@ -247,7 +247,16 @@ struct ContentView: View {
                 Toggle("Force OCR", isOn: $queue.forceOCR)
                     .toggleStyle(.checkbox)
                     .help("Skip the PDF's embedded text layer and run OCR on every page. Use when the embedded text is the output of a previous bad OCR pass.")
-                Toggle("Claude OCR ($$$)", isOn: $queue.useClaudePageOCR)
+                Toggle("Claude OCR ($$$)", isOn: Binding(
+                    get: { queue.useClaudePageOCR },
+                    set: { newValue in
+                        queue.useClaudePageOCR = newValue
+                        // Manuscript mode and Claude OCR drive the
+                        // same engine; only one should be on at a
+                        // time. Pick the more recent intent.
+                        if newValue { queue.useManuscriptMode = false }
+                    }
+                ))
                     .toggleStyle(.checkbox)
                     .help("""
                         Sonnet OCRs each page end-to-end. Replaces the \
@@ -261,6 +270,25 @@ struct ContentView: View {
                         Costs ≈ $15–25 per book at current Sonnet \
                         pricing.
                         """)
+                Toggle("Manuscript ($$$$)", isOn: Binding(
+                    get: { queue.useManuscriptMode },
+                    set: { newValue in
+                        queue.useManuscriptMode = newValue
+                        if newValue { queue.useClaudePageOCR = false }
+                    }
+                ))
+                    .toggleStyle(.checkbox)
+                    .help("""
+                        Opus OCRs handwritten pages with a hand-family-\
+                        specific prompt (secretary, round hand, 19th-c. \
+                        cursive, modern). Routes each page to Claude \
+                        Opus 4.7 instead of Sonnet. Significantly more \
+                        expensive than Claude OCR (~5× per page) but \
+                        designed for material the typeset path can't \
+                        read. Requires Cloud mode + API key. Pick the \
+                        hand in the row below; "Auto" lets the model \
+                        identify the family from the page.
+                        """)
                 Toggle("Surya OCR", isOn: $queue.useSuryaOCR)
                     .toggleStyle(.checkbox)
                     .disabled(SuryaConnection.shared == nil)
@@ -270,6 +298,23 @@ struct ContentView: View {
                 Spacer(minLength: 0)
             }
             .font(.callout)
+
+            // Manuscript hand picker — only visible when the
+            // Manuscript toggle above is on. Per-job, per-conversion.
+            if queue.useManuscriptMode {
+                HStack(spacing: 14) {
+                    Spacer(minLength: 0)
+                    Picker("Hand:", selection: $queue.manuscriptHand) {
+                        ForEach(ManuscriptHand.allCases, id: \.self) { hand in
+                            Text(hand.displayName).tag(hand)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                    Spacer(minLength: 0)
+                }
+                .font(.callout)
+            }
 
             // Row 3 — output format toggles
             HStack(spacing: 14) {

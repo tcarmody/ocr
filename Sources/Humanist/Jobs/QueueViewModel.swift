@@ -59,6 +59,21 @@ final class QueueViewModel: ObservableObject {
     /// in any mode but produces no Sonnet calls when those gates
     /// aren't met.
     @Published var useClaudePageOCR: Bool = false
+    /// E-Vision-Modes / Manuscript track. When true, page OCR
+    /// routes to Claude Opus 4.7 with a hand-family-specific
+    /// prompt (see `manuscriptHand`). Mutually exclusive with
+    /// `useClaudePageOCR` at the UI layer — the engine factory
+    /// also lets manuscript win when both are set, but the
+    /// launcher shouldn't let a user check both at once.
+    /// Per-session toggle: snapshotted into `Job.options` at
+    /// enqueue time; not persisted to Settings (manuscript is the
+    /// exception, not the routine).
+    @Published var useManuscriptMode: Bool = false
+    /// Selected hand family for manuscript mode. Defaults to
+    /// `.auto` — the model identifies the hand and transcribes
+    /// accordingly. Specific cases (diplomatic / roundHand /
+    /// cursive / contemporaryInformal) load a tuned prompt.
+    @Published var manuscriptHand: ManuscriptHand = .auto
     /// Force-OCR override for new conversions in this session.
     /// Promoted from Settings to a launcher toggle since it's
     /// inherently per-conversion (some PDFs need it; most don't).
@@ -206,6 +221,8 @@ final class QueueViewModel: ObservableObject {
                 languages: selectedLanguages.map { $0.rawValue },
                 useSuryaOCR: useSuryaOCR,
                 useClaudePageOCR: useClaudePageOCR,
+                useManuscriptMode: useManuscriptMode,
+                manuscriptHand: manuscriptHand,
                 forceOCR: forceOCR,
                 privateMode: privateMode,
                 emitDebugLog: emitDebugLog,

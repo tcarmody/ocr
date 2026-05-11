@@ -237,6 +237,9 @@ final class JobRunner: ObservableObject {
             // rebuilding the pipeline.
             anthropicAPIKeyProvider: keyProvider,
             useClaudePageOCR: claudePageOCR,
+            useManuscriptMode: !job.options.privateMode
+                && job.options.useManuscriptMode,
+            manuscriptHand: job.options.manuscriptHand,
             emitSiblingTextOutputs: job.options.emitSiblingTextOutputs,
             emitSiblingDocuments: job.options.emitSiblingDocuments,
             forceOCRPageRanges: PageRangeParser.parse(
