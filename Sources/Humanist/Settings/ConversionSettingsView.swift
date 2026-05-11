@@ -54,10 +54,7 @@ struct ConversionSettingsView: View {
         Form {
             Section("Output folder") {
                 outputFolderRow
-                Text(explanation)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                helpText(explanation)
                 if !outputFolderPath.isEmpty {
                     layoutPreview
                 }
@@ -69,13 +66,10 @@ struct ConversionSettingsView: View {
                         "Automatically scan Input folder for new PDFs",
                         isOn: $autoScanInputFolder
                     )
-                    Text("""
+                    helpText("""
                         When on, the launcher watches `Input/` under the output folder. \
                         Drop PDFs in and they get converted automatically with the launcher's current settings — output lands in `Books/`, `Searchable PDFs/`, `Text Files/`, etc. just like a drag-drop conversion. A PDF is skipped once its output EPUB exists; delete the EPUB to re-run.
                         """)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Section("EPUB import") {
@@ -83,19 +77,30 @@ struct ConversionSettingsView: View {
                     "Skip embedding index build on import",
                     isOn: $skipIndexingOnImport
                 )
-                Text("""
+                helpText("""
                     Useful for bulk imports (hundreds or thousands of books): the importer still injects paragraph anchors, runs on-device metadata + chapter classification, and catalogs each book — but skips the per-book embedding sidecar build that library chat needs for retrieval. Run *Build Missing Indexes* from the Library window (Refresh menu) once the import finishes to fill the sidecars in overnight.
                     """)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             if !outputFolderPath.isEmpty {
                 libraryShareSection
             }
         }
-        .padding(20)
-        .frame(width: 560, alignment: .leading)
+        .formStyle(.grouped)
+        .padding(.vertical)
+        .frame(width: 520)
+        .frame(minHeight: 460)
+    }
+
+    /// Standard subdued help-text styling used throughout the
+    /// Settings panes. Single helper so the callout font /
+    /// secondary foreground / vertical-fixed-size combo isn't
+    /// repeated at every site.
+    @ViewBuilder
+    private func helpText(_ s: String) -> some View {
+        Text(s)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Conversion defaults section. Each toggle seeds the matching
@@ -106,19 +111,17 @@ struct ConversionSettingsView: View {
     @ViewBuilder
     private var conversionDefaultsSection: some View {
         Section("Conversion defaults") {
-            Text("These set the initial values of the launcher's toggles each session. Per-conversion changes in the launcher don't write back here. The auto-scan watcher (and `Scripts/auto-scan-input.sh`) use these defaults too.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            helpText("These set the initial values of the launcher's toggles each session. Per-conversion changes don't write back here.")
             Toggle("Surya OCR", isOn: $defaultUseSuryaOCR)
             Toggle("Claude OCR ($$$)", isOn: $defaultUseClaudePageOCR)
             Toggle("Force OCR (ignore embedded PDF text)", isOn: $defaultForceOCR)
             Toggle("Private mode (disable every Cloud feature)", isOn: $defaultPrivateMode)
             Toggle("Save log (keep debug staging directory)", isOn: $defaultEmitDebugLog)
-            Divider()
-            Toggle("Emit `.txt` + `.md` siblings", isOn: $defaultEmitSiblingTextOutputs)
-            Toggle("Emit `.html` + `.docx` siblings", isOn: $defaultEmitSiblingDocuments)
-            Toggle("Emit searchable PDF (overlay)", isOn: $defaultEmitSearchablePDF)
+        }
+        Section("Sibling outputs") {
+            Toggle("`.txt` + `.md` siblings", isOn: $defaultEmitSiblingTextOutputs)
+            Toggle("`.html` + `.docx` siblings", isOn: $defaultEmitSiblingDocuments)
+            Toggle("Searchable PDF (overlay)", isOn: $defaultEmitSearchablePDF)
             HStack {
                 Spacer()
                 Button("Reset to factory defaults", action: resetConversionDefaults)
@@ -146,19 +149,16 @@ struct ConversionSettingsView: View {
                     }
                 )
             )
-            Text("""
-                When on, `library.json`, the embedding / hierarchy / entity sidecars, and the alias dictionary all live under `<output folder>/.humanist/` instead of `~/Library/Application Support/`. The same catalog resolves correctly on a second Mac sharing the folder via iCloud / Dropbox / SyncThing — book paths inside store as relative-to-root, and sidecars are keyed by their stable catalog UUID. Per-book chat history, the conversion queue, and per-app preferences stay machine-local by design.
+            helpText("""
+                When on, `library.json`, the embedding / hierarchy / entity sidecars, and the alias dictionary all live under `<output folder>/.humanist/` instead of `~/Library/Application Support/`. The same catalog resolves correctly on a second Mac sharing the folder via iCloud / Dropbox / SyncThing. Per-book chat history, the conversion queue, and per-app preferences stay machine-local.
 
                 Toggling this requires an app relaunch to take effect.
                 """)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             if let msg = shareMigrationMessage {
                 Text(msg)
                     .font(.callout)
                     .foregroundStyle(Color.accentColor)
-                    .padding(.vertical, 4)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
