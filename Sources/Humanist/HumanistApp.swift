@@ -203,6 +203,7 @@ private struct FileOpenCommands: Commands {
             OpenRecentMenu()
             ConvertCommand()
             ImportEPUBCommand()
+            RestoreLibraryCatalogCommand()
             Divider()
             SplitTwoUpCommand()
             Divider()
@@ -428,6 +429,23 @@ private struct ImportEPUBCommand: View {
     }
 }
 
+/// Reveal the Library window and post the restore-catalog request.
+/// The Library window's `.onReceive` opens the SnapshotRestoreSheet
+/// against its live `LibraryStore`. Surfaced in the File menu so
+/// users hit by an iCloud conflict or a buggy save have a path
+/// back to a pre-incident catalog without leaving the app.
+private struct RestoreLibraryCatalogCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Restore Library Catalog…") {
+            openWindow(id: "library")
+            NotificationCenter.default.post(
+                name: .humanistRestoreCatalogRequested, object: nil
+            )
+        }
+    }
+}
+
 /// Window menu — Show Converter (⌘1), Show Library (⌘2),
 /// Show Editor (⌘3), Show Queue (⌘4). Each chord must work even
 /// when the target window was previously closed with the red-X:
@@ -622,5 +640,13 @@ extension Notification.Name {
     /// the Library window's state.
     static let humanistImportEPUBRequested = Notification.Name(
         "humanistImportEPUBRequested"
+    )
+
+    /// Posted by File → Restore Library Catalog…; the Library
+    /// window listens and surfaces the SnapshotRestoreSheet. Same
+    /// notification-routed pattern as the import command — the
+    /// menu item lives outside the Library window's state.
+    static let humanistRestoreCatalogRequested = Notification.Name(
+        "humanistRestoreCatalogRequested"
     )
 }

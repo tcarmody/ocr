@@ -144,6 +144,13 @@ struct LibraryWindowView: View {
     /// editing a row's title / author / languages / type / genre via
     /// the row context menu's "Edit Metadata…" entry.
     @State private var metadataEditContext: MetadataEditContext?
+
+    /// Snapshot-restore sheet trigger. Non-nil binding when the
+    /// user has opened the Restore Library Catalog sheet.
+    @State private var showRestoreSnapshotSheet: Bool = false
+    /// Error surfaced when a restore fails (filesystem error during
+    /// the copy). Library state remains pointed at the live catalog.
+    @State private var restoreError: String?
     /// Error surfaced from a failed Move-to-Trash. NSWorkspace.recycle
     /// can fail per-file (permissions, file gone, etc.); we collect
     /// errors and show them in an alert so the user knows which
@@ -180,6 +187,86 @@ struct LibraryWindowView: View {
     @State private var refreshTask: Task<Void, Never>?
 
     var body: some View {
+        // The modifier chain on this view hit the SwiftUI type-
+        // checker budget once we added the restore-snapshot sheet
+        // (8 sheets + 5 alerts + a confirmationDialog + 2
+        // onReceive handlers in one chain). Split into three
+        // computed views so each chain stays within budget.
+        coreBodyWithAlerts
+            .alert("Some files could not be moved to Trash",
+                   isPresented: Binding(
+                       get: { removeError != nil },
+                       set: { if !$0 { removeError = nil } }
+                   )) {
+                Button("OK", role: .cancel) { removeError = nil }
+            } message: {
+                Text(removeError ?? "")
+            }
+            .alert("Restore failed",
+                   isPresented: Binding(
+                       get: { restoreError != nil },
+                       set: { if !$0 { restoreError = nil } }
+                   )) {
+                Button("OK", role: .cancel) { restoreError = nil }
+            } message: {
+                Text(restoreError ?? "")
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .humanistImportEPUBRequested
+            )) { _ in
+                startImport()
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .humanistRestoreCatalogRequested
+            )) { _ in
+                showRestoreSnapshotSheet = true
+            }
+    }
+
+    @ViewBuilder
+    private var coreBodyWithAlerts: some View {
+        coreBody
+            .alert("Indexing failed",
+                   isPresented: Binding(
+                       get: { indexBuildError != nil },
+                       set: { if !$0 { indexBuildError = nil } }
+                   )) {
+                Button("OK", role: .cancel) { indexBuildError = nil }
+            } message: {
+                Text(indexBuildError ?? "")
+            }
+            .alert("Import failed",
+                   isPresented: Binding(
+                       get: { importError != nil },
+                       set: { if !$0 { importError = nil } }
+                   )) {
+                Button("OK", role: .cancel) { importError = nil }
+            } message: {
+                Text(importError ?? "")
+            }
+            .confirmationDialog(
+                removeConfirmationTitle,
+                isPresented: Binding(
+                    get: { removeContext != nil },
+                    set: { if !$0 { removeContext = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: removeContext
+            ) { ctx in
+                Button("Move to Trash", role: .destructive) {
+                    performRemove(ctx, alsoTrashFiles: true)
+                }
+                Button("Remove from Library", role: .destructive) {
+                    performRemove(ctx, alsoTrashFiles: false)
+                }
+                Button("Cancel", role: .cancel) { removeContext = nil }
+            } message: { ctx in
+                Text(removeConfirmationMessage(for: ctx))
+            }
+    }
+
+    @ViewBuilder
+    private var coreBody: some View {
         HSplitView {
             if showCollectionsSidebar {
                 collectionsSidebar
@@ -295,6 +382,26 @@ struct LibraryWindowView: View {
                 onCancel: { renameContext = nil }
             )
         }
+        .sheet(isPresented: $showRestoreSnapshotSheet) {
+            SnapshotRestoreSheet(
+                store: LibrarySnapshotStore(
+                    catalogURL: library.storeURL
+                ),
+                onRestore: { snapshot in
+                    showRestoreSnapshotSheet = false
+                    do {
+                        try LibrarySnapshotStore(
+                            catalogURL: library.storeURL
+                        ).restore(from: snapshot)
+                        library.reload()
+                        LibraryAutoCollections.refresh(library: library)
+                    } catch {
+                        restoreError = "Could not restore from snapshot: \(error.localizedDescription)"
+                    }
+                },
+                onCancel: { showRestoreSnapshotSheet = false }
+            )
+        }
         .sheet(item: $metadataEditContext) { ctx in
             MetadataEditorSheet(
                 entryID: ctx.id,
@@ -318,57 +425,6 @@ struct LibraryWindowView: View {
                 },
                 onCancel: { metadataEditContext = nil }
             )
-        }
-        .alert("Indexing failed",
-               isPresented: Binding(
-                   get: { indexBuildError != nil },
-                   set: { if !$0 { indexBuildError = nil } }
-               )) {
-            Button("OK", role: .cancel) { indexBuildError = nil }
-        } message: {
-            Text(indexBuildError ?? "")
-        }
-        .alert("Import failed",
-               isPresented: Binding(
-                   get: { importError != nil },
-                   set: { if !$0 { importError = nil } }
-               )) {
-            Button("OK", role: .cancel) { importError = nil }
-        } message: {
-            Text(importError ?? "")
-        }
-        .confirmationDialog(
-            removeConfirmationTitle,
-            isPresented: Binding(
-                get: { removeContext != nil },
-                set: { if !$0 { removeContext = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: removeContext
-        ) { ctx in
-            Button("Move to Trash", role: .destructive) {
-                performRemove(ctx, alsoTrashFiles: true)
-            }
-            Button("Remove from Library", role: .destructive) {
-                performRemove(ctx, alsoTrashFiles: false)
-            }
-            Button("Cancel", role: .cancel) { removeContext = nil }
-        } message: { ctx in
-            Text(removeConfirmationMessage(for: ctx))
-        }
-        .alert("Some files could not be moved to Trash",
-               isPresented: Binding(
-                   get: { removeError != nil },
-                   set: { if !$0 { removeError = nil } }
-               )) {
-            Button("OK", role: .cancel) { removeError = nil }
-        } message: {
-            Text(removeError ?? "")
-        }
-        .onReceive(NotificationCenter.default.publisher(
-            for: .humanistImportEPUBRequested
-        )) { _ in
-            startImport()
         }
     }
 

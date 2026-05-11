@@ -236,7 +236,25 @@ final class LibraryStore: ObservableObject {
         // date) matches the default JSONDecoder, so the persistence
         // round-trip is symmetric without further configuration.
         guard let data = try? JSONEncoder().encode(payload) else { return }
+        // Snapshot the previous on-disk state before overwriting.
+        // Defends against three known failure modes: a buggy save
+        // that wipes fields, an iCloud sync conflict that lands a
+        // stale copy on top, and a load()-prune cycle that drops
+        // entries the user hasn't yet finished editing. The
+        // snapshot store is fire-and-forget — a failed snapshot
+        // must NEVER block the real save.
+        LibrarySnapshotStore(catalogURL: storeURL).snapshotIfPresent()
         try? data.write(to: storeURL, options: .atomic)
+    }
+
+    /// Re-read `library.json` from disk. Used by the restore-from-
+    /// snapshot flow: the snapshot store overwrites `library.json`
+    /// in place, then calls `reload()` to refresh in-memory state
+    /// so the UI flips to the restored catalog immediately without
+    /// an app relaunch. Equivalent to running the init's load step
+    /// over the live instance.
+    func reload() {
+        load()
     }
 
     /// Compute `entry.relativePath` against the current output
