@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import EPUB  // EPUBBook + EPUBBookSaver + OPFReader.Metadata for the metadata dual-write
 
 /// R-Library. Browser window listing every EPUB the user has
 /// converted in this app. Sortable columns; language filter;
@@ -151,6 +152,13 @@ struct LibraryWindowView: View {
     /// Error surfaced when a restore fails (filesystem error during
     /// the copy). Library state remains pointed at the live catalog.
     @State private var restoreError: String?
+
+    /// Error surfaced when the metadata dual-write to the EPUB
+    /// fails (corrupt EPUB, read-only filesystem, iCloud file not
+    /// yet downloaded, etc.). The catalog edit still went through
+    /// — only the EPUB-side write failed — so the message tells
+    /// the user catalog state is safe.
+    @State private var epubWriteError: String?
     /// Error surfaced from a failed Move-to-Trash. NSWorkspace.recycle
     /// can fail per-file (permissions, file gone, etc.); we collect
     /// errors and show them in an alert so the user knows which
@@ -210,6 +218,15 @@ struct LibraryWindowView: View {
                 Button("OK", role: .cancel) { restoreError = nil }
             } message: {
                 Text(restoreError ?? "")
+            }
+            .alert("Couldn't update EPUB metadata",
+                   isPresented: Binding(
+                       get: { epubWriteError != nil },
+                       set: { if !$0 { epubWriteError = nil } }
+                   )) {
+                Button("OK", role: .cancel) { epubWriteError = nil }
+            } message: {
+                Text(epubWriteError ?? "")
             }
             .onReceive(NotificationCenter.default.publisher(
                 for: .humanistImportEPUBRequested
@@ -412,8 +429,11 @@ struct LibraryWindowView: View {
                 initialGenre: ctx.genre,
                 epubFilename: ctx.epubFilename,
                 onSave: { title, author, languages, type, genre in
+                    let entryID = ctx.id
+                    let epubURL = library.entries
+                        .first(where: { $0.id == entryID })?.epubURL
                     library.updateEntryMetadata(
-                        for: ctx.id,
+                        for: entryID,
                         title: title,
                         author: author,
                         languages: languages,
@@ -422,10 +442,65 @@ struct LibraryWindowView: View {
                     )
                     LibraryAutoCollections.refresh(library: library)
                     metadataEditContext = nil
+                    // Dual-write: also push title / author /
+                    // first-language to the EPUB's OPF so the edit
+                    // survives a library.json wipe and travels with
+                    // the file. Genre and conversionType stay
+                    // catalog-only — neither has an OPF
+                    // representation. EPUBs with `urn:isbn:` etc.
+                    // are preserved because the saver round-trips
+                    // through OPFReader.Metadata, which carries
+                    // those fields too. Background-priority so the
+                    // sheet dismiss doesn't pause on the ~100ms
+                    // unzip + repack.
+                    if let epubURL {
+                        Task.detached(priority: .userInitiated) {
+                            do {
+                                try Self.writeEPUBMetadata(
+                                    epubURL: epubURL,
+                                    title: title,
+                                    author: author,
+                                    languages: languages
+                                )
+                            } catch {
+                                await MainActor.run {
+                                    epubWriteError = "Catalog saved, but couldn't update the EPUB's OPF for \(epubURL.lastPathComponent): \(error.localizedDescription)"
+                                }
+                            }
+                        }
+                    }
                 },
                 onCancel: { metadataEditContext = nil }
             )
         }
+    }
+
+    /// Write title / author / first-language back to the EPUB's
+    /// OPF. Preserves the other Dublin Core fields (year, publisher,
+    /// ISBN) by round-tripping through the parsed metadata struct.
+    /// Empty / nil title falls back to the existing OPF title —
+    /// the editor's UI already rejects empty title submission, so
+    /// this is a belt-and-suspenders guard against passing through
+    /// a wiped title.
+    nonisolated private static func writeEPUBMetadata(
+        epubURL: URL,
+        title: String,
+        author: String?,
+        languages: [String]
+    ) throws {
+        let book = try EPUBBook.open(epubURL: epubURL)
+        let existing = book.metadata
+        let cleanedTitle = title
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        book.metadata = OPFReader.Metadata(
+            title: cleanedTitle.isEmpty ? existing.title : cleanedTitle,
+            author: author,
+            language: languages.first ?? existing.language,
+            year: existing.year,
+            publisher: existing.publisher,
+            isbn: existing.isbn
+        )
+        try EPUBBookSaver().save(book)
     }
 
     /// Stage a removal-confirmation prompt for the given entries.
