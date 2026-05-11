@@ -496,6 +496,17 @@ struct LibraryWindowView: View {
     /// the editor's UI already rejects empty title submission, so
     /// this is a belt-and-suspenders guard against passing through
     /// a wiped title.
+    ///
+    /// Three-step write: open (unpacks the EPUB to a temp working
+    /// directory), `EPUBBookSaver.save(book)` (flushes the OPF
+    /// rewrite into that working directory), then
+    /// `EPUBRepacker.repack(workingDirectory:to:)` (re-zips the
+    /// working directory back into the `.epub` at the original
+    /// location). The repack is essential — without it, the save
+    /// only updates the temp dir, the `.epub` on disk stays
+    /// unchanged, and the dual-write looks like a no-op. (Lived
+    /// experience: this exact omission shipped in the first dual-
+    /// write version and the EPUB on disk never updated.)
     nonisolated private static func writeEPUBMetadata(
         epubURL: URL,
         title: String,
@@ -515,6 +526,10 @@ struct LibraryWindowView: View {
             isbn: existing.isbn
         )
         try EPUBBookSaver().save(book)
+        try EPUBRepacker().repack(
+            workingDirectory: book.workingDirectory,
+            to: epubURL
+        )
     }
 
     /// Stage a removal-confirmation prompt for the given entries.
