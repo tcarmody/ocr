@@ -236,7 +236,7 @@ private struct ChapterRow: View {
                 Button(action: onSelect) {
                     Text(chapter.title)
                         .font(.body)
-                        .foregroundStyle(isSelected ? Color.accentColor : .primary)
+                        .foregroundStyle(isSelected ? HumanistTheme.accent : .primary)
                         .lineLimit(1)
                 }
                 .buttonStyle(.plain)

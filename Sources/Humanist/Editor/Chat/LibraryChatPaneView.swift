@@ -177,7 +177,7 @@ struct LibraryChatPaneView: View {
     private var scopedStatusRow: some View {
         HStack(spacing: 6) {
             Image(systemName: "scope")
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(HumanistTheme.accent)
                 .imageScale(.small)
             Text(scopeSummary())
                 .font(.caption)
@@ -191,7 +191,7 @@ struct LibraryChatPaneView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
-        .background(Color.accentColor.opacity(0.06))
+        .background(HumanistTheme.accent.opacity(0.06))
     }
 
     private func scopeSummary() -> String {

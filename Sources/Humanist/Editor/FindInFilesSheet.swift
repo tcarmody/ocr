@@ -234,7 +234,7 @@ struct FindInFilesSheet: View {
             let prefix = nsLine.substring(with: NSRange(location: 0, length: hit.matchStart))
             let match = nsLine.substring(with: NSRange(location: hit.matchStart, length: hit.matchLength))
             let suffix = nsLine.substring(with: NSRange(location: hit.matchStart + hit.matchLength, length: nsLine.length - hit.matchStart - hit.matchLength))
-            (Text(prefix) + Text(match).bold().foregroundColor(.accentColor) + Text(suffix))
+            (Text(prefix) + Text(match).bold().foregroundColor(HumanistTheme.accent) + Text(suffix))
         } else {
             Text(hit.lineText)
         }

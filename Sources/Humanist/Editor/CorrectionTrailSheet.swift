@@ -233,7 +233,7 @@ struct CorrectionTrailSheet: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(
-                        isCurrent ? Color.accentColor.opacity(0.6) : Color.clear,
+                        isCurrent ? HumanistTheme.accent.opacity(0.6) : Color.clear,
                         lineWidth: 1.5
                     )
             )

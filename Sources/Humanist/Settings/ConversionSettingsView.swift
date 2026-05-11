@@ -182,7 +182,7 @@ struct ConversionSettingsView: View {
             if let msg = shareMigrationMessage {
                 Text(msg)
                     .font(.callout)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(HumanistTheme.accent)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

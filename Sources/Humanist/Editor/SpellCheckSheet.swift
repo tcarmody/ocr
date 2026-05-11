@@ -140,7 +140,7 @@ struct SpellCheckSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 selectedSuggestion == suggestion
-                    ? Color.accentColor.opacity(0.15)
+                    ? HumanistTheme.accent.opacity(0.15)
                     : Color.clear
             )
             .contentShape(Rectangle())

@@ -890,7 +890,7 @@ struct LibraryWindowView: View {
         .overlay(
             Capsule()
                 .stroke(searchFieldFocused
-                        ? Color.accentColor.opacity(0.7)
+                        ? HumanistTheme.accent.opacity(0.7)
                         : Color.clear,
                         lineWidth: 1)
         )
@@ -1648,7 +1648,7 @@ private struct AsyncWorkProgressSheet: View {
         VStack(spacing: 16) {
             HStack(spacing: 8) {
                 Image(systemName: done ? "checkmark.circle.fill" : workingIcon)
-                    .foregroundStyle(done ? .green : Color.accentColor)
+                    .foregroundStyle(done ? .green : HumanistTheme.accent)
                     .font(.title2)
                 Text(done ? doneTitle : workingTitle)
                     .font(.headline)

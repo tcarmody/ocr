@@ -114,7 +114,7 @@ struct ChatMessageRow: View {
 
     private var bubbleColor: Color {
         message.role == .user
-            ? Color.accentColor.opacity(0.10)
+            ? HumanistTheme.accent.opacity(0.10)
             : Color.secondary.opacity(0.08)
     }
 }
@@ -160,9 +160,9 @@ struct FlowingCitationRow: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(
-                    Capsule().fill(Color.accentColor.opacity(0.14))
+                    Capsule().fill(HumanistTheme.accent.opacity(0.14))
                 )
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(HumanistTheme.accent)
             }
             .buttonStyle(.plain)
             .help(citationHelpText(citation))

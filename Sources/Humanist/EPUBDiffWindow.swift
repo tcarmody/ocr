@@ -92,7 +92,7 @@ struct EPUBDiffWindow: View {
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
-                                .background(Color.accentColor, in: Capsule())
+                                .background(HumanistTheme.accent, in: Capsule())
                         }
                     }
                     .tag(idx)
