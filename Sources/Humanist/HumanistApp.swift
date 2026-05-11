@@ -178,6 +178,7 @@ struct HumanistApp: App {
         // whether the window was already open or just spawned.
         Settings {
             SettingsRoot()
+                .environmentObject(library)
         }
     }
 }

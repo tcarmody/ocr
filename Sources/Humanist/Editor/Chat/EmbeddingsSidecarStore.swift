@@ -138,23 +138,35 @@ struct EmbeddingsSidecar: Codable, Sendable {
     }
 }
 
-/// Disk persistence for `EmbeddingsSidecar`, keyed by the canonical
-/// path of the EPUB the index belongs to (same scheme as
-/// `ChatTranscriptStore`).
+/// Disk persistence for `EmbeddingsSidecar`. Two storage modes
+/// coexist:
 ///
-/// We deliberately store outside the EPUB — same reasoning as the
-/// chat transcript path:
+///   * **UUID-keyed** (preferred when a `LibraryEntry.id` is
+///     available): the sidecar filename is `<uuid>.json`. With
+///     R-Library-Sync Phase B's "share across machines" toggle
+///     enabled, these files live in
+///     `<outputRoot>/.humanist/Embeddings/` so cloud-synced
+///     folders carry them across Macs. Without sharing, they live
+///     in `~/Library/Application Support/Humanist/Embeddings/`.
 ///
-///  * Embeddings are derived state, not document content; coupling
-///    the cache to the save flow would force a full re-zip every time
-///    a paragraph changes.
-///  * A spec-faithful EPUB has nothing to gain from a 2 MB binary
-///    blob in `META-INF/`; readers that don't recognize it would
-///    flag it.
+///   * **SHA-keyed** (legacy / uncataloged-fallback): the filename
+///     is `SHA256(canonicalEpubPath).json`, always under
+///     Application Support. Used for books not in the library
+///     catalog (which today should be rare given auto-catalog on
+///     editor open) and as a read-side fallback during the
+///     migration window.
 ///
-/// Tradeoff: moving the .epub orphans its sidecar. Acceptable for v1
-/// (rebuild on next open is ~1 minute with NLEmbedding); a follow-up
-/// can index by the OPF unique-identifier metadata to follow renames.
+/// Reads use a fallback chain: UUID-at-shared-root, UUID-at-app-
+/// support, SHA-at-app-support. Writes always go to the current
+/// preferred location for the libraryID. Result: existing
+/// SHA-keyed sidecars stay readable until they're naturally
+/// refreshed, and turning sharing on doesn't strand any work.
+///
+/// Tradeoff: moving the .epub orphans its sidecar. With UUID
+/// keying the rename problem disappears (id is stable, location
+/// is irrelevant). The old SHA-keyed orphans are still possible
+/// for uncataloged books; auto-catalog on editor open keeps this
+/// rare.
 struct EmbeddingsSidecarStore {
     private let baseDirectory: URL
 
@@ -171,41 +183,81 @@ struct EmbeddingsSidecarStore {
         }
     }
 
-    /// Where the sidecar for `epubURL` lives on disk. Exposed so the
-    /// Settings UI can compute total cache size without re-deriving
-    /// the hashing scheme.
-    func fileURL(for epubURL: URL) -> URL {
-        let canonical = epubURL.canonicalForFile.standardizedFileURL.path
-        let digest = SHA256.hash(data: Data(canonical.utf8))
-        let hex = digest.map { String(format: "%02x", $0) }.joined()
-        return baseDirectory.appendingPathComponent("\(hex).json")
+    /// Where to *write* the sidecar for this lookup. Honors
+    /// sharing toggle + libraryID. UUID-keyed when libraryID is
+    /// provided; SHA-keyed in Application Support as the legacy
+    /// fallback. Public for tests + Settings cache-size compute.
+    func writeURL(for epubURL: URL, libraryID: UUID?) -> URL {
+        if let libraryID {
+            if let shared = Self.sharedRootEmbeddingsDir() {
+                return shared.appendingPathComponent(
+                    "\(libraryID.uuidString).json"
+                )
+            }
+            return baseDirectory.appendingPathComponent(
+                "\(libraryID.uuidString).json"
+            )
+        }
+        return legacySHAFileURL(for: epubURL)
     }
 
-    /// Read the sidecar for `epubURL`. Returns `nil` when no file
-    /// exists, the file is unreadable, or its `schemaVersion` is
-    /// older than the current version (the caller treats those
-    /// equivalently — "no usable cache; build from scratch").
-    func read(for epubURL: URL) -> EmbeddingsSidecar? {
-        let url = fileURL(for: epubURL)
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              let payload = try? Self.decoder.decode(EmbeddingsSidecar.self, from: data)
-        else { return nil }
-        // Forward-compat: a future Humanist build might write a
-        // higher schemaVersion than this one knows about. Newer
-        // sidecars are loaded as-is; older ones are dropped so the
-        // build pass can re-populate the missing sections.
-        guard payload.schemaVersion >= EmbeddingsSidecar.currentSchemaVersion else {
-            return nil
+    /// Compatibility shim — original single-arg call. Resolves to
+    /// the SHA-keyed legacy path so existing call sites that
+    /// haven't been threaded through libraryID still work. New
+    /// code should call `writeURL(for:libraryID:)`.
+    func fileURL(for epubURL: URL) -> URL {
+        legacySHAFileURL(for: epubURL)
+    }
+
+    /// Ordered list of *read* candidates for this lookup. The
+    /// load chain stops at the first file that exists + decodes
+    /// cleanly. Order: UUID-at-shared-root → UUID-at-app-support →
+    /// SHA-at-app-support. Visible-internal for tests.
+    func readCandidateURLs(
+        for epubURL: URL, libraryID: UUID?
+    ) -> [URL] {
+        var out: [URL] = []
+        if let libraryID {
+            if let shared = Self.sharedRootEmbeddingsDir() {
+                out.append(shared.appendingPathComponent(
+                    "\(libraryID.uuidString).json"
+                ))
+            }
+            out.append(baseDirectory.appendingPathComponent(
+                "\(libraryID.uuidString).json"
+            ))
         }
-        return payload
+        out.append(legacySHAFileURL(for: epubURL))
+        return out
+    }
+
+    /// Read the sidecar for `epubURL`. Walks the candidate chain
+    /// returning the first usable file. Returns nil when none of
+    /// them exist or the schemaVersion is too old.
+    func read(for epubURL: URL, libraryID: UUID? = nil) -> EmbeddingsSidecar? {
+        for url in readCandidateURLs(for: epubURL, libraryID: libraryID) {
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let data = try? Data(contentsOf: url),
+                  let payload = try? Self.decoder.decode(
+                    EmbeddingsSidecar.self, from: data
+                  )
+            else { continue }
+            guard payload.schemaVersion >= EmbeddingsSidecar.currentSchemaVersion
+            else { continue }
+            return payload
+        }
+        return nil
     }
 
     /// Write the sidecar for `epubURL`. Creates the storage directory
     /// if needed; failures are silent — losing the cache means a
     /// rebuild on next open, not a broken editor.
-    func write(_ sidecar: EmbeddingsSidecar, for epubURL: URL) {
-        let url = fileURL(for: epubURL)
+    func write(
+        _ sidecar: EmbeddingsSidecar,
+        for epubURL: URL,
+        libraryID: UUID? = nil
+    ) {
+        let url = writeURL(for: epubURL, libraryID: libraryID)
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -214,11 +266,42 @@ struct EmbeddingsSidecarStore {
         try? data.write(to: url, options: .atomic)
     }
 
-    /// Drop the sidecar for `epubURL`. Used by Settings → "Clear all
-    /// indexes" (per-book wipe variant) and by tests.
-    func clear(for epubURL: URL) {
-        let url = fileURL(for: epubURL)
-        try? FileManager.default.removeItem(at: url)
+    /// Drop every known location for this book's sidecar (UUID at
+    /// shared root, UUID at app support, SHA at app support).
+    /// Used by Settings → "Clear all indexes" (per-book variant)
+    /// and tests.
+    func clear(for epubURL: URL, libraryID: UUID? = nil) {
+        for url in readCandidateURLs(for: epubURL, libraryID: libraryID) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    // MARK: - Path helpers
+
+    private func legacySHAFileURL(for epubURL: URL) -> URL {
+        let canonical = epubURL.canonicalForFile.standardizedFileURL.path
+        let digest = SHA256.hash(data: Data(canonical.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return baseDirectory.appendingPathComponent("\(hex).json")
+    }
+
+    /// `<outputRoot>/.humanist/Embeddings/` when the user has the
+    /// share-library-across-machines toggle on AND has configured
+    /// an output folder. Nil otherwise — the caller falls back to
+    /// `baseDirectory` (Application Support).
+    private static func sharedRootEmbeddingsDir() -> URL? {
+        guard UserDefaults.standard.bool(
+            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
+        ) else { return nil }
+        guard let root = ConversionOutputResolver.currentRoot()
+        else { return nil }
+        let dir = root
+            .appendingPathComponent(".humanist", isDirectory: true)
+            .appendingPathComponent("Embeddings", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true
+        )
+        return dir
     }
 
     /// Wipe every sidecar under the storage root. Used by Settings

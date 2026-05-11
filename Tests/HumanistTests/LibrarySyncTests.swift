@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import CryptoKit
 import EPUB  // canonicalForFile
 @testable import Humanist
 
@@ -233,6 +234,121 @@ final class LibrarySyncTests: XCTestCase {
             throw XCTSkip("real Humanist library present at \(supportURL.path); test skipped")
         }
         XCTAssertEqual(LibrarySyncMigration.run(), .nothingToMigrate)
+    }
+
+    // MARK: - Phase B: sidecar + alias migration
+
+    func test_runFull_copies_sha_keyed_sidecar_to_root_uuid_location() throws {
+        // Set up: an EPUB at <root>/Books/foo.epub, a catalog
+        // entry pointing at it with a known UUID, and a
+        // SHA-keyed sidecar in Application Support. After
+        // runFull, the UUID-keyed copy should exist at
+        // <root>/.humanist/Embeddings/<uuid>.json.
+        let root = tempDir.appendingPathComponent("Library")
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true
+        )
+        UserDefaults.standard.set(root.path,
+            forKey: ConversionSettingsKeys.outputFolderPath)
+
+        let epub = root.appendingPathComponent("Books/foo.epub")
+        try FileManager.default.createDirectory(
+            at: epub.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: epub)
+
+        // Build the catalog row in a real LibraryStore (so its UUID
+        // is captured correctly).
+        let storeURL = tempDir.appendingPathComponent("library.json")
+        let library = LibraryStore(storeURL: storeURL)
+        library.recordConversion(epubURL: epub, title: "Foo", languages: [])
+        guard let entry = library.entries.first else {
+            return XCTFail("expected one entry after recordConversion")
+        }
+
+        // Plant a SHA-keyed sidecar at the AppSupport location
+        // the migration helper will scan. We can't redirect that
+        // location from inside the test (it uses the real
+        // Application Support path), so this assertion is
+        // skip-gated: if there's no pre-existing AppSupport
+        // sidecar dir we can safely write into, skip.
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first!
+        let supportEmbDir = appSupport
+            .appendingPathComponent("Humanist", isDirectory: true)
+            .appendingPathComponent("Embeddings", isDirectory: true)
+        // Only run when the developer machine is happy to host a
+        // throwaway sidecar; otherwise skip to avoid mutating
+        // real-user data.
+        if FileManager.default.fileExists(atPath: supportEmbDir.path) {
+            // Don't pollute a real Humanist install.
+            throw XCTSkip("Application Support/Humanist/Embeddings exists; skipping to avoid touching real data")
+        }
+        try FileManager.default.createDirectory(
+            at: supportEmbDir, withIntermediateDirectories: true
+        )
+        defer {
+            // Clean up our test sidecar dir on exit.
+            try? FileManager.default.removeItem(at: supportEmbDir)
+        }
+        let canonical = entry.epubURL
+            .canonicalForFile.standardizedFileURL.path
+        let sha = SHA256.hash(data: Data(canonical.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let legacyURL = supportEmbDir.appendingPathComponent("\(sha).json")
+        let sidecar = EmbeddingsSidecar.empty(
+            backend: "legacy", dimension: 8
+        )
+        try JSONEncoder().encode(sidecar).write(to: legacyURL)
+
+        // Run the full migration.
+        let result = LibrarySyncMigration.runFull(library: library)
+        XCTAssertEqual(result.sidecarsCopied, 1)
+
+        let expectedDest = root
+            .appendingPathComponent(".humanist/Embeddings")
+            .appendingPathComponent("\(entry.id.uuidString).json")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: expectedDest.path),
+            "UUID-keyed sidecar must exist at \(expectedDest.path)"
+        )
+    }
+
+    func test_runFull_skips_already_migrated_sidecars() {
+        // Idempotent re-run: if the UUID-keyed copy already
+        // exists, sidecarsCopied is 0 — the helper doesn't
+        // re-copy or clobber.
+        let root = tempDir.appendingPathComponent("Library")
+        try? FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true
+        )
+        UserDefaults.standard.set(root.path,
+            forKey: ConversionSettingsKeys.outputFolderPath)
+
+        let epub = root.appendingPathComponent("Books/foo.epub")
+        makeEPUBStub(at: epub)
+        let library = LibraryStore(
+            storeURL: tempDir.appendingPathComponent("library.json")
+        )
+        library.recordConversion(epubURL: epub, title: "Foo", languages: [])
+        guard let entry = library.entries.first else { return }
+
+        // Plant an already-migrated UUID-keyed file under the
+        // root. Migration should skip it.
+        let destDir = root
+            .appendingPathComponent(".humanist/Embeddings")
+        try? FileManager.default.createDirectory(
+            at: destDir, withIntermediateDirectories: true
+        )
+        try? Data().write(
+            to: destDir.appendingPathComponent("\(entry.id.uuidString).json")
+        )
+
+        let result = LibrarySyncMigration.runFull(library: library)
+        XCTAssertEqual(result.sidecarsCopied, 0)
     }
 
     func test_migration_is_idempotent_when_inroot_exists() {

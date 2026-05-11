@@ -443,6 +443,36 @@ in Tier 6 — full write-up there):
   `LibraryStoreTests` cover the mutations + the legacy-load
   + membership-pruning paths.
 
+**Done — Multi-machine sidecar + alias sync** (R-Library-Sync Phase B):
+- **`EmbeddingsSidecarStore` API change**: `libraryID: UUID?`
+  parameter routes writes to UUID-keyed paths when set
+  (sharing on → `<outputRoot>/.humanist/Embeddings/<uuid>.json`,
+  sharing off → `<appSupport>/<uuid>.json`) and to legacy
+  SHA-keyed paths otherwise. Reads walk a candidate chain so
+  existing SHA-keyed sidecars stay usable during the migration
+  window. Every consumer threaded: `BookSidecarBuilder`,
+  `LibraryIndexBuilder`, `EPUBImporter` (looks up freshly-
+  created entry's id after `recordConversion`),
+  `LibraryEmbeddingIndex`, `LibraryEntityIndex`,
+  `BookChatViewModel` (uses `OpenRouter.library` to resolve
+  URL → UUID at each sidecar access).
+- **`AliasDictionaryStore.resolveStoreURL`**: same shape —
+  `<outputRoot>/.humanist/aliases.json` when sharing on, else
+  Application Support. Single file, simple location swap.
+- **`LibrarySyncMigration.runFull(library:)`**: composite
+  helper that runs the Phase A catalog move + walks every
+  catalog entry to copy SHA-keyed sidecars to UUID-keyed
+  locations + copies aliases. Idempotent on every step.
+  Settings activation prompt surfaces sidecar / alias counts.
+- **Auto-catalog on editor-open**: `EditorViewModel`
+  auto-catalogs an opened book that isn't already in the
+  library so BookChatViewModel has a stable UUID for sidecar
+  keying. Uses canonical-URL dedup (no-op for known books).
+- **18 new tests** across `EmbeddingsSidecarStoreKeyingTests`
+  (writeURL routing, read fallback chain, write+read
+  round-trip) and `LibrarySyncTests` (migration sidecar +
+  aliases copy, idempotent re-runs).
+
 **Done — Multi-machine catalog portability** (R-Library-Sync Phase A):
 - **`relativePath` on `LibraryEntry`** — populated when the EPUB
   sits under the configured output root. Persisted alongside the
@@ -624,24 +654,33 @@ Drivers for the current ordering:
    and the `CoverImageCache` decodes thumbnails lazily, so
    performance should hold up; revisit if a real soak surfaces
    issues.
-4. **R-Library-Sync Phase A**: ~~catalog + collections portability~~
-   shipped. `LibraryEntry` carries a `relativePath` from the
-   configured output root when applicable; `LibraryStore` reads
-   the catalog from `<outputRoot>/.humanist/library.json` and
-   rewrites in-memory `epubURL`s against the current machine's
-   root on load when "Share library across machines" is on in
-   Settings → Conversion. `LibrarySyncMigration` copies the
-   Application Support catalog into place on first activation
-   (idempotent + leaves a backup behind). 8 new
-   `LibrarySyncTests` cover the portability invariant, the
-   record-conversion auto-populate of relativePath, the
-   backward-compat decode of legacy entries, and the migration
-   states.
-   **Phase B (next session)**: sidecar UUID rekey so embedding
-   / hierarchy / entity indexes travel with the catalog. Today
-   sidecars are keyed by absolute-path SHA-256, which differs
-   across machines — library chat treats books as un-indexed on
-   the second Mac until *Build Missing Indexes* runs there.
+4. ~~**R-Library-Sync Phases A + B**~~ shipped. The catalog,
+   embedding / hierarchy / entity sidecars, and alias dictionary
+   all travel across machines via a cloud-synced output root:
+   - **Phase A** (already shipped earlier this session):
+     `LibraryEntry` carries a `relativePath`; `LibraryStore`
+     reads `<outputRoot>/.humanist/library.json` and rewrites
+     `epubURL` against the current machine's root on load
+     when sharing is on.
+   - **Phase B**: `EmbeddingsSidecarStore` gained `libraryID:
+     UUID?` parameters; sidecars route by UUID to
+     `<outputRoot>/.humanist/Embeddings/<uuid>.json` (sharing
+     on) or to UUID-keyed Application Support (sharing off).
+     Reads walk a fallback chain (UUID-at-root → UUID-at-
+     appsupport → SHA-at-appsupport) so existing SHA-keyed
+     sidecars stay usable during the migration window. Alias
+     dictionary moves to `<outputRoot>/.humanist/aliases.json`
+     when sharing is on. `LibrarySyncMigration.runFull(library:)`
+     copies the legacy SHA-keyed sidecars + aliases on
+     activation; idempotent re-runs are no-ops.
+   - **Auto-catalog on editor-open**: every EPUB opened in the
+     editor that isn't already in the catalog gets a thin
+     entry (URL + title + language from OPF metadata) so the
+     sidecar gets a stable UUID for keying. `recordConversion`
+     dedups by canonical URL.
+   18 new tests across `EmbeddingsSidecarStoreKeyingTests` +
+   `LibrarySyncTests` cover the writeURL routing, read
+   fallback chain, write+read round-trip, and migration steps.
 5. **E-Vision-Modes — Manuscript track only, validation spike
    first** (~1-2 days for the spike). Tester driver. Build the
    manuscript path (Claude Opus 4.7, diplomatic transcription)
@@ -3268,23 +3307,22 @@ they still have).
 
 ## R-Library-Sync — Multi-machine library sharing via a cloud folder
 
-**Status**: Phase A shipped, Phase B not started.
+**Status**: Phases A + B shipped. A single
+"Share library across machines" toggle in Settings → Conversion
+moves the catalog (library.json + collections), the embedding /
+hierarchy / entity sidecars (keyed by stable catalog UUID
+instead of path SHA-256), and the alias dictionary from
+`~/Library/Application Support/Humanist/` to
+`<outputRoot>/.humanist/`. A second Mac sharing the folder via
+iCloud / Dropbox / SyncThing reads the same files; book paths
+resolve through per-entry `relativePath` against the local root.
 
-Phase A (catalog portability) carries `library.json` + collections
-across machines: a `Share library across machines` toggle in
-Settings → Conversion moves the catalog from `~/Library/Application
-Support/Humanist/` to `<outputRoot>/.humanist/library.json` and
-threads a `relativePath` through each `LibraryEntry` so the same
-JSON resolves correctly on each Mac. The migration is idempotent
-(re-flipping the toggle is a no-op) and leaves the Application
-Support copy in place as a backup.
-
-Phase B (sidecar UUID rekey) is the heavier piece. Today's
-embedding / hierarchy / entity sidecars are keyed by canonical
-absolute-path SHA-256; different roots produce different hashes
-even for the same EPUB. After Phase A the catalog row's UUID is
-already portable; Phase B switches the sidecar store to key by
-that UUID so the indexes travel too.
+Auto-catalog on editor-open ensures every EPUB the user touches
+gets a stable UUID for sidecar keying — a deliberate scope
+expansion of "the library is for books I converted in this app"
+to "the library knows about every EPUB you've opened." Per-book
+chat transcripts, the conversion queue, and per-app preferences
+intentionally stay machine-local.
 
 ### Why bother
 

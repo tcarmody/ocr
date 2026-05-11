@@ -92,17 +92,51 @@ struct AliasDictionaryStore {
         if let storeURL {
             self.storeURL = storeURL
         } else {
-            let support = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first ?? FileManager.default.temporaryDirectory
-            let dir = support
-                .appendingPathComponent("Humanist", isDirectory: true)
-                .appendingPathComponent("Aliases", isDirectory: true)
+            self.storeURL = Self.resolveStoreURL()
+        }
+    }
+
+    /// Resolve the alias dictionary location. R-Library-Sync
+    /// Phase B: when "Share library across machines" is on + an
+    /// output root is configured, the dictionary lives at
+    /// `<outputRoot>/.humanist/aliases.json` so the same custom
+    /// vocabulary applies on every Mac. Otherwise the historical
+    /// Application Support path.
+    static func resolveStoreURL() -> URL {
+        if UserDefaults.standard.bool(
+            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
+        ), let root = ConversionOutputResolver.currentRoot() {
+            let dir = root.appendingPathComponent(
+                ".humanist", isDirectory: true
+            )
             try? FileManager.default.createDirectory(
                 at: dir, withIntermediateDirectories: true
             )
-            self.storeURL = dir.appendingPathComponent("aliases.json")
+            return dir.appendingPathComponent("aliases.json")
         }
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        let dir = support
+            .appendingPathComponent("Humanist", isDirectory: true)
+            .appendingPathComponent("Aliases", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true
+        )
+        return dir.appendingPathComponent("aliases.json")
+    }
+
+    /// Application Support location regardless of current sync
+    /// settings. Used by the migration helper to find a
+    /// pre-existing file to copy into the shared location.
+    static func applicationSupportStoreURL() -> URL {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return support
+            .appendingPathComponent("Humanist", isDirectory: true)
+            .appendingPathComponent("Aliases", isDirectory: true)
+            .appendingPathComponent("aliases.json")
     }
 
     func read() -> AliasDictionary {

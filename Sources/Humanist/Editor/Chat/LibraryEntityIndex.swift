@@ -67,7 +67,9 @@ struct LibraryEntityIndex: Sendable {
         var displayNames: [String: String] = [:]
         var indexed = 0
         for entry in libraryEntries {
-            guard let sidecar = store.read(for: entry.epubURL),
+            guard let sidecar = store.read(
+                    for: entry.epubURL, libraryID: entry.id
+                  ),
                   let book = sidecar.entities else { continue }
             indexed += 1
             for (canonical, anchors) in book.mentions {

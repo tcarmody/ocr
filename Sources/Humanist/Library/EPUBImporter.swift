@@ -352,12 +352,17 @@ final class EPUBImporter: ObservableObject {
         let title = book.displayTitle
         let languages = book.metadata.language
             .flatMap { $0.isEmpty ? nil : [$0] } ?? []
-        await MainActor.run {
+        let libraryID: UUID? = await MainActor.run {
             library.recordConversion(
                 epubURL: destination,
                 title: title,
                 languages: languages
             )
+            // Read back the entry's UUID so the sidecar build can
+            // key by it under R-Library-Sync Phase B.
+            return library.entries.first(where: {
+                $0.epubURL.canonicalForFile == destination.canonicalForFile
+            })?.id
         }
 
         // 7. Build the embedding sidecar so library chat sees the
@@ -366,6 +371,7 @@ final class EPUBImporter: ObservableObject {
         if let backend {
             _ = try await BookSidecarBuilder.buildIfNeeded(
                 epubURL: destination,
+                libraryID: libraryID,
                 backend: backend,
                 store: sidecarStore,
                 forceRebuild: false
@@ -394,17 +400,19 @@ final class EPUBImporter: ObservableObject {
         guard FileManager.default.fileExists(atPath: destination.path)
         else { return false }
         let canonicalDest = destination.canonicalForFile
-        let cataloged = await MainActor.run {
-            library.entries.contains {
+        let libraryID: UUID? = await MainActor.run {
+            library.entries.first(where: {
                 $0.epubURL.canonicalForFile == canonicalDest
-            }
+            })?.id
         }
-        guard cataloged else { return false }
+        guard libraryID != nil else { return false }
         guard let backend else {
             // skip-indexing path — file + catalog row is enough.
             return true
         }
-        guard let sidecar = sidecarStore.read(for: destination),
+        guard let sidecar = sidecarStore.read(
+                for: destination, libraryID: libraryID
+              ),
               sidecar.backendIdentifier == backend.identifier,
               sidecar.dimension == backend.dimension,
               !sidecar.paragraphs.isEmpty

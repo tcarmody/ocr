@@ -5,6 +5,13 @@ import AppKit
 /// determines where the launcher / queue routes converter artifacts
 /// (EPUBs, plain-text + markdown sibling outputs, debug logs).
 struct ConversionSettingsView: View {
+    /// Needed by the library-sync activation flow so the
+    /// migration helper can walk catalog entries when copying
+    /// sidecars to the shared root. Optional because the
+    /// preferences scene may host the view without environment
+    /// plumbing during early app launch.
+    @EnvironmentObject private var library: LibraryStore
+
     @AppStorage(ConversionSettingsKeys.outputFolderPath)
     private var outputFolderPath: String = ""
 
@@ -120,9 +127,10 @@ struct ConversionSettingsView: View {
         }
     }
 
-    /// R-Library-Sync Phase A. Toggle that flips
+    /// R-Library-Sync. Toggle that flips
     /// `shareLibraryAcrossMachines`; first activation runs
-    /// `LibrarySyncMigration.run()` and prompts a relaunch.
+    /// `LibrarySyncMigration.runFull(library:)` (catalog +
+    /// sidecars + aliases) and prompts a relaunch.
     @ViewBuilder
     private var libraryShareSection: some View {
         Section("Library sync") {
@@ -139,9 +147,7 @@ struct ConversionSettingsView: View {
                 )
             )
             Text("""
-                Phase A — catalog + collections only. When on, `library.json` lives in `<output folder>/.humanist/library.json` instead of `~/Library/Application Support/`, and book paths inside store as relative-to-root so the same catalog resolves correctly on a second Mac sharing the folder via iCloud / Dropbox / SyncThing. Per-book chat history, the conversion queue, and per-app preferences stay machine-local.
-
-                **Phase B (planned):** sidecar (embedding / hierarchy / entity) rekeying to portable UUIDs so library chat doesn't need to re-index on each machine. Until that ships, run *Build Missing Indexes* on the second Mac to materialize embeddings there.
+                When on, `library.json`, the embedding / hierarchy / entity sidecars, and the alias dictionary all live under `<output folder>/.humanist/` instead of `~/Library/Application Support/`. The same catalog resolves correctly on a second Mac sharing the folder via iCloud / Dropbox / SyncThing — book paths inside store as relative-to-root, and sidecars are keyed by their stable catalog UUID. Per-book chat history, the conversion queue, and per-app preferences stay machine-local by design.
 
                 Toggling this requires an app relaunch to take effect.
                 """)
@@ -158,19 +164,35 @@ struct ConversionSettingsView: View {
     }
 
     private func runShareMigration() {
-        let result = LibrarySyncMigration.run()
-        switch result {
+        let result = LibrarySyncMigration.runFull(library: library)
+        let suffix = sidecarsAliasesSummary(result)
+        switch result.catalog {
         case .moved:
-            shareMigrationMessage = "Catalog moved to your output folder. Quit and reopen Humanist to start using the shared library."
+            shareMigrationMessage = "Catalog moved to your output folder.\(suffix) Quit and reopen Humanist to start using the shared library."
         case .alreadyMigrated:
-            shareMigrationMessage = "Shared catalog already in place under your output folder. Quit and reopen Humanist if this is a fresh activation."
+            shareMigrationMessage = "Shared catalog already in place.\(suffix) Quit and reopen Humanist if this is a fresh activation."
         case .nothingToMigrate:
-            shareMigrationMessage = "No existing library to migrate. Future conversions will write into the shared location after relaunch."
+            shareMigrationMessage = "No existing library to migrate.\(suffix) Future conversions will write into the shared location after relaunch."
         case .rootMissing:
             shareMigrationMessage = "Pick an output folder above first — the shared library lives under it."
         case .failed(let message):
             shareMigrationMessage = "Migration failed: \(message)"
         }
+    }
+
+    private func sidecarsAliasesSummary(
+        _ result: LibrarySyncMigration.PhaseBResult
+    ) -> String {
+        var parts: [String] = []
+        if result.sidecarsCopied > 0 {
+            let n = result.sidecarsCopied
+            parts.append("\(n) embedding sidecar\(n == 1 ? "" : "s") copied")
+        }
+        if result.aliasesCopied {
+            parts.append("alias dictionary copied")
+        }
+        guard !parts.isEmpty else { return "" }
+        return " " + parts.joined(separator: " · ") + "."
     }
 
     private func resetConversionDefaults() {

@@ -92,7 +92,9 @@ struct LibraryEmbeddingIndex: Sendable {
         var unindexed = 0
         var mismatch = 0
         for entry in libraryEntries {
-            guard let sidecar = store.read(for: entry.epubURL) else {
+            guard let sidecar = store.read(
+                for: entry.epubURL, libraryID: entry.id
+            ) else {
                 unindexed += 1
                 continue
             }

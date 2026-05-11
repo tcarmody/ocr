@@ -139,6 +139,20 @@ final class BookChatViewModel: ObservableObject {
     private let embeddingsStore: EmbeddingsSidecarStore
     private let epubURL: URL
 
+    /// R-Library-Sync Phase B. Resolve the catalog entry's UUID
+    /// for `epubURL` at each sidecar read/write so the file lands
+    /// at the UUID-keyed location when the book is cataloged.
+    /// Re-computed each access so a book that gets auto-cataloged
+    /// after the chat VM exists immediately starts writing to the
+    /// UUID-keyed location. Nil for uncataloged books — the
+    /// sidecar store falls back to legacy SHA-keyed storage.
+    private var resolvedLibraryID: UUID? {
+        let canonical = epubURL.canonicalForFile
+        return OpenRouter.library?.entries.first(where: {
+            $0.epubURL.canonicalForFile == canonical
+        })?.id
+    }
+
     /// Selected chat backend. Resolved per-send so a Settings change
     /// applies on the next query without rebuilding the view model.
     /// Default is Cloud (Haiku 4.5).
@@ -860,6 +874,10 @@ final class BookChatViewModel: ObservableObject {
         let url = epubURL
         let store = embeddingsStore
         let snapshot = book
+        // Snapshot libraryID at task start. Most chat opens hit
+        // an already-cataloged book; for the rare uncataloged
+        // case the sidecar lands at the legacy SHA-keyed path.
+        let libraryID = resolvedLibraryID
         embeddingBuildTask = Task { [weak self] in
             guard let resolution = await self?.resolveEmbeddingBackend() else { return }
             guard let backend = resolution.backend else {
@@ -874,7 +892,7 @@ final class BookChatViewModel: ObservableObject {
                 self?.fallbackNote = resolution.fallbackNote
             }
             do {
-                var sidecar = store.read(for: url)
+                var sidecar = store.read(for: url, libraryID: libraryID)
                     ?? EmbeddingsSidecar.empty(
                         backend: backend.identifier,
                         dimension: backend.dimension
@@ -906,7 +924,7 @@ final class BookChatViewModel: ObservableObject {
                 // run itself.
                 let entities = BookEntityIndex.build(from: snapshot)
                 sidecar.entities = entities
-                store.write(sidecar, for: url)
+                store.write(sidecar, for: url, libraryID: libraryID)
                 try Task.checkCancellation()
                 await MainActor.run {
                     self?.embeddingIndex = index

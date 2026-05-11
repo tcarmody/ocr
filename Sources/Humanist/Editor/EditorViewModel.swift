@@ -430,6 +430,14 @@ final class EditorViewModel: ObservableObject {
             self.book = book
             self.fileTree = FileNode.walk(book.workingDirectory, spineOrder: book.spineURLOrder)
             self.state = .ready
+            // R-Library-Sync Phase B: auto-catalog any opened EPUB
+            // that isn't already in the library. recordConversion
+            // is idempotent on canonical URL so re-opens of an
+            // already-cataloged book are no-ops. The catalog row
+            // gives BookChatViewModel a stable UUID for sidecar
+            // keying — the alternative was SHA-keyed legacy
+            // storage that doesn't survive sync to a second Mac.
+            self.autoCatalogIfMissing(epubURL: epubURL, book: book)
             self.selectedFile = Self.preferredInitialSelection(
                 in: book, fileTree: self.fileTree
             )
@@ -448,6 +456,36 @@ final class EditorViewModel: ObservableObject {
         } catch {
             self.state = .failed(error.localizedDescription)
         }
+    }
+
+    /// R-Library-Sync Phase B. Catalog the freshly-opened book
+    /// when it isn't already known. The library uses canonical-URL
+    /// matching for dedup so the no-op path is cheap; freshly-
+    /// added entries inherit title + language from the OPF
+    /// metadata the book just loaded with.
+    ///
+    /// Reads `OpenRouter.library` rather than threading a
+    /// LibraryStore reference through EditorView → EditorViewModel —
+    /// that pattern's already in use elsewhere in the editor
+    /// (e.g. for `recordOpen`) and avoids a configure-after-init
+    /// dance over an @StateObject. The library is set on app
+    /// launch (`ContentView.onAppear`) and stays for the
+    /// application lifetime, so an editor opened any time after
+    /// launch sees it.
+    private func autoCatalogIfMissing(epubURL: URL, book: EPUBBook) {
+        guard let library = OpenRouter.library else { return }
+        let canonical = epubURL.canonicalForFile
+        if library.entries.contains(where: {
+            $0.epubURL.canonicalForFile == canonical
+        }) { return }
+        let title = book.displayTitle
+        let languages: [String] = book.metadata.language
+            .flatMap { $0.isEmpty ? nil : [$0] } ?? []
+        library.recordConversion(
+            epubURL: epubURL,
+            title: title,
+            languages: languages
+        )
     }
 
     // MARK: - linked navigation (Phase 7.D, simplified to one-way)

@@ -112,6 +112,7 @@ final class LibraryIndexBuilder: ObservableObject {
     ) async throws -> Bool {
         try await BookSidecarBuilder.buildIfNeeded(
             epubURL: entry.epubURL,
+            libraryID: entry.id,
             backend: backend,
             store: store,
             forceRebuild: forceRebuild
@@ -123,12 +124,18 @@ final class LibraryIndexBuilder: ObservableObject {
 /// Extracted so both `LibraryIndexBuilder` (bulk) and `EPUBImporter`
 /// (per-book on import) can build the same shape without duplicating
 /// the cache / backend / EPUB-open machinery.
+///
+/// R-Library-Sync Phase B: takes `libraryID` so the sidecar is
+/// keyed by the catalog entry's UUID rather than the EPUB's path
+/// SHA. When sharing is on, the file lands at
+/// `<outputRoot>/.humanist/Embeddings/<uuid>.json` and travels
+/// with the catalog. nil libraryID means an uncataloged book —
+/// the store falls back to legacy SHA-keyed storage in
+/// Application Support.
 enum BookSidecarBuilder {
-    /// Build the sidecar for the EPUB at `epubURL`. Returns true on
-    /// a fresh build, false when the cached sidecar already matched
-    /// the requested backend + dimension and was non-empty.
     static func buildIfNeeded(
         epubURL: URL,
+        libraryID: UUID?,
         backend: any EmbeddingBackend,
         store: EmbeddingsSidecarStore,
         forceRebuild: Bool
@@ -137,7 +144,7 @@ enum BookSidecarBuilder {
         // we skip it entirely when the persisted sidecar matches
         // and is non-empty.
         if !forceRebuild,
-           let existing = store.read(for: epubURL),
+           let existing = store.read(for: epubURL, libraryID: libraryID),
            existing.backendIdentifier == backend.identifier,
            existing.dimension == backend.dimension,
            !existing.paragraphs.isEmpty {
@@ -147,7 +154,7 @@ enum BookSidecarBuilder {
         // directory; the throwaway book is released at scope exit
         // and the temp dir cleaned by its deinit.
         let book = try EPUBBook.open(epubURL: epubURL)
-        var sidecar = store.read(for: epubURL)
+        var sidecar = store.read(for: epubURL, libraryID: libraryID)
             ?? EmbeddingsSidecar.empty(
                 backend: backend.identifier,
                 dimension: backend.dimension
@@ -165,7 +172,7 @@ enum BookSidecarBuilder {
         )
         sidecar.hierarchy = BookHierarchyIndex.build(from: book)
         sidecar.entities = BookEntityIndex.build(from: book)
-        store.write(sidecar, for: epubURL)
+        store.write(sidecar, for: epubURL, libraryID: libraryID)
         return true
     }
 }
