@@ -4,22 +4,35 @@ import AI
 import EPUB
 import Pipeline
 
+// `AISettings` lives in the AI module above; we read the user's
+// `localFeatures` snapshot to decide whether to invoke the AFM
+// metadata extractor at import time.
+
 /// R-EPUB-Import. Take existing EPUBs (already-edited books, books
 /// converted from documents the user no longer has, books from other
 /// sources) and bring them into the Humanist library: inject
-/// paragraph anchors, copy to the configured Books folder, catalog
-/// in `LibraryStore`, and build the federated-chat embedding sidecar.
+/// paragraph anchors, optionally run an AFM metadata-extraction
+/// pass to populate the OPF, copy to the configured Books folder,
+/// catalog in `LibraryStore`, and build the federated-chat
+/// embedding sidecar.
 ///
 /// Idempotent on re-import — already-anchored books pass through the
 /// injector unchanged and the catalog entry updates in place rather
 /// than duplicating.
 ///
-/// v1 scope: anchor injection + cataloging + indexing. AFM
-/// classification / metadata / coherence passes are deliberately
-/// out of scope here — they layer on later by re-running the
-/// imported book through the existing per-book pipelines. The
-/// minimum-viable shape ("get it into the library so chat sees
-/// it") is the load-bearing piece.
+/// Source URLs may be individual `.epub` files or directories;
+/// `expandSources(_:)` walks directories recursively for `.epub`
+/// children so a user can drag a folder of EPUBs onto the Library
+/// window (or pick one through the menu) and have every book inside
+/// imported in one batch.
+///
+/// AFM passes: `BookMetadataExtractor` runs on the first ~4KB of
+/// stripped front-matter text and writes title + author back into
+/// `book.metadata` when the on-device model is available + the
+/// `localMetadataExtraction` setting is on. Chapter classification
+/// and the coherence pass require constructing a Chapter IR from
+/// the imported XHTML, which is a follow-up; today they only run
+/// during the PDF conversion path that already has the IR in hand.
 @MainActor
 final class EPUBImporter: ObservableObject {
 
@@ -140,6 +153,56 @@ final class EPUBImporter: ObservableObject {
         task?.cancel()
     }
 
+    // MARK: - Source expansion
+
+    /// Resolve a mixed list of URLs (individual `.epub` files and
+    /// directories) into a flat list of `.epub` files. Directories
+    /// walk recursively. Used by the drag-drop handler and the
+    /// `NSOpenPanel` callback so both paths feed `start(sources:)`
+    /// the same shape.
+    static func expandSources(_ urls: [URL]) -> [URL] {
+        var out: [URL] = []
+        var seen: Set<String> = []
+        for url in urls {
+            if isDirectory(url) {
+                out.append(contentsOf: epubsRecursively(in: url))
+            } else if url.pathExtension.lowercased() == "epub" {
+                out.append(url)
+            }
+        }
+        // Drop duplicates a user might create by dragging both a
+        // folder and a file inside it; preserve first-seen order.
+        return out.filter { url in
+            let key = url.standardizedFileURL.path
+            return seen.insert(key).inserted
+        }
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(
+            atPath: url.path, isDirectory: &isDir
+        )
+        return exists && isDir.boolValue
+    }
+
+    private static func epubsRecursively(in root: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+        var found: [URL] = []
+        for case let url as URL in enumerator {
+            if url.pathExtension.lowercased() == "epub" {
+                found.append(url)
+            }
+        }
+        // Stable sort so a folder import has a deterministic order
+        // independent of FileManager's enumeration quirks.
+        return found.sorted { $0.path < $1.path }
+    }
+
     // MARK: - Per-book orchestration
 
     /// Per-book result. Surfaces the destination URL for the catalog
@@ -174,6 +237,17 @@ final class EPUBImporter: ObservableObject {
         // books pass through unchanged. Marks touched resources
         // dirty so the saver flushes them.
         _ = ParagraphAnchorInjector.injectAnchors(in: book)
+
+        // 2.5. Optional AFM metadata pass. Reads the user's
+        // `localMetadataExtraction` toggle off the same AISettings
+        // snapshot the conversion pipeline reads; gated on AFM
+        // availability + a non-stub front-matter. Writes title +
+        // author into `book.metadata` (which then round-trips
+        // through `EPUBBookSaver.updateMetadataInPlace`). Year /
+        // publisher / ISBN aren't part of `OPFReader.Metadata`
+        // today — a future iteration that extends the model can
+        // round-trip those fields too.
+        await runMetadataExtraction(on: book)
 
         // 3. Save dirty resources back into the working directory.
         // No-ops cleanly when nothing changed (e.g. re-import).
@@ -227,6 +301,104 @@ final class EPUBImporter: ObservableObject {
         }
 
         return ImportResult(destinationURL: destination)
+    }
+
+    // MARK: - AFM metadata pass
+
+    /// Run on-device metadata extraction over the book's front
+    /// matter and write title + author into `book.metadata` when
+    /// the model returns usable values. Silently skipped when the
+    /// user has the toggle off, when AFM isn't available on this
+    /// device, or when there isn't enough front-matter text to
+    /// extract anything reliably (`BookMetadataExtractor` itself
+    /// gates on ~80 chars minimum).
+    ///
+    /// Only the AFM path runs on import — the conversion pipeline
+    /// has the Claude extractor for cloud mode, but invoking it
+    /// here would mean a Cloud call per import which the user
+    /// didn't opt into. AFM is free + offline, so on-by-default is
+    /// the right shape; the existing `localMetadataExtraction`
+    /// Settings toggle is the off switch.
+    private static func runMetadataExtraction(on book: EPUBBook) async {
+        let settings = AISettingsStore().load()
+        guard settings.localFeatures.localMetadataExtraction else { return }
+        guard case .available = AppleFoundationModelClient.availability
+        else { return }
+        let frontMatter = sampleFrontMatterText(from: book)
+        guard frontMatter.count >= 80 else { return }
+        let extractor = AppleFoundationModelMetadataExtractor()
+        guard let result = await extractor.extract(
+            frontMatterText: frontMatter
+        ) else { return }
+        applyMetadata(result, to: book)
+    }
+
+    private static func applyMetadata(
+        _ result: ClaudeMetadataExtractor.Result,
+        to book: EPUBBook
+    ) {
+        // Prefer extracted values when present; preserve whatever
+        // the OPF originally carried otherwise. The user can
+        // always rename / re-author the book in the editor if AFM
+        // gets it wrong.
+        let existing = book.metadata
+        let updated = OPFReader.Metadata(
+            title: result.title ?? existing.title,
+            author: result.author ?? existing.author,
+            language: existing.language
+        )
+        // No-op when nothing actually changed — avoid marking the
+        // book dirty (and triggering a save) when the OPF already
+        // had the right values.
+        if updated == existing { return }
+        book.metadata = updated
+    }
+
+    /// Strip XHTML to plain text and concatenate the first ~4KB of
+    /// the first two spine resources. Imitates
+    /// `ClaudeMetadataExtractor.sampleFrontMatter(from: [Chapter])`
+    /// but on an in-memory `EPUBBook` so we don't need a Chapter IR.
+    private static func sampleFrontMatterText(
+        from book: EPUBBook, maxChars: Int = 4000
+    ) -> String {
+        var collected = ""
+        let head = book.spine.prefix(2)
+        for resourceID in head {
+            guard let resource = book.resourcesByID[resourceID],
+                  let xhtml = resource.text else { continue }
+            let plain = stripXHTML(xhtml)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if plain.isEmpty { continue }
+            if !collected.isEmpty { collected += "\n" }
+            collected += plain
+            if collected.count >= maxChars {
+                return String(collected.prefix(maxChars))
+            }
+        }
+        return collected
+    }
+
+    /// Lightweight tag stripper. Mirrors the regex-based approach
+    /// in `BookChatViewModel.stripTags` — sufficient for "give me
+    /// the visible prose of this XHTML" tasks like front-matter
+    /// sampling. Decodes the small handful of named entities most
+    /// scanned books emit; numeric entities pass through.
+    private static func stripXHTML(_ s: String) -> String {
+        var out = s.replacingOccurrences(
+            of: "<[^>]+>", with: " ", options: .regularExpression
+        )
+        out = out.replacingOccurrences(of: "&nbsp;", with: " ")
+        out = out.replacingOccurrences(of: "&amp;", with: "&")
+        out = out.replacingOccurrences(of: "&lt;", with: "<")
+        out = out.replacingOccurrences(of: "&gt;", with: ">")
+        out = out.replacingOccurrences(of: "&quot;", with: "\"")
+        out = out.replacingOccurrences(of: "&#39;", with: "'")
+        out = out.replacingOccurrences(of: "&apos;", with: "'")
+        // Collapse runs of whitespace introduced by tag elision.
+        out = out.replacingOccurrences(
+            of: "\\s+", with: " ", options: .regularExpression
+        )
+        return out
     }
 
     // MARK: - Destination resolution

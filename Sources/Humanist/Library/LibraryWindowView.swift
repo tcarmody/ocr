@@ -111,6 +111,16 @@ struct LibraryWindowView: View {
         }
         .navigationTitle("Humanist Library")
         .frame(minWidth: 620, minHeight: 380)
+        // R-EPUB-Import: drag-drop entry point. Accepts individual
+        // `.epub` files and folders (walked recursively). The
+        // `EPUBImporter.expandSources` helper handles both shapes
+        // so the user can drop a single book, a flat batch, or a
+        // nested archive of folders — same code path through to
+        // the progress sheet.
+        .dropDestination(for: URL.self) { urls, _ in
+            runImport(picked: urls)
+            return true
+        }
         .sheet(isPresented: $showBulkEdit) {
             BulkEditSheet(
                 targets: selectedEntries,
@@ -220,15 +230,29 @@ struct LibraryWindowView: View {
     private func startImport() {
         importError = nil
         let panel = NSOpenPanel()
-        panel.title = "Import EPUB into Library"
+        panel.title = "Import EPUBs into Library"
+        panel.message = "Pick one or more .epub files, or a folder containing EPUBs. Folders are walked recursively."
         panel.prompt = "Import"
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
+        // Allow folders as well as files. The `.epub` type filter
+        // applies only to files — directories show enabled
+        // regardless, so the user can mix-and-match in one picker.
+        panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.epub]
         guard panel.runModal() == .OK else { return }
-        let sources = panel.urls
-        guard !sources.isEmpty else { return }
+        runImport(picked: panel.urls)
+    }
+
+    /// Shared entry point used by both the picker and drag-drop.
+    /// Expands directories to their `.epub` descendants and routes
+    /// the flattened list through `EPUBImporter`.
+    private func runImport(picked: [URL]) {
+        let sources = EPUBImporter.expandSources(picked)
+        guard !sources.isEmpty else {
+            importError = "No `.epub` files found in the selection."
+            return
+        }
         Task {
             // Backend resolution is best-effort. Imports proceed
             // either way; the user sees a friendly note on the

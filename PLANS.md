@@ -455,8 +455,13 @@ in Tier 6 — full write-up there):
   canonical-URL match). 13 new `ParagraphAnchorInjectorTests`
   cover the rewriter edge cases (XML quirks, mixed case, single
   vs. double quoted attributes, `xml:id` / `data-id`
-  look-alikes). AFM passes on import + drag-drop deferred to a
-  follow-up.
+  look-alikes). v1.1 follow-up adds folder + drag-drop import
+  (`EPUBImporter.expandSources` walks directories recursively)
+  and AFM metadata extraction on import — title + author lift
+  out of the first ~4 KB of stripped front-matter, write back
+  through `OPFReader.Metadata`'s new public initializer.
+  Chapter classification + coherence pass still deferred for
+  imported EPUBs (needs XHTML → Chapter IR parser).
 
 **Done — Cloud Phase 5**:
 - **`ClaudeTableExtractor`**: Sonnet-driven table structure behind
@@ -2712,19 +2717,52 @@ place via canonical-URL match). 13 new
 - **Library window**: `tray.and.arrow.down` button next to the
   bulk-index menu in the filter bar.
 
-### Deferred to a follow-up
+### What landed in the v1.1 follow-up
 
-- **AFM passes on import** (chapter classification / metadata
-  extraction / coherence pass). The protocol-based factories
-  in `PDFToEPUBPipeline` already exist; layering them into
-  `EPUBImporter.importOne` is straightforward but expands the
-  per-book time meaningfully. Re-running the imported book
-  through the existing per-book pipeline is the current path.
-- **Drag-drop of `.epub` onto the Library window**.
+- **Folder + drag-drop import**: `EPUBImporter.expandSources(_:)`
+  walks any directory in the picked list recursively for `.epub`
+  files (sorted by path so the import order is deterministic;
+  hidden + package-internal children skipped). The File →
+  Import EPUBs into Library… picker now allows directory
+  selection alongside files (`canChooseDirectories = true` with
+  the `.epub` type filter still applied to file rows). The
+  Library window gains `.dropDestination(for: URL.self)` —
+  drop a `.epub`, a folder of EPUBs, or any mix; everything
+  flattens through `expandSources` before reaching
+  `EPUBImporter.start`.
+- **AFM metadata extraction on import**: when the on-device
+  toggle (`AISettings.localFeatures.localMetadataExtraction`)
+  is on and Apple Intelligence is available, the importer
+  samples the first ~4 KB of stripped front-matter from the
+  first two spine resources and runs
+  `AppleFoundationModelMetadataExtractor`. Extracted title +
+  author write back into `book.metadata`, which round-trips
+  through `EPUBBookSaver.updateMetadataInPlace` so the OPF
+  gets the new `<dc:title>` / `<dc:creator>` values. The
+  library catalog row picks up the real book title instead of
+  the source-file basename.
+- **OPF Metadata public init**: `OPFReader.Metadata` gained a
+  public initializer so the importer can construct an updated
+  metadata struct after AFM extraction.
+
+### Deferred further
+
+- **Chapter classification + coherence pass** on imported
+  EPUBs. Both engines (`SemanticChapterClassifier`,
+  `BookCoherenceAnalyzer`) consume `Chapter` IR which the
+  conversion path builds during reflow. Imported EPUBs arrive
+  as XHTML and have no IR — running these on imports would
+  need an XHTML → Chapter parser, which is a bigger project.
+- **Year / publisher / ISBN write-back**. AFM extracts them
+  but `OPFReader.Metadata` only carries title / author /
+  language. Extending the model to round-trip the remaining
+  three fields is straightforward but expands the OPF reader /
+  writer surface; not done in v1.1.
 - **Settings → Library → Import section** with per-feature
   toggles. The existing `localFeatures.*` toggles already
-  apply during conversion; when AFM-on-import ships, they'll
-  apply here too without a new Settings surface.
+  apply on import; when chapter-classification / coherence
+  ship for imports, they'll respect the same Settings without
+  a new surface.
 
 This is the gap the importer closes: take any existing EPUB, give
 it the structural marks Humanist relies on (paragraph anchors), put

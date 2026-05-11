@@ -21,6 +21,16 @@ public struct OPFReader {
         public let title: String?
         public let author: String?
         public let language: String?
+
+        public init(
+            title: String? = nil,
+            author: String? = nil,
+            language: String? = nil
+        ) {
+            self.title = title
+            self.author = author
+            self.language = language
+        }
     }
 
     public struct Package: Sendable {
