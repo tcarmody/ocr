@@ -2747,17 +2747,59 @@ place via canonical-URL match). 13 new
 
 ### Deferred further
 
-- **Chapter classification + coherence pass** on imported
-  EPUBs. Both engines (`SemanticChapterClassifier`,
-  `BookCoherenceAnalyzer`) consume `Chapter` IR which the
-  conversion path builds during reflow. Imported EPUBs arrive
-  as XHTML and have no IR — running these on imports would
-  need an XHTML → Chapter parser, which is a bigger project.
-- **Year / publisher / ISBN write-back**. AFM extracts them
-  but `OPFReader.Metadata` only carries title / author /
-  language. Extending the model to round-trip the remaining
-  three fields is straightforward but expands the OPF reader /
-  writer surface; not done in v1.1.
+- **Chapter classification on imported EPUBs**. The
+  `SemanticChapterClassifier` engine takes a `Chapter` IR.
+  Imported EPUBs only carry XHTML strings — the conversion
+  path builds Chapters during reflow, the import path never
+  does. Cheap shortcut: a *minimal* Chapter (just the title
+  from the first `<h1>` or the nav entry, plus the first ~5
+  paragraphs of stripped plain text) is enough for the
+  classifier — it doesn't read figures, tables, or footnotes.
+  Half a day of work; produces `epub:type` labels that drive
+  smart sectioning in chat citations + library row badges.
+- **Coherence pass on imported EPUBs**. `BookCoherenceAnalyzer`
+  consumes `[Chapter]` AND emits modified `[Chapter]`. The
+  apply step rewrites chapter content, which means a
+  full-fidelity XHTML → Chapter parser (every block kind,
+  inline runs preserving italic/bold/lang, figure asset
+  references, table grids) plus a Chapter → XHTML round-trip
+  through `XHTMLWriter` on the way back. Round-trip risk: any
+  formatting we don't model in `Chapter` (publisher CSS
+  classes, inline styles, custom asides) silently disappears.
+  ~2 days plus fidelity tests. Skipping the parser means
+  skipping the feature — coherence needs the full text to
+  rewrite recurring errors.
+- **Year / publisher / ISBN write-back**. AFM already extracts
+  all five fields (title / author / year / publisher / isbn).
+  Title + author write back today; the other three are
+  dropped on the floor because `OPFReader.Metadata` only
+  models three slots. The PDF conversion path doesn't have
+  this gap — it generates the OPF from scratch via
+  `EPUBBuilder` and emits `<dc:date>` / `<dc:publisher>` /
+  `<dc:identifier>` directly from `Book`. The importer edits
+  an existing OPF through `EPUBBookSaver.updateMetadataInPlace`,
+  which only knows the three modeled fields.
+
+  To fix:
+   1. Add `year`, `publisher`, `isbn` to `OPFReader.Metadata`
+      + parse `<dc:date>` / `<dc:publisher>` / `<dc:identifier>`
+      on load.
+   2. Teach `EPUBBookSaver.updateMetadataInPlace` to upsert
+      them — the existing `upsertSimpleDC` helper already
+      handles arbitrary `dc:*` localnames, so it's mostly
+      additional call lines.
+   3. ISBN wrinkle: `<dc:identifier>` is *also* the EPUB's
+      `unique-identifier` (publishing id, referenced from
+      `<package unique-identifier="...">`). Adding the ISBN
+      means either a *second* `<dc:identifier opf:scheme="ISBN">`
+      child (cleanest, EPUB-spec compliant), or a
+      `<meta property="dcterms:identifier">` sibling. Don't
+      overwrite the existing `<dc:identifier>` — that breaks
+      `unique-identifier` resolution and some readers refuse
+      the EPUB.
+
+  ~Half day of plumbing + tests covering the ISBN case
+  specifically.
 - **Settings → Library → Import section** with per-feature
   toggles. The existing `localFeatures.*` toggles already
   apply on import; when chapter-classification / coherence
