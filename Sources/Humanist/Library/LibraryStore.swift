@@ -358,6 +358,42 @@ final class LibraryStore: ObservableObject {
         return changed
     }
 
+    /// Direct-write metadata edit driven by the user via the
+    /// metadata editor sheet. Unlike `backfillMetadata` (which
+    /// preserves existing stamps), this overwrites every supplied
+    /// field — passing `nil` for an optional clears it, passing an
+    /// empty string for `title` is rejected (title is required).
+    /// Triggers a single `save()` after the edit so a typo + immediate
+    /// re-edit doesn't fan out into two writes.
+    @discardableResult
+    func updateEntryMetadata(
+        for entryID: UUID,
+        title: String,
+        author: String?,
+        languages: [String],
+        conversionType: BookConversionType?,
+        genre: BookGenre?
+    ) -> Bool {
+        guard let idx = entries.firstIndex(where: { $0.id == entryID })
+        else { return false }
+        let cleanedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedTitle.isEmpty else { return false }
+        let cleanedAuthor: String? = {
+            let trimmed = author?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed?.isEmpty ?? true) ? nil : trimmed
+        }()
+        let cleanedLanguages = languages
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        entries[idx].title = cleanedTitle
+        entries[idx].author = cleanedAuthor
+        entries[idx].languages = cleanedLanguages
+        entries[idx].conversionType = conversionType
+        entries[idx].genre = genre
+        save()
+        return true
+    }
+
     /// Bump `lastOpened` for `epubURL`. No-op if the entry doesn't
     /// exist — opening an EPUB the library doesn't know about (e.g.
     /// a third-party file the user dragged in for editing) doesn't

@@ -254,30 +254,61 @@ enum LibraryAutoCollections {
     /// `progress` is called on the main actor with `(current,
     /// total)` after each book — drives a progress sheet in the
     /// caller. Returns the count of newly-classified books.
+    /// Result tuple for the genre backfill — surfaces both the
+    /// "newly classified" count and the "tried but declined" count
+    /// so the progress sheet can communicate the outcome honestly
+    /// (a 2000-book run that classifies 30 and stamps 1970 as
+    /// uncategorized is very different from one that classifies
+    /// nothing because AFM is broken).
+    struct GenreClassificationResult: Sendable {
+        let classified: Int
+        let stampedUncategorized: Int
+    }
+
     @discardableResult
     static func classifyMissingGenres(
         library: LibraryStore,
         progress: (@MainActor (Int, Int) -> Void)? = nil
-    ) async -> Int {
+    ) async -> GenreClassificationResult {
         guard case .available = AppleFoundationModelClient.availability
-        else { return 0 }
+        else { return GenreClassificationResult(classified: 0, stampedUncategorized: 0) }
         let classifier = BookGenreClassifier()
         let needsClassification = library.entries.filter { $0.genre == nil }
         let total = needsClassification.count
-        guard total > 0 else { return 0 }
+        guard total > 0 else {
+            return GenreClassificationResult(classified: 0, stampedUncategorized: 0)
+        }
         var classified = 0
+        var declined = 0
         for (idx, entry) in needsClassification.enumerated() {
             if Task.isCancelled { break }
             await progress?(idx, total)
-            guard let genre = await classifyOne(entry: entry, using: classifier)
-            else { continue }
-            await MainActor.run {
-                library.setGenre(genre, for: entry.id)
+            if let genre = await classifyOne(entry: entry, using: classifier) {
+                await MainActor.run {
+                    library.setGenre(genre, for: entry.id)
+                }
+                classified += 1
+            } else {
+                // Stamp `.uncategorized` so subsequent backfill runs
+                // skip this entry. Without the stamp, every wand-
+                // click re-tries the same un-classifiable books
+                // forever (sparse front matter, OCR garbage,
+                // unreadable EPUBs all return nil from classifyOne;
+                // re-attempting them is futile and confuses users
+                // into thinking the wand "doesn't do anything").
+                // Users who want a re-attempt can clear the genre
+                // from the metadata editor.
+                await MainActor.run {
+                    library.setGenre(.uncategorized, for: entry.id)
+                }
+                declined += 1
             }
-            classified += 1
         }
         await progress?(total, total)
-        return classified
+        return GenreClassificationResult(
+            classified: classified,
+            stampedUncategorized: declined
+        )
     }
 
     /// Open the book, sample front-matter prose, classify. Mirrors

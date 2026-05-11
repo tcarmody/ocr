@@ -832,6 +832,14 @@ Drivers for the current ordering:
 9. **L-Foundation-Models Phase 2.5** (on-device post-OCR
    cleanup). Useful for Private-mode conversion runs; not
    load-bearing for import workflows.
+10. **R-Metadata-Online v1** (Open Library + Google Books
+    lookup wired into the metadata editor sheet, ~2 days
+    for single + multi-source). The shipped metadata editor
+    is the anchor; this is the natural follow-on once the
+    user reaches for it on a book whose front matter didn't
+    parse. Defer the Claude-search consolidator and the
+    bulk-mode multi-select until the per-entry flow is in
+    daily use.
 
 ### Earn when you need it
 
@@ -3836,6 +3844,249 @@ needed).
   get a confidence score back. Could read the model's
   uncertainty by asking for two top candidates, but adds
   complexity. v1 takes the single answer.
+
+---
+
+## R-Metadata-Online — Import book metadata from online sources
+
+**Status**: not started. Sketches the path from the in-app
+metadata editor (shipped) to a "Look up online…" button that
+populates the editor with publisher / bibliographic data pulled
+from open metadata sources.
+
+### Why bother
+
+The current pipeline pulls title / author / year / publisher /
+ISBN from inside the book (Q-Metadata via Haiku, then the
+R-EPUB-Import OPF write-back). That's authoritative when the
+front matter is clean; it falls down hard on:
+
+- Manuscript / Early Print material that doesn't carry
+  modern bibliographic front matter at all.
+- OCR runs where the title page came through illegible and
+  the model returned `null`s.
+- Books the user imported as a pre-converted EPUB whose OPF
+  someone else filled out wrong.
+- Editions where the publisher matters for citation
+  (Oxford Classical Texts vs. Loeb vs. Teubner) and the
+  in-book metadata doesn't surface the imprint.
+
+The metadata editor (shipped) lets the user type corrections
+in by hand. The next step is "fetch the corrections for me" —
+look up by title + author or by ISBN, present candidates, let
+the user pick one, write all matching fields into the entry.
+
+This is a Tier 9 quality feature, not a near-term must-have,
+but the editor work has now built the obvious anchor point.
+
+### Sources to evaluate
+
+Open / free-tier, no API keys required, queryable without
+auth — preferred. Each has different strengths; the right
+posture is "ask 2-3 in parallel, present a merged candidate
+list."
+
+- **Open Library API** (`openlibrary.org/search.json` and
+  `/api/books?bibkeys=ISBN:...`). Free, no key. Strong on
+  English-language books with ISBNs; weaker on academic
+  monographs and non-Latin scripts. Returns title / authors /
+  publishers / publish_date / subjects / cover image URLs.
+- **Google Books API** (`googleapis.com/books/v1/volumes?q=...`).
+  Free tier without key (rate-limited to ~1000/day); a key
+  raises the cap. Best general-purpose coverage; strong
+  multilingual support. Returns industryIdentifiers,
+  publishedDate, publisher, categories, language, plus
+  cover thumbnails.
+- **WorldCat Search API** (`worldcat.org/webservices/...`).
+  Requires registration + a wskey. Best for older academic
+  material and editions / printings. Worth integrating only
+  after the open sources prove insufficient.
+- **Library of Congress catalog** (`id.loc.gov/`). Useful for
+  authority records (canonical author name forms, LC subject
+  headings) more than book records. Could feed a "normalize
+  author name" pass.
+- **CrossRef** (`api.crossref.org/works`). DOI-based — barely
+  applicable to books-as-EPUBs, but valuable for the subset
+  of academic books with assigned DOIs. Returns ISBN +
+  publisher + year cleanly.
+- **OCLC's xISBN** — deprecated; skip.
+- **Wikidata SPARQL** — overkill for v1 but the only source
+  with strong coverage of historical / pre-1900 imprints and
+  manuscript shelfmarks. Worth a follow-on after v1 lands.
+
+For non-English / classical / manuscript material specifically,
+the right answer is probably **a Claude call against a search
+result**, not a pure API hit. The model gathering loose hits
+from Google Books + Open Library + arXiv + library catalogs
+and consolidating beats trying to fit medieval Latin / Greek
+into Google Books' schema.
+
+### Goal
+
+A "Look up online…" button in the metadata editor sheet that
+asks the user for query terms (defaulted from the entry's
+current title + author), fans out to two or three sources,
+shows a candidate-picker, and on selection populates the
+editor's fields without dismissing the sheet (so the user
+can still edit before Save).
+
+Pre-ISBN material gets a separate ISBN entry field in the
+candidate picker — if the user picks a candidate that has
+an ISBN we'd previously failed to extract, the Save writes
+it back into the OPF (existing `EPUBBookSaver`
+`updateMetadataInPlace` path; the ISBN-doesn't-clobber-
+unique-id invariant already documented under R-EPUB-Import).
+
+### Approach
+
+Three layers:
+
+1. **`MetadataSource` protocol** in a new `Sources/Pipeline/
+   MetadataLookup/` directory. One method:
+   `func query(_ q: MetadataQuery) async throws ->
+   [MetadataCandidate]`. Concrete impls
+   `OpenLibrarySource`, `GoogleBooksSource`, and (later)
+   `ClaudeSearchSource`. Each source maps its wire format to
+   a shared `MetadataCandidate` struct (title, author,
+   publisher, year, isbn, subjects, coverImageURL,
+   sourceName, sourceURL).
+2. **`MetadataLookupCoordinator`** — fans queries out to the
+   configured sources in parallel via `async let` / task
+   group; merges results via title+author fuzzy key
+   (Levenshtein on lowercased title, last-name match on
+   author); ranks merged candidates by source agreement
+   (a candidate with hits in 2 sources outranks a singleton).
+   Per-source timeouts so a slow upstream can't stall the UI.
+3. **`MetadataLookupSheet`** — UI layer presented from inside
+   `MetadataEditorSheet`. Lists candidate matches with source
+   badges; clicking "Use this" populates the editor's fields
+   and dismisses the lookup sheet but not the editor. Empty-
+   result + error states surface plainly; per-source errors
+   collected into a "failed sources" footer rather than
+   blocking the whole lookup.
+
+### Tricky bits
+
+- **Author normalization**: source results return "Foucault,
+  Michel" or "Michel Foucault" or "Foucault, M." — need a
+  shared lastname-firstname normalizer before fuzzy match.
+  Reuse / extend the existing `AuthorNameNormalizer`
+  (R-Auto-Collections Phase 1).
+- **Multi-volume / multi-edition**: a single search may hit
+  five editions of "Discipline and Punish." The picker must
+  show edition / publisher / year prominently so the user
+  can pick the right one. Probably also surface "this is one
+  of N editions found" so the user knows there's a choice
+  being made.
+- **Rate-limiting**: Google Books without a key throttles at
+  ~1000/day. The user could plausibly batch-lookup an entire
+  library; we'd need a per-source rate counter + cooldown.
+  Simplest v1: per-day in-memory counter + an explicit cap
+  alert. v2 would add an optional API key field in Settings.
+- **No-result handling**: a real failure mode for manuscript /
+  pre-1900 material. The picker needs a clean "no matches —
+  try a different query" path that doesn't look like a bug.
+- **PII / network egress**: the user has historically wanted
+  Private mode as a real option. Lookup is network-dependent
+  by definition, so this feature needs a Settings toggle and
+  a per-call confirmation when the user is in Private mode
+  (or the button disables entirely with a "Cloud-mode only"
+  hint). The query payload itself — title + author — is
+  user-typed and going to a public catalog API, so the
+  privacy story is roughly "this is a Google search, not a
+  cloud-AI call," but the toggle still belongs.
+- **Cover-image fetching**: Open Library returns cover URLs;
+  Google Books returns thumbnail URLs. Tempting to refresh
+  the EPUB cover from a high-res match, but EPUB cover
+  replacement is its own surface (read OPF, replace the
+  referenced image file, update manifest item). Defer to a
+  v2; v1 just stores the cover URL in `MetadataCandidate`
+  for the picker thumbnail.
+
+### Bulk-mode follow-on (v2)
+
+After the per-entry editor flow works, a "Look up metadata
+for selected books" command becomes natural. Same pipeline,
+but driven from the Library window's filter-bar (alongside
+Bulk Edit / Chat with Selected / Remove). Per-book picker
+would be too tedious for 50 books at once, so the bulk mode
+needs different UX:
+
+- **Auto-accept high-confidence matches** (e.g. a single
+  candidate that hit in 2+ sources with title Levenshtein
+  ≤ 0.1 and author last-name match).
+- **Queue ambiguous matches** for user review (sheet at the
+  end showing 5 books that need a pick).
+- **Skip no-result books** silently; surface count in the
+  completion summary.
+
+The bulk path is independent of v1; ship the per-entry
+editor lookup first and let the bulk shape settle once we
+see real hit rates.
+
+### Risks
+
+- **Source schema drift**: free APIs change without notice.
+  Each `MetadataSource` impl needs defensive decoding +
+  unit tests fixtured against captured real responses; treat
+  any source-side failure as "skip this source, fall through"
+  rather than failing the whole lookup.
+- **Wrong-edition drift**: confidently picking the wrong
+  edition silently corrupts metadata. The picker UX must
+  show enough provenance for the user to notice — at
+  minimum, the source's URL alongside each candidate so they
+  can click through and verify.
+- **Scope creep into "manage my entire library from this
+  feature"**: the metadata-import work invites a "while we're
+  here, let's also fetch series info / awards / Goodreads
+  ratings" expansion. Resist. The feature is "fill in the
+  fields we already have"; everything else is a separate
+  surface.
+
+### Effort estimate
+
+- v1 — single-source Open Library lookup wired into the
+  editor sheet: ~1 day.
+- v1.5 — second source (Google Books) + merging /
+  ranking: ~0.5 day.
+- v1.7 — Claude search consolidator for non-modern
+  material: ~0.5 day (Cloud-Phase-1 plumbing already
+  exists; this is one new prompt + one new wire type).
+- v2 — bulk-mode multi-select lookup with auto-accept:
+  ~1.5 days.
+
+Total to ship-ready single + multi source: ~2 days.
+Total including Claude consolidator and bulk mode: ~3.5
+days.
+
+### Dependencies
+
+- Metadata editor sheet (shipped).
+- `Sources/Pipeline/ClaudeMetadataExtractor.swift` (shipped)
+  for the prompt shape — the Claude-search consolidator
+  reuses the same JSON schema.
+- `AnthropicAPIClient` (Cloud Phase 1, shipped) for the
+  search-consolidator path.
+- Settings → Library → "Online metadata lookup" toggle
+  (new). Default on; Private-mode users can flip it off
+  to silence the editor's lookup button entirely.
+
+### Open questions
+
+- Default source set? Open Library + Google Books with no
+  key is probably the right v1; the user can layer a key on
+  later if they hit rate limits.
+- Claude consolidator: gate it behind a separate toggle
+  ("Use AI to find harder-to-match books") so the user
+  knows when a network round-trip becomes a Claude call?
+  Probably yes — the cost / latency profile is different
+  enough to merit visibility.
+- Save UX: should the lookup-picker autosave on selection
+  (replacing the current editor state immediately and
+  closing both sheets) or just populate the editor (current
+  plan)? Populate is safer — the user gets a last look
+  before commit; one extra click is the right price for
+  not accidentally accepting a wrong edition.
 
 ---
 

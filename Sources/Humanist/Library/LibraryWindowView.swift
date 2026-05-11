@@ -28,6 +28,13 @@ struct LibraryWindowView: View {
     /// "All" default is fine on every launch.
     @State private var languageFilter: String? = nil
 
+    /// Library text search. Case-insensitive substring match
+    /// against title + author; empty string = no filter. Per-
+    /// session @State; resets on each launch so a stale filter
+    /// doesn't surprise the user. ⌘F focuses the field.
+    @State private var searchQuery: String = ""
+    @FocusState private var searchFieldFocused: Bool
+
     /// Multi-selection in the table. Drives R-Bulk-Editor: the
     /// "Bulk Edit Selected…" button enables when this is non-empty
     /// and opens a sheet that runs find/replace across the
@@ -47,6 +54,21 @@ struct LibraryWindowView: View {
     /// don't exist for first-launch users.
     @AppStorage("humanist.library.showCollectionsSidebar")
     private var showCollectionsSidebar: Bool = false
+
+    /// Collapse state for each top-level sidebar section. Persisted
+    /// per app so the user's last-used arrangement sticks across
+    /// launches. Default to expanded — first-launch users with no
+    /// collections won't see the sections at all (each group is
+    /// guarded by `isEmpty`), so the expanded default only matters
+    /// once content exists.
+    @AppStorage("humanist.library.expandMyCollections")
+    private var expandMyCollections: Bool = true
+    @AppStorage("humanist.library.expandAutoType")
+    private var expandAutoType: Bool = true
+    @AppStorage("humanist.library.expandAutoAuthor")
+    private var expandAutoAuthor: Bool = true
+    @AppStorage("humanist.library.expandAutoGenre")
+    private var expandAutoGenre: Bool = true
 
     /// Active collection filter. `nil` = "All Books." Stored as the
     /// collection's UUID so it survives `LibraryStore` mutations
@@ -89,6 +111,23 @@ struct LibraryWindowView: View {
     /// sidebar context menu fires "Rename…".
     @State private var renameContext: RenameContext?
 
+    /// Pending "Remove from Library" confirmation. Non-nil when the
+    /// user has triggered removal (row context menu, filter-bar
+    /// button, or ⌫ shortcut) — the confirmationDialog reads it for
+    /// the target list and offers Remove / Move to Trash / Cancel.
+    @State private var removeContext: RemoveContext?
+
+    /// Metadata-editor sheet payload. Non-nil while the user is
+    /// editing a row's title / author / languages / type / genre via
+    /// the row context menu's "Edit Metadata…" entry.
+    @State private var metadataEditContext: MetadataEditContext?
+    /// Error surfaced from a failed Move-to-Trash. NSWorkspace.recycle
+    /// can fail per-file (permissions, file gone, etc.); we collect
+    /// errors and show them in an alert so the user knows which
+    /// files weren't trashed. Library state is still updated for
+    /// successful trash actions.
+    @State private var removeError: String?
+
     /// R-Auto-Collections Phase 2. Progress state for the
     /// "Classify missing genres" backfill. Surfaces as a sheet
     /// when `showClassifyProgress` is true; `classifyTask` lets
@@ -98,6 +137,13 @@ struct LibraryWindowView: View {
     @State private var classifyTotal: Int = 0
     @State private var classifyDone: Bool = false
     @State private var classifyTask: Task<Void, Never>?
+    /// Outcome of the most recent classify run. Drives the sheet's
+    /// completion copy: the user needs to see "Classified 30 books;
+    /// stamped 1970 as uncategorized" rather than a generic
+    /// "Classified 30 of 2000," because the latter looks like
+    /// progress failed when it actually finished.
+    @State private var classifyClassifiedCount: Int = 0
+    @State private var classifyDeclinedCount: Int = 0
 
     /// Progress state for the OPF-metadata backfill that runs
     /// when the user clicks Refresh on a library with unstamped
@@ -179,10 +225,10 @@ struct LibraryWindowView: View {
                 workingIcon: "wand.and.stars",
                 workingTitle: "Classifying Genres…",
                 doneTitle: "Classification Complete",
-                noopMessage: "No books needed classification — every entry already has a genre stamp.",
+                noopMessage: "No books needed classification — every entry already has a genre stamp. To re-classify, clear the genre on individual books via Edit Metadata.",
                 progressLabel: { c, t in "Book \(c) of \(t)" },
-                doneSummary: { c, t in
-                    "Classified \(c) of \(t) book\(t == 1 ? "" : "s"). Auto-collections refreshed."
+                doneSummary: { _, _ in
+                    classifyDoneSummary
                 },
                 current: classifyCurrent,
                 total: classifyTotal,
@@ -226,6 +272,30 @@ struct LibraryWindowView: View {
                 onCancel: { renameContext = nil }
             )
         }
+        .sheet(item: $metadataEditContext) { ctx in
+            MetadataEditorSheet(
+                entryID: ctx.id,
+                initialTitle: ctx.title,
+                initialAuthor: ctx.author,
+                initialLanguages: ctx.languages,
+                initialConversionType: ctx.conversionType,
+                initialGenre: ctx.genre,
+                epubFilename: ctx.epubFilename,
+                onSave: { title, author, languages, type, genre in
+                    library.updateEntryMetadata(
+                        for: ctx.id,
+                        title: title,
+                        author: author,
+                        languages: languages,
+                        conversionType: type,
+                        genre: genre
+                    )
+                    LibraryAutoCollections.refresh(library: library)
+                    metadataEditContext = nil
+                },
+                onCancel: { metadataEditContext = nil }
+            )
+        }
         .alert("Indexing failed",
                isPresented: Binding(
                    get: { indexBuildError != nil },
@@ -244,11 +314,118 @@ struct LibraryWindowView: View {
         } message: {
             Text(importError ?? "")
         }
+        .confirmationDialog(
+            removeConfirmationTitle,
+            isPresented: Binding(
+                get: { removeContext != nil },
+                set: { if !$0 { removeContext = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: removeContext
+        ) { ctx in
+            Button("Move to Trash", role: .destructive) {
+                performRemove(ctx, alsoTrashFiles: true)
+            }
+            Button("Remove from Library", role: .destructive) {
+                performRemove(ctx, alsoTrashFiles: false)
+            }
+            Button("Cancel", role: .cancel) { removeContext = nil }
+        } message: { ctx in
+            Text(removeConfirmationMessage(for: ctx))
+        }
+        .alert("Some files could not be moved to Trash",
+               isPresented: Binding(
+                   get: { removeError != nil },
+                   set: { if !$0 { removeError = nil } }
+               )) {
+            Button("OK", role: .cancel) { removeError = nil }
+        } message: {
+            Text(removeError ?? "")
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: .humanistImportEPUBRequested
         )) { _ in
             startImport()
         }
+    }
+
+    /// Stage a removal-confirmation prompt for the given entries.
+    /// Splits selection-aware vs single-row callers: if the
+    /// right-clicked row is part of the multi-selection, remove the
+    /// whole selection; otherwise just the right-clicked row. Falls
+    /// through silently on empty input so callers can pipe selection
+    /// straight in without guarding.
+    private func requestRemove(_ entries: [LibraryEntry]) {
+        guard !entries.isEmpty else { return }
+        removeContext = RemoveContext(entries: entries)
+    }
+
+    /// Selection-aware target set: if `entry` is part of the current
+    /// selection, return every selected entry in display order;
+    /// otherwise just `entry`. Matches Finder's right-click semantics.
+    private func removalTargets(for entry: LibraryEntry) -> [LibraryEntry] {
+        if selection.contains(entry.id) {
+            return selectedEntries
+        }
+        return [entry]
+    }
+
+    /// Execute the staged removal. Always detaches the entries from
+    /// every collection and forgets them from the catalog. When the
+    /// user picked "Move to Trash," also recycles the .epub file via
+    /// NSWorkspace. Per-file trash failures are aggregated into
+    /// `removeError`; the library-side removal still proceeds so the
+    /// catalog doesn't carry stale rows.
+    private func performRemove(_ ctx: RemoveContext, alsoTrashFiles: Bool) {
+        var failures: [(URL, String)] = []
+        for entry in ctx.entries {
+            coverCache.invalidate(entry.epubURL)
+            if alsoTrashFiles {
+                do {
+                    try FileManager.default.trashItem(
+                        at: entry.epubURL, resultingItemURL: nil
+                    )
+                } catch {
+                    failures.append((entry.epubURL, error.localizedDescription))
+                }
+            }
+            library.remove(entry.id)
+            selection.remove(entry.id)
+        }
+        removeContext = nil
+        if !failures.isEmpty {
+            let lines = failures.map { "• \($0.0.lastPathComponent) — \($0.1)" }
+            removeError = "Removed from library, but Trash failed for:\n"
+                + lines.joined(separator: "\n")
+        }
+    }
+
+    /// Dialog title — uses the entry count so the prompt reads as a
+    /// natural sentence for both single and bulk removals.
+    private var removeConfirmationTitle: String {
+        switch removeContext?.entries.count ?? 0 {
+        case 0, 1: return "Remove this book from your library?"
+        case let n: return "Remove \(n) books from your library?"
+        }
+    }
+
+    /// Dialog body — names the book on single removal, otherwise
+    /// gives a short list (truncated past 5 so the dialog stays
+    /// readable) plus the trash-vs-keep semantics.
+    private func removeConfirmationMessage(for ctx: RemoveContext) -> String {
+        let preamble: String
+        if ctx.entries.count == 1, let only = ctx.entries.first {
+            preamble = "\"\(only.title)\""
+        } else {
+            let titles = ctx.entries.prefix(5).map { "\"\($0.title)\"" }
+            let suffix = ctx.entries.count > 5
+                ? " and \(ctx.entries.count - 5) more"
+                : ""
+            preamble = titles.joined(separator: ", ") + suffix
+        }
+        return preamble
+            + "\n\nRemove from Library forgets the book but leaves the EPUB on disk."
+            + " Move to Trash also sends the EPUB file to the Trash."
     }
 
     /// Restrict the library chat to just the selected rows and
@@ -327,11 +504,32 @@ struct LibraryWindowView: View {
     /// backfill — walks every entry without a stamped `genre`,
     /// classifies via `BookGenreClassifier`, persists, refreshes
     /// auto-collections at the end. Cancellable mid-run.
+    /// Honest done-state copy for the classify sheet. The user
+    /// needs to see "20 classified, 1980 declined" so a wand-click
+    /// that lands almost entirely on un-classifiable books still
+    /// reads as a completed run, not an apparent silent failure.
+    private var classifyDoneSummary: String {
+        let c = classifyClassifiedCount
+        let d = classifyDeclinedCount
+        switch (c, d) {
+        case (0, 0):
+            return "No books were classified. If Apple Intelligence is enabled and books remain unstamped, try Refresh first — the classifier needs front-matter text it can read."
+        case (let c, 0):
+            return "Classified \(c) book\(c == 1 ? "" : "s"). Auto-collections refreshed."
+        case (0, let d):
+            return "Tried \(d) book\(d == 1 ? "" : "s") — none could be classified. They've been stamped \"uncategorized\" so re-runs won't retry them. Clear the genre via Edit Metadata to retry individual books."
+        case (let c, let d):
+            return "Classified \(c) book\(c == 1 ? "" : "s"). \(d) couldn't be classified and were stamped \"uncategorized\" — re-runs won't retry them. Auto-collections refreshed."
+        }
+    }
+
     private func startClassifyMissingGenres() {
         let missing = library.entries.filter { $0.genre == nil }.count
         classifyCurrent = 0
         classifyTotal = missing
         classifyDone = false
+        classifyClassifiedCount = 0
+        classifyDeclinedCount = 0
         showClassifyProgress = true
         guard missing > 0 else {
             classifyDone = true
@@ -339,13 +537,15 @@ struct LibraryWindowView: View {
         }
         classifyTask?.cancel()
         classifyTask = Task {
-            _ = await LibraryAutoCollections.classifyMissingGenres(
+            let result = await LibraryAutoCollections.classifyMissingGenres(
                 library: library,
                 progress: { current, total in
                     classifyCurrent = current
                     classifyTotal = total
                 }
             )
+            classifyClassifiedCount = result.classified
+            classifyDeclinedCount = result.stampedUncategorized
             LibraryAutoCollections.refresh(library: library)
             classifyDone = true
             classifyTask = nil
@@ -451,6 +651,18 @@ struct LibraryWindowView: View {
                 table
             }
         }
+        // ⌘F focuses the inline search field — standard macOS Find
+        // convention. The Library window is a separate scene from
+        // the editor (which has its own ⌘F bound to CodeMirror), so
+        // the chord doesn't clash. Hidden zero-size button so the
+        // shortcut binds without claiming any visual real estate.
+        .overlay(alignment: .topLeading) {
+            Button("Find") { searchFieldFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+        }
     }
 
     /// The library entries currently in `selection`, in the order
@@ -470,6 +682,52 @@ struct LibraryWindowView: View {
 
     // MARK: - filter bar
 
+    /// Search field rendered inline in the filter bar. Capsule
+    /// background so it reads as a chrome element distinct from
+    /// the count labels; magnifying-glass leading icon + clear
+    /// button when non-empty so the user can wipe the filter
+    /// without retyping. Fixed-ish width to keep the layout
+    /// stable as the user types — let it grow up to 280pt so a
+    /// long author name fits.
+    @ViewBuilder
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .imageScale(.small)
+            TextField(
+                "Search title or author",
+                text: $searchQuery
+            )
+            .textFieldStyle(.plain)
+            .focused($searchFieldFocused)
+            .frame(minWidth: 140, idealWidth: 220, maxWidth: 280)
+            if !searchQuery.isEmpty {
+                Button {
+                    searchQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .imageScale(.small)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            Capsule().fill(Color.secondary.opacity(0.12))
+        )
+        .overlay(
+            Capsule()
+                .stroke(searchFieldFocused
+                        ? Color.accentColor.opacity(0.7)
+                        : Color.clear,
+                        lineWidth: 1)
+        )
+    }
+
     @ViewBuilder
     private var filterBar: some View {
         HStack(spacing: 12) {
@@ -481,6 +739,7 @@ struct LibraryWindowView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            searchField
             Spacer()
             // R-Bulk-Editor: cross-book find/replace driven from
             // the current multi-selection. Visible only when at
@@ -501,6 +760,15 @@ struct LibraryWindowView: View {
                     )
                 }
                 .help("Scope the library chat to the selected books")
+                Button(role: .destructive) {
+                    requestRemove(selectedEntries)
+                } label: {
+                    Label(
+                        "Remove \(selection.count)…",
+                        systemImage: "trash"
+                    )
+                }
+                .help("Remove the selected books from the library (or move to Trash)")
             } else if let collection = activeCollection,
                       !collection.bookIDs.isEmpty {
                 // No row selection, but the table is filtered to a
@@ -652,7 +920,7 @@ struct LibraryWindowView: View {
                         return false
                     }
                 if !userCollections.isEmpty {
-                    Section("My Collections") {
+                    Section("My Collections", isExpanded: $expandMyCollections) {
                         ForEach(userCollections) { collection in
                             collectionRow(collection)
                                 .tag(UUID?.some(collection.id))
@@ -660,7 +928,7 @@ struct LibraryWindowView: View {
                     }
                 }
                 if !autoByType.isEmpty {
-                    Section("Auto: by Type") {
+                    Section("Auto: by Type", isExpanded: $expandAutoType) {
                         ForEach(autoByType) { collection in
                             collectionRow(collection)
                                 .tag(UUID?.some(collection.id))
@@ -668,7 +936,7 @@ struct LibraryWindowView: View {
                     }
                 }
                 if !autoByAuthor.isEmpty {
-                    Section("Auto: by Author") {
+                    Section("Auto: by Author", isExpanded: $expandAutoAuthor) {
                         ForEach(autoByAuthor) { collection in
                             collectionRow(collection)
                                 .tag(UUID?.some(collection.id))
@@ -676,7 +944,7 @@ struct LibraryWindowView: View {
                     }
                 }
                 if !autoByGenre.isEmpty {
-                    Section("Auto: by Genre") {
+                    Section("Auto: by Genre", isExpanded: $expandAutoGenre) {
                         ForEach(autoByGenre) { collection in
                             collectionRow(collection)
                                 .tag(UUID?.some(collection.id))
@@ -764,6 +1032,24 @@ struct LibraryWindowView: View {
             }
             .width(min: 200, ideal: 320)
 
+            // Author column. Sortable by stamped author (rows
+            // without an author sort last via the empty-string
+            // KeyPath). Italicizes a placeholder dash when nil
+            // so the user can see at a glance which entries
+            // still need a metadata backfill.
+            TableColumn("Author", value: \.authorSortKey) { entry in
+                if let author = entry.author, !author.isEmpty {
+                    Text(author)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else {
+                    Text("—")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .width(min: 100, ideal: 180)
+
             TableColumn("Languages") { (entry: LibraryEntry) in
                 Text(entry.languages.map(languageLabel).joined(separator: ", "))
                     .foregroundStyle(.secondary)
@@ -793,6 +1079,13 @@ struct LibraryWindowView: View {
                         rowContextMenu(for: entry)
                     }
             }
+        }
+        // ⌫ on the table triggers the confirmation flow for the
+        // current selection. Empty selection no-ops via the guard in
+        // `requestRemove`. The confirmation dialog is the actual
+        // destructive step, so this is safe even on misfires.
+        .onDeleteCommand {
+            requestRemove(selectedEntries)
         }
     }
 
@@ -842,6 +1135,18 @@ struct LibraryWindowView: View {
             NSWorkspace.shared.activateFileViewerSelecting([entry.epubURL])
         }
         Divider()
+        Button("Edit Metadata…") {
+            metadataEditContext = MetadataEditContext(
+                id: entry.id,
+                title: entry.title,
+                author: entry.author,
+                languages: entry.languages,
+                conversionType: entry.conversionType,
+                genre: entry.genre,
+                epubFilename: entry.epubURL.lastPathComponent
+            )
+        }
+        Divider()
         addToCollectionMenu(for: entry)
         if let collection = activeCollection,
            collection.bookIDs.contains(entry.id) {
@@ -850,9 +1155,12 @@ struct LibraryWindowView: View {
             }
         }
         Divider()
-        Button("Remove from Library", role: .destructive) {
-            coverCache.invalidate(entry.epubURL)
-            library.remove(entry.id)
+        let removeTargets = removalTargets(for: entry)
+        let removeLabel = removeTargets.count > 1
+            ? "Remove \(removeTargets.count) Books from Library…"
+            : "Remove from Library…"
+        Button(removeLabel, role: .destructive) {
+            requestRemove(removeTargets)
         }
     }
 
@@ -893,6 +1201,31 @@ struct LibraryWindowView: View {
         var rows = library.entries
         if let lang = languageFilter {
             rows = rows.filter { $0.languages.contains(lang) }
+        }
+        // Text search: case-insensitive substring match against
+        // title, author, and filename. Filename is included because
+        // most catalog entries don't have a stamped author yet —
+        // author names often live in the EPUB filename (e.g.
+        // "Foucault - Discipline and Punish.epub"), so matching
+        // filename gives sensible hits before the user runs the
+        // Refresh backfill to populate `author`. Applied before
+        // collection ordering so search composes with collection
+        // scope. Trims to ignore whitespace-only queries.
+        let needle = searchQuery
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if !needle.isEmpty {
+            rows = rows.filter { entry in
+                if entry.title.lowercased().contains(needle) { return true }
+                if let author = entry.author,
+                   author.lowercased().contains(needle) { return true }
+                let filename = entry.epubURL
+                    .deletingPathExtension()
+                    .lastPathComponent
+                    .lowercased()
+                if filename.contains(needle) { return true }
+                return false
+            }
         }
         if let collection = activeCollection {
             let membership = Set(collection.bookIDs)
@@ -942,6 +1275,14 @@ private extension LibraryEntry {
     var lastOpenedSortKey: Date {
         lastOpened ?? .distantPast
     }
+
+    /// Sort key for the Author column. Empty string for nil so
+    /// authored entries sort together (ascending alphabetical) and
+    /// un-authored rows cluster at one end. Lowercased so case
+    /// doesn't shuffle the natural alphabetical grouping.
+    var authorSortKey: String {
+        (author ?? "").lowercased()
+    }
 }
 
 // MARK: - new-collection / rename helpers
@@ -958,6 +1299,15 @@ private struct NewCollectionContext: Identifiable {
 private struct RenameContext: Identifiable {
     let id: UUID
     let name: String
+}
+
+/// Payload for the "Remove from Library" confirmation dialog. Holds
+/// the entries the user is about to remove so the dialog body can
+/// name them, and the perform step can iterate over them without
+/// rereading from the (potentially mutated) catalog.
+private struct RemoveContext: Identifiable {
+    let id = UUID()
+    let entries: [LibraryEntry]
 }
 
 private struct NewCollectionSheet: View {
