@@ -227,7 +227,11 @@ struct AISettingsView: View {
         .formStyle(.grouped)
         .padding(.vertical)
         .frame(width: 520)
-        .frame(minHeight: 420)
+        // Match the floor used by Editor + Conversion panes so
+        // switching tabs doesn't shrink the Settings window
+        // (jarring when the dynamic content height pulled it
+        // down to 420 on this pane but the others stayed at 460).
+        .frame(minHeight: 460)
         .onAppear {
             refreshEmbeddingsCacheSize()
             refreshVoyageKeyState()

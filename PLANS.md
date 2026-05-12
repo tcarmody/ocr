@@ -5302,11 +5302,65 @@ future audits.
   deliberately.
 - **U-HIG-Help-Book** — Apple Help Book + `MDItemKeywords`.
   Earns priority alongside P10 distribution, not before.
-- **U-HIG-Settings-Audit** — confirm Settings panes don't
-  surface Cancel/Save (currently fine), that all four tabs
-  read at similar density (`AISettingsView` is 844 lines vs
-  `EditorSettingsView`'s 125 — uneven). Small fix-ups; can
-  fold into the relevant feature areas as they're touched.
+- ~~**U-HIG-Settings-Audit**~~ small fix-ups shipped
+  2026-05-12. The density-imbalance question (AISettingsView
+  is 844 lines vs EditorSettingsView's 125 — 6.7×) is real
+  but is a UI-split decision deferred to a separate item:
+  **U-HIG-AI-Settings-Split** below.
+
+  Confirmed clean:
+  - All four panes use `.formStyle(.grouped)` + radio /
+    checkbox / picker controls — no toggle switches, no
+    Save / Cancel / Apply buttons. (The "Save aliases"
+    button in AISettingsView is a legitimate TextEditor
+    commit, not a Settings-modeless violation.)
+  - SettingsRoot frames 540×520, each `.tabItem` carries
+    both icon and label.
+  - Tab order Editor → Conversion → AI → Appearance reads
+    "most-used first" rather than "general first," which
+    is a defensible choice for an editor-centric app.
+
+  Fixed:
+  - AI pane's `.frame(minHeight: 420)` was inconsistent
+    with Editor + Conversion's `460`. Bumped to 460 so the
+    Settings window doesn't shrink when the user switches
+    to the AI tab in Private mode (where the AI pane's
+    intrinsic content is shorter).
+  - Appearance pane was missing `.frame(width:)` and
+    `.frame(minHeight:)` entirely, and used `.padding()`
+    instead of `.padding(.vertical)`. Brought into line
+    with the other three so content alignment + window
+    bounds stay stable across tab switches.
+
+### U-HIG-AI-Settings-Split — split the AI pane (discuss)
+
+`AISettingsView` is 844 lines — 6.7× the next-largest pane
+(ConversionSettingsView at 316). MACUX.md says "an order of
+magnitude longer should probably split." Natural split:
+
+- **AI pane** keeps the conversion-pipeline AI sections:
+  Processing Mode, Anthropic API Key, Cloud Features, Cost
+  Cap, Local AI features for conversion (chapter
+  classification, metadata, coherence, post-OCR cleanup).
+- **Chat pane** (new) gets the book/library chat sections:
+  Book Chat backend selector (Cloud Haiku / Cloud Sonnet /
+  Local Ollama), Chat Retrieval (BM25 / embedding / hybrid),
+  embedding backend chooser, alias dictionary, advanced
+  retrieval tunables.
+
+Result: 5 tabs (Editor / Conversion / AI / Chat /
+Appearance). Each pane stays under ~400 lines. AI tab
+becomes "AI for converting your books"; Chat tab becomes
+"AI for talking with your books" — clearer mental model
+for users who want to configure one without the other.
+
+Tradeoff: 5 tabs is more horizontal real estate. macOS
+Settings windows handle that fine up to ~7 tabs; the icon
++ label per tab keeps the row scannable.
+
+Effort: ~½ day. Mostly file split + Settings-tab plumbing.
+Defer to a separate session — it's a deliberate UI change,
+not a fix-up.
 - **U-HIG-LiquidGlass-Inspect** — full Xcode-26 pass with
   `NSGlassEffectContainerView`, `NSSplitViewItemAccessoryViewController`
   for editor pane headers, `NSView.LayoutRegion` for corner

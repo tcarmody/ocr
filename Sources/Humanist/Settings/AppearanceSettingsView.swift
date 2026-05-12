@@ -16,7 +16,13 @@ struct AppearanceSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .padding()
+        // Match Editor / Conversion / AI panes:
+        // `.padding(.vertical)` + explicit width + minHeight so
+        // switching tabs doesn't shift content position or jump
+        // the window's vertical bounds.
+        .padding(.vertical)
+        .frame(width: 520)
+        .frame(minHeight: 460)
     }
 }
 
