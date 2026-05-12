@@ -49,7 +49,17 @@ final class CoverImageCache {
     /// decoded yet (or doesn't exist) — call sites should render a
     /// placeholder. The cache will publish a change when the image
     /// becomes available.
-    func image(for epubURL: URL) -> NSImage? {
+    ///
+    /// `libraryID` lets the cache check for a per-entry override
+    /// thumbnail before falling through to the EPUB-embedded
+    /// cover. Overrides live under `<storeDir>/.humanist/Covers/`
+    /// and are populated by the online metadata picker — gives
+    /// the user better thumbnails without rewriting the .epub.
+    /// Nil libraryID skips the override check (back-compat for
+    /// callers that don't know the catalog id yet).
+    func image(
+        for epubURL: URL, libraryID: UUID? = nil
+    ) -> NSImage? {
         let key = epubURL.canonicalForFile
         if case .loaded(let img) = slots[key] { return img }
         if slots[key] != nil { return nil }   // .missing — don't retry
@@ -57,7 +67,25 @@ final class CoverImageCache {
         inFlight.insert(key)
         let max = maxPixelSize
         Task.detached(priority: .userInitiated) {
-            let image = Self.loadThumbnail(epubURL: epubURL, maxPixelSize: max)
+            // Override path first. If the user has accepted an
+            // online cover for this entry, prefer it over the
+            // EPUB-embedded version — better resolution, accurate
+            // edition matching, and the EPUB stays untouched.
+            var image: NSImage? = nil
+            if let id = libraryID {
+                let store = LibraryCoverOverrideStore.currentDefault()
+                let overrideURL = store.url(for: id)
+                if FileManager.default.fileExists(atPath: overrideURL.path) {
+                    image = Self.loadThumbnailFromFile(
+                        fileURL: overrideURL, maxPixelSize: max
+                    )
+                }
+            }
+            if image == nil {
+                image = Self.loadThumbnail(
+                    epubURL: epubURL, maxPixelSize: max
+                )
+            }
             await MainActor.run {
                 self.inFlight.remove(key)
                 self.slots[key] = image.map(Slot.loaded) ?? .missing
@@ -67,9 +95,38 @@ final class CoverImageCache {
     }
 
     /// Drop a cached entry. Called by the library on `remove(_:)` so
-    /// re-adding the same EPUB after deletion picks up a fresh cover.
+    /// re-adding the same EPUB after deletion picks up a fresh
+    /// cover. Also called after the metadata picker saves a new
+    /// override so the table re-decodes from the override file.
     func invalidate(_ epubURL: URL) {
         slots.removeValue(forKey: epubURL.canonicalForFile)
+    }
+
+    /// Decode an image from any local file URL. Mirrors
+    /// `loadThumbnail` but reads bytes directly from disk instead
+    /// of pulling them out of an EPUB zip. Used for the override
+    /// path; same downsampling pipeline so override + extracted
+    /// covers render at consistent quality.
+    private nonisolated static func loadThumbnailFromFile(
+        fileURL: URL,
+        maxPixelSize: CGFloat
+    ) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(
+            fileURL as CFURL, nil
+        ) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(
+            source, 0, opts as CFDictionary
+        ) else { return nil }
+        return NSImage(
+            cgImage: cg,
+            size: NSSize(width: cg.width, height: cg.height)
+        )
     }
 
     private nonisolated static func loadThumbnail(

@@ -456,6 +456,16 @@ struct LibraryWindowView: View {
                     )
                     LibraryAutoCollections.refresh(library: library)
                     metadataEditContext = nil
+                    // The online-lookup picker may have written a
+                    // cover override during the edit. Invalidate
+                    // the in-memory cover cache so the table's
+                    // next render re-decodes from disk and picks
+                    // up the new override. Harmless when no
+                    // override changed — next image() call just
+                    // re-extracts from the EPUB as before.
+                    if let url = epubURL {
+                        coverCache.invalidate(url)
+                    }
                     // Dual-write: also push title / author /
                     // first-language to the EPUB's OPF so the edit
                     // survives a library.json wipe and travels with
@@ -1345,7 +1355,7 @@ struct LibraryWindowView: View {
         // this just resamples down without re-decoding the original
         // (potentially multi-MB) cover.
         Group {
-            if let img = coverCache.image(for: entry.epubURL) {
+            if let img = coverCache.image(for: entry.epubURL, libraryID: entry.id) {
                 Image(nsImage: img)
                     .resizable()
                     .aspectRatio(contentMode: .fill)

@@ -59,7 +59,7 @@ final class LibraryStore: ObservableObject {
     /// `shareAcrossMachines` Settings toggle: when on + an output
     /// root is configured, returns `<outputRoot>/.humanist/library.json`.
     /// Otherwise the historical Application Support location.
-    static func resolveStoreURL() -> (url: URL, sharing: Bool) {
+    nonisolated static func resolveStoreURL() -> (url: URL, sharing: Bool) {
         let shareEnabled = UserDefaults.standard.bool(
             forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
         )

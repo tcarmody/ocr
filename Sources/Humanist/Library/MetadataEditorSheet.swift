@@ -158,6 +158,13 @@ struct MetadataEditorSheet: View {
     /// Language merges into the existing comma-separated text only
     /// when the source returned one; otherwise leaves whatever
     /// the user already had.
+    ///
+    /// Cover: if the candidate carries a cover image URL, kicks
+    /// off a detached download to save the bytes as a per-entry
+    /// override under `<storeDir>/.humanist/Covers/<id>.jpg`. The
+    /// EPUB itself is not touched — the library table just prefers
+    /// the override when one exists. Download failure is silent;
+    /// the metadata edit still succeeds.
     private func applyCandidate(_ candidate: MetadataCandidate) {
         title = candidate.title
         author = candidate.author ?? ""
@@ -170,6 +177,13 @@ struct MetadataEditorSheet: View {
             // additional codes the user had typed in.
             let merged = [lang] + existing.filter { $0 != lang }
             languagesText = merged.joined(separator: ", ")
+        }
+        if let coverURL = candidate.coverImageURL {
+            let id = entryID
+            Task.detached(priority: .userInitiated) {
+                let store = LibraryCoverOverrideStore.currentDefault()
+                try? await store.download(from: coverURL, for: id)
+            }
         }
     }
 

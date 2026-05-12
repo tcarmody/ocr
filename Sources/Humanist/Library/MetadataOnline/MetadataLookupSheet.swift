@@ -167,54 +167,103 @@ struct MetadataLookupSheet: View {
     }
 
     private func candidateRow(_ candidate: MetadataCandidate) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(candidate.title)
-                .font(.callout.weight(.medium))
-                .lineLimit(2)
-            HStack(spacing: 6) {
-                if let author = candidate.author {
-                    Text(author)
-                        .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 10) {
+            coverThumbnail(for: candidate)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(candidate.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(2)
+                HStack(spacing: 6) {
+                    if let author = candidate.author {
+                        Text(author)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let year = candidate.year {
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(year)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let publisher = candidate.publisher {
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(publisher)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
-                if let year = candidate.year {
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text(year)
-                        .foregroundStyle(.secondary)
+                .font(.caption)
+                HStack(spacing: 6) {
+                    if let isbn = candidate.isbn {
+                        Text("ISBN \(isbn)")
+                    }
+                    if let lang = candidate.language {
+                        Text("Language: \(lang)")
+                    }
+                    Spacer()
+                    Text(candidate.sourceName)
+                        .foregroundStyle(.tint)
+                    if candidate.sourceURL != nil {
+                        Image(systemName: "link")
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                if let publisher = candidate.publisher {
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text(publisher)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
             }
-            .font(.caption)
-            HStack(spacing: 6) {
-                if let isbn = candidate.isbn {
-                    Text("ISBN \(isbn)")
-                }
-                if let lang = candidate.language {
-                    Text("Language: \(lang)")
-                }
-                Spacer()
-                Text(candidate.sourceName)
-                    .foregroundStyle(.tint)
-                if candidate.sourceURL != nil {
-                    Image(systemName: "link")
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
             accept(candidate)
         }
+    }
+
+    /// Show the source's cover thumbnail next to each candidate
+    /// row so the user can visually verify they're picking the
+    /// right edition (a different cover = a different printing).
+    /// AsyncImage handles the download + placeholder + cache;
+    /// we don't persist these thumbnails anywhere because they
+    /// only matter for the picker session — the accepted
+    /// candidate's image gets saved to the library override
+    /// path separately on accept.
+    @ViewBuilder
+    private func coverThumbnail(for candidate: MetadataCandidate) -> some View {
+        Group {
+            if let url = candidate.coverImageURL {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    case .empty:
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.12))
+                            .overlay(ProgressView().controlSize(.mini))
+                    case .failure:
+                        coverPlaceholder
+                    @unknown default:
+                        coverPlaceholder
+                    }
+                }
+            } else {
+                coverPlaceholder
+            }
+        }
+        .frame(width: 36, height: 52)
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    private var coverPlaceholder: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.12))
+            .overlay(
+                Image(systemName: "book.closed")
+                    .foregroundStyle(.tertiary)
+                    .imageScale(.small)
+            )
     }
 
     private var footer: some View {
