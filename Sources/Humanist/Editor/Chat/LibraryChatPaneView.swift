@@ -111,6 +111,7 @@ struct LibraryChatPaneView: View {
                 .controlSize(.small)
                 .buttonStyle(.borderless)
                 .help("Rebuild the federated index from current sidecars")
+                .accessibilityLabel("Rebuild federated index")
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.caption)
@@ -128,6 +129,9 @@ struct LibraryChatPaneView: View {
             .help(vm.useLongFormSynthesis
                   ? "Switch back to short chat-shaped answers"
                   : "Longer-form: a few well-developed paragraphs instead of one or two")
+            .accessibilityLabel(vm.useLongFormSynthesis
+                  ? "Switch to short answers"
+                  : "Switch to long-form answers")
             Button {
                 showRetrievalDetail.toggle()
             } label: {
@@ -140,6 +144,9 @@ struct LibraryChatPaneView: View {
             .help(showRetrievalDetail
                   ? "Hide retrieval detail under each answer"
                   : "Show retrieval detail under each answer")
+            .accessibilityLabel(showRetrievalDetail
+                  ? "Hide retrieval detail"
+                  : "Show retrieval detail")
             if !vm.messages.isEmpty {
                 Button {
                     exportTranscript()
@@ -149,6 +156,7 @@ struct LibraryChatPaneView: View {
                 .controlSize(.small)
                 .buttonStyle(.borderless)
                 .help("Export this transcript as Markdown (citations resolved) to the clipboard")
+                .accessibilityLabel("Export chat transcript")
                 Button {
                     vm.clear()
                 } label: {
@@ -157,6 +165,7 @@ struct LibraryChatPaneView: View {
                 .controlSize(.small)
                 .buttonStyle(.borderless)
                 .help("Clear this transcript (deletes the persisted chat)")
+                .accessibilityLabel("Clear chat transcript")
             }
         }
         .padding(.horizontal, 12)

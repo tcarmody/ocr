@@ -225,6 +225,7 @@ struct QueueWindowView: View {
                 } label: { Image(systemName: "xmark") }
                     .controlSize(.small)
                     .help("Remove from queue")
+                    .accessibilityLabel("Remove from queue")
             case .failed, .cancelled:
                 Button("Retry") {
                     runner.retry(jobID: job.id)
@@ -235,6 +236,7 @@ struct QueueWindowView: View {
                 } label: { Image(systemName: "xmark") }
                     .controlSize(.small)
                     .help("Remove from queue")
+                    .accessibilityLabel("Remove from queue")
             }
         }
     }

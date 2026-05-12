@@ -74,6 +74,8 @@ struct ChatInputRow: View {
                       || isThinking
                       || isBlocked)
             .keyboardShortcut(.return, modifiers: [.command])
+            .help("Send (⌘Return)")
+            .accessibilityLabel("Send message")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

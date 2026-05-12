@@ -884,14 +884,15 @@ Drivers for the current ordering:
 16. **Section-level granularity** (R-Chat-Graph-Lite's only
     remaining item). Chapter-level expansion already works;
     finer cut is opt-in only.
-17. **U-HIG-Pass — Mac HIG / Liquid Glass conformance**
-    (~4.5 days for the seven recommended sub-items: VoiceOver
-    labels, Library `.toolbar` + `.searchable`, edge-to-edge
-    background cleanup, `Credits.rtf`, editor-toolbar labels,
-    keyboard focus). Mostly subtractive / annotation work.
-    Sequence opportunistically — earns priority before the
-    first non-tester distribution, or when an accessibility-
-    dependent user needs the app.
+17. ~~**U-HIG-Pass — Mac HIG / Liquid Glass conformance**~~
+    shipped 2026-05-12 across six commits: About-Credits
+    (`1f87716`), Editor-Toolbar-Labels skip with rationale
+    (`d1089f2`), Library `.toolbar` + `.searchable`
+    (`1d13e48`), Liquid-Glass-Edges launcher background
+    (`011f4d9`), A11y + keyboard-focus audit (this commit).
+    Out-of-scope items still pending: Launcher-Toolbar, Help
+    Book, Settings audit, full Xcode-26 Liquid-Glass inspect
+    pass.
 
 ### Deferred indefinitely
 
@@ -5150,20 +5151,52 @@ Each sub-item is independently scoped — take or skip without
 affecting the others. Sequencing is intentionally loose; the
 audit is polish work, not a feature gate.
 
-### U-HIG-Pass-A11y — VoiceOver labels on every icon-only control
+### U-HIG-Pass-A11y + U-HIG-Pass-Keyboard-Focus — shipped 2026-05-12
 
-Grep returns zero hits for `accessibilityLabel` / `accessibilityHint`
-across `Sources/Humanist/`. Native SwiftUI controls inherit some
-accessibility for free, but icon-only buttons (Library filter
-bar — sidebar toggle, import, index, chat; editor pane-header
-chat-clear + index-rebuild; queue status icons; theme swatches;
-drop zone) don't announce meaningfully under VoiceOver.
+Shipped together since both audited the same icon-only-button
+sites. Primary-surface coverage:
 
-Pass: walk every `Image(systemName:)`-as-button site and add
-`.accessibilityLabel("…")` mirroring the existing `.help("…")`
-copy. Add `accessibilityElement(children: .combine)` on composite
-rows (queue row, library row, theme row) so VO reads the whole
-row as one element rather than fragmenting it. ~½ day.
+- **Library window toolbar** (`.navigation` sidebar toggle +
+  `.primaryAction` group of language, bulk-edit, import, index,
+  chat): `.accessibilityLabel` mirroring each `.help` string.
+- **Editor toolbar pane toggles**: already accessible via
+  `Label("Show PDF", systemImage:)` — Label's text doubles as
+  the VoiceOver name. Documented this in-place so future
+  readers don't add redundant `.accessibilityLabel` modifiers.
+- **Editor PDF-pane toolbar** (Prev / Next / Zoom Out / Zoom In
+  / Fit Page): bare `Image(systemName:)` buttons → all labeled.
+- **Editor chat-pane header** (rebuild index, clear chat):
+  labeled.
+- **Source + WYSIWYG formatting toolbars** (~22 buttons via
+  shared `iconButton(...)` helper): added one
+  `.accessibilityLabel(label)` line in each helper, covering
+  every formatting button at once.
+- **Chat panes** (long-form toggle, retrieval-detail toggle,
+  export, clear, rebuild federated index in library chat):
+  labeled.
+- **Chat input** Send button: labeled, with new `.help("Send
+  (⌘Return)")` tooltip too.
+- **Queue rows** in launcher + queue window: status icon
+  marked `.accessibilityHidden(true)` (the adjacent status
+  text is the description); remove button labeled.
+- **DropZone**: `.accessibilityElement(.ignore)` to consolidate
+  the decorative dashed-border + icon + label texts into one
+  VO element, with a custom `.accessibilityLabel` /
+  `.accessibilityHint` that explains the drag-drop affordance
+  and points keyboard users at the "Choose Files…" button as
+  the equivalent.
+
+**Keyboard focus**: SwiftUI's `Button` is keyboard-focusable
+by default — ThemeRow (`.buttonStyle(.plain)`), queue row
+action chips, and library filter toolbar buttons all
+participate in Tab navigation without further intervention.
+The Library search field that previously needed
+`@FocusState` is now `.searchable` (system-provided focus +
+⌘F binding). The DropZone is non-interactive (drag-only)
+and intentionally not focusable; the "Choose Files or
+Folder…" button below it is the keyboard equivalent.
+
+Build clean; 1036 tests pass.
 
 ### U-HIG-Pass-Toolbar-Library + U-HIG-Pass-Searchable — shipped 2026-05-12
 
@@ -5258,15 +5291,6 @@ MACUX.md's "icon + label is the macOS default" note applies to
 `.primaryAction` items, not navigation toggles. Tightening the
 MACUX entry is a follow-up if the distinction keeps tripping
 future audits.
-
-### U-HIG-Pass-Keyboard-Focus — Tab key reaches every interactive surface
-
-Several custom hit areas don't participate in keyboard focus —
-the drop zone, theme rows in Appearance Settings, the Library
-search capsule (if kept), the queue row's action chips. Pass:
-add `.focusable()` + a `.focused()` ring treatment using the
-system focus-ring color so Tab walks the whole UI. Important
-for keyboard-only users and a HIG requirement. ~½ day.
 
 ### Out of scope for this pass (discuss separately)
 

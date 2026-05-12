@@ -740,6 +740,11 @@ private struct JobRow: View {
         HStack(alignment: .center, spacing: 10) {
             statusIcon
                 .frame(width: 18)
+                // Status icon is decorative — the adjacent
+                // `statusLine` text describes the same state in
+                // words. Hide from VoiceOver so it isn't read as
+                // "circle dashed" / "exclamation triangle".
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(job.sourceURL.lastPathComponent)
                     .font(.callout)
@@ -870,6 +875,7 @@ private struct JobRow: View {
             } label: { Image(systemName: "xmark") }
                 .controlSize(.small)
                 .help("Remove from queue")
+                .accessibilityLabel("Remove from queue")
         case .failed, .cancelled:
             Button("Retry") {
                 runner.retry(jobID: job.id)
@@ -880,6 +886,7 @@ private struct JobRow: View {
             } label: { Image(systemName: "xmark") }
                 .controlSize(.small)
                 .help("Remove from queue")
+                .accessibilityLabel("Remove from queue")
         }
     }
 }
@@ -1098,5 +1105,15 @@ private struct DropZone: View {
             }
         }
         .allowsHitTesting(false)
+        // VoiceOver hint — the visual cue is a dashed-border
+        // rectangle which doesn't read meaningfully without a
+        // label. Drag-drop isn't accessible via keyboard; the
+        // bottom bar's "Choose Files or Folder…" button is the
+        // keyboard-and-VO equivalent.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(isTargeted
+            ? "Release to add documents to the queue"
+            : "Drop zone for documents")
+        .accessibilityHint("Drag PDFs, DOCX, HTML, RTF, MD, or TXT files (or folders) here to add them to the conversion queue. Or use the Choose Files button below for keyboard access.")
     }
 }

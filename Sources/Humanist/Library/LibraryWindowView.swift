@@ -932,6 +932,9 @@ struct LibraryWindowView: View {
             .help(showCollectionsSidebar
                   ? "Hide collections sidebar"
                   : "Show collections sidebar")
+            .accessibilityLabel(showCollectionsSidebar
+                  ? "Hide collections sidebar"
+                  : "Show collections sidebar")
         }
         ToolbarItemGroup(placement: .primaryAction) {
             if !availableLanguages.isEmpty {
@@ -957,6 +960,7 @@ struct LibraryWindowView: View {
             .help(selection.isEmpty
                 ? "Bulk edit (select books first)"
                 : "Bulk edit \(selection.count) selected book\(selection.count == 1 ? "" : "s") — find/replace across them")
+            .accessibilityLabel("Bulk edit selected books")
 
             // R-EPUB-Import: bring an existing .epub into the
             // library — anchor injection + cataloging + index.
@@ -966,6 +970,7 @@ struct LibraryWindowView: View {
                 Image(systemName: "tray.and.arrow.down")
             }
             .help("Import EPUB into Library…")
+            .accessibilityLabel("Import EPUB into Library")
 
             // Bulk-index menu. Default-click ran an incremental
             // build in the old filter-bar version; we now surface
@@ -981,6 +986,7 @@ struct LibraryWindowView: View {
                 Image(systemName: "arrow.triangle.2.circlepath")
             }
             .help("Build embedding indexes for every book")
+            .accessibilityLabel("Build embedding indexes")
 
             // Chat-pane button — same triple-duty action as before
             // (selection → chatWithSelected; collection →
@@ -993,6 +999,7 @@ struct LibraryWindowView: View {
                       : "bubble.left.and.text.bubble.right")
             }
             .help(chatIconHelp)
+            .accessibilityLabel(chatIconHelp)
             .keyboardShortcut("/", modifiers: [.command])
         }
     }

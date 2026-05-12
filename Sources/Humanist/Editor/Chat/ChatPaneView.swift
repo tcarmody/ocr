@@ -122,6 +122,9 @@ struct ChatPaneView: View {
                 .help(vm.useLongFormSynthesis
                       ? "Switch back to short chat-shaped answers"
                       : "Longer-form: a few well-developed paragraphs instead of one or two")
+                .accessibilityLabel(vm.useLongFormSynthesis
+                      ? "Switch to short answers"
+                      : "Switch to long-form answers")
                 Button {
                     showRetrievalDetail.toggle()
                 } label: {
@@ -133,6 +136,9 @@ struct ChatPaneView: View {
                 .help(showRetrievalDetail
                       ? "Hide retrieval detail under each answer"
                       : "Show retrieval detail under each answer")
+                .accessibilityLabel(showRetrievalDetail
+                      ? "Hide retrieval detail"
+                      : "Show retrieval detail")
                 if !vm.messages.isEmpty {
                     Button {
                         exportTranscript()
@@ -141,6 +147,7 @@ struct ChatPaneView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Export this transcript as Markdown (citations resolved) to the clipboard")
+                    .accessibilityLabel("Export chat transcript")
                 }
             }
             if vm.chatScope == .library {

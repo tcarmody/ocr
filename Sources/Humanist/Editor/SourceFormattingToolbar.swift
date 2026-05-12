@@ -141,6 +141,10 @@ struct SourceFormattingToolbar: View {
         }
         .buttonStyle(.borderless)
         .help(label)
+        // `label` doubles as the VoiceOver name — same copy as the
+        // sighted-user tooltip. Every formatting button flows
+        // through this helper so this single line covers them all.
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder

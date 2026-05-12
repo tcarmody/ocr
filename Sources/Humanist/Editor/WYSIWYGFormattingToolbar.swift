@@ -109,6 +109,11 @@ struct WYSIWYGFormattingToolbar: View {
         }
         .buttonStyle(.borderless)
         .help(label)
+        // `label` doubles as the VoiceOver name — same copy as the
+        // sighted-user tooltip. Every WYSIWYG formatting button
+        // flows through this helper so this single line covers
+        // them all.
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder

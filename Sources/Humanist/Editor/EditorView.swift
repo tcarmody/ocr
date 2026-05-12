@@ -397,6 +397,7 @@ struct EditorView: View {
                 Image(systemName: "chevron.left")
             }
             .help("Previous Page (⇧⌘←)")
+            .accessibilityLabel("Previous Page")
 
             Button {
                 vm.pdfNextPage()
@@ -404,6 +405,7 @@ struct EditorView: View {
                 Image(systemName: "chevron.right")
             }
             .help("Next Page (⇧⌘→)")
+            .accessibilityLabel("Next Page")
 
             Divider().frame(height: 12).padding(.horizontal, 4)
 
@@ -413,6 +415,7 @@ struct EditorView: View {
                 Image(systemName: "minus.magnifyingglass")
             }
             .help("Zoom Out (⌘−)")
+            .accessibilityLabel("Zoom Out")
 
             Button {
                 vm.pdfZoomIn()
@@ -420,6 +423,7 @@ struct EditorView: View {
                 Image(systemName: "plus.magnifyingglass")
             }
             .help("Zoom In (⌘=)")
+            .accessibilityLabel("Zoom In")
 
             Button {
                 vm.pdfFitPage()
@@ -427,6 +431,7 @@ struct EditorView: View {
                 Image(systemName: "rectangle.arrowtriangle.2.inward")
             }
             .help("Fit Page (⌘0)")
+            .accessibilityLabel("Fit Page")
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
@@ -462,6 +467,7 @@ struct EditorView: View {
                     .buttonStyle(.borderless)
                     .controlSize(.small)
                     .help("Rebuild this book's chat indexes from scratch")
+                    .accessibilityLabel("Rebuild chat indexes")
                     if !chat.messages.isEmpty {
                         Button {
                             chat.clear()
@@ -471,6 +477,7 @@ struct EditorView: View {
                         .buttonStyle(.borderless)
                         .controlSize(.small)
                         .help("Clear this chat (deletes the persisted transcript)")
+                        .accessibilityLabel("Clear chat transcript")
                     }
                 }
             }
@@ -716,7 +723,11 @@ struct EditorView: View {
         ToolbarItemGroup(placement: .navigation) {
             // Toolbar toggles mirror the View > Show … menu items;
             // both flow through `vm.togglePane` so menu, keyboard
-            // shortcut, and toolbar stay in lockstep.
+            // shortcut, and toolbar stay in lockstep. `.navigation`
+            // placement renders icon-only on macOS 26 (intentional
+            // — leading-edge view-toggle convention, per MACUX.md).
+            // `Label` carries the visible-text name AND the
+            // accessibility label for VoiceOver in one go.
             Toggle(isOn: paneBinding(.pdf)) {
                 Label("Show PDF", systemImage: "doc.richtext")
             }
