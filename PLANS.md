@@ -2299,65 +2299,60 @@ the size-format / theme-palette helpers.
 
 ## R-Split-Filename-Sanity — Bound chapter-split filename growth
 
-**Status**: not started. Surfaced 2026-05-12 by a real EPUB
-(Walter Benjamin *Selected Writings, Volume 1*) the user had
-to repair manually. After ~23 successive chapter splits, the
-generated filename hit the macOS 255-byte filename limit and
-got silently truncated from `.xhtml` to `.xht`, breaking the
-manifest's spine reference.
+**Status**: shipped 2026-05-12 (this commit). Two defenses in
+`EPUBBook.nextAvailableHref(near:)`:
 
-### Root cause
+1. **Suffix-stripping**: a new `stripSplitSuffix(from:)` helper
+   strips trailing `_split_NNN` segments (any digit count,
+   iterative for already-pathological stems). Splitting
+   `chapter-001_split_001` now produces
+   `chapter-001_split_002` (sibling), not
+   `chapter-001_split_001_split_001` (descendant).
+2. **Byte cap**: candidate href is checked against a 200-byte
+   UTF-8 ceiling. When the iterating counter would push it
+   past, fall back to `chapter-NNN.{ext}` minted via a private
+   `fallbackCounterHref(...)` helper — same collision semantics
+   as the primary path, just a different stem.
+
+The 200-byte cap leaves ~50 bytes of headroom under macOS
+APFS's 255-byte limit for OS-prefix paths. Counter ceiling at
+999 splits is a defensive belt-and-suspenders cap on the
+primary loop too.
+
+11 new `NextAvailableHrefTests` cover the suffix-stripper's
+boundary cases (no suffix, single, 23-deep stack from the
+Benjamin EPUB, varied counter widths, mid-string non-matching
+patterns), the sibling-counter behavior on re-split, a 30-
+successive-splits stress that asserts the bound holds, and
+the byte-cap fallback with and without `chapter-NNN`
+collisions. 1070 tests pass total.
+
+### Root cause (preserved for archaeology)
 
 [`EPUBBook.nextAvailableHref(near:)`]
-(Sources/EPUB/EPUBBook.swift#L283) takes the source chapter's
-*full* current stem and appends `_split_NNN`. So:
+(Sources/EPUB/EPUBBook.swift) used to take the source chapter's
+*full* current stem and append `_split_NNN`. So:
 
 - split `chapter-001.xhtml` → second piece = `chapter-001_split_001.xhtml`
 - split THAT → `chapter-001_split_001_split_001.xhtml`
 - split THAT → `chapter-001_split_001_split_001_split_001.xhtml`
 - …
 
-Each split adds 10 chars to the stem. After 23 splits the
-href is 245 bytes (≈ `text/` + 232-char stem + `.xhtml`).
-macOS APFS truncates at 255 bytes, clipping the trailing `ml`
-from the extension. The manifest still records the intended
-`.xhtml`, the disk file is now `.xht`, and the EPUB silently
-breaks.
+Each split added 10 chars to the stem. After 23 splits the
+href was 245 bytes (≈ `text/` + 232-char stem + `.xhtml`).
+macOS APFS truncated at 255 bytes, clipping the trailing `ml`
+from the extension. The manifest still recorded the intended
+`.xhtml`, the disk file became `.xht`, and the EPUB silently
+broke. Now fixed.
 
-### Fix
-
-Two complementary changes in `nextAvailableHref`:
-
-1. **Detect and increment existing `_split_NNN` suffix**. If
-   the source href already matches `(.+?)_split_(\d{3})\.(\w+)`,
-   strip that suffix and look for the next-free counter
-   against the *base* stem, not against the suffixed stem.
-   So `chapter-001_split_001` split again produces
-   `chapter-001_split_002`, not `chapter-001_split_001_split_001`.
-   Eliminates the indefinite growth for the common single-
-   linage case.
-2. **Hard length cap as a final guard**. Wrap the existing
-   loop with a check that the candidate href doesn't exceed
-   200 bytes (well below the 255 limit, leaves room for OPF-
-   prefix paths and OS prefixes). When the bound triggers,
-   fall back to `chapter-NNN.xhtml` minted via
-   `nextAvailableResourceID(prefix: "chapter")` semantics —
-   loses the "sorts next to the source" property but keeps
-   the EPUB valid. Length check works at the byte level
-   (`.utf8.count`), not character count, since the limit
-   itself is byte-scoped.
-
-Effort: ~½ day plus a test that splits the same chapter 30
-times and asserts the resulting filenames stay under 200
-bytes.
-
-### Q-Content-Aware-Rename (separate, related)
+### Content-aware rename (separate, related)
 
 The user also asked for "a content-aware rename feature" —
-see below. Bounding the auto-name growth is the minimum fix;
-the content-aware rename is the better default. Ship the
-sanity bound first as defense-in-depth even if content-aware
-rename ships alongside.
+see R-Content-Aware-Rename below. Bounding the auto-name
+growth was the minimum fix; the content-aware rename is the
+better default. Sanity bound shipped first as defense-in-
+depth so the next person to import a Sigil-edited EPUB with
+existing growth can't trip the breakage either.
 
 ---
 
