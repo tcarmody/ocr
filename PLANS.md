@@ -818,20 +818,25 @@ Drivers for the current ordering:
    (`wand.and.stars` icon) walks the catalog with a progress
    sheet + cancel. "Auto: by Genre" sidebar section sorts by
    top-level then leaf so the flat list still reads grouped.
-7. **R-Library-Chat-Plus Tier 2 — citation export +
-   conversation export** (~6-9 hrs combined). Real research-
-   workflow items now that the library is big enough to drive
-   serious questions. Pinned passages and ask-each-book mode
-   are still useful but lower priority than the export pair.
-8. **R-EPUB-Import: Coherence pass on imports**. Lower priority
-   than v1's chapter-classification follow-up because clean
-   EPUBs rarely have the recurring-OCR-error patterns the
-   coherence pass exists to catch. Worth building if the
-   1000-book corpus surfaces enough errors to justify the
-   ~2-day XHTML → Chapter IR + round-trip-fidelity testing.
+7. ~~**R-Library-Chat-Plus Tier 2 — citation export +
+   conversation export**~~ shipped (commit `6c63714`).
+   `ChatCitationFormatter` (Chicago note-style with graceful
+   fallbacks) + "Export Transcript…" action on both chat panes.
+   8 new tests cover the format matrix + bibliography dedup +
+   transcript shape. Pinned passages and ask-each-book mode
+   remain in the "Earn when you need it" tier — useful but
+   not load-bearing.
+8. **R-EPUB-Import: Coherence pass on imports** (~2 days).
+   Picked as next-up on 2026-05-12. The 1000-book corpus is
+   the real driver — even if clean EPUBs rarely have recurring
+   OCR-error patterns, the imported corpus includes scanned
+   books cataloged elsewhere whose recurring artifacts haven't
+   been touched by a coherence pass. Needs the XHTML →
+   Chapter IR parser plus round-trip fidelity work.
 9. **L-Foundation-Models Phase 2.5** (on-device post-OCR
-   cleanup). Useful for Private-mode conversion runs; not
-   load-bearing for import workflows.
+   cleanup). Picked as the follow-on after item 8. Useful for
+   Private-mode conversion runs; pairs naturally with the
+   coherence work since both operate on already-OCR'd text.
 10. **R-Metadata-Online v1** (Open Library + Google Books
     lookup wired into the metadata editor sheet, ~2 days
     for single + multi-source). The shipped metadata editor
@@ -2955,15 +2960,25 @@ These shape the chat output for downstream use (research notes,
 citations, drafting). Not as universally useful as Tier 1; pick
 based on whether your workflow leans heavily on writing-up.
 
-6. **Citation export** — turn `[book:N chapter:M]` markers into
-   real bibliographic citations (Chicago / MLA / APA) by reading
-   `book.metadata`. Toggle below each answer to show the formatted
-   bibliography. ~4-6 hours. The metadata-extraction Cloud feature
-   already populates `book.metadata.author / year / publisher`;
-   formatting is the only new code.
-7. **Conversation export** — Markdown / DOCX of the current chat
-   thread with citations resolved. Reuses the existing DOCX
-   writer. ~2-3 hours. Drops directly into research notes.
+6. ~~**Citation export**~~ shipped (commit `6c63714`).
+   `ChatCitationFormatter` turns `[book:N chapter:M]` markers
+   into Chicago note-style strings — `Author, *Title*, "Chapter
+   Title", ¶ N.` — with graceful fallbacks when fields are
+   missing (no author → title-only; no chapter title → "ch. N";
+   no catalog entry → citation's own `bookTitle`). Three entry
+   points: `format` (one), `bibliography` (numbered Markdown
+   list with dedup), `transcript` (full Markdown research note
+   with inline footnote markers + Sources section). Year /
+   publisher / ISBN aren't surfaced through `LibraryEntry`
+   today; formatter handles their absence and future enrichment
+   slots in without changing the API.
+7. ~~**Conversation export**~~ shipped (commit `6c63714`).
+   `ChatPaneView` and `LibraryChatPaneView` gained "Export
+   Transcript…" actions that write Markdown via
+   `ChatCitationFormatter.transcript`. Citations resolve through
+   `LibraryStore.entries` to per-book metadata at export time.
+   8 new `ChatCitationFormatterTests` cover the format-string
+   matrix, bibliography dedup + numbering, and transcript shape.
 8. **Pinned passages** — when chat surfaces a passage worth
    keeping, click a star on the citation to save it to a per-
    library "Quotes" pane (passage text + source book + chapter +
