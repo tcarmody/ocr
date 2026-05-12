@@ -826,13 +826,16 @@ Drivers for the current ordering:
    transcript shape. Pinned passages and ask-each-book mode
    remain in the "Earn when you need it" tier — useful but
    not load-bearing.
-8. **R-EPUB-Import: Coherence pass on imports** (~2 days).
-   Picked as next-up on 2026-05-12. The 1000-book corpus is
-   the real driver — even if clean EPUBs rarely have recurring
-   OCR-error patterns, the imported corpus includes scanned
-   books cataloged elsewhere whose recurring artifacts haven't
-   been touched by a coherence pass. Needs the XHTML →
-   Chapter IR parser plus round-trip fidelity work.
+8. ~~**R-EPUB-Import: Coherence pass on imports**~~ shipped
+   2026-05-12 via Option B (text-node-only path —
+   `CoherenceDigestSampler` + `XHTMLTextReplacer` +
+   `EPUBImporter.runCoherencePass`). Skipped the doc's
+   originally-spec'd XHTML → Chapter parser since the apply
+   step only needs text-content replacement; no Chapter IR
+   round-trip means publisher formatting survives intact.
+   AFM-only on import (matches the metadata-extraction
+   posture); 29 new tests + behavior-preserving refactor of
+   `applyWithGuardrails`.
 9. **L-Foundation-Models Phase 2.5** (on-device post-OCR
    cleanup). Picked as the follow-on after item 8. Useful for
    Private-mode conversion runs; pairs naturally with the
@@ -3240,18 +3243,37 @@ place via canonical-URL match). 13 new
   written into the resource's `<body>` opening tag through the
   new `BodyTypeInjector`. Conservative: existing publisher-set
   `epub:type` attributes are preserved.
-- **Coherence pass on imported EPUBs**. `BookCoherenceAnalyzer`
-  consumes `[Chapter]` AND emits modified `[Chapter]`. The
-  apply step rewrites chapter content, which means a
-  full-fidelity XHTML → Chapter parser (every block kind,
-  inline runs preserving italic/bold/lang, figure asset
-  references, table grids) plus a Chapter → XHTML round-trip
-  through `XHTMLWriter` on the way back. Round-trip risk: any
-  formatting we don't model in `Chapter` (publisher CSS
-  classes, inline styles, custom asides) silently disappears.
-  ~2 days plus fidelity tests. Skipping the parser means
-  skipping the feature — coherence needs the full text to
-  rewrite recurring errors.
+- ~~**Coherence pass on imported EPUBs**~~ shipped via the
+  **text-node-only path** (chose Option B over the doc's
+  spec'd full XHTML → Chapter round-trip — same outcome at
+  much smaller surface and zero risk of dropping publisher
+  formatting). Three new pieces:
+  - `Pipeline/CoherenceDigestSampler` builds digest-suitable
+    `[Chapter]` from an `EPUBBook`'s spine resources by lifting
+    the regex extraction `EPUBImporter.buildMinimalChapter`
+    already used for chapter classification, raising the
+    body-char cap to 2KB so the guardrail occurrence floor
+    triggers on legitimately-recurring errors.
+  - `Pipeline/XHTMLTextReplacer` does case-sensitive
+    substring replacement only on character data between
+    tags. Tags, attributes, `<script>` / `<style>` bodies,
+    comments, CDATA, and PIs pass through byte-identical.
+    No XHTML parser, no Chapter IR round-trip.
+  - `ClaudeCoherenceAnalyzer` gained `docText(for:)` and
+    `filterByGuardrails(suggestions:docText:)` public statics
+    so the import path can reuse the same gating without
+    going through `applyWithGuardrails`. Existing
+    `applyWithGuardrails` now calls them internally (behavior-
+    preserving refactor; 22 existing tests pass unchanged).
+  - `EPUBImporter.runCoherencePass(on:)` wires it in after
+    chapter classification, gated on
+    `localFeatures.localCoherencePass` + AFM availability.
+    AFM-only (matches the `runMetadataExtraction` posture —
+    imports stay free; Cloud users get coherence on the
+    conversion path).
+  29 new tests across `CoherenceDigestSamplerTests` (12) +
+  `XHTMLTextReplacerTests` (14) + analyzer additions (3).
+  1027 tests pass total.
 - ~~**Year / publisher / ISBN write-back**~~ shipped. AFM
   extracts all five front-matter fields; all five now write
   back. `OPFReader.Metadata` carries `year` / `publisher` /

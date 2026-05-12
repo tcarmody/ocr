@@ -347,6 +347,22 @@ final class EPUBImporter: ObservableObject {
         await runChapterClassification(on: book)
         try Task.checkCancellation()
 
+        // 2.7. Optional AFM coherence pass. Builds a digest of
+        // every spine resource (title + ~2KB of body text per
+        // chapter), asks AFM for up to 10 recurring-OCR-error
+        // suggestions, filters through the same length-ratio /
+        // occurrence-floor / no-collision guardrails as the
+        // conversion path, then applies surviving rewrites
+        // directly on the XHTML via `XHTMLTextReplacer` — text
+        // nodes only, never tags / attributes / CSS / scripts.
+        // No `Chapter` round-trip, so publisher-specific
+        // formatting that `Chapter` doesn't model survives
+        // intact. Cloud equivalent intentionally not invoked
+        // here — same posture as `runMetadataExtraction`:
+        // imports stay free.
+        await runCoherencePass(on: book)
+        try Task.checkCancellation()
+
         // 3. Save dirty resources back into the working directory.
         // No-ops cleanly when nothing changed (e.g. re-import).
         do {
@@ -639,6 +655,61 @@ final class EPUBImporter: ObservableObject {
             let result = BodyTypeInjector.inject(label: label, into: xhtml)
             if result.changed {
                 resource.text = result.xhtml  // marks the resource dirty
+            }
+        }
+    }
+
+    // MARK: - AFM coherence pass
+
+    /// Run the AFM coherence pass over the imported book. Builds a
+    /// digest of every spine resource via `CoherenceDigestSampler`,
+    /// asks `AppleFoundationModelCoherenceAnalyzer` for up to 10
+    /// recurring-OCR-error rewrites, filters them through
+    /// `ClaudeCoherenceAnalyzer.filterByGuardrails` (length-ratio,
+    /// occurrence floor, no-collision), and applies surviving
+    /// rewrites to each resource's XHTML via `XHTMLTextReplacer`.
+    ///
+    /// Silently skipped when:
+    ///  * the user's `localCoherencePass` toggle is off;
+    ///  * Apple Intelligence isn't available on the device;
+    ///  * the digest is too small (analyzer's input floor); or
+    ///  * the analyzer returns no suggestions / none survive the
+    ///    guardrails.
+    ///
+    /// Replacements are XHTML-aware: only character data between
+    /// tags is touched. Tags, attributes, `<script>` / `<style>`
+    /// bodies, comments, CDATA, and PIs pass through byte-
+    /// identical so publisher-specific formatting Humanist's
+    /// `Chapter` IR doesn't model is preserved on the round-trip.
+    private static func runCoherencePass(on book: EPUBBook) async {
+        let settings = AISettingsStore().load()
+        guard settings.localFeatures.localCoherencePass else { return }
+        guard case .available = AppleFoundationModelClient.availability
+        else { return }
+
+        let chapters = CoherenceDigestSampler.sampleChapters(from: book)
+        guard !chapters.isEmpty else { return }
+
+        let analyzer = AppleFoundationModelCoherenceAnalyzer()
+        let raw = await analyzer.analyze(chapters: chapters)
+        guard !raw.isEmpty else { return }
+
+        let docText = ClaudeCoherenceAnalyzer.docText(for: chapters)
+        let accepted = ClaudeCoherenceAnalyzer.filterByGuardrails(
+            suggestions: raw, docText: docText
+        )
+        guard !accepted.isEmpty else { return }
+
+        for resourceID in book.spine {
+            guard let resource = book.resourcesByID[resourceID],
+                  resource.isText,
+                  let xhtml = resource.text
+            else { continue }
+            let rewritten = XHTMLTextReplacer.apply(
+                suggestions: accepted, xhtml: xhtml
+            )
+            if rewritten != xhtml {
+                resource.text = rewritten  // marks the resource dirty
             }
         }
     }

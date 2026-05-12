@@ -191,6 +191,45 @@ public struct ClaudeCoherenceAnalyzer: Sendable {
     /// reject as hallucination.
     public static let maxLengthRatio: Double = 0.5
 
+    /// Assembled plain text from every text-bearing run in
+    /// `chapters` — what the occurrence / collision guardrails
+    /// count against. Exposed publicly so the EPUB-import path
+    /// (which does text-only replacement directly on XHTML rather
+    /// than going through `[Chapter]`) can build the same docText
+    /// from its digest chapters before calling
+    /// `filterByGuardrails`.
+    public static func docText(for chapters: [Chapter]) -> String {
+        chapters.flatMap { ch -> [String] in
+            ch.blocks.flatMap { block -> [String] in
+                switch block {
+                case .heading(_, let runs), .paragraph(let runs):
+                    return runs.map(\.text)
+                case .figure(_, _, let caption):
+                    return caption.map(\.text)
+                case .table(let rows, let caption):
+                    let cellTexts = rows.flatMap { row in
+                        row.flatMap { $0.runs.map(\.text) }
+                    }
+                    return cellTexts + caption.map(\.text)
+                case .anchor:
+                    return []
+                }
+            }
+        }.joined()
+    }
+
+    /// Filter raw suggestions through the guardrails (length-ratio,
+    /// empty/equal, document-occurrence floor, no-collision). The
+    /// returned list is safe to apply via string replacement on
+    /// any representation of the same text (Chapter IR, raw XHTML,
+    /// plain text). Exposed so callers can reuse the same gating
+    /// independent of where they store the text.
+    public static func filterByGuardrails(
+        suggestions: [Suggestion], docText: String
+    ) -> [Suggestion] {
+        suggestions.filter { shouldApply(suggestion: $0, in: docText) }
+    }
+
     /// Apply guardrail-accepted suggestions to the chapters.
     /// For each suggestion:
     ///   1. Length-ratio guardrail: `|wrong| / |right|` and
@@ -208,27 +247,10 @@ public struct ClaudeCoherenceAnalyzer: Sendable {
     public static func applyWithGuardrails(
         suggestions: [Suggestion], to chapters: [Chapter]
     ) -> [Chapter] {
-        let docText = chapters.flatMap { ch -> [String] in
-            ch.blocks.flatMap { block -> [String] in
-                switch block {
-                case .heading(_, let runs), .paragraph(let runs):
-                    return runs.map(\.text)
-                case .figure(_, _, let caption):
-                    return caption.map(\.text)
-                case .table(let rows, let caption):
-                    let cellTexts = rows.flatMap { row in
-                        row.flatMap { $0.runs.map(\.text) }
-                    }
-                    return cellTexts + caption.map(\.text)
-                case .anchor:
-                    return []
-                }
-            }
-        }.joined()
-
-        let accepted = suggestions.filter {
-            shouldApply(suggestion: $0, in: docText)
-        }
+        let assembled = docText(for: chapters)
+        let accepted = filterByGuardrails(
+            suggestions: suggestions, docText: assembled
+        )
         guard !accepted.isEmpty else { return chapters }
 
         return chapters.map { chapter in

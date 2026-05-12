@@ -282,6 +282,63 @@ final class ClaudeCoherenceAnalyzerTests: XCTestCase {
         XCTAssertEqual(updated[0].title, "Schäfer's Journey")
     }
 
+    // MARK: - docText / filterByGuardrails (exposed for import path)
+
+    func test_docText_collects_runs_from_every_text_block() {
+        let chapters = [Chapter(title: "Title text", blocks: [
+            .heading(level: 2, runs: [InlineRun("Heading")]),
+            .paragraph(runs: [InlineRun("Body one.")]),
+            .figure(assetId: "f1", alt: "alt",
+                    caption: [InlineRun("Figure caption.")]),
+            .anchor(id: "p1", label: "Page 1"),
+        ])]
+        let docText = ClaudeCoherenceAnalyzer.docText(for: chapters)
+        // Title isn't part of docText (only block-level runs).
+        // All three text-bearing block kinds contribute.
+        XCTAssertTrue(docText.contains("Heading"))
+        XCTAssertTrue(docText.contains("Body one."))
+        XCTAssertTrue(docText.contains("Figure caption."))
+        // Anchor contributes no text — its label is for accessibility,
+        // not body content.
+        XCTAssertFalse(docText.contains("Page 1"))
+    }
+
+    func test_filterByGuardrails_returns_only_passing_suggestions() {
+        let docText = String(repeating: "Schafer arrived. ", count: 3)
+        let suggestions = [
+            // Accepted: clean diacritic fix, 3 occurrences, ratio ok.
+            ClaudeCoherenceAnalyzer.Suggestion(wrong: "Schafer", right: "Schäfer"),
+            // Rejected: length-ratio.
+            ClaudeCoherenceAnalyzer.Suggestion(wrong: "arrived", right: "x"),
+            // Rejected: collision (`Schäfer` already in docText after
+            // the first suggestion would apply — but the filter
+            // checks against docText *as given*, so this stays
+            // accepted at the filter stage; the collision rule
+            // catches it only if `right` already appears).
+            ClaudeCoherenceAnalyzer.Suggestion(wrong: "arrived", right: "arrived"),
+        ]
+        let accepted = ClaudeCoherenceAnalyzer.filterByGuardrails(
+            suggestions: suggestions, docText: docText
+        )
+        XCTAssertEqual(accepted.count, 1)
+        XCTAssertEqual(accepted[0].wrong, "Schafer")
+        XCTAssertEqual(accepted[0].right, "Schäfer")
+    }
+
+    func test_filterByGuardrails_drops_when_right_already_in_text() {
+        // Both "Schafer" and "Schäfer" exist in the source — applying
+        // a rewrite would homogenize legitimate variation. Filter
+        // refuses.
+        let docText = "Schafer met Schäfer. Schafer left. Schafer waited."
+        let suggestions = [
+            ClaudeCoherenceAnalyzer.Suggestion(wrong: "Schafer", right: "Schäfer"),
+        ]
+        let accepted = ClaudeCoherenceAnalyzer.filterByGuardrails(
+            suggestions: suggestions, docText: docText
+        )
+        XCTAssertTrue(accepted.isEmpty)
+    }
+
     // MARK: - buildDigest
 
     func test_buildDigest_includes_chapter_title_brackets() {
