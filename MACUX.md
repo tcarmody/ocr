@@ -86,10 +86,23 @@ inherit them by default:
 
 - Use `.toolbar { ToolbarItemGroup(placement: …) { … } }` —
   always a real toolbar, never an in-content `HStack`.
-- **Icon + label** is the macOS default. `Label("Save", systemImage:
-  "tray.and.arrow.down")` renders both. Use `.automatic` or
-  `.primaryAction` placement to get both rendered; `.navigation`
-  often renders icon-only.
+- **Placement determines label visibility** — and that's
+  intentional, not a bug to work around:
+  - `.primaryAction` / `.automatic` (trailing-edge actions like
+    Save, Share, Export) — render icon + label by default. Use
+    `Label(_:systemImage:)` and let SwiftUI do both. This is what
+    HIG means by "icon + label is the macOS default."
+  - `.navigation` (leading-edge view toggles like sidebar /
+    inspector / pane visibility) — render icon-only by default.
+    This is the macOS convention; Mail, Notes, Pages, Xcode,
+    and Finder all do it. Don't move pane toggles to
+    `.primaryAction` to "fix" the icon-only rendering — the
+    icons there are conventional and tooltips + accessibility
+    labels carry the meaning.
+- **Icons** must come from SF Symbols. Pane / sidebar /
+  inspector toggles in `.navigation` should use the standard
+  symbols (`sidebar.left`, `sidebar.right`, `text.alignleft`,
+  `eye`, etc.) so users recognize them from other apps.
 - **Order:** primary actions on the leading edge, search and
   utility on the trailing edge, separators between logical groups.
 - **`.help()` tooltip** on every toolbar item — covers users who

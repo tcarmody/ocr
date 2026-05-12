@@ -5210,15 +5210,31 @@ epubcheck, Apple Vision, NaturalLanguage, etc.) wires it
 automatically — macOS picks up `Credits.rtf` from the bundle's
 Copy Bundle Resources phase. ~30 min. Cheap win.
 
-### U-HIG-Pass-Editor-Toolbar-Labels — Icon + label on editor toolbar items
+### U-HIG-Pass-Editor-Toolbar-Labels — not advisable (skipped 2026-05-12)
 
-`EditorView.toolbarContent` uses `ToolbarItemGroup(placement: .navigation)`
-for the pane-toggle Labels. macOS 26 renders that group icon-only
-by default, even though the `Label` carries both an icon and a
-title. Switch to `.automatic` placement (or explicit
-`.primaryAction`) so the labels appear next to the icons — HIG
-default. Remove the `.help()` strings that duplicate the now-
-visible labels. ~½ day.
+The original entry proposed moving the five pane toggles out of
+`.navigation` placement so labels would render alongside the
+icons. On re-review, this is wrong: `.navigation` placement
+rendering icon-only is the intentional macOS convention for view
+toggles on the leading edge. Mail, Notes, Pages, Xcode, and
+Finder all use icon-only leading-edge toggles for sidebar /
+inspector visibility — moving the editor's pane toggles to
+`.automatic` would produce five labeled "Show X" buttons
+crowding the title, which is *less* HIG-aligned, not more.
+
+The three `.primaryAction` items (Save / Original menu / Reveal
+in Finder) already use `Label(_:systemImage:)` and render
+icon + label by default. No change needed.
+
+Tooltips on the pane toggles (`.help("Toggle the PDF source pane
+(⌘1)")` etc.) remain useful — they're the discoverability hook
+for icon-only buttons. Accessibility labels for VoiceOver get
+added in U-HIG-Pass-A11y.
+
+MACUX.md's "icon + label is the macOS default" note applies to
+`.primaryAction` items, not navigation toggles. Tightening the
+MACUX entry is a follow-up if the distinction keeps tripping
+future audits.
 
 ### U-HIG-Pass-Keyboard-Focus — Tab key reaches every interactive surface
 
