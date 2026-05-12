@@ -245,6 +245,28 @@ struct LibraryWindowView: View {
             )) { _ in
                 showRestoreSnapshotSheet = true
             }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .humanistUpdateLibraryRequested
+            )) { _ in
+                updateLibraryFromOutputFolder()
+            }
+    }
+
+    /// Scan the configured conversion output folder for `.epub`
+    /// files and import any that aren't yet in the catalog. Reuses
+    /// `runImport(picked:)` so newly-found books get the same
+    /// paragraph-anchor + metadata-extraction + chapter-
+    /// classification + sidecar-index treatment as a hand-driven
+    /// import. Already-cataloged books pass through cleanly via
+    /// the importer's skip-existing short-circuit, so this is safe
+    /// to run on a fully-indexed library — it's a no-op when
+    /// nothing new is present.
+    private func updateLibraryFromOutputFolder() {
+        guard let root = ConversionOutputResolver.currentRoot() else {
+            importError = "Set a conversion output folder in Settings → Conversion first. Update Library scans that folder for new EPUBs."
+            return
+        }
+        runImport(picked: [root])
     }
 
     @ViewBuilder

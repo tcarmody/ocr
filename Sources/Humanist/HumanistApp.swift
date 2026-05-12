@@ -206,6 +206,7 @@ private struct FileOpenCommands: Commands {
             OpenRecentMenu()
             ConvertCommand()
             ImportEPUBCommand()
+            UpdateLibraryCommand()
             RestoreLibraryCatalogCommand()
             Divider()
             SplitTwoUpCommand()
@@ -432,6 +433,26 @@ private struct ImportEPUBCommand: View {
     }
 }
 
+/// Scan the configured conversion output folder for new EPUBs and
+/// import any that aren't yet in the catalog — one-step bring-
+/// in-the-new path for users who add books to their output folder
+/// via Finder rather than through the app. Reuses EPUBImporter so
+/// imported books get paragraph-anchored, metadata-extracted, and
+/// chapter-classified just like a hand-driven import. Already-
+/// cataloged books pass through cleanly via the importer's
+/// skip-existing short-circuit.
+private struct UpdateLibraryCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Update Library from Output Folder") {
+            openWindow(id: "library")
+            NotificationCenter.default.post(
+                name: .humanistUpdateLibraryRequested, object: nil
+            )
+        }
+    }
+}
+
 /// Reveal the Library window and post the restore-catalog request.
 /// The Library window's `.onReceive` opens the SnapshotRestoreSheet
 /// against its live `LibraryStore`. Surfaced in the File menu so
@@ -651,5 +672,16 @@ extension Notification.Name {
     /// menu item lives outside the Library window's state.
     static let humanistRestoreCatalogRequested = Notification.Name(
         "humanistRestoreCatalogRequested"
+    )
+
+    /// Posted by File → Update Library from Output Folder; the
+    /// Library window listens and runs `EPUBImporter` against the
+    /// configured conversion output root. Same skip-existing
+    /// semantics as the manual EPUB import path: already-cataloged
+    /// books pass through cleanly; new ones get imported,
+    /// anchor-injected, metadata-extracted, and cataloged in one
+    /// pass.
+    static let humanistUpdateLibraryRequested = Notification.Name(
+        "humanistUpdateLibraryRequested"
     )
 }
