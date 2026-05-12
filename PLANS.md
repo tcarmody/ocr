@@ -5191,18 +5191,38 @@ the toolbar of status text.
 
 Build clean; 1036 tests pass.
 
-### U-HIG-Pass-LiquidGlass-Edges — Stop blocking the floating-glass treatment
+### U-HIG-Pass-LiquidGlass-Edges — shipped 2026-05-12
 
-`ContentView` paints `.background(Color(nsColor: .windowBackgroundColor))`
-on the full body and inserts a manual `Divider()` under
-`ModeStrip`. Both fight macOS 26's automatic floating-glass
-toolbar/sidebar treatment, which expects content to extend
-edge-to-edge and sample-through. Remove the explicit background,
-drop the divider, and let the system render the toolbar/sidebar
-glass over the content. Repeat the audit in `LibraryWindowView`
-and `EditorView`. Verify with an Xcode 26 build that the glass
-toolbar appears correctly without the legacy `NSVisualEffectView`
-backings. ~1 day, mostly subtractive.
+Smaller than the umbrella implied — Tier 2's Library refactor
+already removed the only Divider that was competing with a
+floating toolbar (the filter-bar separator). What remained was
+the redundant root-VStack background paint in
+`ContentView.body`.
+
+- **Launcher**: removed
+  `.background(Color(nsColor: .windowBackgroundColor))` from
+  the root VStack. The window already paints that color, and
+  the redundant paint would block macOS 26 Liquid Glass if
+  U-HIG-Launcher-Toolbar later promotes `ModeStrip` into a
+  real `.toolbar`. `ModeStrip` itself already uses
+  `.background(.bar)` — the system material that adapts to
+  Liquid Glass automatically.
+- **Library**: nothing to do — Tier 2 removed the filter-bar
+  Divider, and the window has no other competing backgrounds.
+  Real `.toolbar` now picks up Liquid Glass automatically.
+- **Editor**: pane-header backgrounds (`.windowBackgroundColor`)
+  and `.underPageBackgroundColor` on the PDF viewer stay. These
+  are internal chrome *inside* each pane, not at the window
+  root, so they don't compete with the toolbar's glass
+  treatment. The `paneHeader` Divider sits below the pane
+  header (intra-pane separator), not below the window toolbar
+  — keep.
+
+The `ModeStrip` Divider in the launcher stays for now: ModeStrip
+is the launcher's de facto status header (not yet a real
+toolbar), and the Divider tells the eye where the chrome ends.
+When U-HIG-Launcher-Toolbar lands, ModeStrip can become a
+`.toolbar` and the Divider can drop alongside.
 
 ### U-HIG-Pass-About-Credits — Ship `Credits.rtf`
 

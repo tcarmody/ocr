@@ -78,7 +78,15 @@ struct ContentView: View {
             .padding(.vertical, 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        // No explicit `.background(.windowBackgroundColor)` here —
+        // the window itself paints that color, and the redundant
+        // paint would block macOS 26's Liquid Glass treatment if
+        // U-HIG-Launcher-Toolbar later promotes ModeStrip into a
+        // real `.toolbar` (the floating-glass toolbar samples
+        // through to the content beneath; an opaque root
+        // background defeats it). `ModeStrip` itself uses
+        // `.background(.bar)`, the system material that adapts
+        // automatically.
         // Drop target accepts PDFs (added to queue) or EPUBs (open editor
         // directly). Folders enumerate to PDFs.
         .dropDestination(for: URL.self) { urls, _ in
