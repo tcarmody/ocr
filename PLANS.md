@@ -836,10 +836,18 @@ Drivers for the current ordering:
    AFM-only on import (matches the metadata-extraction
    posture); 29 new tests + behavior-preserving refactor of
    `applyWithGuardrails`.
-9. **L-Foundation-Models Phase 2.5** (on-device post-OCR
-   cleanup). Picked as the follow-on after item 8. Useful for
-   Private-mode conversion runs; pairs naturally with the
-   coherence work since both operate on already-OCR'd text.
+9. ~~**L-Foundation-Models Phase 2.5**~~ shipped earlier
+   (commit `0e93526`) but PLANS hadn't been updated. Discovered
+   on 2026-05-12 while picking it up as the follow-on after
+   item 8. The implementation is complete — `PostOCRProcessor`
+   protocol + `AppleFoundationModelPostProcessor` + AFM-
+   fallback factory + Settings toggle all in place; only test
+   coverage was missing. 9 smoke tests added to cover gating
+   (vision rejection, short-text floor, clean-text threshold,
+   prompt composition, protocol conformance). AFM itself isn't
+   mockable; end-to-end behavior is verified by the Cloud-side
+   tests since both impls share trigger gate + guardrail +
+   return shape.
 10. **R-Metadata-Online v1** (Open Library + Google Books
     lookup wired into the metadata editor sheet, ~2 days
     for single + multi-source). The shipped metadata editor
@@ -4762,17 +4770,51 @@ gap, on-device, free, no key.
   separate "auto-classify genres" toggle is v1.1 if anyone
   wants finer control).
 
+### Phase 2.5 — Post-OCR cleanup (shipped)
+
+Shipped in commit `0e93526` (the PLANS doc wasn't updated to
+reflect it at the time; corrected on 2026-05-12). On-device
+counterpart to `ClaudePostProcessor` — same trigger gate
+(`OCRTextQualityScorer`), same length floor, same guardrail
+policy (`OCRChangeGuardrail`), same `ClaudePostProcessor.Result`
+return shape. Only the model call differs: schema-guided AFM
+`respond(instructions:prompt:)` against a `@Generable
+CorrectedText` struct rather than an Anthropic round-trip.
+
+Text-only. Vision-mode requests decline (return nil) rather
+than silently downgrading, so callers that wanted vision-mode
+cleanup on the hardest regions can route to Cloud Haiku
+instead of accepting passages-only correction on something
+that was flagged for vision specifically.
+
+Wiring: new `PostOCRProcessor` protocol; `ClaudePostProcessor`
+retroactively conforms via an empty extension;
+`AppleFoundationModelPostProcessor` joins as a sibling impl;
+`makePostProcessor(options:budget:)` factory prefers Cloud
+(when configured) then falls back to AFM (when its toggle is on
+and Apple Intelligence is available); the cascade's
+`applyPostOCRCleanup` retyped to the protocol so the per-region
+call site doesn't branch on which impl is active.
+
+Settings: `LocalFeatures.localPostOCRCleanup` Bool (default
+true), exposed in `AISettingsView` alongside the other Local
+AI toggles. Local AI section visible in both Cloud and Private
+modes — AFM picks up as a fallback whenever Cloud isn't
+properly configured, closing the gap where a Cloud-mode user
+without a key used to get no AI assistance at all.
+
+9 smoke tests added on 2026-05-12 covering vision rejection
+(with/without image), short-text rejection,
+clean-text-above-threshold rejection, prompt composition,
+`PostOCRProcessor` protocol conformance, and the verbatim-
+except-JSON-clause prompt parity with the Cloud path. AFM
+itself isn't mockable (the client wraps Apple's framework
+directly); end-to-end behavior is verified by the Cloud-side
+tests in `ClaudePostProcessorTests` since both impls share
+every piece except the model call. 1036 tests pass total.
+
 ### Still pending
 
-- **Post-OCR cleanup** (the last Phase 2 piece). The Cloud path
-  is `ClaudePostProcessor`, called from inside `RegionCascade`'s
-  per-region loop. Refactoring to a shared protocol involves
-  multiple call sites including a vision-mode path that AFM
-  doesn't support (text-only model). Reasonable scope is "Phase
-  2.5" — cleaner integration point + scope clarity (text-only,
-  passages mode only). Quality on classical / worn / polytonic-
-  Greek regions is uncertain; Cloud Haiku stays as the higher-
-  accuracy option there even after Phase 2.5 ships.
 - **Phase 3 — TOC parsing**. Long-context structured extraction.
   AFM's 8K-token context is tight for full TOCs of long books;
   some chunking strategy needed. Deferred until we have Phase
