@@ -51,15 +51,18 @@ struct ContentView: View {
     private var advancedExpanded: Bool = false
 
     var body: some View {
+        // U-HIG-Launcher-Toolbar (β): per-job options live in
+        // toolbar menus (OCR Engine / Languages / Outputs); the
+        // content area is drop zone + queue + Choose Files CTA +
+        // a compact per-job overrides disclosure. The custom
+        // ModeStrip strip is gone — the mode badge sits in the
+        // toolbar's `.principal` placement now.
         VStack(spacing: 0) {
-            ModeStrip()
-            Divider()
             if SuryaConnection.shared == nil {
                 SuryaAbsentBanner { showingSuryaSetup = true }
                 Divider()
             }
             VStack(spacing: 14) {
-                optionsBlock
                 if store.jobs.isEmpty {
                     // Queue empty: hero drop zone takes the room.
                     DropZone(isTargeted: isTargeted, compact: false)
@@ -72,12 +75,15 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, minHeight: 36)
                     queueList
                 }
-                bottomBar
+                chooseFilesCTA
+                perJobOverridesDisclosure
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle("Humanist")
+        .toolbar { toolbarContent }
         // No explicit `.background(.windowBackgroundColor)` here —
         // the window itself paints that color, and the redundant
         // paint would block macOS 26's Liquid Glass treatment if
@@ -219,303 +225,21 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - options + bottom bar
+    // MARK: - Toolbar (U-HIG-Launcher-Toolbar β)
 
-    /// Per-conversion options. Single horizontal row when the
-    /// window is wide enough, plus a separator + tesseract badge.
-    /// Each toggle / picker only affects new jobs you queue —
-    /// existing queued/running jobs keep their snapshotted options.
-    @ViewBuilder
-    private var optionsBlock: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Row 1 — language + engine badge (one visual cluster)
-            HStack(spacing: 14) {
-                Spacer(minLength: 0)
-                HStack(spacing: 10) {
-                    languageMenu
-                    Divider().frame(height: 14)
-                    tesseractStatusBadge
-                }
-                Spacer(minLength: 0)
-            }
-            .font(.callout)
-
-            // Row 2 — processing mode toggles
-            HStack(spacing: 14) {
-                Spacer(minLength: 0)
-                Toggle("Force Private", isOn: $queue.privateMode)
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Per-job override that disables every cloud feature \
-                        regardless of your global Settings. No Claude \
-                        calls, no cost. Coerces Claude OCR off; Surya OCR \
-                        / Force OCR still apply. Redundant when the \
-                        ModeStrip already shows "Private" — but harmless.
-                        """)
-                Toggle("Force OCR", isOn: $queue.forceOCR)
-                    .toggleStyle(.checkbox)
-                    .help("Skip the PDF's embedded text layer and run OCR on every page. Use when the embedded text is the output of a previous bad OCR pass.")
-                Toggle("Claude OCR ($$$)", isOn: Binding(
-                    get: { queue.useClaudePageOCR },
-                    set: { newValue in
-                        queue.useClaudePageOCR = newValue
-                        // Three cloud-OCR engines, same plumbing,
-                        // mutually exclusive: picking one clears
-                        // the others.
-                        if newValue {
-                            queue.useManuscriptMode = false
-                            queue.useEarlyPrintMode = false
-                        }
-                    }
-                ))
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Sonnet OCRs each modern printed page end-to-\
-                        end. Replaces the Vision/Surya/Tesseract \
-                        cascade with one call per page; produces \
-                        structured paragraphs, headings, footnotes, \
-                        language spans directly. Best for modern \
-                        printed material with hard scripts or dense \
-                        academic prose. Requires Cloud mode + API \
-                        key (configure in Settings); inert otherwise. \
-                        Costs ≈ $15–25 per book at current Sonnet \
-                        pricing.
-                        """)
-                Toggle("Early Print ($$$)", isOn: Binding(
-                    get: { queue.useEarlyPrintMode },
-                    set: { newValue in
-                        queue.useEarlyPrintMode = newValue
-                        if newValue {
-                            queue.useClaudePageOCR = false
-                            queue.useManuscriptMode = false
-                        }
-                    }
-                ))
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Sonnet OCRs each page with a normalizing prompt \
-                        tuned for 15th–18th c. printed books: silently \
-                        modernize long-s, u/v, i/j, and standard \
-                        ligatures; preserve period spelling otherwise; \
-                        skip catchwords and signature marks. Same cost \
-                        tier as Claude OCR. Pick a typeface in the row \
-                        below; "Auto" lets the model identify Roman vs \
-                        Blackletter from the page.
-                        """)
-                Toggle("Manuscript ($$$$)", isOn: Binding(
-                    get: { queue.useManuscriptMode },
-                    set: { newValue in
-                        queue.useManuscriptMode = newValue
-                        if newValue {
-                            queue.useClaudePageOCR = false
-                            queue.useEarlyPrintMode = false
-                        }
-                    }
-                ))
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Opus OCRs handwritten pages with a hand-family-\
-                        specific prompt (secretary, round hand, 19th-c. \
-                        cursive, modern). Routes each page to Claude \
-                        Opus 4.7 instead of Sonnet. Significantly more \
-                        expensive than Claude OCR (~5× per page) but \
-                        designed for material the typeset path can't \
-                        read. Requires Cloud mode + API key. Pick the \
-                        hand in the row below; "Auto" lets the model \
-                        identify the family from the page.
-                        """)
-                Toggle("Surya OCR", isOn: $queue.useSuryaOCR)
-                    .toggleStyle(.checkbox)
-                    .disabled(SuryaConnection.shared == nil)
-                    .help(SuryaConnection.shared == nil
-                          ? "Surya is not installed — use \"Set up Surya…\" in the banner above to install it."
-                          : "Force Surya OCR on every region of every page. Local-only; works without an API key. Slower than the standard cascade — use when offline and getting poor Vision results.")
-                Spacer(minLength: 0)
-            }
-            .font(.callout)
-
-            // Manuscript / Early Print sub-pickers. Only one is
-            // ever visible at a time since the two toggles are
-            // mutually exclusive. Per-job; not persisted to
-            // Settings.
-            if queue.useManuscriptMode {
-                HStack(spacing: 14) {
-                    Spacer(minLength: 0)
-                    Picker("Hand:", selection: $queue.manuscriptHand) {
-                        ForEach(ManuscriptHand.allCases, id: \.self) { hand in
-                            Text(hand.displayName).tag(hand)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .fixedSize()
-                    Spacer(minLength: 0)
-                }
-                .font(.callout)
-            } else if queue.useEarlyPrintMode {
-                HStack(spacing: 14) {
-                    Spacer(minLength: 0)
-                    Picker("Typeface:", selection: $queue.earlyPrintTypeface) {
-                        ForEach(EarlyPrintTypeface.allCases, id: \.self) { face in
-                            Text(face.displayName).tag(face)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .fixedSize()
-                    Spacer(minLength: 0)
-                }
-                .font(.callout)
-            }
-
-            // Row 3 — output format toggles
-            HStack(spacing: 14) {
-                Spacer(minLength: 0)
-                Toggle("Searchable PDF", isOn: $queue.emitSearchablePDF)
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Write `<basename>.searchable.pdf` next to the \
-                        EPUB — visually identical to the source PDF, \
-                        with invisible OCR text per page so the result \
-                        is fully Cmd+F searchable / selectable / \
-                        Spotlight-indexed. Off by default; output is \
-                        several MB per book.
-                        """)
-                Toggle(".txt + .md", isOn: $queue.emitSiblingTextOutputs)
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Write `<basename>.txt` and `<basename>.md` \
-                        next to the EPUB. Cheap (plain text); on by \
-                        default. Good for search / archival / RAG \
-                        pipelines.
-                        """)
-                Toggle(".html + .docx", isOn: $queue.emitSiblingDocuments)
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Write a self-contained `<basename>.html` and \
-                        a `<basename>.docx` next to the EPUB. Heavier \
-                        than the text outputs (DOCX is a binary zip, \
-                        HTML inlines all CSS); off by default.
-                        """)
-                Toggle("Save log", isOn: $queue.emitDebugLog)
-                    .toggleStyle(.checkbox)
-                    .help("""
-                        Keep the per-page staging directory after \
-                        conversion and write a diagnostic log next to \
-                        the EPUB (under <basename>.humanist-debug/). \
-                        Includes Surya region kinds + reading order, \
-                        Vision observation bboxes, header/footer / \
-                        footnote / heading-promotion decisions, and \
-                        trust verdicts. Leaves 50–100MB of artifacts \
-                        on disk per book — only enable when \
-                        diagnosing conversion issues.
-                        """)
-                Spacer(minLength: 0)
-            }
-            .font(.callout)
-
-            // Advanced — collapsed by default. Holds per-page Force OCR
-            // override and the output-suffix field that A/B users need.
-            advancedDisclosure
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        // Mode badge sits in the principal slot — clickable
+        // chip showing "Private" or "Cloud" and the per-feature
+        // detail. Tapping opens Settings → AI so the badge IS
+        // the discovery hook for mode configuration.
+        ToolbarItem(placement: .principal) {
+            ModeBadge()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Collapsed by default. Holds the niche per-page Force OCR
-    /// override and the output-suffix field most users never touch.
-    @ViewBuilder
-    private var advancedDisclosure: some View {
-        DisclosureGroup(isExpanded: $advancedExpanded) {
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
-                Text("Force OCR pages:")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                TextField("e.g. 1-20, 150-160",
-                          text: $queue.forceOCRPageRangesString)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.callout)
-                    .frame(maxWidth: 200)
-                    .help("""
-                        Re-OCR these specific pages even when their \
-                        embedded text would otherwise pass the trust \
-                        scorer. 1-based, comma-separated, with N-M \
-                        ranges (e.g. "1-20, 150-160"). Useful for \
-                        mixed-quality books — born-digital front \
-                        matter + scanned appendix, or any pages where \
-                        the embedded text is bad OCR. The global \
-                        "Force OCR" toggle overrides every page; this \
-                        field overrides only the listed pages.
-                        """)
-                Text("Output suffix:")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                TextField("e.g. claude or local",
-                          text: $queue.outputSuffix)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.callout)
-                    .frame(maxWidth: 160)
-                    .help("""
-                        Append this suffix to the output filenames so \
-                        the same source PDF can produce multiple \
-                        variants side-by-side. With "claude" set: \
-                        "<book> claude.epub" / ".txt" / ".md". Empty \
-                        keeps the default "<book>.epub". Pair with \
-                        Tools → Compare EPUBs for A/B-ing OCR \
-                        methods or settings.
-                        """)
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 6)
-        } label: {
-            Text("Advanced")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 4)
-    }
-
-    @ViewBuilder
-    private var languageMenu: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "globe")
-                .foregroundStyle(.secondary)
-            Menu {
-                ForEach(QueueViewModel.supportedLanguages) { opt in
-                    Button {
-                        queue.toggleLanguage(opt.language)
-                    } label: {
-                        if queue.isLanguageSelected(opt.language) {
-                            Label(opt.label, systemImage: "checkmark")
-                        } else {
-                            Text(opt.label)
-                        }
-                    }
-                }
-            } label: {
-                Text(queue.languageButtonLabel)
-                    .frame(maxWidth: 200, alignment: .leading)
-            }
-            .frame(maxWidth: 220)
-        }
-    }
-
-    /// Bottom action bar. Choose Files always present; Pause /
-    /// Resume + Show Queue + Clear Done + Cancel All conditional
-    /// on queue state.
-    @ViewBuilder
-    private var bottomBar: some View {
-        HStack(spacing: 8) {
-            Button {
-                queue.chooseFiles()
-            } label: {
-                Label("Choose Files or Folder…", systemImage: "folder")
-            }
-            .buttonStyle(.borderedProminent)
-            Spacer()
-            // Open the dedicated full-queue window (R-Launcher-FullQueue).
-            // Visible whenever the queue has any rows — gives the user
-            // a way to see the whole list at once without the
-            // launcher's drop / options bar competing for vertical
-            // space. Window menu also has this command (⇧⌘Q).
+        ToolbarItemGroup(placement: .primaryAction) {
+            ocrEngineMenu
+            languagesMenu
+            outputsMenu
             if !store.jobs.isEmpty {
                 Button {
                     openWindow(id: "queue")
@@ -523,12 +247,8 @@ struct ContentView: View {
                     Label("Show Queue", systemImage: "rectangle.split.3x1")
                 }
                 .help("Open the full-queue window")
+                .accessibilityLabel("Show queue window")
             }
-            // Pause / Resume Queue. Visible when there's pending work
-            // OR the queue is currently paused (so an empty paused
-            // queue can still be unpaused — e.g. user paused mid-run,
-            // current job finished, hasPendingWork is now false but
-            // they may still want to "re-arm" before adding more PDFs).
             if store.hasPendingWork || runner.isPaused {
                 Button {
                     if runner.isPaused {
@@ -538,45 +258,282 @@ struct ContentView: View {
                     }
                 } label: {
                     if runner.isPaused {
-                        Label("Resume Queue", systemImage: "play.fill")
+                        Label("Resume", systemImage: "play.fill")
                     } else {
-                        Label("Pause Queue", systemImage: "pause.fill")
+                        Label("Pause", systemImage: "pause.fill")
                     }
                 }
-            }
-            if store.jobs.contains(where: \.isFinished) {
-                Button("Clear Done") { store.clearFinished() }
+                .help(runner.isPaused ? "Resume the queue" : "Pause the queue")
+                .accessibilityLabel(runner.isPaused ? "Resume queue" : "Pause queue")
             }
             if store.hasPendingWork {
-                Button("Cancel All", role: .destructive) {
+                Button(role: .destructive) {
                     runner.cancelAll()
+                } label: {
+                    Label("Cancel All", systemImage: "xmark.circle")
                 }
+                .help("Cancel every pending or running job")
+                .accessibilityLabel("Cancel all queued jobs")
             }
         }
     }
 
+    /// OCR Engine Picker, packaged as a toolbar Menu. Replaces
+    /// the previous trio of mutually-exclusive Cloud-OCR toggles
+    /// (Claude OCR / Early Print / Manuscript) plus the
+    /// independent-but-redundant Surya OCR toggle. A single
+    /// 5-way choice cleanly expresses "what reads this book?"
+    /// without the user having to know which toggles to combine.
     @ViewBuilder
-    private var tesseractStatusBadge: some View {
-        if queue.willUseTesseract && !queue.tesseractAvailable {
-            Button {
-                showingTesseractSetup = true
-            } label: {
-                Label("Tesseract not installed", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+    private var ocrEngineMenu: some View {
+        Menu {
+            Picker("OCR Engine", selection: ocrEngineBinding) {
+                Text("Auto (Vision + Tesseract cascade)")
+                    .tag(LauncherOCREngine.auto)
+                Text("Surya OCR (local, force)")
+                    .tag(LauncherOCREngine.surya)
+                Text("Claude OCR — Typeset ($$$)")
+                    .tag(LauncherOCREngine.claudeTypeset)
+                Text("Claude OCR — Early Print ($$$)")
+                    .tag(LauncherOCREngine.earlyPrint)
+                Text("Claude OCR — Manuscript ($$$$)")
+                    .tag(LauncherOCREngine.manuscript)
             }
-            .buttonStyle(.borderless)
-            .help("Click to install Tesseract — improves accuracy on classical scripts")
-        } else if queue.willUseTesseract {
-            Label("Tesseract", systemImage: "checkmark.circle.fill")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else {
-            Label("Vision", systemImage: "eye")
-                .font(.caption)
+            .pickerStyle(.inline)
+            if ocrEngineBinding.wrappedValue == .earlyPrint {
+                Divider()
+                Picker("Typeface", selection: $queue.earlyPrintTypeface) {
+                    ForEach(EarlyPrintTypeface.allCases, id: \.self) { face in
+                        Text(face.displayName).tag(face)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+            if ocrEngineBinding.wrappedValue == .manuscript {
+                Divider()
+                Picker("Hand", selection: $queue.manuscriptHand) {
+                    ForEach(ManuscriptHand.allCases, id: \.self) { hand in
+                        Text(hand.displayName).tag(hand)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+        } label: {
+            Label(ocrEngineMenuLabel, systemImage: "text.viewfinder")
+        }
+        .help(ocrEngineHelp)
+    }
+
+    /// Languages Menu — same toggleable list the old launcher
+    /// kept inline at the top of the options block. Each language
+    /// is independently switchable. Tesseract install status
+    /// surfaces as a contextual footer when the selection would
+    /// benefit from it.
+    @ViewBuilder
+    private var languagesMenu: some View {
+        Menu {
+            ForEach(QueueViewModel.supportedLanguages) { opt in
+                Button {
+                    queue.toggleLanguage(opt.language)
+                } label: {
+                    if queue.isLanguageSelected(opt.language) {
+                        Label(opt.label, systemImage: "checkmark")
+                    } else {
+                        Text(opt.label)
+                    }
+                }
+            }
+            if queue.willUseTesseract && !queue.tesseractAvailable {
+                Divider()
+                Button {
+                    showingTesseractSetup = true
+                } label: {
+                    Label("Set up Tesseract for classical scripts…",
+                          systemImage: "exclamationmark.triangle")
+                }
+            }
+        } label: {
+            Label(queue.languageButtonLabel, systemImage: "globe")
+        }
+        .help("Pick the languages this conversion should expect")
+    }
+
+    /// Outputs Menu — checkmark items for the four sibling-format
+    /// toggles. Each is independent. Replaces the four checkbox
+    /// row that previously sat in the options block.
+    @ViewBuilder
+    private var outputsMenu: some View {
+        Menu {
+            Toggle("Searchable PDF",
+                   isOn: $queue.emitSearchablePDF)
+            Toggle(".txt + .md",
+                   isOn: $queue.emitSiblingTextOutputs)
+            Toggle(".html + .docx",
+                   isOn: $queue.emitSiblingDocuments)
+            Divider()
+            Toggle("Save debug log",
+                   isOn: $queue.emitDebugLog)
+        } label: {
+            Label("Outputs", systemImage: "square.and.arrow.down.on.square")
+        }
+        .help("Choose which sibling files (.txt / .md / .html / .docx / searchable PDF / debug log) get written alongside the EPUB")
+    }
+
+    // MARK: - OCR Engine model
+
+    /// Five-way mode the launcher's OCR Engine Picker exposes.
+    /// Maps to the existing mutually-exclusive cluster of
+    /// `useClaudePageOCR` / `useEarlyPrintMode` / `useManuscriptMode`
+    /// / `useSuryaOCR` bools on QueueViewModel. Going through this
+    /// enum guarantees the bools stay coherent — earlier launcher
+    /// behavior allowed `useSuryaOCR` to combine with the Cloud
+    /// modes (it had no effect when Claude OCR was on), which the
+    /// β redesign cleans up: picking any Claude mode clears
+    /// `useSuryaOCR` too.
+    enum LauncherOCREngine: Hashable {
+        case auto
+        case surya
+        case claudeTypeset
+        case earlyPrint
+        case manuscript
+    }
+
+    private var ocrEngineBinding: Binding<LauncherOCREngine> {
+        Binding(
+            get: {
+                if queue.useManuscriptMode { return .manuscript }
+                if queue.useEarlyPrintMode { return .earlyPrint }
+                if queue.useClaudePageOCR { return .claudeTypeset }
+                if queue.useSuryaOCR { return .surya }
+                return .auto
+            },
+            set: { newValue in
+                queue.useClaudePageOCR = false
+                queue.useEarlyPrintMode = false
+                queue.useManuscriptMode = false
+                queue.useSuryaOCR = false
+                switch newValue {
+                case .auto: break
+                case .surya: queue.useSuryaOCR = true
+                case .claudeTypeset: queue.useClaudePageOCR = true
+                case .earlyPrint: queue.useEarlyPrintMode = true
+                case .manuscript: queue.useManuscriptMode = true
+                }
+            }
+        )
+    }
+
+    /// Menu-label string showing the currently-selected engine
+    /// (and the sub-pick when applicable) so the user reads
+    /// their setting at a glance without opening the menu.
+    private var ocrEngineMenuLabel: String {
+        switch ocrEngineBinding.wrappedValue {
+        case .auto: return "Auto OCR"
+        case .surya: return "Surya OCR"
+        case .claudeTypeset: return "Claude — Typeset"
+        case .earlyPrint:
+            return "Claude — Early Print (\(queue.earlyPrintTypeface.displayName))"
+        case .manuscript:
+            return "Claude — Manuscript (\(queue.manuscriptHand.displayName))"
+        }
+    }
+
+    private var ocrEngineHelp: String {
+        switch ocrEngineBinding.wrappedValue {
+        case .auto:
+            return "Standard cascade: Vision → Tesseract → optional Cloud Sonnet on hard regions (when Cloud features are enabled in Settings)."
+        case .surya:
+            return "Force Surya for every region. Local-only; works without an API key. Slower than the standard cascade — use when offline."
+        case .claudeTypeset:
+            return "Sonnet OCRs each page end-to-end. Best for modern printed material with hard scripts or dense academic prose. Requires Cloud mode + API key. ≈ $15–25 per book."
+        case .earlyPrint:
+            return "Sonnet with a normalizing prompt tuned for 15th–18th c. printed material (long-s, u/v, i/j, ligatures). Pick a typeface inside the menu; \"Auto\" lets the model identify Roman vs Blackletter."
+        case .manuscript:
+            return "Opus 4.7 with hand-family-specific prompts for handwritten material. ≈ 5× more expensive than Claude — Typeset. Pick a hand inside the menu; \"Auto\" identifies the family from the page."
+        }
+    }
+
+    // MARK: - Content pieces
+
+    /// Primary CTA below the drop zone — explicit alternative to
+    /// drag-drop for keyboard / accessibility users and for the
+    /// "I have a file picked but won't drag" case.
+    @ViewBuilder
+    private var chooseFilesCTA: some View {
+        HStack {
+            Spacer()
+            Button {
+                queue.chooseFiles()
+            } label: {
+                Label("Choose Files or Folder…", systemImage: "folder")
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+            if store.jobs.contains(where: \.isFinished) {
+                Button("Clear Done") { store.clearFinished() }
+            }
+            Spacer()
+        }
+    }
+
+    /// Per-job overrides — the niche knobs most users never touch.
+    /// Replaces the old "Advanced" disclosure plus the Force
+    /// Private / Force OCR / Save log toggles that used to sit in
+    /// the options block. Collapsed by default.
+    @ViewBuilder
+    private var perJobOverridesDisclosure: some View {
+        DisclosureGroup(isExpanded: $advancedExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 14) {
+                    Toggle("Force Private", isOn: $queue.privateMode)
+                        .toggleStyle(.checkbox)
+                        .help("""
+                            Per-job override that disables every cloud feature \
+                            regardless of your global Settings. Redundant when \
+                            the toolbar's mode badge already shows "Private" — \
+                            but harmless.
+                            """)
+                    Toggle("Force OCR", isOn: $queue.forceOCR)
+                        .toggleStyle(.checkbox)
+                        .help("Skip the PDF's embedded text layer and run OCR on every page.")
+                    Spacer()
+                }
+                HStack(spacing: 8) {
+                    Text("Force OCR pages:")
+                        .foregroundStyle(.secondary)
+                    TextField("e.g. 1-20, 150-160",
+                              text: $queue.forceOCRPageRangesString)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 200)
+                        .help("""
+                            Re-OCR these specific pages even when their \
+                            embedded text would otherwise pass the trust \
+                            scorer. 1-based, comma-separated, with N-M \
+                            ranges (e.g. "1-20, 150-160").
+                            """)
+                    Text("Output suffix:")
+                        .foregroundStyle(.secondary)
+                    TextField("e.g. claude or local",
+                              text: $queue.outputSuffix)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 160)
+                        .help("""
+                            Append this suffix to the output filenames so the \
+                            same source PDF can produce multiple variants \
+                            side-by-side. Empty keeps the default "<book>.epub".
+                            """)
+                    Spacer()
+                }
+            }
+            .font(.callout)
+            .padding(.top, 6)
+        } label: {
+            Text("Per-job overrides")
+                .font(.callout)
                 .foregroundStyle(.secondary)
         }
     }
+
 
     // MARK: - queue
 
@@ -900,14 +857,6 @@ private extension Job {
     }
 }
 
-/// Status strip across the top of the launcher. Tells the user at
-/// a glance what processing mode they're in (Private vs Cloud),
-/// surfaces Cloud-mode misconfigurations (no API key, no features
-/// enabled) before they queue anything, and gives one-click access
-/// to Settings via the trailing gear button.
-///
-/// Refreshes itself off the AISettings store on appear and
-/// whenever the Settings sheet might have closed (`scenePhase`
 /// Shown at the top of the launcher when Surya isn't installed.
 /// Communicates Vision-only mode and offers a direct path to setup.
 private struct SuryaAbsentBanner: View {
@@ -934,96 +883,95 @@ private struct SuryaAbsentBanner: View {
     }
 }
 
-/// transitions). Keeps the strip honest without subscribing to
+/// Compact processing-mode badge for the launcher toolbar's
+/// `.principal` slot (replacing the old in-content `ModeStrip`).
+/// Click → opens Settings → AI so the badge IS the discovery
+/// entry point for mode configuration. The badge tints orange
+/// in Cloud mode when the user's setup is incomplete (no API
+/// key, or every Cloud feature toggled off) so misconfigurations
+/// stay surfaced without a separate detail line.
+///
+/// Refreshes itself off the AISettings store on appear and
+/// whenever the Settings sheet might have closed (`scenePhase`
+/// transitions). Keeps the badge honest without subscribing to
 /// every UserDefaults change.
-private struct ModeStrip: View {
+private struct ModeBadge: View {
     @State private var settings: AISettings = AISettings()
     @State private var hasAPIKey: Bool = false
     @Environment(\.openSettings) private var openSettings
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        HStack(spacing: 12) {
-            modeBadge
-            Divider().frame(height: 16)
-            detailLine
-            Spacer()
-            Button {
-                openSettings()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.callout)
-            }
-            .buttonStyle(.borderless)
-            .help("Open Settings (⌘,)")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .onAppear { refresh() }
-        .onChange(of: scenePhase) { _, _ in refresh() }
-    }
-
-    // MARK: - Pieces
-
-    @ViewBuilder
-    private var modeBadge: some View {
         Button {
-            // Land on the AI pane: the badge is the user's entry point
-            // for "what mode am I in" — that decision lives in AI
-            // Settings, not whatever tab was last viewed.
+            // Land on the AI pane: the badge is the user's
+            // entry point for "what mode am I in" — that
+            // decision lives in AI Settings, not whatever tab
+            // was last viewed.
             UserDefaults.standard.set(
                 SettingsTab.ai.rawValue,
                 forKey: SettingsTab.storageKey
             )
             openSettings()
         } label: {
-            switch settings.processingMode {
-            case .privateLocal:
-                Label("Private", systemImage: "lock.shield")
+            badgeLabel
+        }
+        .buttonStyle(.borderless)
+        .help(helpText)
+        .accessibilityLabel(accessibilityText)
+        .onAppear { refresh() }
+        .onChange(of: scenePhase) { _, _ in refresh() }
+    }
+
+    @ViewBuilder
+    private var badgeLabel: some View {
+        switch settings.processingMode {
+        case .privateLocal:
+            Label("Private", systemImage: "lock.shield")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+        case .cloud:
+            if isCloudMisconfigured {
+                Label("Cloud (setup needed)",
+                      systemImage: "exclamationmark.triangle.fill")
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(.secondary)
-            case .cloud:
+                    .foregroundStyle(.orange)
+            } else {
                 Label("Cloud", systemImage: "cloud")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.tint)
             }
         }
-        .buttonStyle(.borderless)
-        .help("Processing mode — click to open AI Settings (⌘,)")
     }
 
-    @ViewBuilder
-    private var detailLine: some View {
+    private var isCloudMisconfigured: Bool {
+        guard settings.processingMode == .cloud else { return false }
+        if !hasAPIKey { return true }
+        return enabledFeatureCount(settings.cloudFeatures) == 0
+    }
+
+    private var helpText: String {
         switch settings.processingMode {
         case .privateLocal:
-            Text("Local-only — no data leaves this machine.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            return "Private mode — no data leaves this machine. Click to open AI Settings (⌘,)."
         case .cloud:
-            HStack(spacing: 8) {
-                if !hasAPIKey {
-                    Label("No API key", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                } else {
-                    let active = enabledFeatureCount(settings.cloudFeatures)
-                    if active == 0 {
-                        Label("0 features enabled", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    } else {
-                        Label("\(active) feature\(active == 1 ? "" : "s")", systemImage: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Text("·")
-                    .foregroundStyle(.tertiary)
-                Text("Cap: \(settings.perBookCallCap) calls/book")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if !hasAPIKey {
+                return "Cloud mode but no API key set. Click to open AI Settings (⌘,)."
             }
+            let active = enabledFeatureCount(settings.cloudFeatures)
+            if active == 0 {
+                return "Cloud mode but every Cloud feature is off. Click to open AI Settings (⌘,)."
+            }
+            return "Cloud mode — \(active) feature\(active == 1 ? "" : "s") enabled, cap \(settings.perBookCallCap) calls/book. Click to open AI Settings (⌘,)."
+        }
+    }
+
+    private var accessibilityText: String {
+        switch settings.processingMode {
+        case .privateLocal: return "Processing mode: Private"
+        case .cloud:
+            return isCloudMisconfigured
+                ? "Processing mode: Cloud, setup needed"
+                : "Processing mode: Cloud"
         }
     }
 

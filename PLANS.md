@@ -5294,12 +5294,46 @@ future audits.
 
 ### Out of scope for this pass (discuss separately)
 
-- **U-HIG-Launcher-Toolbar** — promoting the launcher mode
-  toggles (Force Private, Force OCR, Claude OCR, Early Print,
-  Manuscript, Surya OCR) from in-content checkboxes into a
-  real toolbar. Bigger change (~1.5 days including layout
-  rework); user-visible enough that it should be sequenced
-  deliberately.
+- ~~**U-HIG-Launcher-Toolbar**~~ shipped 2026-05-12 via
+  Option β (compact toolbar with grouped menus). The launcher
+  is now drop-zone + queue + Choose Files CTA + a compact
+  Per-job-overrides disclosure; all per-job options live in
+  toolbar menus.
+
+  Toolbar layout:
+  - `.principal`: `ModeBadge` — compact mode chip (Private /
+    Cloud / Cloud-setup-needed-orange) that opens Settings → AI
+    on click. Replaces the in-content `ModeStrip`. Misconfig
+    state (no API key, or every Cloud feature off) tints the
+    badge orange so cloud-mode users still see the warning
+    at a glance even though the detail line went away.
+  - `.primaryAction` group: **OCR Engine** Picker menu, **Languages**
+    menu, **Outputs** menu, plus conditional Show Queue /
+    Pause/Resume / Cancel All buttons.
+
+  Real UX simplification: the three mutually-exclusive
+  Cloud-OCR checkboxes (Claude OCR / Early Print / Manuscript)
+  plus the redundantly-combinable Surya OCR toggle collapsed
+  into one 5-way Picker (`LauncherOCREngine`: auto / surya /
+  claudeTypeset / earlyPrint / manuscript). The Picker's
+  menu label shows the currently-selected engine inline
+  (including sub-pick: "Claude — Early Print (Blackletter)")
+  so the user reads their setting without opening the menu.
+  Sub-pickers (typeface, hand) appear inside the OCR Engine
+  menu only when the parent mode is selected.
+
+  Surviving overrides (Force Private, Force OCR, Force OCR
+  pages, Output suffix) moved into a single `Per-job overrides`
+  disclosure at the bottom of the content area — collapsed
+  by default. Save log toggle moved into the Outputs menu
+  alongside the sibling-format toggles.
+
+  Files: ContentView.swift shrank from 1119 → 1067 lines
+  net (added ~300 lines of toolbar / menus / overrides, removed
+  ~358 lines of legacy optionsBlock / bottomBar /
+  languageMenu / tesseractStatusBadge / advancedDisclosure /
+  ModeStrip). The launcher now picks up macOS 26 Liquid Glass
+  on the toolbar automatically.
 - **U-HIG-Help-Book** — Apple Help Book + `MDItemKeywords`.
   Earns priority alongside P10 distribution, not before.
 - ~~**U-HIG-Settings-Audit**~~ small fix-ups shipped
