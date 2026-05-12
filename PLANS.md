@@ -848,14 +848,17 @@ Drivers for the current ordering:
    mockable; end-to-end behavior is verified by the Cloud-side
    tests since both impls share trigger gate + guardrail +
    return shape.
-10. **R-Metadata-Online v1** (Open Library + Google Books
-    lookup wired into the metadata editor sheet, ~2 days
-    for single + multi-source). The shipped metadata editor
-    is the anchor; this is the natural follow-on once the
-    user reaches for it on a book whose front matter didn't
-    parse. Defer the Claude-search consolidator and the
-    bulk-mode multi-select until the per-entry flow is in
-    daily use.
+10. ~~**R-Metadata-Online v1 + v1.5**~~ shipped earlier
+    (commits `2820d07`, `6363f30`, `d1e24b5`) but PLANS
+    hadn't been updated. Discovered + corrected 2026-05-12.
+    Open Library + Google Books sources, multi-source
+    coordinator with concurrent fan-out and fuzzy
+    duplicate-merge, picker UI with cover thumbnails,
+    iCloud-syncing per-entry cover-override store.
+    Still pending: v1.7 (Claude-search consolidator for
+    classical / manuscript material), v2 (bulk-mode
+    multi-select lookup). See R-Metadata-Online section
+    for scope.
 
 ### Earn when you need it
 
@@ -3903,10 +3906,82 @@ needed).
 
 ## R-Metadata-Online — Import book metadata from online sources
 
-**Status**: not started. Sketches the path from the in-app
-metadata editor (shipped) to a "Look up online…" button that
-populates the editor with publisher / bibliographic data pulled
-from open metadata sources.
+**Status**: v1 + v1.5 shipped (commits `2820d07`, `6363f30`,
+`d1e24b5`). PLANS hadn't been updated to reflect it; corrected
+2026-05-12 after the user flagged.
+
+**What landed (v1, v1.5, cover follow-on)**:
+- `Sources/Humanist/Library/MetadataOnline/` — new directory
+  housing the lookup surface.
+- `MetadataOnlineLookup.swift` — `MetadataQuery`,
+  `MetadataCandidate` (id, title, author, publisher, year,
+  isbn, language, coverImageURL, sourceName, sourceURL),
+  `MetadataSource` protocol, `MetadataSourceError`.
+- `OpenLibrarySource.swift` — adapter against
+  `openlibrary.org/search.json`. URLSession-injectable for
+  tests; defensive decoder; capped at 10 results per query.
+- `GoogleBooksSource.swift` — adapter against
+  `googleapis.com/books/v1/volumes?intitle:…+inauthor:…`.
+  Picks ISBN_13 over ISBN_10, extracts 4-digit year from
+  `publishedDate`, sanitizes cover URLs (strips `&edge=curl`,
+  http→https). Optional API key threaded through so the
+  field can plug in later from Settings without a refactor.
+- `MetadataLookupCoordinator` — fans queries to every source
+  concurrently via `TaskGroup` with a 5s per-source timeout
+  (slow source doesn't stall the picker). Per-source failure
+  is non-fatal — errors collect in `partialErrors`; picker
+  shows a soft orange banner ("Google Books unavailable")
+  while still rendering whichever sources responded. Merge
+  fuzzy key = first-5-title-words + author last name
+  (handles "Foucault, Michel" vs "Michel Foucault" and
+  prefix-vs-subtitle title variants); cross-source duplicates
+  collapse into one row whose badge joins source names
+  ("Open Library · Google Books"). Ranks by agreement count
+  desc, then preserves intra-source rank.
+- `MetadataLookupSheet.swift` — picker UI. Pre-fills query
+  from the editor's current title/author + auto-runs on
+  appear; ⌘↩ re-searches; idle / searching / empty / failed /
+  results states; per-row preview (title, author · year ·
+  publisher, ISBN, language, source badge, AsyncImage cover
+  thumbnail 36×52pt); double-click or Use Selected accepts;
+  ⌘. cancels.
+- `MetadataEditorSheet` integration — "Look up online…"
+  header button opens the picker. `onAccept` populates title +
+  author + prepends the candidate's language to the editor's
+  state. Genre / conversionType stay untouched (no
+  OPF / source representation for those).
+- `LibraryCoverOverrideStore` (cover follow-on) — keyed by
+  library entry id, stored at
+  `<storeDir>/.humanist/Covers/<libraryID>.jpg`. Atomic
+  writes; `download(from:for:)` fetches an HTTP URL with
+  non-2xx / empty-body errors surfaced. iCloud-syncing across
+  machines via the existing catalog path. Reversible —
+  delete the file and the EPUB-embedded cover comes back.
+  `CoverImageCache.image(for:libraryID:)` gained an
+  optional `libraryID` and checks the override path before
+  falling through to the EPUB-cover extractor; same
+  downsampling pipeline for both paths so quality is
+  consistent.
+
+**Still pending**:
+- **v1.7 — Claude-search consolidator** (~½ day). For
+  non-modern / classical / manuscript material the open APIs
+  return weak hits. A Claude-backed `MetadataSource` impl
+  would gather looser hits, consolidate, and rank. Cloud
+  Phase 1 plumbing exists; the work is one prompt + one
+  wire type. Build when manuscript / Early Print users
+  actually reach for it.
+- **v2 — bulk-mode multi-select lookup** (~1.5 days). "Look
+  up metadata for selected books" command in the Library
+  filter bar / toolbar. Different UX from per-entry: auto-
+  accept high-confidence matches (single candidate, 2+ source
+  agreement, title Levenshtein ≤ 0.1, author last-name
+  match); queue ambiguous matches for end-of-run review;
+  skip no-result books silently with a count in the
+  completion summary. Independent of v1; ship after the
+  per-entry flow is in daily use and the hit rates settle.
+
+Sections below preserved as design rationale for v1.7 / v2.
 
 ### Why bother
 
