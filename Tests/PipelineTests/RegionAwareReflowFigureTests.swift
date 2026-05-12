@@ -239,10 +239,15 @@ final class RegionAwareReflowFigureTests: XCTestCase {
                        "Captioned formula's alt should mirror the caption text")
     }
 
-    // MARK: - cover detection
+    // MARK: - cover handling
 
-    func test_dominant_page_zero_picture_is_marked_cover() {
-        // Single picture covering ≥50% of page 0 → cover.
+    func test_dominant_page_zero_picture_is_not_marked_as_cover() {
+        // Reflow no longer stamps body figures as the EPUB cover.
+        // Covers are now sourced from a rendered raster of PDF
+        // page 0, injected by `PDFToEPUBPipeline.convert` after
+        // reflow returns. Even a single picture region covering
+        // most of page 0 stays a body figure here — the dedicated
+        // cover-page-0 asset gets attached downstream.
         let pictureBox = CGRect(x: 0.05, y: 0.10, width: 0.90, height: 0.80)
         let regions = [region(.picture, pictureBox, 0)]
         let page = PageObservations(
@@ -259,8 +264,8 @@ final class RegionAwareReflowFigureTests: XCTestCase {
             figureExtractions: figureExtractions
         )
         XCTAssertEqual(result.figureAssets.count, 1)
-        XCTAssertTrue(result.figureAssets[0].isCover,
-                      "Dominant page-0 picture should be marked as cover")
+        XCTAssertFalse(result.figureAssets[0].isCover,
+                       "Reflow no longer assigns the cover-image property to body figures.")
     }
 
     func test_small_page_zero_picture_is_not_cover() {

@@ -161,9 +161,11 @@ enum RegionAwareReflow {
         // entirely.
         var diagnostics = Diagnostics()
 
-        // Decide which picture region (if any) becomes the EPUB cover.
-        // Page-0 single dominant picture (≥ 50% of page area) qualifies.
-        let coverFigureKey = detectCoverFigure(pageResults: pageResults)
+        // Cover is sourced from a rendered raster of PDF page 0,
+        // injected by `PDFToEPUBPipeline.convert` after this reflow
+        // pass returns. No body figure carries `isCover` here — the
+        // page-0 raster is unconditional and stamps the cover-image
+        // property on its own dedicated FigureAsset downstream.
 
         // Reverse the caption→figure index for fast lookup during
         // reflow: when we hit a caption region, we want to know
@@ -192,7 +194,7 @@ enum RegionAwareReflow {
                     data: fig.data,
                     mediaType: fig.mediaType,
                     intrinsicSize: fig.intrinsicSize,
-                    isCover: key == coverFigureKey
+                    isCover: false
                 ))
             }
         }
@@ -338,29 +340,13 @@ enum RegionAwareReflow {
         )
     }
 
-    /// Identify the page-0 picture region (if any) that should be the
-    /// EPUB cover. We require:
-    ///   * page index 0,
-    ///   * exactly one `.picture` region on the page (so we don't
-    ///     flag a multi-figure layout as having a cover), and
-    ///   * that region's bbox covers ≥ 50% of the page.
-    /// Conservative: false negatives just mean no cover-image is
-    /// declared (still valid EPUB), but a false positive would stamp
-    /// a body figure as the cover.
-    private static func detectCoverFigure(
-        pageResults: [PageObservations]
-    ) -> CaptionAssociator.PageRegionKey? {
-        guard let firstPage = pageResults.first(where: { $0.pageIndex == 0 }) else {
-            return nil
-        }
-        guard let regions = firstPage.layoutRegions else { return nil }
-        let pictures = regions.enumerated().filter { _, r in r.kind == .picture }
-        guard pictures.count == 1 else { return nil }
-        let (idx, region) = pictures[0]
-        let area = region.box.width * region.box.height
-        guard area >= 0.5 else { return nil }
-        return CaptionAssociator.PageRegionKey(pageIndex: 0, regionIndex: idx)
-    }
+    // `detectCoverFigure` (page-0 dominant-picture heuristic) was
+    // removed when the cover source moved to a rendered raster of
+    // PDF page 0, injected by `PDFToEPUBPipeline.convert` after
+    // reflow. The new path is unconditional and works for text-
+    // only first pages; the heuristic was conservative and rarely
+    // fired in practice. Git history preserves the impl if a
+    // hybrid path ever wants to come back.
 
     private static func heuristicFallback(for page: PageObservations) -> [Block] {
         ParagraphReflow().reflow(page.observations)

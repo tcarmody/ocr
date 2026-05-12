@@ -2055,8 +2055,26 @@ public actor PDFToEPUBPipeline {
             title: title,
             language: language
         )
-        let book = assembled.book
+        var book = assembled.book
         let appliedTOC = assembled.appliedTOC
+
+        // Cover-from-page-0. Render the first PDF page as a JPEG
+        // raster and attach it to chapter[0] as the dedicated
+        // cover-image asset. The EPUB writer stamps
+        // `properties="cover-image"` on this manifest item via
+        // FigureAsset.isCover, and because no Block.figure
+        // references its id, the cover doesn't render inline —
+        // it shows in library views, on first-open, etc.
+        //
+        // Unconditional: works for text-first-pages too (book
+        // title typography, ToC, etc.) — those still make a
+        // recognizable cover when rasterized. Replaces the prior
+        // conservative "page-0 dominant picture region ≥ 50%"
+        // heuristic which rarely fired.
+        if let coverAsset = Self.renderPDFPage0AsCover(pdf: pdf),
+           !book.chapters.isEmpty {
+            book.chapters[0].figureAssets.insert(coverAsset, at: 0)
+        }
 
         let trail = correctionTrailEntries.isEmpty
             ? nil
@@ -3033,6 +3051,63 @@ public actor PDFToEPUBPipeline {
         let alt = fig.regionKind == .formula ? "formula" : "figure"
         let block = Block.figure(assetId: assetId, alt: alt, caption: [])
         return (assetId, asset, block)
+    }
+
+    /// Rasterize PDF page 0 as a JPEG and wrap it in a
+    /// FigureAsset stamped as the EPUB cover. The result lands
+    /// in `book.chapters[0].figureAssets[0]` and the EPUB writer
+    /// stamps `properties="cover-image"` on its manifest item.
+    /// No `Block.figure` references the id, so the cover doesn't
+    /// render inline — it surfaces only as the OPF cover-image.
+    ///
+    /// Renders at 150 dpi: on a typical 6×9" book page that's
+    /// ~900×1350 px, under the EPUB 1600×2400 cover-size guidance
+    /// while keeping per-book file size to ~100 KB. JPEG quality
+    /// 0.85 — good enough for thumbnail / first-open use, far
+    /// smaller than PNG for scanned/photographic content.
+    ///
+    /// Returns nil on any failure (load, encode); the EPUB writer
+    /// proceeds without a cover, which is still valid.
+    private static func renderPDFPage0AsCover(
+        pdf: LoadedPDF
+    ) -> FigureAsset? {
+        guard pdf.pageCount > 0 else { return nil }
+        let renderer = PDFRenderer(dpi: 150)
+        guard let image = try? renderer.renderPage(at: 0, of: pdf)
+        else { return nil }
+        guard let data = encodeCoverJPEG(image, quality: 0.85)
+        else { return nil }
+        return FigureAsset(
+            id: "cover-page-0",
+            data: data,
+            mediaType: "image/jpeg",
+            intrinsicSize: CGSize(
+                width: CGFloat(image.width),
+                height: CGFloat(image.height)
+            ),
+            isCover: true
+        )
+    }
+
+    /// JPEG-encode a CGImage with the given quality (0...1).
+    /// Returns nil on encoder failure. Used by the cover-from-
+    /// page-0 path; could be reused for other figure assets if
+    /// the pipeline ever wants JPEG output for scanned figures.
+    private static func encodeCoverJPEG(
+        _ image: CGImage, quality: CGFloat
+    ) -> Data? {
+        let buffer = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            buffer as CFMutableData,
+            UTType.jpeg.identifier as CFString,
+            1, nil
+        ) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: quality
+        ]
+        CGImageDestinationAddImage(dest, image, options as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return buffer as Data
     }
 
     /// Save a CGImage as PNG to the given URL. Used by the debug-log
