@@ -5239,23 +5239,83 @@ needed.
   `epub:type`, XHTML stripping), `CorpusComparison.retention`
   semantics, and Jaccard similarity boundary cases.
 
-### What the first mini-run surfaced (3 O'Reilly tech books, Private mode)
+### Baseline 2026-05-12 — full 17-book O'Reilly corpus, Private mode
 
-| metric | finding |
+| metric | value |
 |---|---|
-| median Jaccard word similarity | 0.82 — text content roughly right |
-| median character-count ratio | 0.98 — capturing nearly all chars |
-| mean `<code>` retention | **0.00** — losing every inline code span |
-| mean `<pre>` retention | **0.00** — losing every code block |
-| mean `<em>` retention | **0.00** — Vision doesn't detect italics (expected in Private mode) |
-| mean `<strong>` retention | **0.00** — same |
-| Δparagraphs per book | -506 to -1043 — reflow glomming text into bigger blocks |
-| Δfigures per book | -7 to -158 — Private-mode figure extraction limited |
+| median Jaccard word similarity | **0.71** |
+| median character-count ratio | **0.94** |
+| mean `<code>` retention | **0.00** |
+| mean `<pre>` retention | **0.00** |
+| mean `<em>` retention | **0.00** |
+| mean `<strong>` retention | **0.00** |
 
-The 0% inline-tag retention numbers are the most useful
-finding — they elevate **Q-Code-Preservation** from a
-hypothetical Tier 3 concern to a measured Tier 1 gap. See the
-new entry under Q-Hard-Captures.
+Per-book Δcode spans (negative = code spans lost):
+
+- narrative-leaning books: -12 to -758
+- moderate code: -7,987 to -17,638
+- code-heavy: -21,923 to **-38,097** (hands-on-ML cookbook)
+
+Per-book Δparagraphs is *bimodal* and that's a finding by itself:
+
+- narrative books **under-split** (Δpara -506 to -1043): we glom
+  multi-line code into prose paragraphs.
+- code-heavy books **over-split** (Δpara +298 to +1481): we treat
+  every code line as a separate paragraph.
+
+Two different reflow bugs depending on visual layout. See
+**Q-Paragraph-Split-Consistency** below.
+
+Char ratio drops as low as 0.79-0.80 in code-heavy books
+(`machinelearningwithpythoncookbook`, `learninglangchain`).
+That's ~20% of characters lost — Vision OCR on small monospace
+glyphs is dropping content. Plausibly mitigated by Cloud OCR
+or by Q-Code-Preservation's detection step.
+
+Median Jaccard 0.71 on the full corpus vs 0.82 on the first 3
+books — the corpus harness was originally tuned on three of
+the most narrative-leaning books in the set; the code-heavy
+majority pulls the median down. Worth re-running with Cloud
+mode (`useClaudePageOCR` enabled) to get a Cloud baseline; the
+harness's current `convert()` hardcodes `useClaudePageOCR:
+false` (see "Harness limitations" below).
+
+The 0% inline-tag retention is the most-useful single finding —
+it elevates **Q-Code-Preservation** from a hypothetical concern
+to a measured Tier 1 gap with concrete numbers. See the
+expanded entry under Q-Hard-Captures.
+
+Three more findings the harness surfaced beyond the original
+umbrella, each promoted to its own Q-* entry:
+
+- **Q-Callout-Boxes** (new): publisher emits 19+ `<aside
+  epub:type="note">` per book for tip/note/warning sidebars;
+  we emit 0. They come through as ordinary paragraphs at the
+  wrong reading order.
+- **Q-Chapter-Vocab-Expand** (new): publisher uses `part`,
+  `sidebar`, `colophon`, `dedication`, `copyright-page`,
+  `afterword`, `titlepage`, `toc`, `index`; our AFM
+  classifier emits only `chapter` / `frontmatter` /
+  `preface` / etc. — a much smaller `@Generable` enum than
+  real-world books need.
+- **Q-Chapter-Over-Split** (new): 41 chapters in our output
+  for `hands-onlargelanguagemodels` vs 25 in the reference.
+  ChapterSplitter triggers on something the publisher
+  treats as a heading inside a chapter rather than a chapter
+  boundary.
+
+### Harness limitations to fix
+
+- `CompareCorpusCommand.convert(...)` hardcodes
+  `useClaudePageOCR: false`. To get a Cloud-mode baseline
+  (which is what most users actually run), the harness needs
+  a `--claude-page-ocr` flag that passes through. Trivial
+  addition; do alongside the next Cloud-baseline run.
+- Convert isn't parallel — 17 books sequentially is ~30-60
+  minutes wall-clock. Could TaskGroup over books with a low
+  concurrency cap (2-3) since each book's pipeline is
+  already parallel internally. Defer until iteration speed
+  is the bottleneck.
 
 ### Corpus storage convention
 
@@ -5761,13 +5821,21 @@ invariant.
 
 #### Q-Code-Preservation (Tier 1, newly elevated 2026-05-12)
 
-Surfaced by the corpus harness's first mini-run (3 O'Reilly
-tech books): we emit **0% of the `<code>` and `<pre>` tags**
-the publisher EPUBs have. Inline code (function names, file
-paths, shell commands) and code blocks (multi-line snippets)
-come through as plain prose with whatever Vision / Tesseract
-made of the monospace glyphs. For technical content, that
-loss is the single biggest quality gap measurable today.
+Surfaced by the corpus harness's first mini-run + full 17-book
+run: we emit **0% of the `<code>` and `<pre>` tags** the
+publisher EPUBs have. Inline code (function names, file paths,
+shell commands) and code blocks (multi-line snippets) come
+through as plain prose with whatever Vision / Tesseract made of
+the monospace glyphs. For technical content, that loss is the
+single biggest quality gap measurable today.
+
+**Concrete numbers from the full corpus run**:
+
+- 17 books, mean `<code>` retention 0.00
+- Per-book Δcode spans range from -12 (least code-heavy) to
+  **-38,097** (`hands-onmachinelearningwithscikit-learn`, the
+  big O'Reilly ML reference)
+- Cumulative `<code>` loss across all 17 ≈ 200,000+ spans
 
 Two pieces missing in the document IR:
 
@@ -5809,6 +5877,103 @@ the change; `<code>` retention should climb from 0 to
 ~0.8-0.95 on Cloud-mode runs.
 
 Total effort: ~1.5 days for v1.
+
+#### Q-Paragraph-Split-Consistency (Tier 1, surfaced 2026-05-12)
+
+The corpus harness revealed `ParagraphReflow` is **bimodally
+wrong** depending on the visual layout of code in the source:
+
+- Narrative-leaning books: Δpara -506 to -1043 — multi-line code
+  blocks get *under-split*, glomming code lines and the prose
+  paragraph after into one giant block (the `conda create…` /
+  `pip install…` example pulled out of the
+  `hands-onlargelanguagemodels` conversion).
+- Code-heavy books: Δpara +298 to +1481 — code blocks get
+  *over-split*, with each code line emitted as its own
+  paragraph. Reading order is mostly correct but tag structure
+  is wrong.
+
+Both bugs share a root cause: reflow heuristic uses line
+spacing + indentation to decide paragraph boundaries, but
+code blocks have unusual spacing and indentation that
+defeats the heuristic in opposite directions depending on
+the book's typesetting.
+
+Likely fix path: Q-Code-Preservation's detection step
+identifies code regions; the reflow heuristic then *defers*
+on those (don't reflow, don't split — emit each code-region's
+lines as the single `Block.code` body). Both bugs disappear
+as soon as code regions are correctly tagged.
+
+Effort: largely subsumed by Q-Code-Preservation if that ships
+first. Standalone if not: ~½ day to tune ParagraphReflow's
+indentation-based split heuristic with corpus regression
+testing.
+
+#### Q-Callout-Boxes (Tier 2, surfaced 2026-05-12)
+
+O'Reilly tech books emit ~10-30 `<aside epub:type="note">`
+callout boxes per book — tip / note / warning / example
+sidebars. The publisher EPUB for `hands-onlargelanguagemodels`
+has 19 `<aside epub:type="note">`; our conversion emits 0.
+The callout content comes through as a regular paragraph,
+typically in the wrong reading order (next to whatever body
+text was visually adjacent on the page).
+
+Detection signal: callout boxes have a visual frame (colored
+background, border, distinct typography). Surya's region
+classifier doesn't currently have a "sidebar" category; both
+the visual region detector and the Cloud OCR prompt could
+gain one.
+
+For a v1 fix, the simplest path is to instruct the Claude
+page-OCR prompt to wrap detected callouts in
+`<aside epub:type="note">` (or `tip` / `warning` per the
+visual cue). Same prompt-side approach as Q-Code-Preservation
+detection.
+
+Effort: ~½ day prompt change + IR plumbing for the `.aside`
+block kind.
+
+#### Q-Chapter-Vocab-Expand (Tier 2, surfaced 2026-05-12)
+
+Publisher EPUBs use a richer `epub:type` vocabulary than our
+chapter classifier emits:
+
+- Already in our enum: `chapter`, `preface`, `foreword`,
+  `appendix`, `bibliography`, `glossary`, `acknowledgments`,
+  `dedication`, `epilogue`.
+- Found in the O'Reilly corpus but missing: `part`,
+  `sidebar`, `colophon`, `copyright-page`, `afterword`,
+  `titlepage`, `toc`, `index`.
+
+Cloud + AFM classifiers both use the same `@Generable` enum
+defined in `Sources/Pipeline/EpubChapterType.swift`.
+Broadening it teaches both impls without per-engine work.
+
+The risk in expanding the vocabulary is the classifier
+becoming less reliable on small distinctions (afterword vs
+epilogue, titlepage vs copyright-page). Mitigation: keep the
+top-level labels broad and add precise sub-labels only where
+the corpus shows a clear gain.
+
+Effort: ~½ day enum expansion + regression test on the AFM
+classifier (`AppleFoundationModelClassifierTests`).
+
+#### Q-Chapter-Over-Split (Tier 2, surfaced 2026-05-12)
+
+`hands-onlargelanguagemodels` has 25 chapters in the
+reference, 41 in our conversion. ChapterSplitter triggers on
+something the publisher treats as a heading inside a chapter
+rather than a chapter boundary. Plausible cause: our heading-
+level inference emits `<h1>` for what's structurally an
+`<h2>` section heading.
+
+Needs fixture capture from the over-split book + comparison
+against the reference's chapter file boundaries. Likely the
+fix is ChapterSplitter respecting heading-level >= 2 as
+section breaks, not chapter breaks. ~1 day with the harness
+as the regression metric.
 
 #### Q-Widow-Footnote-Guard (Tier 2)
 
