@@ -82,29 +82,39 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// global rewrites. Mirrors `cloudFeatures.coherencePass`.
         /// Phase 2 of `L-Foundation-Models`.
         public var localCoherencePass: Bool
+        /// Run on-device per-region post-OCR cleanup (character-
+        /// level fixes for ligatures, missing diacritics, dropped
+        /// spaces, long-s, homoglyphs). Passages-mode only; vision-
+        /// mode regions still need Cloud Haiku because AFM is
+        /// text-only. Mirrors `cloudFeatures.postOCRCleanup`.
+        /// Phase 2.5 of `L-Foundation-Models`.
+        public var localPostOCRCleanup: Bool
 
         public init(
             localChapterClassification: Bool = true,
             localMetadataExtraction: Bool = true,
-            localCoherencePass: Bool = true
+            localCoherencePass: Bool = true,
+            localPostOCRCleanup: Bool = true
         ) {
             self.localChapterClassification = localChapterClassification
             self.localMetadataExtraction = localMetadataExtraction
             self.localCoherencePass = localCoherencePass
+            self.localPostOCRCleanup = localPostOCRCleanup
         }
 
         private enum CodingKeys: String, CodingKey {
             case localChapterClassification
             case localMetadataExtraction
             case localCoherencePass
+            case localPostOCRCleanup
         }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             // Default-on so Private-mode users get classification
-            // / metadata / coherence automatically; flipping off
-            // restores the no-op behavior they had before each
-            // feature shipped.
+            // / metadata / coherence / cleanup automatically;
+            // flipping off restores the no-op behavior they had
+            // before each feature shipped.
             self.localChapterClassification = try c.decodeIfPresent(
                 Bool.self, forKey: .localChapterClassification
             ) ?? true
@@ -113,6 +123,9 @@ public struct AISettings: Sendable, Codable, Equatable {
             ) ?? true
             self.localCoherencePass = try c.decodeIfPresent(
                 Bool.self, forKey: .localCoherencePass
+            ) ?? true
+            self.localPostOCRCleanup = try c.decodeIfPresent(
+                Bool.self, forKey: .localPostOCRCleanup
             ) ?? true
         }
     }

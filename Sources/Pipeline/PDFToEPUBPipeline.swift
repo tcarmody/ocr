@@ -390,11 +390,27 @@ public actor PDFToEPUBPipeline {
         ) { ClaudeChapterClassifier(client: $0, budget: $1) }
     }
 
-    /// Pick a metadata extractor: Cloud (when configured) or AFM
-    /// (Private + toggle on + Apple Intelligence available). nil
-    /// means the conversion runs without front-matter extraction;
-    /// the OPF metadata falls back to user-provided / filename
-    /// values, same as before either path existed.
+    /// Gating policy shared by all four `makeXxx` factories below:
+    ///
+    ///  1. Cloud wins when configured + keyed + per-feature toggle on.
+    ///  2. Otherwise, AFM picks up as a **fallback** whenever its
+    ///     per-feature toggle is on and Apple Intelligence is
+    ///     available — regardless of `processingMode`. This covers
+    ///     the gap where a user is on `.cloud` mode but hasn't
+    ///     supplied a key (or the key is invalid, or the per-feature
+    ///     Cloud toggle is off): AFM still runs on-device for free
+    ///     instead of the feature silently no-op'ing.
+    ///  3. Returns nil only when both Cloud and AFM are unavailable
+    ///     or both toggles are off — the cascade falls back to its
+    ///     pre-AI behavior in that case (no classification, no
+    ///     metadata extraction, no cleanup, no coherence pass).
+    ///
+    /// To opt out of AFM entirely on a Cloud-configured Mac, flip
+    /// the corresponding `localFeatures.localXxx` toggle off. The
+    /// processingMode setting no longer artificially blocks AFM
+    /// when Cloud is selected.
+
+    /// Pick a metadata extractor. See gating note above.
     static func makeMetadataExtractor(
         options: Options, budget: ClaudeCallBudget
     ) -> (any BookMetadataExtractor)? {
@@ -403,8 +419,7 @@ public actor PDFToEPUBPipeline {
         ) {
             return cloud
         }
-        guard options.processingMode == .privateLocal,
-              options.localFeatures.localMetadataExtraction
+        guard options.localFeatures.localMetadataExtraction
         else { return nil }
         if case .available = AppleFoundationModelClient.availability {
             return AppleFoundationModelMetadataExtractor()
@@ -412,11 +427,27 @@ public actor PDFToEPUBPipeline {
         return nil
     }
 
-    /// Pick a coherence analyzer: Cloud or AFM under the same
-    /// gating policy as `makeMetadataExtractor`. nil means the
-    /// coherence pass runs as a no-op (chapters pass through
-    /// unchanged), which is also the fallback when no model is
-    /// available.
+    /// Pick a post-OCR cleanup processor. See gating note above.
+    /// The AFM impl is text-only: vision-mode regions still need
+    /// Cloud Haiku, but the AFM path covers the much larger
+    /// passages-mode population.
+    static func makePostProcessor(
+        options: Options, budget: ClaudeCallBudget
+    ) -> (any PostOCRProcessor)? {
+        if let cloud = makeClaudePostProcessor(
+            options: options, budget: budget
+        ) {
+            return cloud
+        }
+        guard options.localFeatures.localPostOCRCleanup
+        else { return nil }
+        if case .available = AppleFoundationModelClient.availability {
+            return AppleFoundationModelPostProcessor()
+        }
+        return nil
+    }
+
+    /// Pick a coherence analyzer. See gating note above.
     static func makeCoherenceAnalyzer(
         options: Options, budget: ClaudeCallBudget
     ) -> (any BookCoherenceAnalyzer)? {
@@ -425,8 +456,7 @@ public actor PDFToEPUBPipeline {
         ) {
             return cloud
         }
-        guard options.processingMode == .privateLocal,
-              options.localFeatures.localCoherencePass
+        guard options.localFeatures.localCoherencePass
         else { return nil }
         if case .available = AppleFoundationModelClient.availability {
             return AppleFoundationModelCoherenceAnalyzer()
@@ -434,20 +464,9 @@ public actor PDFToEPUBPipeline {
         return nil
     }
 
-    /// Pick a chapter classifier based on processing mode +
-    /// per-feature toggles + runtime availability:
-    ///
-    ///  * `.cloud` + `cloudFeatures.semanticClassification` + key →
-    ///    Claude (Haiku 4.5).
-    ///  * `.privateLocal` + `localFeatures.localChapterClassification`
-    ///    + Apple Intelligence available → AFM.
-    ///  * Otherwise → nil (chapters emit without `epub:type`).
-    ///
-    /// Cloud wins when both paths would qualify (a user with Cloud
-    /// configured isn't normally on Private mode, but defensive
-    /// against future config combinations). Returns the protocol
-    /// type so the per-chapter `classifyChapters` pass doesn't
-    /// branch.
+    /// Pick a chapter classifier. See gating note above. Returns
+    /// the protocol type so the per-chapter `classifyChapters`
+    /// pass doesn't branch on which impl is active.
     static func makeChapterClassifier(
         options: Options, budget: ClaudeCallBudget
     ) -> (any SemanticChapterClassifier)? {
@@ -456,8 +475,7 @@ public actor PDFToEPUBPipeline {
         ) {
             return cloud
         }
-        guard options.processingMode == .privateLocal,
-              options.localFeatures.localChapterClassification
+        guard options.localFeatures.localChapterClassification
         else { return nil }
         if case .available = AppleFoundationModelClient.availability {
             return AppleFoundationModelClassifier()
@@ -542,7 +560,12 @@ public actor PDFToEPUBPipeline {
     struct ClaudeEngines {
         let budget: ClaudeCallBudget
         let ocr: ClaudeOCREngine?
-        let postProcessor: ClaudePostProcessor?
+        /// Post-OCR cleanup processor — Cloud (Haiku) or AFM
+        /// depending on processingMode + feature toggles +
+        /// runtime availability. Held as the protocol type so
+        /// the cascade's `applyPostOCRCleanup` doesn't branch
+        /// on which impl is active.
+        let postProcessor: (any PostOCRProcessor)?
         let tocParser: ClaudeTOCParser?
         let tableExtractor: ClaudeTableExtractor?
         let pageEngine: ClaudePageOCREngine?
@@ -555,7 +578,7 @@ public actor PDFToEPUBPipeline {
             return ClaudeEngines(
                 budget: budget,
                 ocr: makeClaudeOCREngine(options: options, budget: budget),
-                postProcessor: makeClaudePostProcessor(options: options, budget: budget),
+                postProcessor: makePostProcessor(options: options, budget: budget),
                 tocParser: makeClaudeTOCParser(options: options, budget: budget),
                 tableExtractor: makeClaudeTableExtractor(options: options, budget: budget),
                 pageEngine: makeClaudePageOCREngine(
@@ -669,7 +692,7 @@ public actor PDFToEPUBPipeline {
         pageIndex: Int,
         hints: OCRHints,
         mode: ClaudePostProcessor.Mode,
-        postProcessor: ClaudePostProcessor
+        postProcessor: any PostOCRProcessor
     ) async -> PostOCRCleanupOutcome {
         var working = observations
         var trail: [CorrectionTrail.Entry] = []

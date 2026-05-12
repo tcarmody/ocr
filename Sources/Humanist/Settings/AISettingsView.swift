@@ -191,13 +191,16 @@ struct AISettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-            } else {
-                // Private-mode shows the on-device features so users
-                // who picked Privacy aren't left without any AI
-                // assistance. Each one is independently toggle-able
-                // and gated on Apple Intelligence availability.
-                localAISection
             }
+
+            // Local AI section is now visible in both modes. In
+            // Private mode it's the primary surface; in Cloud mode
+            // it acts as the fallback when a Cloud feature isn't
+            // configured / keyed / toggled on, so the user still
+            // gets on-device classification + metadata + cleanup +
+            // coherence rather than the feature silently no-op'ing.
+            // Each toggle is independently switchable.
+            localAISection
 
             // Book Chat sits outside the cloud-only conditional —
             // a user in Private mode can still want a local-Ollama
@@ -516,7 +519,16 @@ struct AISettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("All three run in seconds per book and are private to this Mac. Cloud Haiku is still the higher-accuracy option when you have an API key configured — these features mirror the Cloud equivalents but trade some quality for not having to leave the device.")
+                Toggle(
+                    "Post-OCR cleanup (per region)",
+                    isOn: $vm.settings.localFeatures.localPostOCRCleanup
+                )
+                Text("Per-region character cleanup for low-quality OCR output: ligature confusions (rn→m), missing diacritics, dropped spaces, long-s in pre-1800 reprints. Text-only — vision-mode regions still need Cloud Haiku, which kicks in automatically when configured.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("All four run in seconds per book and are private to this Mac. In Private mode these are the primary AI pipeline; in Cloud mode they fall back automatically when the matching Cloud feature isn't configured or its toggle is off, so a book gets on-device cleanup instead of no cleanup. Cloud Haiku is the higher-accuracy option when you have an API key.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
