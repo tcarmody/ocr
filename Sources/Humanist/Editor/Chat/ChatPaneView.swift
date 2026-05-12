@@ -133,6 +133,15 @@ struct ChatPaneView: View {
                 .help(showRetrievalDetail
                       ? "Hide retrieval detail under each answer"
                       : "Show retrieval detail under each answer")
+                if !vm.messages.isEmpty {
+                    Button {
+                        exportTranscript()
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Export this transcript as Markdown (citations resolved) to the clipboard")
+                }
             }
             if vm.chatScope == .library {
                 libraryStatusLabel
@@ -140,6 +149,43 @@ struct ChatPaneView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    // MARK: - export helpers
+
+    private func exportTranscript() {
+        let markdown = ChatCitationFormatter.transcript(
+            messages: vm.messages,
+            library: vm.library,
+            title: "Book chat transcript"
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(markdown, forType: .string)
+    }
+
+    fileprivate func copyCitation(_ citation: BookChatCitation) {
+        let entry = vm.library?.entries.first {
+            $0.epubURL.canonicalForFile
+                == citation.bookEpubURL?.canonicalForFile
+        }
+        let line = ChatCitationFormatter.format(
+            citation: citation, entry: entry
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(line, forType: .string)
+    }
+
+    fileprivate func copyBibliography(
+        _ citations: [BookChatCitation]
+    ) {
+        let markdown = ChatCitationFormatter.bibliography(
+            citations: citations, library: vm.library
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(markdown, forType: .string)
     }
 
     @ViewBuilder
@@ -232,6 +278,8 @@ struct ChatPaneView: View {
                         ChatMessageRow(
                             message: message,
                             onCitationTap: onCitationTap,
+                            onCopyCitation: copyCitation,
+                            onCopyBibliography: copyBibliography,
                             onExcludeBook: { citation in
                                 guard let url = citation.bookEpubURL,
                                       let title = citation.bookTitle

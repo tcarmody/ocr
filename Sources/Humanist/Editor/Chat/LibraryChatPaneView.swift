@@ -142,6 +142,14 @@ struct LibraryChatPaneView: View {
                   : "Show retrieval detail under each answer")
             if !vm.messages.isEmpty {
                 Button {
+                    exportTranscript()
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderless)
+                .help("Export this transcript as Markdown (citations resolved) to the clipboard")
+                Button {
                     vm.clear()
                 } label: {
                     Image(systemName: "trash")
@@ -153,6 +161,50 @@ struct LibraryChatPaneView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// Build a Markdown transcript with Chicago note-style
+    /// citations and put it on the clipboard. The user pastes
+    /// into Obsidian / their writing tool — direct hand-off from
+    /// chat session to research note.
+    private func exportTranscript() {
+        let markdown = ChatCitationFormatter.transcript(
+            messages: vm.messages,
+            library: vm.library,
+            title: "Library chat transcript"
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(markdown, forType: .string)
+    }
+
+    /// Copy a single citation as a formatted reference string.
+    /// Looks up the catalog entry via `vm.library` so author /
+    /// title resolve to whatever the catalog currently holds.
+    private func copyCitation(_ citation: BookChatCitation) {
+        let entry = vm.library?.entries.first {
+            $0.epubURL.canonicalForFile
+                == citation.bookEpubURL?.canonicalForFile
+        }
+        let line = ChatCitationFormatter.format(
+            citation: citation, entry: entry
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(line, forType: .string)
+    }
+
+    /// Copy the message's full citation list as a numbered
+    /// Markdown bibliography. Duplicates collapsed by citation id.
+    private func copyBibliography(
+        _ citations: [BookChatCitation]
+    ) {
+        let markdown = ChatCitationFormatter.bibliography(
+            citations: citations, library: vm.library
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(markdown, forType: .string)
     }
 
     private func libraryReadySummary(
@@ -257,6 +309,8 @@ struct LibraryChatPaneView: View {
                         ChatMessageRow(
                             message: message,
                             onCitationTap: onCitationTap,
+                            onCopyCitation: copyCitation,
+                            onCopyBibliography: copyBibliography,
                             onExcludeBook: { citation in
                                 guard let url = citation.bookEpubURL,
                                       let title = citation.bookTitle

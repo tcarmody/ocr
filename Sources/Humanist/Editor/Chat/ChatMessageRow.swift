@@ -8,6 +8,15 @@ import SwiftUI
 struct ChatMessageRow: View {
     let message: BookChatMessage
     let onCitationTap: (BookChatCitation) -> Void
+    /// Optional: copy one citation as a formatted reference
+    /// string. Surfaced as a context menu on each citation chip
+    /// when non-nil.
+    var onCopyCitation: ((BookChatCitation) -> Void)? = nil
+    /// Optional: copy the message's full citation list as a
+    /// Markdown bibliography. Surfaced as a small button next to
+    /// the citation strip when non-nil and the message has any
+    /// citations.
+    var onCopyBibliography: (([BookChatCitation]) -> Void)? = nil
     /// Optional citation-chip context-menu action for library-
     /// scope chats: "Exclude {Book Title} from chat." Hidden
     /// (no menu item) when nil or when the citation isn't a
@@ -56,8 +65,23 @@ struct ChatMessageRow: View {
                 FlowingCitationRow(
                     citations: message.citations,
                     onTap: onCitationTap,
-                    onExcludeBook: onExcludeBook
+                    onExcludeBook: onExcludeBook,
+                    onCopyCitation: onCopyCitation
                 )
+                if let copyBib = onCopyBibliography {
+                    Button {
+                        copyBib(message.citations)
+                    } label: {
+                        Label(
+                            "Copy bibliography",
+                            systemImage: "list.bullet.clipboard"
+                        )
+                        .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Copy a Markdown bibliography of this answer's citations to the clipboard.")
+                }
             }
             if showRetrievalDetail,
                let detail = message.retrievalDetail,
@@ -130,6 +154,12 @@ struct FlowingCitationRow: View {
     /// library-scope citations (those carry `bookEpubURL`); the
     /// menu item suppresses itself when the citation has no book.
     var onExcludeBook: ((BookChatCitation) -> Void)? = nil
+    /// Optional context-menu action: "Copy citation." Wired from
+    /// the chat pane, which has the library reference needed to
+    /// look up author / title metadata for the formatter.
+    /// Suppresses when nil so non-library-scope callers don't
+    /// see a useless action.
+    var onCopyCitation: ((BookChatCitation) -> Void)? = nil
 
     var body: some View {
         // ViewThatFits + horizontal layouts handles the common
@@ -167,6 +197,16 @@ struct FlowingCitationRow: View {
             .buttonStyle(.plain)
             .help(citationHelpText(citation))
             .contextMenu {
+                if let copy = onCopyCitation {
+                    Button {
+                        copy(citation)
+                    } label: {
+                        Label(
+                            "Copy citation",
+                            systemImage: "doc.on.doc"
+                        )
+                    }
+                }
                 if let exclude = onExcludeBook,
                    citation.bookEpubURL != nil,
                    let title = citation.bookTitle {
