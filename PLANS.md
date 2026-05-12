@@ -2257,6 +2257,132 @@ the size-format / theme-palette helpers.
 
 ---
 
+## R-Split-Filename-Sanity — Bound chapter-split filename growth
+
+**Status**: not started. Surfaced 2026-05-12 by a real EPUB
+(Walter Benjamin *Selected Writings, Volume 1*) the user had
+to repair manually. After ~23 successive chapter splits, the
+generated filename hit the macOS 255-byte filename limit and
+got silently truncated from `.xhtml` to `.xht`, breaking the
+manifest's spine reference.
+
+### Root cause
+
+[`EPUBBook.nextAvailableHref(near:)`]
+(Sources/EPUB/EPUBBook.swift#L283) takes the source chapter's
+*full* current stem and appends `_split_NNN`. So:
+
+- split `chapter-001.xhtml` → second piece = `chapter-001_split_001.xhtml`
+- split THAT → `chapter-001_split_001_split_001.xhtml`
+- split THAT → `chapter-001_split_001_split_001_split_001.xhtml`
+- …
+
+Each split adds 10 chars to the stem. After 23 splits the
+href is 245 bytes (≈ `text/` + 232-char stem + `.xhtml`).
+macOS APFS truncates at 255 bytes, clipping the trailing `ml`
+from the extension. The manifest still records the intended
+`.xhtml`, the disk file is now `.xht`, and the EPUB silently
+breaks.
+
+### Fix
+
+Two complementary changes in `nextAvailableHref`:
+
+1. **Detect and increment existing `_split_NNN` suffix**. If
+   the source href already matches `(.+?)_split_(\d{3})\.(\w+)`,
+   strip that suffix and look for the next-free counter
+   against the *base* stem, not against the suffixed stem.
+   So `chapter-001_split_001` split again produces
+   `chapter-001_split_002`, not `chapter-001_split_001_split_001`.
+   Eliminates the indefinite growth for the common single-
+   linage case.
+2. **Hard length cap as a final guard**. Wrap the existing
+   loop with a check that the candidate href doesn't exceed
+   200 bytes (well below the 255 limit, leaves room for OPF-
+   prefix paths and OS prefixes). When the bound triggers,
+   fall back to `chapter-NNN.xhtml` minted via
+   `nextAvailableResourceID(prefix: "chapter")` semantics —
+   loses the "sorts next to the source" property but keeps
+   the EPUB valid. Length check works at the byte level
+   (`.utf8.count`), not character count, since the limit
+   itself is byte-scoped.
+
+Effort: ~½ day plus a test that splits the same chapter 30
+times and asserts the resulting filenames stay under 200
+bytes.
+
+### Q-Content-Aware-Rename (separate, related)
+
+The user also asked for "a content-aware rename feature" —
+see below. Bounding the auto-name growth is the minimum fix;
+the content-aware rename is the better default. Ship the
+sanity bound first as defense-in-depth even if content-aware
+rename ships alongside.
+
+---
+
+## R-Content-Aware-Rename — Rename chapters from their content
+
+**Status**: not started. Asked for 2026-05-12 alongside
+R-Split-Filename-Sanity. Two related surfaces:
+
+1. **Auto-name on split.** When a chapter is split, the new
+   piece's filename should derive from its first `<h1>` /
+   `<h2>` / `<h3>` heading (slugified), not from the source
+   chapter's filename. So splitting an essay collection
+   right before "On the Program of the Coming Philosophy"
+   produces `on-the-program-of-the-coming-philosophy.xhtml`
+   automatically, not `chapter-001_split_001.xhtml`.
+2. **Manual rename to match content.** Add `Edit Chapter
+   Filename…` to the editor's chapter context menu / Document
+   menu. Default the new name to the slugified first heading;
+   user can edit before confirm. Already-existing internal
+   links to the renamed resource get rewritten the same way
+   the existing rename-chapter path does it.
+
+### Slug rules
+
+- Take first heading text (`<h1>` preferred, then `<h2>`,
+  then `<h3>`); empty heading → fall back to counter scheme.
+- Strip XML entities + decode HTML; collapse runs of
+  whitespace.
+- Replace internal whitespace with hyphens (or keep spaces
+  — both are valid in EPUB hrefs and spaces preserve the
+  human-readable form the user might prefer).
+- Strip / replace characters that break filesystems: `/`,
+  `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`. (Apostrophes are
+  fine in macOS / EPUB but get URL-encoded.)
+- Cap at 80 chars before extension. Truncate at the nearest
+  word boundary so the title remains readable.
+- Collision-check: if `<slug>.xhtml` exists, append ` -2`,
+  ` -3`, etc. Same iteration as `nextAvailableResourceID`.
+
+### Integration with existing chapter rename
+
+The editor already has a chapter rename surface
+(`pendingRename` state + alert sheet in `EditorView.swift`).
+The new "auto-rename to match content" command can:
+- Read the chapter's current first heading via
+  `BookPackageEditor.previewHeading(for:)` (or similar new
+  helper).
+- Stage the resulting slug as `pendingRename.newBaseName`.
+- Reuse the existing apply path (which already rewrites
+  internal links via the rename machinery).
+
+### Effort
+
+- R-Split-Filename-Sanity (defense): ~½ day.
+- R-Content-Aware-Rename auto-on-split: ~1 day (slug helper +
+  wire into `splitChapter` + tests).
+- R-Content-Aware-Rename manual command: ~½ day (menu item +
+  default-from-heading + existing rename path).
+
+Total: ~2 days for both together. Sanity bound is the
+must-have; content-aware is the nice-to-have that makes the
+sanity bound rarely triggered.
+
+---
+
 ## R-Search — Full-text search in the editor
 
 **Status**: shipped as Find in All Files (commit `baea472`).
