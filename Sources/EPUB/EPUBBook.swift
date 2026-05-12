@@ -267,7 +267,8 @@ public final class EPUBBook: @unchecked Sendable {
     /// Href (relative to the OPF) not currently in use, derived from
     /// `nearHref`'s basename so the new file sorts immediately after
     /// the source file in alphabetical (sidebar) order. Format:
-    /// `{dir}/{stem}_split_NNN.{ext}`.
+    /// `{dir}/{base}_split_NNN.{ext}` where `base` is `nearHref`'s
+    /// stem with any existing `_split_NNN` suffix(es) stripped.
     ///
     /// The `_` separator (0x5F) sorts after `.` (0x2E), which means
     /// `ch05_split_001.xhtml` falls between `ch05.xhtml` and
@@ -280,6 +281,29 @@ public final class EPUBBook: @unchecked Sendable {
     /// Collision check covers both manifest hrefs and any
     /// pre-existing on-disk files — we don't want to clobber a
     /// sibling the manifest forgot to declare.
+    ///
+    /// **R-Split-Filename-Sanity (2026-05-12)**: two defenses
+    /// against indefinite filename growth from repeated splits:
+    ///
+    /// 1. Existing `_split_NNN` suffix on `nearHref` is stripped
+    ///    before generating the new name. Splitting
+    ///    `chapter-001_split_001` produces `chapter-001_split_002`
+    ///    (a sibling), not `chapter-001_split_001_split_001` (a
+    ///    descendant). Sibling-flat naming caps the growth — the
+    ///    user can split a chapter 999 times before the counter
+    ///    runs out.
+    /// 2. Hard byte-length cap (~200 bytes) on the candidate href.
+    ///    macOS APFS truncates filenames silently at 255 bytes; an
+    ///    EPUB hitting that limit ends up with a `.xht` extension
+    ///    where the manifest expected `.xhtml`, breaking the spine.
+    ///    On cap, fall back to `chapter-NNN.xhtml` minted via a
+    ///    counter (loses the "sorts next to source" property but
+    ///    produces a valid manifest entry the OS accepts).
+    ///
+    /// Without these defenses, a real-world Walter Benjamin EPUB
+    /// the user repaired by hand had been split 23 times and the
+    /// resulting 245-byte filename had `.xhtml` silently clipped to
+    /// `.xht` on disk.
     public func nextAvailableHref(near nearHref: String) -> String {
         // Parse the href as a string. `URL(fileURLWithPath:)` would
         // resolve relative paths against the current working
@@ -288,10 +312,73 @@ public final class EPUBBook: @unchecked Sendable {
         // split_001.xhtml` and the sidebar sort would put the new
         // file in the wrong place.
         let (dir, stem, ext) = Self.parseHrefParts(nearHref)
+        let baseStem = Self.stripSplitSuffix(from: stem)
         let usedHrefs = Set(resourcesByID.values.map(\.hrefRelativeToOPF))
+        // Byte cap (UTF-8) just under macOS APFS's 255-byte filename
+        // limit. Leaves ~50 bytes of headroom for the OS-prefix path
+        // (e.g. `/Users/tim/Library/Mobile Documents/.../OEBPS/`) that
+        // sits in front of the OPF-relative href at write time.
+        let maxHrefBytes = 200
+        // Counter ceiling: 999 splits of the same chapter is a clear
+        // signal something's wrong with the user's workflow, not a
+        // legitimate use. Past that, fall back to chapter-NNN.
+        let maxCounter = 999
+
+        var i = 1
+        while i <= maxCounter {
+            let basename = "\(baseStem)_split_\(String(format: "%03d", i)).\(ext)"
+            let href: String = dir.isEmpty ? basename : "\(dir)/\(basename)"
+            if href.utf8.count > maxHrefBytes {
+                return fallbackCounterHref(
+                    dir: dir, ext: ext, usedHrefs: usedHrefs
+                )
+            }
+            let absoluteOnDisk = opfDirectory.appendingPathComponent(href)
+            let collidesOnDisk = FileManager.default
+                .fileExists(atPath: absoluteOnDisk.path)
+            if !usedHrefs.contains(href), !collidesOnDisk {
+                return href
+            }
+            i += 1
+        }
+        return fallbackCounterHref(
+            dir: dir, ext: ext, usedHrefs: usedHrefs
+        )
+    }
+
+    /// Strip all trailing `_split_NNN` suffixes from `stem`.
+    /// Iterative so a pathological pre-existing stem like
+    /// `chapter-001_split_001_split_001_split_001` recovers the
+    /// `chapter-001` base in one call. Matches one-or-more-digit
+    /// counters so legacy `_split_1` style names also strip cleanly.
+    /// Exposed `static` (internal) so tests can pin the behavior
+    /// without going through an EPUBBook instance.
+    static func stripSplitSuffix(from stem: String) -> String {
+        var s = stem
+        let pattern = "_split_\\d+$"
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern, options: []
+        ) else { return s }
+        while true {
+            let ns = s as NSString
+            guard let match = regex.firstMatch(
+                in: s,
+                range: NSRange(location: 0, length: ns.length)
+            ) else { return s }
+            s = ns.substring(to: match.range.location)
+        }
+    }
+
+    /// Mint `chapter-NNN.{ext}` in `dir` via an iterating counter
+    /// — the escape hatch when stem-based naming would exceed the
+    /// byte cap. Same collision-check posture as the primary path:
+    /// both manifest hrefs and on-disk files are checked.
+    private func fallbackCounterHref(
+        dir: String, ext: String, usedHrefs: Set<String>
+    ) -> String {
         var i = 1
         while true {
-            let basename = "\(stem)_split_\(String(format: "%03d", i)).\(ext)"
+            let basename = "chapter-\(String(format: "%03d", i)).\(ext)"
             let href: String = dir.isEmpty ? basename : "\(dir)/\(basename)"
             let absoluteOnDisk = opfDirectory.appendingPathComponent(href)
             let collidesOnDisk = FileManager.default
