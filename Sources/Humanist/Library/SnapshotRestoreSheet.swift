@@ -78,7 +78,7 @@ struct SnapshotRestoreSheet: View {
                 Text("No snapshots yet")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Text("Snapshots accumulate as you edit metadata, run Refresh, classify genres, or import books.")
+                Text("Snapshots accumulate automatically as you edit metadata, run Refresh, classify genres, or import books — at most one per minute so a burst of edits doesn't burn through history. Click Snapshot Now below to create one on demand before a risky operation.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -165,8 +165,19 @@ struct SnapshotRestoreSheet: View {
 
     private var footer: some View {
         HStack {
-            Button("Cancel", role: .cancel, action: onCancel)
+            // "Done" rather than "Cancel" because the sheet is a
+            // viewer with two side-actions (Snapshot Now /
+            // Restore Selected) — leaving via the dismiss button
+            // doesn't undo anything. Both Snapshot Now and
+            // Restore commit on their own button press. Escape
+            // still dismisses via the cancellation shortcut.
+            Button("Done", action: onCancel)
                 .keyboardShortcut(.cancelAction)
+            Button("Snapshot Now") {
+                store.forceSnapshotNow()
+                reload()
+            }
+            .help("Capture the current catalog state as a new rollback point. Bypasses the auto-snapshot throttle so you always have a fresh restore target before risky operations.")
             Spacer()
             if let selectedID = selection,
                let target = snapshots.first(where: { $0.id == selectedID }) {
