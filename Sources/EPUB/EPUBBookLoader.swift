@@ -66,7 +66,15 @@ public struct EPUBBookLoader {
 
         for id in manifestIDs {
             guard let item = opfPackage.manifestById[id] else { continue }
-            let absoluteURL = opfDirectory.appendingPathComponent(item.href)
+            // Percent-decode the href before resolving to disk —
+            // OPF stores URI references, but the filesystem has
+            // the decoded forms. See `EPUBBook.appendingHref(_:to:)`
+            // for the rationale (Walter Benjamin EPUB import
+            // tripped on `text/Table%20of%20Contents.xhtml`
+            // 2026-05-12).
+            let absoluteURL = EPUBBook.appendingHref(
+                item.href, to: opfDirectory
+            )
             let resource = try buildResource(from: item, at: absoluteURL)
             resources[id] = resource
             resourceOrder.append(id)

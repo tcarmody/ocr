@@ -170,6 +170,67 @@ final class NextAvailableHrefTests: XCTestCase {
         XCTAssertEqual(next, "text/chapter-003.xhtml")
     }
 
+    // MARK: - appendingHref percent-decoding
+
+    /// Surfaced 2026-05-12 by the Walter Benjamin EPUB import bug:
+    /// OPF stores hrefs as URI references with percent-encoding
+    /// (`text/Table%20of%20Contents.xhtml`), but the filesystem
+    /// has the decoded form (`text/Table of Contents.xhtml`). The
+    /// loader's existence check used `appendingPathComponent` which
+    /// treats `%20` as literal path characters; the file lookup
+    /// then failed and `EPUBBookLoader` threw `missingFile`.
+    func test_appendingHref_decodes_percent_escapes_for_disk_lookup() {
+        let base = URL(fileURLWithPath: "/tmp/example/OEBPS")
+        let url = EPUBBook.appendingHref(
+            "text/Table%20of%20Contents.xhtml", to: base
+        )
+        XCTAssertEqual(
+            url.path, "/tmp/example/OEBPS/text/Table of Contents.xhtml"
+        )
+    }
+
+    func test_appendingHref_handles_apostrophe_and_comma() {
+        // Both characters appear in the Benjamin EPUB's hrefs.
+        let base = URL(fileURLWithPath: "/tmp/OEBPS")
+        XCTAssertEqual(
+            EPUBBook.appendingHref(
+                "text/A%20Child%27s%20View%20of%20Color.xhtml",
+                to: base
+            ).path,
+            "/tmp/OEBPS/text/A Child's View of Color.xhtml"
+        )
+        XCTAssertEqual(
+            EPUBBook.appendingHref(
+                "text/Painting%2C%20or%20Signs%20and%20Marks.xhtml",
+                to: base
+            ).path,
+            "/tmp/OEBPS/text/Painting, or Signs and Marks.xhtml"
+        )
+    }
+
+    func test_appendingHref_passes_through_unencoded_hrefs() {
+        // Plain ASCII hrefs (the typical case) round-trip unchanged.
+        let base = URL(fileURLWithPath: "/tmp/OEBPS")
+        XCTAssertEqual(
+            EPUBBook.appendingHref(
+                "text/chapter-001.xhtml", to: base
+            ).path,
+            "/tmp/OEBPS/text/chapter-001.xhtml"
+        )
+    }
+
+    func test_appendingHref_falls_back_for_malformed_escape() {
+        // `%XY` with non-hex characters is invalid percent-encoding;
+        // `removingPercentEncoding` returns nil. The helper falls
+        // back to the raw string so the lookup at least proceeds
+        // (and fails with a more accurate "file not found" later).
+        let base = URL(fileURLWithPath: "/tmp/OEBPS")
+        let url = EPUBBook.appendingHref(
+            "text/bad%ZZ.xhtml", to: base
+        )
+        XCTAssertEqual(url.path, "/tmp/OEBPS/text/bad%ZZ.xhtml")
+    }
+
     // MARK: - Helpers
 
     private func makeMinimalBook(
