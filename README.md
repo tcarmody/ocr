@@ -198,7 +198,7 @@ Cloud features only run when you flip Settings → AI → Processing Mode to Clo
 
 ```sh
 Scripts/run-app.sh          # release build + assemble .app + sign + open
-swift test                  # 986 unit tests across 98 test files
+swift test                  # 1000+ unit tests across 104 test files
 ```
 
 `Scripts/run-app.sh` is the only supported launch path. `swift run` / `swift build` produce a bare binary without the bundled `Resources/` directory — the editor's CodeMirror source pane and the Surya layout sidecar won't load.
@@ -241,7 +241,7 @@ ocr/
 │   │                                differ + validator
 │   └── AI/                          22 files: Anthropic + Ollama + Voyage + Gemini + Apple Foundation Models clients,
 │                                    embedding backends, settings, key stores
-├── Tests/                           986 unit tests across 98 test files
+├── Tests/                           1000+ unit tests across 104 test files
 ├── Resources/
 │   └── codemirror/                  Vendored CodeMirror 5 for the editor's source pane
 ├── Sidecars/
@@ -276,20 +276,28 @@ Editor / chat state that's user-scoped rather than book-scoped lives outside the
 |---|---|
 | `Chats/<sha256>.json` | Per-book chat transcript, keyed by canonical EPUB path. |
 | `Chats/library.json` | Library chat transcript (one per user). |
-| `Embeddings/<sha256>.json` | Per-book embedding sidecar — paragraph vectors + hierarchy index + entity index, keyed by canonical EPUB path. |
-| `Aliases/aliases.json` | Per-library alias dictionary for entity retrieval. |
+| `Embeddings/<uuid>.json` | Per-book embedding sidecar — paragraph vectors + hierarchy index + entity index, keyed by library entry UUID. |
+| `Covers/<uuid>.jpg` | Per-entry cover override (when the user has replaced the EPUB's bundled cover). |
+| `aliases.json` | Per-library alias dictionary for entity retrieval. |
 | `library.json` | Library catalog. |
+| `snapshots/library-*.json` | Rolling pre-save snapshots of the catalog (20 latest, ≥60 s apart). |
 | `queue.json` | Conversion queue snapshot. |
 
 Storing chat / embedding state outside the EPUB keeps the file portable (a copy you give to someone else doesn't carry your chat history) and avoids re-zipping the EPUB on every save.
 
+**When *Share library across machines* is enabled** (Settings → Conversion), `library.json`, `Embeddings/`, `Covers/`, `aliases.json`, and `snapshots/` all relocate to `<configured output folder>/.humanist/` so a second Mac sharing that folder via iCloud Drive / Dropbox / SyncThing reads the same catalog and indexes. Per-book chat transcripts and the queue snapshot stay machine-local. Embedding sidecars are keyed by the library entry's UUID so a book's index survives a path change on the receiving Mac.
+
 ## Plans
 
-[PLANS.md](PLANS.md) tracks remaining work in detail with a top-of-doc Sequencing section anchoring priorities to current drivers. The core conversion pipeline, editor, library, multi-book chat, on-device classification (Apple Foundation Models Phases 1+2), R-Library-Chat-Plus Tier 1 (Chat with Selected, Collections, Suggested follow-ups, Long-form synthesis, Per-book exclusion), R-EPUB-Import v1.3 (anchors, drag-drop / folder import, AFM metadata + classification, year/publisher/ISBN write-back, 1000-book bulk hardening), R-Library-Sync Phases A + B (catalog + embedding-sidecar portability across machines), and E-Vision-Modes v1 (Manuscript + Early Print sub-modes) are all shipped. Active items:
+[PLANS.md](PLANS.md) tracks remaining work in detail with a top-of-doc Sequencing section anchoring priorities to current drivers. Shipped this cycle in addition to everything above: R-Library-Chat-Plus Tier 2 (citation + conversation export), L-Foundation-Models Phase 2.5 (on-device post-OCR cleanup), R-EPUB-Import coherence pass (text-node-only path — `CoherenceDigestSampler` + `XHTMLTextReplacer`), U-HIG-Pass (full Mac HIG / Liquid Glass conformance audit across launcher, library, editor, and settings), Q-Hard-Captures Tier 1 (italic-skip, Vision-backfill batch, refused-fallback surface), T-Real-Corpus (`humanist-cli compare-corpus` regression harness against publisher EPUBs), and R-Split-Filename-Sanity (bounded chapter-split filename growth against the 255-byte APFS cap). Active items:
 
-- **R-Library-Chat-Plus Tier 2** — citation export, conversation export, pinned passages, ask-each-book mode.
-- **L-Foundation-Models Phase 2.5 + 3** — on-device post-OCR cleanup + TOC parsing.
-- **R-EPUB-Import coherence on import** — chapter classification + year/publisher/ISBN already ship; coherence still needs a full XHTML → Chapter IR parser plus round-trip fidelity work.
+- **R-Library-Migrate** — Settings wizard to move library.json + Embeddings/ + snapshots/ + Covers/ between locations (local ↔ cloud, or cloud → cloud).
+- **U-Splitview-Frame-Clamp** — defensive clamp of restored NSSplitView frames against the corrupt-autosave failure mode.
+- **R-Library-Dedupe** — content-hash dedupe at import + scan, plus a one-time `humanist-cli library-dedupe` cleanup for parenthesized duplicates.
+- **R-Content-Aware-Rename** — rename split-chapter EPUBs from first-heading content rather than counter suffixes.
+- **L-Foundation-Models Phase 3** — on-device printed-TOC parsing.
+- **R-Library-Chat-Plus Tier 2 remainder** — pinned passages, ask-each-book mode.
+- **Q-Hard-Captures Tier 2/3** — code-block preservation, layout-aware figure caption snapping, polytonic Greek accuracy lift.
 - **Distribution polish** — Developer ID cert, notarization, DMG, GitHub Releases. See [RELEASES.md](RELEASES.md).
 - **P-Greek-Quality** — measure Tesseract polytonic-Greek CER against hand-corrected ground truth.
 
