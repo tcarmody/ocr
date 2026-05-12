@@ -157,8 +157,74 @@ public struct DictionaryCorrector: Sendable {
             return nil
         }
 
+        // Guard 6 (Q-Italic-Skip, 2026-05-12): cross-language
+        // validity. Vision/Tesseract paths often emit italicized
+        // foreign words inside an otherwise-English paragraph as
+        // a single run with no italic flag, so the per-run
+        // isItalic gate upstream can't protect them. Before
+        // applying an English (etc.) correction, check whether
+        // the *original* word is a valid word in any of the other
+        // supported European-language dictionaries. If it is,
+        // skip — the safer assumption is "this is a foreign term,
+        // not a misspelling of the active language."
+        //
+        // This catches things like Italian "vita" / "morte",
+        // German "die" / "der" / "das", French "thé" / "très",
+        // Latin/Portuguese "deus" inside English prose. The cost
+        // is six NSSpellChecker calls per candidate (microseconds
+        // each); negligible at book scale.
+        if Self.isValidInOtherSupportedLanguage(
+            word: word, activeLanguage: language,
+            checker: checker, documentTag: documentTag
+        ) {
+            return nil
+        }
+
         // Apply case to the suggestion to match the original.
         return Self.matchCase(of: word, target: top)
+    }
+
+    /// Return true when `word` is correctly spelled in any of the
+    /// supported languages other than `activeLanguage`. Used as
+    /// the cross-language skip-guard above so legitimate foreign
+    /// words don't get "corrected" to similar-shape words in the
+    /// active language.
+    ///
+    /// Important: only checks languages that NSSpellChecker
+    /// actually has dictionaries for on this machine. Calling
+    /// `checkSpelling(of:language:…)` with a tag whose dictionary
+    /// isn't installed appears to silently fall back to a
+    /// permissive default that flags very little as misspelled,
+    /// which would make this guard refuse legitimate corrections
+    /// (e.g. "xqzwk" validates against an absent dictionary).
+    /// Intersecting `supportedLanguages` with
+    /// `checker.availableLanguages` (normalized to primary
+    /// subtags) keeps the check honest.
+    static func isValidInOtherSupportedLanguage(
+        word: String,
+        activeLanguage: String,
+        checker: NSSpellChecker,
+        documentTag: Int
+    ) -> Bool {
+        let lowercased = word.lowercased()
+        let installed = Set(
+            checker.availableLanguages.map(primarySubtag)
+        )
+        for lang in supportedLanguages
+        where lang != activeLanguage && installed.contains(lang) {
+            let range = checker.checkSpelling(
+                of: lowercased,
+                startingAt: 0,
+                language: lang,
+                wrap: false,
+                inSpellDocumentWithTag: documentTag,
+                wordCount: nil
+            )
+            // NSNotFound location ⇒ spell check did not flag a
+            // misspelling ⇒ word is valid in this language.
+            if range.location == NSNotFound { return true }
+        }
+        return false
     }
 
     // MARK: - Language resolution

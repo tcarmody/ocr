@@ -829,11 +829,25 @@ public actor PDFToEPUBPipeline {
     /// single-run block and the corrector changed something.
     /// Returns nil for multi-run blocks (preserve their structure)
     /// and for single-run blocks where no correction was needed.
+    ///
+    /// Q-Italic-Skip (2026-05-12): skip italic single-run blocks
+    /// outright. Academic prose italicizes foreign terms
+    /// specifically so the reader knows they're not native;
+    /// applying English spell-check to a fully-italic
+    /// paragraph (e.g. a Latin epigraph, a Greek citation
+    /// transliterated whole) is exactly wrong. Multi-run blocks
+    /// were already protected (the run-count == 1 guard) since
+    /// italic spans inside otherwise-English prose come through
+    /// as separate runs in the Claude-OCR'd path. Vision/Tesseract
+    /// paths often don't emit italics as separate runs at all —
+    /// the cross-language guard inside `correctionFor` is the
+    /// second half of the fix that covers those.
     static func correctedRun(
         _ runs: [InlineRun],
         corrector: DictionaryCorrector
     ) -> InlineRun? {
         guard runs.count == 1 else { return nil }
+        if runs[0].isItalic { return nil }
         let original = runs[0].text
         let corrected = corrector.correct(original)
         guard corrected != original else { return nil }

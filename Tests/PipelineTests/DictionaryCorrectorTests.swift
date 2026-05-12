@@ -149,4 +149,47 @@ final class DictionaryCorrectorTests: XCTestCase {
         // returns nil → no NSSpellChecker call → input returned.
         XCTAssertEqual(corrector.correct(text), text)
     }
+
+    // MARK: - Q-Italic-Skip cross-language guard
+
+    /// Spell-server tests are normally avoided since
+    /// `NSSpellChecker` IPC can be flaky on CI, but the
+    /// cross-language guard is the core of the
+    /// foreign-word-overcorrection fix. Worth keeping as a small
+    /// smoke even though the active-language path is excluded.
+    func test_cross_language_check_skips_word_valid_in_other_language() {
+        // "vita" is a valid Italian / Latin word; should be
+        // flagged by the cross-language guard so the English
+        // corrector doesn't replace it.
+        let checker = NSSpellChecker.shared
+        let tag = NSSpellChecker.uniqueSpellDocumentTag()
+        defer { checker.closeSpellDocument(withTag: tag) }
+        XCTAssertTrue(
+            DictionaryCorrector.isValidInOtherSupportedLanguage(
+                word: "vita",
+                activeLanguage: "en",
+                checker: checker,
+                documentTag: tag
+            ),
+            "Italian/Latin 'vita' should validate in another supported language"
+        )
+    }
+
+    func test_cross_language_check_returns_false_for_pure_gibberish() {
+        // Random consonant cluster — shouldn't validate in any
+        // supported language. Confirms the guard returns false
+        // when the original really is a typo.
+        let checker = NSSpellChecker.shared
+        let tag = NSSpellChecker.uniqueSpellDocumentTag()
+        defer { checker.closeSpellDocument(withTag: tag) }
+        XCTAssertFalse(
+            DictionaryCorrector.isValidInOtherSupportedLanguage(
+                word: "xqzwk",
+                activeLanguage: "en",
+                checker: checker,
+                documentTag: tag
+            ),
+            "Gibberish shouldn't validate in any other language"
+        )
+    }
 }
