@@ -1194,6 +1194,13 @@ struct LibraryWindowView: View {
                 }
             }
         } header: {
+            // No section-total count: aligning it with child row
+            // counts is fiddly (Section headers don't inherit the
+            // List's row content insets, so the right column reads
+            // as ragged at any single padding value), and the
+            // child rows already carry per-collection counts that
+            // are the more useful number. Keep the chevron + label
+            // only.
             HStack(spacing: 4) {
                 Image(systemName: "chevron.right")
                     .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
@@ -1202,10 +1209,6 @@ struct LibraryWindowView: View {
                     .foregroundStyle(.secondary)
                 Text(title)
                 Spacer()
-                Text("\(rows.count)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
             }
             .contentShape(Rectangle())
             .onTapGesture {
