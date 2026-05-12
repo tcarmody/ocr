@@ -61,6 +61,78 @@ final class ConversionStatsTests: XCTestCase {
         XCTAssertEqual(stats.summary, "Claude: 3 calls (~$0.04)")
     }
 
+    // MARK: - Q-Refused-Fallback-Surface
+
+    func test_summary_appends_vision_fallback_count_when_nonzero() {
+        let stats = ConversionStats(
+            pagesReOCRd: 100,
+            pagesUsingVisionFallback: 8,
+            claudeCallCount: 100,
+            estimatedCostUSD: 1.50
+        )
+        XCTAssertEqual(
+            stats.summary,
+            "Claude: 100 calls (~$1.50) · 8 pages fell back to Vision"
+        )
+    }
+
+    func test_summary_singular_form_for_one_fallback_page() {
+        let stats = ConversionStats(
+            pagesReOCRd: 100,
+            pagesUsingVisionFallback: 1,
+            claudeCallCount: 100,
+            estimatedCostUSD: 1.50
+        )
+        XCTAssertEqual(
+            stats.summary,
+            "Claude: 100 calls (~$1.50) · 1 page fell back to Vision"
+        )
+    }
+
+    func test_summary_omits_fallback_suffix_when_zero() {
+        let stats = ConversionStats(
+            claudeCallCount: 12,
+            estimatedCostUSD: 0.06
+        )
+        XCTAssertEqual(stats.summary, "Claude: 12 calls (~$0.06)")
+    }
+
+    func test_fallback_count_round_trips_through_codable() throws {
+        let original = ConversionStats(
+            pagesUsingVisionFallback: 5,
+            claudeCallCount: 50,
+            estimatedCostUSD: 0.75
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(
+            ConversionStats.self, from: data
+        )
+        XCTAssertEqual(decoded.pagesUsingVisionFallback, 5)
+    }
+
+    func test_legacy_json_without_fallback_field_decodes_with_zero() throws {
+        // Stats from before Q-Refused-Fallback-Surface won't have
+        // the new field. Decode must default it to 0 rather than
+        // throw, otherwise old queue rows fail to load.
+        let legacyJSON = """
+        {
+          "elapsed": 12.5,
+          "observationsBySource": {},
+          "pagesTrustedEmbeddedText": 0,
+          "pagesReOCRd": 100,
+          "claudeCallCount": 50,
+          "claudeUsageByModel": {},
+          "estimatedCostUSD": 0.75
+        }
+        """
+        let data = Data(legacyJSON.utf8)
+        let decoded = try JSONDecoder().decode(
+            ConversionStats.self, from: data
+        )
+        XCTAssertEqual(decoded.pagesUsingVisionFallback, 0)
+        XCTAssertEqual(decoded.pagesReOCRd, 100)
+    }
+
     func test_formatted_cost_uses_under_one_cent_threshold() {
         let stats = ConversionStats(claudeCallCount: 1, estimatedCostUSD: 0.003)
         XCTAssertEqual(stats.formattedCost, "<$0.01")

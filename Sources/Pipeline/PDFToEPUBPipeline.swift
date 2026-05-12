@@ -2151,11 +2151,21 @@ public actor PDFToEPUBPipeline {
         let claudeUsage = await claudeBudget.modelUsage
         let trusted = verdictsByPage.values.filter { $0 == .trust }.count
         let reocrd = verdictsByPage.values.filter { $0 == .reocr }.count
+        // Q-Refused-Fallback-Surface (2026-05-12): count pages
+        // where the Claude page-OCR path declined or errored and
+        // the pipeline fell back to local Vision OCR. Lets the
+        // user see "8 pages fell back to Vision" in the
+        // post-conversion summary instead of silently absorbing
+        // the quality degradation.
+        let visionFallback = pageOCRPendingByIndex.values.filter {
+            $0.usedLocalFallback
+        }.count
         return ConversionStats.make(
             elapsed: Date().timeIntervalSince(conversionStart),
             observationsBySource: bySource,
             pagesTrustedEmbeddedText: trusted,
             pagesReOCRd: reocrd,
+            pagesUsingVisionFallback: visionFallback,
             claudeCallCount: claudeCallCount,
             claudeUsageByModel: claudeUsage
         )
@@ -2912,6 +2922,9 @@ public actor PDFToEPUBPipeline {
             // Re-emit a final PendingPageOCR with Sonnet content
             // merged in. Preserves the partial's anchor / bounds /
             // figures / verdict / quality / diagnostics.
+            // `usedLocalFallback` stays false here; the
+            // Q-Vision-Backfill-Batch pass below upgrades it for
+            // pages that took the Vision fallback path.
             let final = PendingPageOCR(
                 pageIndex: prep.partial.pageIndex,
                 anchorId: prep.partial.anchorId,
@@ -2923,10 +2936,6 @@ public actor PDFToEPUBPipeline {
                 qualityScore: prep.partial.qualityScore,
                 extractorDiagnostics: prep.partial.extractorDiagnostics,
                 sonnetSucceeded: success,
-                // Batch path doesn't currently retry locally on
-                // refusal — would need a separate per-page Vision
-                // pass keyed off the batch result. Falls under the
-                // batch-path follow-up; for now leave false.
                 usedLocalFallback: false
             )
             pendingByIndex[pageIndex] = final
@@ -2942,6 +2951,58 @@ public actor PDFToEPUBPipeline {
         // partial as final so the page emits empty.
         for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
             if let p = prepared[i] { pendingByIndex[i] = p.partial }
+        }
+
+        // Q-Vision-Backfill-Batch (2026-05-12): pages whose batch
+        // result didn't produce usable blocks (refused, errored,
+        // canceled, expired, or empty parse) get a Vision-OCR pass
+        // so they contribute *something* to the EPUB instead of
+        // going blank. Mirrors the sync path's per-page fallback
+        // (see `runPageOCRPage`); the batches dispatch had this
+        // TODO'd until now.
+        let needsFallback = sonnetEntries
+            .map(\.0)
+            .filter { i in
+                guard let pending = pendingByIndex[i] else { return true }
+                return !pending.sonnetSucceeded && pending.blocks.isEmpty
+            }
+        guard !needsFallback.isEmpty else { return }
+        let visionRenderer = PDFRenderer(dpi: options.dpi)
+        let hints = OCRHints(
+            languages: options.languages,
+            quality: options.ocrQuality
+        )
+        for i in needsFallback {
+            try Task.checkCancellation()
+            guard let prep = prepared[i] else { continue }
+            do {
+                let image = try visionRenderer.renderPage(
+                    at: i, of: pdf
+                )
+                let visionResult = try await visionEngine.recognize(
+                    image: image, hints: hints
+                )
+                let blocks = ParagraphReflow().reflow(
+                    visionResult.observations
+                )
+                guard !blocks.isEmpty else { continue }
+                pendingByIndex[i] = PendingPageOCR(
+                    pageIndex: prep.partial.pageIndex,
+                    anchorId: prep.partial.anchorId,
+                    pageBoundsCG: prep.partial.pageBoundsCG,
+                    blocks: blocks,
+                    footnotes: prep.partial.footnotes,
+                    figures: prep.partial.figures,
+                    verdict: prep.partial.verdict,
+                    qualityScore: prep.partial.qualityScore,
+                    extractorDiagnostics: prep.partial.extractorDiagnostics,
+                    sonnetSucceeded: false,
+                    usedLocalFallback: true
+                )
+            } catch {
+                // Vision also failed — leave the page empty.
+                // Same posture as the sync path's nested catch.
+            }
         }
     }
 

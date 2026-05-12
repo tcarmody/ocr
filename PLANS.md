@@ -859,18 +859,13 @@ Drivers for the current ordering:
     classical / manuscript material), v2 (bulk-mode
     multi-select lookup). See R-Metadata-Online section
     for scope.
-11. **Q-Hard-Captures Tier 1** (~1¼ days combined). Three
-    quality wins surfaced from real conversion experience
-    on 2026-05-12: **Q-Italic-Skip** (dictionary corrector
-    skips italic runs — fixes the "logos / vita / die"
-    overcorrection class), **Q-Vision-Backfill-Batch**
-    (close the parity gap so batch-API refusals fall back
-    to Vision the same way the sync path already does),
-    **Q-Refused-Fallback-Surface** (count Vision-fallback
-    pages in the conversion summary so the user knows when
-    quality degraded). Tier 2 (`Q-Widow-Footnote-Guard`)
-    and Tier 3 (inline math, marginalia filter, drop caps)
-    follow if the Tier 1 wins surface as substantial.
+11. ~~**Q-Hard-Captures Tier 1**~~ shipped 2026-05-12
+    across three commits: Q-Italic-Skip (`7db9534`),
+    Q-Vision-Backfill-Batch + Q-Refused-Fallback-Surface
+    (this commit). Tier 2 (`Q-Widow-Footnote-Guard`) and
+    Tier 3 (inline math, marginalia filter, drop caps) stay
+    in PLANS and earn priority when the Tier 1 wins land
+    in real conversions and the next gap surfaces.
 
 ### Earn when you need it
 
@@ -5623,61 +5618,75 @@ existing OCR cascade's seams. Surfaced 2026-05-12 from real
 conversion experience. Each sub-item is independently shippable
 and ordered by impact-per-effort.
 
-#### Q-Italic-Skip (Tier 1)
+#### Q-Italic-Skip — shipped 2026-05-12 (`7db9534`)
 
-The dictionary corrector ([DictionaryCorrector.swift:118-158]
-(Sources/Pipeline/DictionaryCorrector.swift)) already gates
-heavily: Latin script only, length ≥ 3 chars, letter-only,
-Levenshtein = 1, capitalization sanity. But it still
-"corrects" italicized 3-5-letter foreign words — *logos*,
-*vita*, *deus*, *die* — that look like English typos to
-`NSSpellChecker`. Academic prose marks foreign terms with
-italics specifically so readers know they're not native;
-applying English spell-check to them is exactly wrong.
+Two complementary gates so italicized foreign terms stop
+getting "corrected" to English typos:
 
-Fix: gate the corrector on the carrying run's `isItalic`
-flag. If the inline run is italic, pass through unchanged.
-Claude page OCR already produces `isItalic` reliably; Vision
-and Tesseract paths are spottier (Vision doesn't flag
-italics at all; Tesseract per-word flags work when font
-training has run). One-line gate plus the upstream wiring to
-get the flag to the corrector. ~½ day.
+1. `correctedRun` in `PDFToEPUBPipeline` skips single-run
+   blocks outright when the run carries `isItalic = true`.
+   Catches the Claude-OCR'd path where italics arrive as
+   proper run-level metadata.
+2. `correctionFor` in `DictionaryCorrector` gained Guard 6 —
+   cross-language validity check. Before applying any
+   correction in the active language, validate the original
+   word against every other supported European-language
+   dictionary that's *installed* on this machine. Valid in
+   another language → skip (safer to assume foreign term).
+   Catches Vision / Tesseract paths that don't emit italics
+   as separate runs at all.
 
-Estimated user-felt impact: high. Addresses the most common
-overcorrection pattern in mixed-language academic text.
+Important implementation detail caught during testing:
+`NSSpellChecker.checkSpelling(of:language:…)` silently
+behaves permissively when called against an uninstalled
+language (e.g. `ca`, `pt` weren't in availableLanguages on
+the dev machine), so the cross-language guard had to filter
+`supportedLanguages` against `checker.availableLanguages`
+before iterating — otherwise it would have refused
+legitimate corrections.
 
-#### Q-Vision-Backfill-Batch (Tier 1)
+2 new tests cover the positive case ("vita" validates in
+another supported language) and negative case (random
+gibberish doesn't validate anywhere).
 
-When Claude OCR refuses a page (safety filter false positive
-or content-policy trip), the **sync path** already falls back
-to Vision ([PDFToEPUBPipeline.swift:2632-2659]
-(Sources/Pipeline/PDFToEPUBPipeline.swift#L2632)) so the page
-contributes *something*. The **batch path** doesn't — a TODO
-at [line 2912](Sources/Pipeline/PDFToEPUBPipeline.swift#L2912)
-explicitly calls this out: "Batch path doesn't currently
-retry locally on refusal — would need a separate per-page
-Vision pass keyed off the batch result." Refused pages in
-batch mode go blank in the output.
+#### Q-Vision-Backfill-Batch — shipped 2026-05-12
 
-Fix: after the batch returns, collect indices where
-`result == .refused` (or empty), run Vision OCR on those
-specific pages, merge into the result set. Mirror the sync
-path's `usedLocalFallback` accounting so the stats panel can
-report it. ~½ day.
+Closed the parity gap. After the batch JSONL is walked, a
+post-pass identifies pages whose result was `.refused`,
+`.errored`, `.canceled`, `.expired`, or `.succeeded` with an
+empty parse, and re-OCRs each via Vision. Renders the page
+with `PDFRenderer(dpi: options.dpi)`, calls
+`visionEngine.recognize`, reflows the observations via
+`ParagraphReflow().reflow`, and replaces the matching
+`PendingPageOCR` slot with `usedLocalFallback: true`.
 
-Estimated user-felt impact: high for batch-mode bulk users,
-low otherwise.
+Sequential per-page rather than parallel — 10% of 500 pages
+refusing is 50 Vision calls at ~1s each, acceptable for the
+edge case; can parallelize later if real bulk users complain.
+Vision failure on top of that leaves the page blank (same
+posture as the sync path's nested catch).
 
-#### Q-Refused-Fallback-Surface (Tier 1)
+#### Q-Refused-Fallback-Surface — shipped 2026-05-12
 
-Even the sync path's existing Vision fallback is silent —
-the user sees the page came through but doesn't know Vision
-ran instead of Sonnet on those specific pages, so quality
-issues on those pages look like Sonnet bugs rather than the
-expected-lower-quality fallback. `usedLocalFallback` is
-already tracked per-page; just needs to surface in
-`ConversionStats` as "N pages used Vision fallback after
-Claude refused / errored." ~¼ day.
+`ConversionStats` gains `pagesUsingVisionFallback: Int`
+(default 0, Codable-round-trip with optional decode so older
+queue rows stay parseable). The `convert()` epilogue counts
+pages with `usedLocalFallback == true` from
+`pageOCRPendingByIndex` and threads the value through to
+`ConversionStats.make(...)`.
+
+`summary` appends "· N page(s) fell back to Vision" when
+non-zero so the suffix shows up everywhere the summary
+renders (queue row status line, queue-window status cell).
+The launcher's `statsTooltip` (hover detail) gains a
+dedicated line spelling out the cause: "Vision fallback —
+N pages (Claude refused or errored; Vision OCR'd them
+locally instead of leaving them blank)".
+
+5 new tests cover the singular/plural summary forms, the
+zero-fallback no-suffix case, the Codable round-trip, and
+the legacy-JSON-without-the-field decode-with-zero
+invariant.
 
 #### Q-Widow-Footnote-Guard (Tier 2)
 

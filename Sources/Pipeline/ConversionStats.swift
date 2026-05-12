@@ -28,6 +28,14 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     public var pagesTrustedEmbeddedText: Int
     /// Pages that went through render + OCR + cascade.
     public var pagesReOCRd: Int
+    /// Pages where Claude page-OCR refused / errored / timed out
+    /// / returned an unparseable result and the pipeline fell back
+    /// to local Vision OCR so the page contributed *something* to
+    /// the EPUB. Surfaced to make quality degradation visible —
+    /// otherwise a user looking at a poorly-rendered page can't
+    /// tell whether it's a Sonnet bug or expected lower-quality
+    /// fallback. 0 when Claude wasn't invoked at all.
+    public var pagesUsingVisionFallback: Int
     /// Number of Claude API calls granted by the budget over this
     /// conversion. Includes refused calls (which still cost tokens)
     /// but not budget-exhausted attempts (which never reached the
@@ -47,6 +55,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         observationsBySource: [String: Int] = [:],
         pagesTrustedEmbeddedText: Int = 0,
         pagesReOCRd: Int = 0,
+        pagesUsingVisionFallback: Int = 0,
         claudeCallCount: Int = 0,
         claudeUsageByModel: [String: ClaudeCallBudget.AggregateUsage] = [:],
         estimatedCostUSD: Double = 0
@@ -55,6 +64,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         self.observationsBySource = observationsBySource
         self.pagesTrustedEmbeddedText = pagesTrustedEmbeddedText
         self.pagesReOCRd = pagesReOCRd
+        self.pagesUsingVisionFallback = pagesUsingVisionFallback
         self.claudeCallCount = claudeCallCount
         self.claudeUsageByModel = claudeUsageByModel
         self.estimatedCostUSD = estimatedCostUSD
@@ -63,6 +73,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case elapsed, observationsBySource
         case pagesTrustedEmbeddedText, pagesReOCRd
+        case pagesUsingVisionFallback
         case claudeCallCount, claudeUsageByModel, estimatedCostUSD
     }
 
@@ -74,6 +85,10 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         // before this field existed don't break the queue store.
         self.pagesTrustedEmbeddedText = try c.decodeIfPresent(Int.self, forKey: .pagesTrustedEmbeddedText) ?? 0
         self.pagesReOCRd = try c.decodeIfPresent(Int.self, forKey: .pagesReOCRd) ?? 0
+        // Same optional posture for the Vision-fallback count —
+        // older queue rows persisted before Q-Refused-Fallback-Surface
+        // (2026-05-12) don't carry it.
+        self.pagesUsingVisionFallback = try c.decodeIfPresent(Int.self, forKey: .pagesUsingVisionFallback) ?? 0
         self.claudeCallCount = try c.decode(Int.self, forKey: .claudeCallCount)
         self.claudeUsageByModel = try c.decode([String: ClaudeCallBudget.AggregateUsage].self, forKey: .claudeUsageByModel)
         self.estimatedCostUSD = try c.decode(Double.self, forKey: .estimatedCostUSD)
@@ -86,16 +101,22 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     /// what gives" confusion.
     public var summary: String {
         let totalPages = pagesTrustedEmbeddedText + pagesReOCRd
+        let fallbackSuffix = pagesUsingVisionFallback > 0
+            ? " · \(pagesUsingVisionFallback) page\(pagesUsingVisionFallback == 1 ? "" : "s") fell back to Vision"
+            : ""
         if totalPages > 0, pagesReOCRd == 0 {
             return "Trusted embedded PDF text on all \(totalPages) pages — OCR did not run"
+                + fallbackSuffix
         }
         if claudeCallCount > 0 {
             return "Claude: \(claudeCallCount) calls (~\(formattedCost))"
+                + fallbackSuffix
         }
         if pagesTrustedEmbeddedText > 0 && pagesReOCRd > 0 {
             return "OCR'd \(pagesReOCRd) of \(totalPages) pages (rest trusted embedded text); Claude not invoked"
+                + fallbackSuffix
         }
-        return "Claude not invoked"
+        return "Claude not invoked" + fallbackSuffix
     }
 
     /// Formatted cost string with sensible precision: "<$0.01" for
@@ -116,6 +137,7 @@ extension ConversionStats {
         observationsBySource: [ObservationSource: Int],
         pagesTrustedEmbeddedText: Int = 0,
         pagesReOCRd: Int = 0,
+        pagesUsingVisionFallback: Int = 0,
         claudeCallCount: Int,
         claudeUsageByModel: [AnthropicModel: ClaudeCallBudget.AggregateUsage]
     ) -> ConversionStats {
@@ -137,6 +159,7 @@ extension ConversionStats {
             observationsBySource: sources,
             pagesTrustedEmbeddedText: pagesTrustedEmbeddedText,
             pagesReOCRd: pagesReOCRd,
+            pagesUsingVisionFallback: pagesUsingVisionFallback,
             claudeCallCount: claudeCallCount,
             claudeUsageByModel: usage,
             estimatedCostUSD: cost

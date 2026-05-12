@@ -689,6 +689,13 @@ private struct JobRow: View {
         if stats.claudeCallCount > 0 {
             lines.append("Estimated cost: \(stats.formattedCost)")
         }
+        if stats.pagesUsingVisionFallback > 0 {
+            let n = stats.pagesUsingVisionFallback
+            lines.append(
+                "Vision fallback — \(n) page\(n == 1 ? "" : "s") (Claude refused or errored; "
+                + "Vision OCR'd them locally instead of leaving them blank)"
+            )
+        }
         lines.append("Elapsed: \(String(format: "%.1fs", stats.elapsed))")
         return lines.joined(separator: "\n")
     }
