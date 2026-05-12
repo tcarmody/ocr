@@ -5165,28 +5165,31 @@ copy. Add `accessibilityElement(children: .combine)` on composite
 rows (queue row, library row, theme row) so VO reads the whole
 row as one element rather than fragmenting it. ~½ day.
 
-### U-HIG-Pass-Toolbar-Library — Promote Library filter bar to `.toolbar`
+### U-HIG-Pass-Toolbar-Library + U-HIG-Pass-Searchable — shipped 2026-05-12
 
-`LibraryWindowView.filterBar` is a custom `HStack` of icon
-buttons rendered inside the window content. HIG wants primary
-window actions in `NSToolbar` so they sit in the titlebar area,
-participate in Customize Toolbar, and pick up macOS 26 Liquid
-Glass automatically.
+Shipped together since both refactored the same Library filter
+bar. The custom in-content `filterBar` `HStack` is gone;
+`LibraryWindowView.toolbarContent` is now a real `.toolbar`
+with:
+- `.navigation` placement: collections sidebar toggle
+  (leading-edge view-toggle convention)
+- `.primaryAction` placement: language picker, bulk-edit
+  (always present, disabled when selection empty so the click
+  target stays discoverable), import, index menu, chat toggle
 
-Move sidebar-toggle, import, index, bulk-edit, and chat-toggle
-into `ToolbarItemGroup(placement: .primaryAction)`. Move the
-language picker + selection-count to `.principal`. Keep the
-selection-count text in a `.status` placement. ~1 day including
-the visual rework to remove the in-content row.
+The custom capsule search field is replaced by
+`.searchable(text:$searchQuery, placement: .toolbar, prompt:
+"Search title or author")`. Lands in the titlebar natively,
+gets the system clear button, ⌘F binding, and macOS 26 Liquid
+Glass treatment. The `@FocusState searchFieldFocused` and the
+hidden zero-size ⌘F overlay both went away.
 
-### U-HIG-Pass-Searchable — Native `.searchable` on the Library
+The "N of M · K selected" count moved out of the content into
+`.navigationSubtitle` via a new `librarySubtitle` computed —
+matches the editor window's title + status posture and frees
+the toolbar of status text.
 
-The Library currently uses a custom capsule TextField with a
-magnifying-glass and clear-button. `.searchable(text:$searchQuery)`
-gives the same behavior natively: titlebar placement, native
-clear button, ⌘F focus, macOS 26 glass treatment for free, and
-Spotlight-style feel. ⌘F binding stays via `.searchable`'s
-default. ~½ day.
+Build clean; 1036 tests pass.
 
 ### U-HIG-Pass-LiquidGlass-Edges — Stop blocking the floating-glass treatment
 

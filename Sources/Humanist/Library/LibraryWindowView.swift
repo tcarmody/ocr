@@ -39,9 +39,9 @@ struct LibraryWindowView: View {
     /// Library text search. Case-insensitive substring match
     /// against title + author; empty string = no filter. Per-
     /// session @State; resets on each launch so a stale filter
-    /// doesn't surprise the user. ⌘F focuses the field.
+    /// doesn't surprise the user. ⌘F focuses the field via
+    /// `.searchable`'s standard binding.
     @State private var searchQuery: String = ""
-    @FocusState private var searchFieldFocused: Bool
 
     /// Multi-selection in the table. Drives R-Bulk-Editor: the
     /// "Bulk Edit Selected…" button enables when this is non-empty
@@ -333,7 +333,18 @@ struct LibraryWindowView: View {
             }
         }
         .navigationTitle("Humanist Library")
+        .navigationSubtitle(librarySubtitle)
         .frame(minWidth: 620, minHeight: 380)
+        .toolbar { toolbarContent }
+        // Searchable lands in the toolbar natively, picks up
+        // ⌘F to focus, gets the native clear button + macOS 26
+        // Liquid Glass treatment, and matches the system search
+        // posture used by Mail, Notes, Finder.
+        .searchable(
+            text: $searchQuery,
+            placement: .toolbar,
+            prompt: "Search title or author"
+        )
         // Wire the live LibraryStore into the chat VM so its
         // federated-index build path doesn't allocate a fresh
         // `LibraryStore()` per send. Idempotent — re-running on
@@ -849,34 +860,16 @@ struct LibraryWindowView: View {
         }
     }
 
-    /// Original browser surface (filter bar + table / empty state).
-    /// Extracted into its own column so the new chat pane sits
-    /// beside it under an `HSplitView`.
+    /// Browser surface — table or empty state. Filter / search /
+    /// action affordances all live in the window toolbar now
+    /// (`.toolbar` + `.searchable` on `coreBody`); the browser
+    /// column just renders content.
     @ViewBuilder
     private var browserColumn: some View {
-        VStack(spacing: 0) {
-            filterBar
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-            Divider()
-
-            if library.entries.isEmpty {
-                emptyState
-            } else {
-                table
-            }
-        }
-        // ⌘F focuses the inline search field — standard macOS Find
-        // convention. The Library window is a separate scene from
-        // the editor (which has its own ⌘F bound to CodeMirror), so
-        // the chord doesn't clash. Hidden zero-size button so the
-        // shortcut binds without claiming any visual real estate.
-        .overlay(alignment: .topLeading) {
-            Button("Find") { searchFieldFocused = true }
-                .keyboardShortcut("f", modifiers: .command)
-                .opacity(0)
-                .frame(width: 0, height: 0)
-                .allowsHitTesting(false)
+        if library.entries.isEmpty {
+            emptyState
+        } else {
+            table
         }
     }
 
@@ -895,62 +888,40 @@ struct LibraryWindowView: View {
         return library.collections.first(where: { $0.id == id })
     }
 
-    // MARK: - filter bar
-
-    /// Search field rendered inline in the filter bar. Capsule
-    /// background so it reads as a chrome element distinct from
-    /// the count labels; magnifying-glass leading icon + clear
-    /// button when non-empty so the user can wipe the filter
-    /// without retyping. Fixed-ish width to keep the layout
-    /// stable as the user types — let it grow up to 280pt so a
-    /// long author name fits.
-    @ViewBuilder
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .imageScale(.small)
-            TextField(
-                "Search title or author",
-                text: $searchQuery
-            )
-            .textFieldStyle(.plain)
-            .focused($searchFieldFocused)
-            .frame(minWidth: 140, idealWidth: 220, maxWidth: 280)
-            if !searchQuery.isEmpty {
-                Button {
-                    searchQuery = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                        .imageScale(.small)
-                }
-                .buttonStyle(.plain)
-                .help("Clear search")
-            }
+    /// Subtitle string rendered under the window title — replaces
+    /// the old in-content "N of M · K selected" line. Empty when
+    /// the library hasn't loaded any entries yet so the subtitle
+    /// doesn't read "0 of 0".
+    private var librarySubtitle: String {
+        guard !library.entries.isEmpty else { return "" }
+        let total = library.entries.count
+        let shown = displayedEntries.count
+        var subtitle = shown == total
+            ? "\(total) book\(total == 1 ? "" : "s")"
+            : "\(shown) of \(total)"
+        if !selection.isEmpty {
+            subtitle += " · \(selection.count) selected"
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            Capsule().fill(Color.secondary.opacity(0.12))
-        )
-        .overlay(
-            Capsule()
-                .stroke(searchFieldFocused
-                        ? HumanistTheme.accent.opacity(0.7)
-                        : Color.clear,
-                        lineWidth: 1)
-        )
+        return subtitle
     }
 
-    @ViewBuilder
-    private var filterBar: some View {
-        HStack(spacing: 12) {
-            // Collections sidebar toggle — anchored to the leading
-            // edge, where the sidebar actually lives. Matches the
-            // macOS toolbar convention used by Mail, Notes, Finder.
-            // The chat toggle stays at the trailing edge for the
-            // mirror reason: the chat pane is on the right.
+    // MARK: - toolbar
+
+    /// Library window toolbar. Replaces the previous in-content
+    /// "filter bar" `HStack` so primary actions sit in the
+    /// system's `NSToolbar` (titlebar area), participate in
+    /// Customize Toolbar, and pick up macOS 26 Liquid Glass
+    /// automatically.
+    ///
+    /// Placement choices follow MACUX.md's toolbar rules:
+    /// `.navigation` (leading) for the sidebar toggle — view-
+    /// toggle convention; `.primaryAction` (trailing) for the
+    /// action group (import, index, bulk-edit, language picker,
+    /// chat). The search field lands in the toolbar via
+    /// `.searchable(text:)` on `coreBody`.
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
             Button {
                 showCollectionsSidebar.toggle()
             } label: {
@@ -961,43 +932,8 @@ struct LibraryWindowView: View {
             .help(showCollectionsSidebar
                   ? "Hide collections sidebar"
                   : "Show collections sidebar")
-            Text("\(displayedEntries.count) of \(library.entries.count)")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            if !selection.isEmpty {
-                Text("· \(selection.count) selected")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            searchField
-            Spacer()
-            // R-Bulk-Editor. Find/replace across the selection.
-            // Icon-only — the action belongs in the right-side icon
-            // group with import / index / sidebar / chat for a
-            // uniform "auxiliary actions" posture. Hover tooltip
-            // carries the verbose label.
-            if !selection.isEmpty {
-                Button {
-                    showBulkEdit = true
-                } label: {
-                    Image(systemName: "pencil.and.list.clipboard")
-                }
-                .help("Bulk edit \(selection.count) selected book\(selection.count == 1 ? "" : "s") — find/replace across them")
-            }
-            // "Remove from Library" was previously a destructive
-            // filter-bar button when 1+ rows were selected. Removed
-            // in favor of the row context menu (right-click → Remove
-            // from Library…) which already supports multi-select and
-            // works the same way the user removes Finder files —
-            // less filter-bar clutter, no behavior loss. The ⌫
-            // keyboard shortcut is still wired on the table.
-            //
-            // "Chat with Selected" / "Chat with [Collection]" were
-            // also previously filter-bar text buttons here. They've
-            // been folded into the right-side chat icon's smart
-            // click action so the filter bar reads as a single row
-            // of uniform icons instead of a row of truncated
-            // long-label buttons.
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
             if !availableLanguages.isEmpty {
                 Picker("Language", selection: $languageFilter) {
                     Text("All Languages").tag(String?.none)
@@ -1006,25 +942,34 @@ struct LibraryWindowView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .fixedSize()
+                .help("Filter by language")
             }
+            // R-Bulk-Editor. Find/replace across the selection.
+            // Always present so the toolbar layout is stable;
+            // disabled when nothing is selected so the click
+            // target is still discoverable.
+            Button {
+                showBulkEdit = true
+            } label: {
+                Image(systemName: "pencil.and.list.clipboard")
+            }
+            .disabled(selection.isEmpty)
+            .help(selection.isEmpty
+                ? "Bulk edit (select books first)"
+                : "Bulk edit \(selection.count) selected book\(selection.count == 1 ? "" : "s") — find/replace across them")
+
             // R-EPUB-Import: bring an existing .epub into the
-            // library — anchor injection + cataloging + index. Sits
-            // next to the bulk-index button so both "fill out the
-            // library" affordances cluster together.
+            // library — anchor injection + cataloging + index.
             Button {
                 startImport()
             } label: {
                 Image(systemName: "tray.and.arrow.down")
             }
             .help("Import EPUB into Library…")
-            // Bulk-index button. Useful any time the user wants
-            // library chat to see books they haven't opened yet
-            // (the alternative is to open every book once to
-            // trigger its lazy index build). Default-click runs
-            // an incremental build (skips books whose sidecar
-            // already matches the current backend); ⌥-click
-            // forces a full rebuild.
+
+            // Bulk-index menu. Default-click ran an incremental
+            // build in the old filter-bar version; we now surface
+            // both as menu items so the action is explicit.
             Menu {
                 Button("Build Missing Indexes") {
                     startBulkIndex(forceRebuild: false)
@@ -1035,19 +980,11 @@ struct LibraryWindowView: View {
             } label: {
                 Image(systemName: "arrow.triangle.2.circlepath")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
             .help("Build embedding indexes for every book")
-            // Chat-pane button — does triple duty depending on
-            // context, so the filter bar only needs one chat
-            // affordance:
-            //   * selection non-empty → open chat pane + scope to
-            //     selection (`chatWithSelected` reveals the pane
-            //     internally; same for `chatWithCollection`)
-            //   * active collection with books → scope to collection
-            //   * neither → toggle pane visibility
-            // The tooltip changes to match the about-to-happen
-            // action so the user knows what each click will do.
+
+            // Chat-pane button — same triple-duty action as before
+            // (selection → chatWithSelected; collection →
+            // chatWithCollection; otherwise → toggle pane).
             Button {
                 chatIconAction()
             } label: {
