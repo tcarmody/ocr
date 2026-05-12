@@ -876,6 +876,46 @@ Drivers for the current ordering:
     `epub:type` alignment). Surfaces regressions in real
     conversions before tagging releases. See T-Real-Corpus
     section for the findings from the first mini-run.
+13. **R-Library-Migrate — Migrate-library wizard**. Settings
+    sheet that moves library.json + Embeddings/ + snapshots/
+    + Covers/ + aliases.json between locations (local
+    Application Support ↔ cloud-synced output root, or one
+    cloud root to another). Currently `R-Library-Sync`'s
+    "Share across machines" toggle only handles **first-
+    time activation** (`LibrarySyncMigration.runFull` copies
+    legacy SHA-keyed sidecars + aliases). There's no path
+    for: turning the toggle OFF after years of cloud usage
+    (leaves the existing Embeddings/ orphaned), moving the
+    output root to a different folder (the catalog points
+    at relative paths against the *old* root), or recovering
+    from a stuck/corrupted cloud catalog. Wizard steps:
+    (1) source vs. destination pickers, (2) pre-flight
+    space + permission check, (3) two-phase copy (catalog
+    first, then siblings) with a progress sheet that's safe
+    to cancel, (4) switchover (flip the toggle + update
+    `ConversionOutputResolver`), (5) post-flight verification
+    (entry count, file-presence sample, re-read round-trip).
+    ~1.5 days.
+14. **U-Splitview-Frame-Clamp — Defensive clamp of restored
+    NSSplitView frames**. macOS persists per-NSSplitView
+    column widths in UserDefaults
+    (`NSSplitView Subview Frames editor-AppWindow-N,
+    SidebarNavigationSplitView`). On 2026-05-12 a session
+    landed with saved widths of 5,198 px sidebar + 10,957 px
+    detail (screen is 1,512 px wide) — likely from a
+    multi-monitor session or a SwiftUI hot-reload mid-resize.
+    The corrupt frame caused a 300-iteration
+    `SystemSplitView` constraint loop on every editor open,
+    blanking the sidebar / WYSIWYG / Preview panes; rendering
+    only returned after manually `defaults delete`-ing the
+    two keys. Hardening: on app launch, walk every
+    `NSSplitView Subview Frames …` key and drop any entry
+    whose any-axis dimension exceeds `2 × max(NSScreen.frame
+    .{width,height})`. Belt-and-suspenders against the same
+    silent wedge recurring. ~half day; trivially unit-testable
+    via injected screen bounds. See
+    `feedback_library_breaks_editor_rendering` memory for
+    the full debugging path.
 
 ### Earn when you need it
 
