@@ -5332,35 +5332,40 @@ future audits.
     with the other three so content alignment + window
     bounds stay stable across tab switches.
 
-### U-HIG-AI-Settings-Split — split the AI pane (discuss)
+### U-HIG-AI-Settings-Split — shipped 2026-05-12
 
-`AISettingsView` is 844 lines — 6.7× the next-largest pane
-(ConversionSettingsView at 316). MACUX.md says "an order of
-magnitude longer should probably split." Natural split:
+Split out a separate Chat pane. Result: 5 tabs (Editor /
+Conversion / AI / Chat / Appearance). Each pane is now under
+~400 lines.
 
-- **AI pane** keeps the conversion-pipeline AI sections:
-  Processing Mode, Anthropic API Key, Cloud Features, Cost
-  Cap, Local AI features for conversion (chapter
-  classification, metadata, coherence, post-OCR cleanup).
-- **Chat pane** (new) gets the book/library chat sections:
-  Book Chat backend selector (Cloud Haiku / Cloud Sonnet /
-  Local Ollama), Chat Retrieval (BM25 / embedding / hybrid),
-  embedding backend chooser, alias dictionary, advanced
-  retrieval tunables.
+**AI pane** kept the conversion-pipeline AI sections:
+Processing Mode, Anthropic API Key, Cloud Features, Cost Cap,
+Local AI features for conversion (chapter classification,
+metadata, coherence, post-OCR cleanup), Restore Defaults.
+Down from 848 lines → 227.
 
-Result: 5 tabs (Editor / Conversion / AI / Chat /
-Appearance). Each pane stays under ~400 lines. AI tab
-becomes "AI for converting your books"; Chat tab becomes
-"AI for talking with your books" — clearer mental model
-for users who want to configure one without the other.
+**Chat pane** (new `ChatSettingsView.swift`) carries the book-
+and library-chat sections: Book Chat backend selector (Cloud
+Haiku / Cloud Sonnet / Local Ollama), Chat Retrieval
+(BM25 / embedding / hybrid), structural / entity boost
+toggles, Advanced retrieval tunables (RRF k, Top-K, max para
+chars), Alias dictionary, embedding-backend chooser (Apple
+NLEmbedding / Ollama / Voyage / Gemini) with per-backend key
+management and Test Connection buttons, embeddings-cache
+clear. 624 lines, self-contained — no shared view-model with
+AI pane (each side uses its own `@AppStorage` properties and
+Keychain stores).
 
-Tradeoff: 5 tabs is more horizontal real estate. macOS
-Settings windows handle that fine up to ~7 tabs; the icon
-+ label per tab keeps the row scannable.
+Tab order is "most-used first" rather than "general first":
+Editor (the app's primary surface) → Conversion (per-book
+options) → AI (conversion AI) → Chat (chat AI) → Appearance.
+AI and Chat sit adjacent so users who want to configure one
+typically open the other right after.
 
-Effort: ~½ day. Mostly file split + Settings-tab plumbing.
-Defer to a separate session — it's a deliberate UI change,
-not a fix-up.
+`SettingsTab.chat` added to the persisted enum; existing
+`humanist.settings.selectedTab` values still decode (the
+default-fallback path catches unknown values and returns
+`.editor`). 1036 tests pass.
 - **U-HIG-LiquidGlass-Inspect** — full Xcode-26 pass with
   `NSGlassEffectContainerView`, `NSSplitViewItemAccessoryViewController`
   for editor pane headers, `NSView.LayoutRegion` for corner
