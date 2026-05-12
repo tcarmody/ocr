@@ -859,6 +859,18 @@ Drivers for the current ordering:
     classical / manuscript material), v2 (bulk-mode
     multi-select lookup). See R-Metadata-Online section
     for scope.
+11. **Q-Hard-Captures Tier 1** (~1¼ days combined). Three
+    quality wins surfaced from real conversion experience
+    on 2026-05-12: **Q-Italic-Skip** (dictionary corrector
+    skips italic runs — fixes the "logos / vita / die"
+    overcorrection class), **Q-Vision-Backfill-Batch**
+    (close the parity gap so batch-API refusals fall back
+    to Vision the same way the sync path already does),
+    **Q-Refused-Fallback-Surface** (count Vision-fallback
+    pages in the conversion summary so the user knows when
+    quality degraded). Tier 2 (`Q-Widow-Footnote-Guard`)
+    and Tier 3 (inline math, marginalia filter, drop caps)
+    follow if the Tier 1 wins surface as substantial.
 
 ### Earn when you need it
 
@@ -5603,6 +5615,134 @@ letter-pair / triplet forms; strips invisible soft hyphens
 typographic ligatures and archaic Latin abbreviations remain
 deferred — the Latin set is what shows up in actual academic
 PDFs; the rest can layer in per-script if a corpus demands it.
+
+### Q-Hard-Captures — Quality gaps on hard-to-read elements
+
+Umbrella for user-reported quality gaps that fall between the
+existing OCR cascade's seams. Surfaced 2026-05-12 from real
+conversion experience. Each sub-item is independently shippable
+and ordered by impact-per-effort.
+
+#### Q-Italic-Skip (Tier 1)
+
+The dictionary corrector ([DictionaryCorrector.swift:118-158]
+(Sources/Pipeline/DictionaryCorrector.swift)) already gates
+heavily: Latin script only, length ≥ 3 chars, letter-only,
+Levenshtein = 1, capitalization sanity. But it still
+"corrects" italicized 3-5-letter foreign words — *logos*,
+*vita*, *deus*, *die* — that look like English typos to
+`NSSpellChecker`. Academic prose marks foreign terms with
+italics specifically so readers know they're not native;
+applying English spell-check to them is exactly wrong.
+
+Fix: gate the corrector on the carrying run's `isItalic`
+flag. If the inline run is italic, pass through unchanged.
+Claude page OCR already produces `isItalic` reliably; Vision
+and Tesseract paths are spottier (Vision doesn't flag
+italics at all; Tesseract per-word flags work when font
+training has run). One-line gate plus the upstream wiring to
+get the flag to the corrector. ~½ day.
+
+Estimated user-felt impact: high. Addresses the most common
+overcorrection pattern in mixed-language academic text.
+
+#### Q-Vision-Backfill-Batch (Tier 1)
+
+When Claude OCR refuses a page (safety filter false positive
+or content-policy trip), the **sync path** already falls back
+to Vision ([PDFToEPUBPipeline.swift:2632-2659]
+(Sources/Pipeline/PDFToEPUBPipeline.swift#L2632)) so the page
+contributes *something*. The **batch path** doesn't — a TODO
+at [line 2912](Sources/Pipeline/PDFToEPUBPipeline.swift#L2912)
+explicitly calls this out: "Batch path doesn't currently
+retry locally on refusal — would need a separate per-page
+Vision pass keyed off the batch result." Refused pages in
+batch mode go blank in the output.
+
+Fix: after the batch returns, collect indices where
+`result == .refused` (or empty), run Vision OCR on those
+specific pages, merge into the result set. Mirror the sync
+path's `usedLocalFallback` accounting so the stats panel can
+report it. ~½ day.
+
+Estimated user-felt impact: high for batch-mode bulk users,
+low otherwise.
+
+#### Q-Refused-Fallback-Surface (Tier 1)
+
+Even the sync path's existing Vision fallback is silent —
+the user sees the page came through but doesn't know Vision
+ran instead of Sonnet on those specific pages, so quality
+issues on those pages look like Sonnet bugs rather than the
+expected-lower-quality fallback. `usedLocalFallback` is
+already tracked per-page; just needs to surface in
+`ConversionStats` as "N pages used Vision fallback after
+Claude refused / errored." ~¼ day.
+
+#### Q-Widow-Footnote-Guard (Tier 2)
+
+The header/footer classifier and the footnote heuristic on
+small text regions both occasionally misclassify legitimate
+1-2 line body fragments at page boundaries as chrome.
+
+Two tightenings:
+- **Header/footer**: require cross-page recurrence (a fragment
+  that doesn't repeat near-verbatim on the previous or next
+  page is body text, not chrome). The classifier already has
+  a recurrence pass; the gate isn't tight enough.
+- **Footnote**: require at least one of (a) clearly smaller
+  font than surrounding body, (b) a horizontal-rule region
+  above, (c) a leading footnote marker (digit / dagger /
+  asterisk). 1-2 lines alone is insufficient.
+
+Needs real fixtures to tune. ~1 day plus fixture capture.
+
+#### Q-Inline-Math (Tier 3)
+
+`.formula` regions get rastered as figures (correct for
+display math). Inline math — `x^2`, fractions, ∫, ∑ — in
+body text comes through as garbled UTF-8. The Cloud-OCR
+prompts could be instructed to wrap inline math in
+`<span class="math">…</span>` so a reader at minimum sees
+the text variant cleanly. Full MathML rendering is a
+separate larger lift. ~½ day for the prompt change + parser
+recognition.
+
+#### Q-Marginalia-Filter (Tier 3)
+
+Library stamps, owner signatures, handwritten margin notes in
+scanned books all get OCR'd as body text. No "is this in the
+page margin?" gate today. A region-position classifier
+(distance from the body bounding box exceeds N% of page
+width or sits clearly outside the body column) would let us
+flag regions as `.marginalia` and exclude them from body
+reflow. ~1 day.
+
+#### Q-Drop-Caps (Tier 3)
+
+Drop caps at chapter starts get OCR'd as a separate region
+from the rest of the first word ("T" + "he story begins…"
+instead of "The story begins…"). Heuristic: a single
+uppercase-letter region whose right edge adjoins a body
+block whose first word starts with lowercase → merge the
+two. ~1 day.
+
+#### Out of scope for this umbrella (separate items)
+
+- **Math notation full rendering** (MathML emission). Reader-
+  side rendering across EPUB readers is patchy; emit text +
+  the inline `<span>` wrapper from Q-Inline-Math and defer
+  the renderer.
+- **Mid-paragraph headings**. Real but rare; needs a
+  representative fixture before designing a fix.
+- **Two-column TOC with leader dots**. Often handled by
+  the printed-TOC parser when Cloud is on; revisit if it
+  becomes a recurring complaint.
+
+#### Effort total
+
+Tiers 1-3 sub-items combined: ~4-5 days. None blocks others;
+sequence by which complaint surfaces next.
 
 ## Versatile (more inputs, more outputs)
 
