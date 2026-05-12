@@ -197,27 +197,7 @@ public final class EPUBBook: @unchecked Sendable {
     /// URL on disk. Used by callers that need to read images or
     /// other resources directly from the working directory.
     public func absoluteURL(for resource: Resource) -> URL {
-        Self.appendingHref(resource.hrefRelativeToOPF, to: opfDirectory)
-    }
-
-    /// Append a manifest href to a base URL, percent-decoding the
-    /// href first so the resulting file URL maps to the actual
-    /// on-disk filename. EPUB OPFs store hrefs as URI references
-    /// (per RFC 3986 + the EPUB 3 spec), so a chapter file named
-    /// `Table of Contents.xhtml` appears in the manifest as
-    /// `text/Table%20of%20Contents.xhtml`. Without decoding,
-    /// `appendingPathComponent` treats the literal `%20` as path
-    /// characters and `FileManager.fileExists` fails to find the
-    /// file — which is exactly what tripped the Humanist importer
-    /// when opening the Walter Benjamin EPUB 2026-05-12.
-    ///
-    /// Falls back to the raw string when `removingPercentEncoding`
-    /// returns nil (malformed escape sequence — rare; the EPUB is
-    /// malformed in that case anyway and `fileExists` will fail
-    /// downstream).
-    static func appendingHref(_ href: String, to base: URL) -> URL {
-        let decoded = href.removingPercentEncoding ?? href
-        return base.appendingPathComponent(decoded)
+        opfDirectory.appendingPathComponent(resource.hrefRelativeToOPF)
     }
 
     /// Resources in `resourceOrder` order. Convenience for callers
@@ -353,9 +333,7 @@ public final class EPUBBook: @unchecked Sendable {
                     dir: dir, ext: ext, usedHrefs: usedHrefs
                 )
             }
-            let absoluteOnDisk = Self.appendingHref(
-                href, to: opfDirectory
-            )
+            let absoluteOnDisk = opfDirectory.appendingPathComponent(href)
             let collidesOnDisk = FileManager.default
                 .fileExists(atPath: absoluteOnDisk.path)
             if !usedHrefs.contains(href), !collidesOnDisk {
@@ -402,9 +380,7 @@ public final class EPUBBook: @unchecked Sendable {
         while true {
             let basename = "chapter-\(String(format: "%03d", i)).\(ext)"
             let href: String = dir.isEmpty ? basename : "\(dir)/\(basename)"
-            let absoluteOnDisk = Self.appendingHref(
-                href, to: opfDirectory
-            )
+            let absoluteOnDisk = opfDirectory.appendingPathComponent(href)
             let collidesOnDisk = FileManager.default
                 .fileExists(atPath: absoluteOnDisk.path)
             if !usedHrefs.contains(href), !collidesOnDisk {
@@ -484,9 +460,8 @@ public final class EPUBBook: @unchecked Sendable {
         guard let resource = resourcesByID.removeValue(forKey: id) else { return }
         resourceOrder.removeAll { $0 == id }
         spine.removeAll { $0 == id }
-        let absoluteURL = Self.appendingHref(
-            resource.hrefRelativeToOPF, to: opfDirectory
-        )
+        let absoluteURL = opfDirectory
+            .appendingPathComponent(resource.hrefRelativeToOPF)
         pendingDeletions.append(.init(id: id, diskURL: absoluteURL))
         structuralIsDirty = true
     }
