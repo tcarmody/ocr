@@ -868,6 +868,14 @@ Drivers for the current ordering:
 16. **Section-level granularity** (R-Chat-Graph-Lite's only
     remaining item). Chapter-level expansion already works;
     finer cut is opt-in only.
+17. **U-HIG-Pass — Mac HIG / Liquid Glass conformance**
+    (~4.5 days for the seven recommended sub-items: VoiceOver
+    labels, Library `.toolbar` + `.searchable`, edge-to-edge
+    background cleanup, `Credits.rtf`, editor-toolbar labels,
+    keyboard focus). Mostly subtractive / annotation work.
+    Sequence opportunistically — earns priority before the
+    first non-tester distribution, or when an accessibility-
+    dependent user needs the app.
 
 ### Deferred indefinitely
 
@@ -5036,6 +5044,138 @@ automatically.
 ### Effort
 
 ~3 days for a 10-book corpus + ground truth + CI integration.
+
+---
+
+## U-HIG-Pass — Mac HIG / Liquid Glass conformance
+
+Audit umbrella that pulls Humanist closer to Apple's macOS Human
+Interface Guidelines and the macOS 26 Liquid Glass design system.
+The app is already a SwiftUI native-Mac app with the right menu-bar
+posture, real toolbars on the editor, and a proper Settings scene —
+but several surfaces drift from HIG (icon-only buttons with no
+VoiceOver labels, the Library window using an in-content "filter
+bar" rather than `.toolbar`, custom search capsule instead of
+`.searchable`, opaque backgrounds that block the floating-glass
+treatment macOS 26 applies automatically).
+
+Reference sources are recorded in the user's memory file
+`reference_mac_uiux_sources.md`: Apple HIG component pages
+(`toolbars`, `sidebars`, `menus-and-actions`, `windows`,
+`settings`, `foundations/accessibility`), WWDC25 #310 "Build an
+AppKit app with the new design" + "Adopting Liquid Glass" docs,
+Mario Guzman's *Macintosh Checklist*, and usagimaru's *macOS
+Settings Window Guidelines*.
+
+Each sub-item is independently scoped — take or skip without
+affecting the others. Sequencing is intentionally loose; the
+audit is polish work, not a feature gate.
+
+### U-HIG-Pass-A11y — VoiceOver labels on every icon-only control
+
+Grep returns zero hits for `accessibilityLabel` / `accessibilityHint`
+across `Sources/Humanist/`. Native SwiftUI controls inherit some
+accessibility for free, but icon-only buttons (Library filter
+bar — sidebar toggle, import, index, chat; editor pane-header
+chat-clear + index-rebuild; queue status icons; theme swatches;
+drop zone) don't announce meaningfully under VoiceOver.
+
+Pass: walk every `Image(systemName:)`-as-button site and add
+`.accessibilityLabel("…")` mirroring the existing `.help("…")`
+copy. Add `accessibilityElement(children: .combine)` on composite
+rows (queue row, library row, theme row) so VO reads the whole
+row as one element rather than fragmenting it. ~½ day.
+
+### U-HIG-Pass-Toolbar-Library — Promote Library filter bar to `.toolbar`
+
+`LibraryWindowView.filterBar` is a custom `HStack` of icon
+buttons rendered inside the window content. HIG wants primary
+window actions in `NSToolbar` so they sit in the titlebar area,
+participate in Customize Toolbar, and pick up macOS 26 Liquid
+Glass automatically.
+
+Move sidebar-toggle, import, index, bulk-edit, and chat-toggle
+into `ToolbarItemGroup(placement: .primaryAction)`. Move the
+language picker + selection-count to `.principal`. Keep the
+selection-count text in a `.status` placement. ~1 day including
+the visual rework to remove the in-content row.
+
+### U-HIG-Pass-Searchable — Native `.searchable` on the Library
+
+The Library currently uses a custom capsule TextField with a
+magnifying-glass and clear-button. `.searchable(text:$searchQuery)`
+gives the same behavior natively: titlebar placement, native
+clear button, ⌘F focus, macOS 26 glass treatment for free, and
+Spotlight-style feel. ⌘F binding stays via `.searchable`'s
+default. ~½ day.
+
+### U-HIG-Pass-LiquidGlass-Edges — Stop blocking the floating-glass treatment
+
+`ContentView` paints `.background(Color(nsColor: .windowBackgroundColor))`
+on the full body and inserts a manual `Divider()` under
+`ModeStrip`. Both fight macOS 26's automatic floating-glass
+toolbar/sidebar treatment, which expects content to extend
+edge-to-edge and sample-through. Remove the explicit background,
+drop the divider, and let the system render the toolbar/sidebar
+glass over the content. Repeat the audit in `LibraryWindowView`
+and `EditorView`. Verify with an Xcode 26 build that the glass
+toolbar appears correctly without the legacy `NSVisualEffectView`
+backings. ~1 day, mostly subtractive.
+
+### U-HIG-Pass-About-Credits — Ship `Credits.rtf`
+
+The About box currently shows whatever default text macOS
+synthesizes from the bundle's `CFBundleShortVersionString`.
+Adding `BundleAssets/Credits.rtf` (Surya, Tesseract, CodeMirror,
+epubcheck, Apple Vision, NaturalLanguage, etc.) wires it
+automatically — macOS picks up `Credits.rtf` from the bundle's
+Copy Bundle Resources phase. ~30 min. Cheap win.
+
+### U-HIG-Pass-Editor-Toolbar-Labels — Icon + label on editor toolbar items
+
+`EditorView.toolbarContent` uses `ToolbarItemGroup(placement: .navigation)`
+for the pane-toggle Labels. macOS 26 renders that group icon-only
+by default, even though the `Label` carries both an icon and a
+title. Switch to `.automatic` placement (or explicit
+`.primaryAction`) so the labels appear next to the icons — HIG
+default. Remove the `.help()` strings that duplicate the now-
+visible labels. ~½ day.
+
+### U-HIG-Pass-Keyboard-Focus — Tab key reaches every interactive surface
+
+Several custom hit areas don't participate in keyboard focus —
+the drop zone, theme rows in Appearance Settings, the Library
+search capsule (if kept), the queue row's action chips. Pass:
+add `.focusable()` + a `.focused()` ring treatment using the
+system focus-ring color so Tab walks the whole UI. Important
+for keyboard-only users and a HIG requirement. ~½ day.
+
+### Out of scope for this pass (discuss separately)
+
+- **U-HIG-Launcher-Toolbar** — promoting the launcher mode
+  toggles (Force Private, Force OCR, Claude OCR, Early Print,
+  Manuscript, Surya OCR) from in-content checkboxes into a
+  real toolbar. Bigger change (~1.5 days including layout
+  rework); user-visible enough that it should be sequenced
+  deliberately.
+- **U-HIG-Help-Book** — Apple Help Book + `MDItemKeywords`.
+  Earns priority alongside P10 distribution, not before.
+- **U-HIG-Settings-Audit** — confirm Settings panes don't
+  surface Cancel/Save (currently fine), that all four tabs
+  read at similar density (`AISettingsView` is 844 lines vs
+  `EditorSettingsView`'s 125 — uneven). Small fix-ups; can
+  fold into the relevant feature areas as they're touched.
+- **U-HIG-LiquidGlass-Inspect** — full Xcode-26 pass with
+  `NSGlassEffectContainerView`, `NSSplitViewItemAccessoryViewController`
+  for editor pane headers, `NSView.LayoutRegion` for corner
+  concentricity. Build once Xcode 26 is the floor *and*
+  the above subtractive items have landed.
+
+### Effort
+
+The seven recommended sub-items sum to ~4.5 days of focused
+work, mostly subtractive or annotation passes. None block
+other PLANS.md items; sequence opportunistically.
 
 ---
 
