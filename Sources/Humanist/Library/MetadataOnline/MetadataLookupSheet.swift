@@ -28,6 +28,7 @@ struct MetadataLookupSheet: View {
     @State private var candidates: [MetadataCandidate] = []
     @State private var selectedID: MetadataCandidate.ID?
     @State private var status: Status = .idle
+    @State private var partialErrors: [(sourceName: String, message: String)] = []
     @State private var lookupTask: Task<Void, Never>?
 
     /// In-flight UI state for the search. Distinct from
@@ -42,7 +43,7 @@ struct MetadataLookupSheet: View {
         case results(Int)
     }
 
-    private let source: any MetadataSource = OpenLibrarySource()
+    private let coordinator = MetadataLookupCoordinator()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,6 +52,12 @@ struct MetadataLookupSheet: View {
             queryBar
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
+            if !partialErrors.isEmpty,
+               case .results = status {
+                partialErrorBanner
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 8)
+            }
             Divider()
             resultsArea
             Divider()
@@ -59,6 +66,31 @@ struct MetadataLookupSheet: View {
         .frame(width: 560, height: 520)
         .onAppear(perform: hydrate)
         .onDisappear { lookupTask?.cancel() }
+    }
+
+    /// Soft-error strip shown when at least one source failed
+    /// but others returned results. Picker stays usable; this is
+    /// just a heads-up that the merged list might be incomplete.
+    @ViewBuilder
+    private var partialErrorBanner: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .imageScale(.small)
+            Text(partialErrors
+                .map { "\($0.sourceName) unavailable" }
+                .joined(separator: " · "))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color.orange.opacity(0.08))
+        )
     }
 
     // MARK: - sections
@@ -308,29 +340,38 @@ struct MetadataLookupSheet: View {
             return
         }
         status = .searching
+        partialErrors = []
         lookupTask?.cancel()
-        let source = self.source
+        let coordinator = self.coordinator
         lookupTask = Task {
-            do {
-                let results = try await source.query(query)
-                if Task.isCancelled { return }
-                candidates = results
-                selectedID = results.first?.id
-                status = results.isEmpty
-                    ? .empty
-                    : .results(results.count)
-            } catch is CancellationError {
-                return
-            } catch {
-                if Task.isCancelled { return }
-                candidates = []
-                selectedID = nil
-                status = .failed(
-                    (error as? MetadataSourceError)?.localizedDescription
-                    ?? error.localizedDescription
-                )
+            let result = await coordinator.query(query)
+            if Task.isCancelled { return }
+            candidates = result.candidates
+            selectedID = result.candidates.first?.id
+            partialErrors = result.partialErrors
+            // Picker treats a successful but empty merge as
+            // .empty even if individual sources had errors —
+            // the soft-error banner under the query bar tells
+            // the user a source failed without blocking the
+            // results from the sources that did respond.
+            if result.candidates.isEmpty && partialErrors.count == sources.count {
+                let messages = partialErrors.map { "\($0.sourceName): \($0.message)" }
+                status = .failed(messages.joined(separator: " · "))
+            } else if result.candidates.isEmpty {
+                status = .empty
+            } else {
+                status = .results(result.candidates.count)
             }
         }
+    }
+
+    /// Names of the sources the coordinator is configured with.
+    /// Used by `runSearch` to compare partial-error count against
+    /// total source count when deciding whether to fail hard vs.
+    /// soft-error. Re-reads coordinator state each call so future
+    /// settings-driven source toggles get picked up.
+    private var sources: [any MetadataSource] {
+        coordinator.sources
     }
 
     private func accept(_ candidate: MetadataCandidate) {
