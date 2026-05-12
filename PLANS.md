@@ -862,10 +862,20 @@ Drivers for the current ordering:
 11. ~~**Q-Hard-Captures Tier 1**~~ shipped 2026-05-12
     across three commits: Q-Italic-Skip (`7db9534`),
     Q-Vision-Backfill-Batch + Q-Refused-Fallback-Surface
-    (this commit). Tier 2 (`Q-Widow-Footnote-Guard`) and
-    Tier 3 (inline math, marginalia filter, drop caps) stay
-    in PLANS and earn priority when the Tier 1 wins land
-    in real conversions and the next gap surfaces.
+    (`356edf5`). **New Tier 1 sub-item added 2026-05-12**:
+    Q-Code-Preservation (`<code>` + `<pre>` retention),
+    elevated from hypothetical to measured-at-0%-retention
+    by the corpus harness's first mini-run. ~1.5 days
+    estimated.
+12. ~~**T-Real-Corpus**~~ shipped 2026-05-12 as
+    `humanist-cli compare-corpus <dir>`. Harness that walks
+    the user's local corpus of paired PDFs + publisher
+    EPUBs, converts each PDF, and reports per-book metrics
+    (Jaccard word similarity, character-count ratio,
+    structural deltas, inline-tag retention,
+    `epub:type` alignment). Surfaces regressions in real
+    conversions before tagging releases. See T-Real-Corpus
+    section for the findings from the first mini-run.
 
 ### Earn when you need it
 
@@ -5192,20 +5202,81 @@ process's RSS doesn't grow past a threshold. Run on demand
 
 ## T-Real-Corpus — Real-corpus regression suite
 
-**Status**: tests use synthetic fixtures. Real-world quality is
-verified manually.
+**Status**: harness shipped 2026-05-12 — `humanist-cli
+compare-corpus <dir>`. The original "hand-correct 5 pages × 10
+books" plan was made obsolete when the user pointed out they
+already have ~17 DRM-free O'Reilly tech books with publisher-
+edited EPUBs sitting next to the source PDFs in iCloud Drive.
+Those pro EPUBs *are* the ground truth — no hand-correction
+needed.
 
-### Goal
+### What shipped
 
-A separate `TestDocuments/` repo (kept out of the app repo for
-size reasons; per the original plan) with hand-corrected ground
-truth for the first 5 pages of a representative corpus. CER /
-WER tracked across releases so accuracy regressions surface
-automatically.
+- `Sources/EPUB/CorpusMetrics.swift` — `CorpusMetrics` value
+  type (chapter / heading / paragraph / figure / table counts;
+  inline `<em>` / `<strong>` / `<code>` / `<pre>` counts;
+  `epub:type` labels per resource; word + character counts;
+  unique-word set for Jaccard similarity).
+  `CorpusMetricsExtractor.extract(from:)` opens an EPUB via
+  `EPUBBook.open` and regex-extracts all of the above.
+  `CorpusComparison` holds the per-book diff (actual vs
+  reference) with `wordSetJaccard`, `characterCountRatio`,
+  `retention(\.inlineCodeCount)` etc., and a positional
+  `epubTypeAlignment()` helper for classification accuracy.
+- `Sources/HumanistCLI/CompareCorpusCommand.swift` —
+  `humanist-cli compare-corpus --dir <dir>` walks the directory,
+  pairs PDFs with reference EPUBs by stem (with `_V\d+`
+  suffix-stripping for publisher review-version filenames),
+  converts each PDF via the full `PDFToEPUBPipeline`, extracts
+  metrics from both, and emits either a text table or
+  `--json`. `--limit N` for iteration; `--keep-output <dir>`
+  to inspect converted EPUBs; `--private` to skip Cloud
+  features.
+- iCloud-safe directory enumeration (`contentsOfDirectory`
+  with `options: []`, not `.skipsHiddenFiles`, per the
+  existing memory).
+- 16 new tests cover the regex extractors (count, body
+  `epub:type`, XHTML stripping), `CorpusComparison.retention`
+  semantics, and Jaccard similarity boundary cases.
 
-### Effort
+### What the first mini-run surfaced (3 O'Reilly tech books, Private mode)
 
-~3 days for a 10-book corpus + ground truth + CI integration.
+| metric | finding |
+|---|---|
+| median Jaccard word similarity | 0.82 — text content roughly right |
+| median character-count ratio | 0.98 — capturing nearly all chars |
+| mean `<code>` retention | **0.00** — losing every inline code span |
+| mean `<pre>` retention | **0.00** — losing every code block |
+| mean `<em>` retention | **0.00** — Vision doesn't detect italics (expected in Private mode) |
+| mean `<strong>` retention | **0.00** — same |
+| Δparagraphs per book | -506 to -1043 — reflow glomming text into bigger blocks |
+| Δfigures per book | -7 to -158 — Private-mode figure extraction limited |
+
+The 0% inline-tag retention numbers are the most useful
+finding — they elevate **Q-Code-Preservation** from a
+hypothetical Tier 3 concern to a measured Tier 1 gap. See the
+new entry under Q-Hard-Captures.
+
+### Corpus storage convention
+
+The user's corpus lives at `/Users/tim/Library/Mobile
+Documents/com~apple~CloudDocs/Documents/Documents - Bird/Books/
+O'Reilly AI and ML /` (note trailing space in folder name) —
+flat directory, source PDFs + reference EPUBs paired by
+filename stem. **Not shipped in the repo**: these are
+copyrighted publisher EPUBs, fair-use as personal regression
+fixtures but can't be distributed. Future expansion can mix
+in tiny hand-redacted single-page excerpts at
+`Tests/Fixtures/HardCaptures/` for specific heuristic edge
+cases.
+
+### Why this matters going forward
+
+Every future Q-* item now has a measurable acceptance test —
+"the metric improves on the corpus" instead of "looks better
+to me." Q-Italic-Skip, Q-Vision-Backfill-Batch,
+Q-Widow-Footnote-Guard, and any future heuristic change can
+A/B'd against the harness before merge.
 
 ---
 
@@ -5687,6 +5758,57 @@ locally instead of leaving them blank)".
 zero-fallback no-suffix case, the Codable round-trip, and
 the legacy-JSON-without-the-field decode-with-zero
 invariant.
+
+#### Q-Code-Preservation (Tier 1, newly elevated 2026-05-12)
+
+Surfaced by the corpus harness's first mini-run (3 O'Reilly
+tech books): we emit **0% of the `<code>` and `<pre>` tags**
+the publisher EPUBs have. Inline code (function names, file
+paths, shell commands) and code blocks (multi-line snippets)
+come through as plain prose with whatever Vision / Tesseract
+made of the monospace glyphs. For technical content, that
+loss is the single biggest quality gap measurable today.
+
+Two pieces missing in the document IR:
+
+- `InlineRun` carries `isItalic` + `isBold` but **no
+  `isCode` / `isMonospace`**.
+- `Block` enum has `heading / paragraph / anchor / figure /
+  table` but **no `.code` / `.preformatted`** variant. Multi-
+  line code blocks get reflowed into prose by
+  `ParagraphReflow`.
+
+Two-tier fix:
+
+1. **IR plumbing**: add `isCode` to `InlineRun`; add
+   `.code(language:lines:)` to `Block`. Update XHTMLWriter
+   to emit `<code>` / `<pre>` accordingly. Update Markdown
+   + text + DOCX + HTML sibling writers to honor the new
+   block kind. ~1 day, mostly mechanical.
+2. **Detection**: where does the signal come from?
+   - **Claude page OCR** (Sonnet / Opus, current `useClaudePageOCR`):
+     simplest path is to instruct the prompt to wrap inline
+     code in `<code>` and code blocks in `<pre><code>`.
+     Sonnet handles this reliably when prompted. ~½ day.
+   - **Tesseract**: per-word font flags include monospace
+     when the model has been trained for it. Default
+     tessdata doesn't tag font; would need a font-class
+     adapter. Defer.
+   - **Vision**: no font information; can't detect
+     monospace from the API. Fallback heuristic: regions
+     that span column position 0 in a fixed-width font on
+     a colored background often signal code, but this is
+     fragile. Defer.
+
+A pragmatic v1: ship the IR plumbing + Claude page OCR
+prompt-side detection. Tech-book users who turn Claude OCR
+on get full `<code>` / `<pre>` retention; users on
+Vision-only Private mode see no regression (we emit nothing
+either way). Measurement: re-run the corpus harness after
+the change; `<code>` retention should climb from 0 to
+~0.8-0.95 on Cloud-mode runs.
+
+Total effort: ~1.5 days for v1.
 
 #### Q-Widow-Footnote-Guard (Tier 2)
 
