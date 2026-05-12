@@ -61,6 +61,14 @@ struct ImportEPUBProgressSheet: View {
                 Text("Importing book \(importer.current) of \(importer.total): \(importer.currentTitle)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    // Reserve two lines of vertical space so the
+                    // sheet height doesn't jitter as the importer
+                    // cycles through books with short vs long
+                    // filenames. Long names truncate with an
+                    // ellipsis rather than wrapping past the
+                    // reserved area.
+                    .lineLimit(2, reservesSpace: true)
+                    .truncationMode(.middle)
             case .completed:
                 Text(summaryText(prefix: "Imported"))
                     .font(.callout)
