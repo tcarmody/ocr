@@ -916,6 +916,41 @@ Drivers for the current ordering:
     via injected screen bounds. See
     `feedback_library_breaks_editor_rendering` memory for
     the full debugging path.
+15. **R-Library-Dedupe — Content-hash dedupe on import AND
+    scan**. The catalog accumulated parenthesized duplicates
+    (`Foo (2).epub`, `Foo (3).epub`, `Foo (2) (3).epub`)
+    primarily from two sources: (a) the user's PDF folder
+    contains physical duplicates from Finder copies / re-
+    downloads / iCloud conflict copies — each PDF scans
+    independently because the writer has no way to tell same-
+    content-different-basename apart; (b) the importer at
+    `EPUBImporter.destinationURL` suffixes `(N)` when a
+    different-source EPUB shares a basename with an existing
+    Books/ file. Compounding (`(2) (3)`) happens when the
+    source filename itself already carries a `(N)` suffix.
+    Fix: SHA-256 the source bytes (~10 ms / MB; effectively
+    free relative to OCR or unpack time) and check against a
+    hash→entryID map derived from the catalog. **Imports**:
+    on hash match, skip the import; append the source path
+    to a new `priorPaths: [String]` field on the existing
+    entry so the user knows where their copies live.
+    **Scans**: on hash match, skip the conversion entirely
+    (no OCR run, no EPUB write) and reuse the existing
+    catalog row — the queue UI marks the job as "Skipped
+    (already in library)". **Truncation defense**: when a
+    destination basename would exceed 200 bytes (giving 55
+    bytes of headroom for `(N)` + extension + sync-conflict
+    suffixes), hash the stem and shorten as
+    `<truncated>~<hash8>.epub` — deterministic, collision-
+    free, fits the 255-byte APFS cap. **One-time cleanup**:
+    `humanist-cli library-dedupe` walks the catalog, hashes
+    every EPUB on disk, surfaces content-identical groups
+    in a deterministic report (newest as the proposed
+    canonical), and with `--apply` removes redundant files
+    + catalog rows + collection memberships, atomically per
+    group. ~1.5 days. See
+    `feedback_library_breaks_editor_rendering` memory for
+    how this pattern surfaced.
 
 ### Earn when you need it
 
