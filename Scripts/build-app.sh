@@ -27,6 +27,15 @@ else
     warn "AppIcon.icns not found at $ICON_ICNS — bundle will use default icon"
 fi
 
+# Credits.rtf — picked up automatically by NSApplication's standard
+# About panel. No code change required to surface it. Lists
+# attribution for Surya, Tesseract, CodeMirror, epubcheck, etc.
+CREDITS_RTF="$REPO_ROOT/BundleAssets/Credits.rtf"
+if [[ -f "$CREDITS_RTF" ]]; then
+    cp "$CREDITS_RTF" "$APP_RESOURCES/Credits.rtf"
+    log "Copied Credits.rtf into bundle Resources"
+fi
+
 # Phase 4: bundle the layout sidecar Python script. The runtime
 # (surya-ocr installed via uv) is found by absolute path on the user's
 # system; only our script lives inside the .app for now. Phase 4.6
