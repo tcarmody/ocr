@@ -227,6 +227,15 @@ struct ConversionOptions: Codable, Equatable {
     /// alongside the EPUB. Off by default — searchable PDFs are
     /// several MB per book and most users only need the EPUB.
     var emitSearchablePDF: Bool
+    /// R-Library-Rescan. When true, the dedupe short-circuit in
+    /// `JobRunner` is skipped — the user explicitly chose to re-run
+    /// the OCR pipeline against a source PDF that already has a
+    /// catalog entry. The job's `outputURL` should target that
+    /// existing entry's `epubURL` so the rescan overwrites the
+    /// old EPUB and the catalog row stays put (no duplicate
+    /// created). Default false; flipped only by
+    /// `QueueViewModel.addPDFForRescan`.
+    var bypassDedupe: Bool
 
     init(
         languages: [String] = ["en"],
@@ -243,7 +252,8 @@ struct ConversionOptions: Codable, Equatable {
         emitSiblingDocuments: Bool = false,
         forceOCRPageRangesString: String = "",
         outputSuffix: String = "",
-        emitSearchablePDF: Bool = false
+        emitSearchablePDF: Bool = false,
+        bypassDedupe: Bool = false
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
@@ -260,6 +270,7 @@ struct ConversionOptions: Codable, Equatable {
         self.forceOCRPageRangesString = forceOCRPageRangesString
         self.outputSuffix = outputSuffix
         self.emitSearchablePDF = emitSearchablePDF
+        self.bypassDedupe = bypassDedupe
     }
 
     /// Codable: decodes both the new `useSuryaOCR` / `useClaudePageOCR`
@@ -283,6 +294,7 @@ struct ConversionOptions: Codable, Equatable {
         case forceOCRPageRangesString
         case outputSuffix
         case emitSearchablePDF
+        case bypassDedupe
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -347,6 +359,11 @@ struct ConversionOptions: Codable, Equatable {
         self.emitSearchablePDF = try c.decodeIfPresent(
             Bool.self, forKey: .emitSearchablePDF
         ) ?? false
+        // Default-off: the rescan flow is the only writer of this
+        // flag; persisted pre-feature jobs decode cleanly.
+        self.bypassDedupe = try c.decodeIfPresent(
+            Bool.self, forKey: .bypassDedupe
+        ) ?? false
     }
 
     /// Encode under the new keys only — the legacy aliases are for
@@ -368,6 +385,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(forceOCRPageRangesString, forKey: .forceOCRPageRangesString)
         try c.encode(outputSuffix, forKey: .outputSuffix)
         try c.encode(emitSearchablePDF, forKey: .emitSearchablePDF)
+        try c.encode(bypassDedupe, forKey: .bypassDedupe)
     }
 }
 

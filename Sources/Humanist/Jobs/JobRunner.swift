@@ -217,6 +217,19 @@ final class JobRunner: ObservableObject {
         let (dedupeHit, sourceHash) = await runDedupeShortCircuitWithHash(for: job)
         if dedupeHit { return }
 
+        // R-Library-Rescan: rename the existing EPUB to
+        // `<basename>.bak.epub` before the pipeline overwrites
+        // it. Cheap rollback — if the new conversion is worse
+        // than the original, the user can pull the .bak.epub
+        // back manually. The backup overwrites any previous
+        // .bak.epub (one rollback level — multi-level history
+        // would be a UX problem to design, not implement). No-op
+        // when the destination doesn't exist or when this isn't
+        // a rescan job.
+        if job.options.bypassDedupe {
+            makeRescanBackup(of: job.outputURL)
+        }
+
         // Multi-Mac claim pre-flight. When a peer Mac sharing the
         // catalog is already converting this exact source, stamp
         // the job as skipped and bail without running the pipeline.
@@ -386,9 +399,26 @@ final class JobRunner: ObservableObject {
                 if job.options.useEarlyPrintMode { return .earlyPrint }
                 return .print
             }()
+            // R-Library-Rescan: on a rescan, the entry already
+            // exists at `outputURL` and the user may have edited
+            // the title via the metadata editor since the original
+            // conversion. Preserve their edits by passing the
+            // existing title back to `recordConversion` instead of
+            // re-deriving from the source filename. Fresh
+            // conversions take the filename-derived path.
+            let recordedTitle: String
+            if job.options.bypassDedupe,
+               let existing = library?.entries.first(where: {
+                   $0.epubURL.canonicalForFile == job.outputURL.canonicalForFile
+               }) {
+                recordedTitle = existing.title
+            } else {
+                recordedTitle = job.sourceURL
+                    .deletingPathExtension().lastPathComponent
+            }
             library?.recordConversion(
                 epubURL: job.outputURL,
-                title: job.sourceURL.deletingPathExtension().lastPathComponent,
+                title: recordedTitle,
                 languages: job.options.languages,
                 conversionType: convType
             )
@@ -451,6 +481,12 @@ final class JobRunner: ObservableObject {
             try ContentHash.sha256(of: sourceURL)
         }
         guard let hash = try? await hashTask.value else { return (false, nil) }
+        // R-Library-Rescan: user explicitly requested a re-run of
+        // the OCR pipeline against an already-cataloged source.
+        // Compute the hash so the success path can still record it
+        // on the (updated) entry, but skip the catalog-match
+        // short-circuit so the pipeline actually runs.
+        if job.options.bypassDedupe { return (false, hash) }
         let sourcePath = job.sourceURL.path
         let dupe: LibraryEntry? = await MainActor.run {
             guard let match = library.findEntryBySourceHash(hash)
@@ -505,6 +541,23 @@ final class JobRunner: ObservableObject {
     static var localHostName: String {
         Host.current().localizedName
             ?? ProcessInfo.processInfo.hostName
+    }
+
+    /// R-Library-Rescan. Snapshot the existing EPUB at
+    /// `<basename>.bak.epub` before the pipeline overwrites it.
+    /// Best-effort: a failed rename falls through (the rescan
+    /// will still run; the user just loses the rollback safety
+    /// net). Any prior .bak.epub is overwritten — one rollback
+    /// level only.
+    private func makeRescanBackup(of epubURL: URL) {
+        guard FileManager.default.fileExists(atPath: epubURL.path) else {
+            return
+        }
+        let backupURL = epubURL
+            .deletingPathExtension()
+            .appendingPathExtension("bak.epub")
+        try? FileManager.default.removeItem(at: backupURL)
+        try? FileManager.default.copyItem(at: epubURL, to: backupURL)
     }
 
     /// Non-PDF text input → EPUB. Bypasses the OCR pipeline entirely:

@@ -14,6 +14,8 @@ import EPUB  // EPUBBook + EPUBBookSaver + OPFReader.Metadata for the metadata d
 /// the table and unlock a "Chat with this collection" affordance.
 struct LibraryWindowView: View {
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var queue: QueueViewModel
+    @EnvironmentObject private var runner: JobRunner
     /// `@Environment(Type.self)` (the Observation-framework
     /// accessor) rather than `@EnvironmentObject` because
     /// `CoverImageCache` is now `@Observable`. The key behavior
@@ -141,6 +143,20 @@ struct LibraryWindowView: View {
     /// flight, populated with the collection under edit when the
     /// sidebar context menu fires "Rename…".
     @State private var renameContext: RenameContext?
+
+    /// R-Library-Rescan. Pending rescan confirmation: the user
+    /// asked to re-OCR an existing catalog row. Carries the
+    /// resolved source PDF + the entry's EPUB so the confirmation
+    /// dialog can name both. Nil when no rescan is in flight.
+    @State private var rescanContext: RescanContext?
+    /// R-Library-Rescan. Surfaced when source-PDF resolution failed
+    /// (no probe site hit, file-picker pending). Non-nil triggers
+    /// the file-picker open-panel; the resulting URL is fed back
+    /// into `rescanContext`.
+    @State private var rescanPickerEntry: LibraryEntry?
+    /// Surfaced when a rescan submission fails. Plain alert with
+    /// the localized error string from the importer / queue path.
+    @State private var rescanError: String?
 
     /// Pending "Remove from Library" confirmation. Non-nil when the
     /// user has triggered removal (row context menu, filter-bar
@@ -321,6 +337,62 @@ struct LibraryWindowView: View {
                 Button("Cancel", role: .cancel) { removeContext = nil }
             } message: { ctx in
                 Text(removeConfirmationMessage(for: ctx))
+            }
+            // R-Library-Rescan: confirmation dialog after probe
+            // succeeds. Shows the resolved PDF + target EPUB so the
+            // user can verify before kicking off a multi-minute job.
+            .confirmationDialog(
+                "Re-scan \u{201C}\(rescanContext?.entry.title ?? "")\u{201D}?",
+                isPresented: Binding(
+                    get: { rescanContext != nil },
+                    set: { if !$0 { rescanContext = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: rescanContext
+            ) { ctx in
+                Button("Re-scan", role: .destructive) {
+                    performRescan(ctx)
+                }
+                Button("Cancel", role: .cancel) { rescanContext = nil }
+            } message: { ctx in
+                Text("Source PDF: \(ctx.sourcePDF.path)\n\n"
+                    + "Re-runs the OCR pipeline with the launcher's current settings "
+                    + "and overwrites the existing EPUB. The catalog row (and its "
+                    + "metadata edits, collection memberships) stays put. The old "
+                    + "EPUB is preserved as a `.bak.epub` sibling for one-click "
+                    + "rollback.\n\n"
+                    + "If this book is currently open in the editor, save your "
+                    + "changes first — the rescan will overwrite any unsaved edits.")
+            }
+            // R-Library-Rescan: file-picker fallback. Fires when the
+            // probe chain couldn't auto-resolve a source PDF — user
+            // points us at the original. On success, hand back into
+            // `rescanContext` so the confirmation dialog runs as
+            // normal; cancel just clears the picker state.
+            .fileImporter(
+                isPresented: Binding(
+                    get: { rescanPickerEntry != nil },
+                    set: { if !$0 { rescanPickerEntry = nil } }
+                ),
+                allowedContentTypes: [.pdf]
+            ) { result in
+                guard let entry = rescanPickerEntry else { return }
+                rescanPickerEntry = nil
+                switch result {
+                case .success(let url):
+                    rescanContext = RescanContext(entry: entry, sourcePDF: url)
+                case .failure(let error):
+                    rescanError = error.localizedDescription
+                }
+            }
+            .alert("Re-scan failed",
+                   isPresented: Binding(
+                       get: { rescanError != nil },
+                       set: { if !$0 { rescanError = nil } }
+                   )) {
+                Button("OK", role: .cancel) { rescanError = nil }
+            } message: {
+                Text(rescanError ?? "")
             }
     }
 
@@ -594,6 +666,30 @@ struct LibraryWindowView: View {
     /// whole selection; otherwise just the right-clicked row. Falls
     /// through silently on empty input so callers can pipe selection
     /// straight in without guarding.
+    /// R-Library-Rescan. Resolve the source PDF for `entry`. On
+    /// success → drop straight into the confirmation dialog. On
+    /// miss → trigger the file-picker fallback so the user can
+    /// point us at the original.
+    private func beginRescan(for entry: LibraryEntry) {
+        if let sourcePDF = LibraryStore.locateSourcePDFForRescan(for: entry) {
+            rescanContext = RescanContext(entry: entry, sourcePDF: sourcePDF)
+        } else {
+            rescanPickerEntry = entry
+        }
+    }
+
+    /// R-Library-Rescan. Submit a rescan job that overwrites the
+    /// existing EPUB. Uses the launcher's current options; bypasses
+    /// the dedupe short-circuit (otherwise the source-hash already
+    /// on the entry would short-circuit the rescan to .done without
+    /// doing any work).
+    private func performRescan(_ ctx: RescanContext) {
+        queue.addPDFForRescan(
+            ctx.sourcePDF, targetEPUBURL: ctx.entry.epubURL
+        )
+        rescanContext = nil
+    }
+
     private func requestRemove(_ entries: [LibraryEntry]) {
         guard !entries.isEmpty else { return }
         removeContext = RemoveContext(entries: entries)
@@ -1495,6 +1591,9 @@ struct LibraryWindowView: View {
                 epubFilename: entry.epubURL.lastPathComponent
             )
         }
+        Button("Re-scan with Current Settings…") {
+            beginRescan(for: entry)
+        }
         Divider()
         addToCollectionMenu(for: entry)
         if let collection = activeCollection,
@@ -1657,6 +1756,16 @@ private struct RenameContext: Identifiable {
 private struct RemoveContext: Identifiable {
     let id = UUID()
     let entries: [LibraryEntry]
+}
+
+/// R-Library-Rescan. Payload for the rescan-confirmation dialog.
+/// Holds the resolved source PDF + the target EPUB URL so the
+/// dialog body can name both, and the submit step has everything
+/// it needs without re-running the probe.
+private struct RescanContext: Identifiable {
+    let id = UUID()
+    let entry: LibraryEntry
+    let sourcePDF: URL
 }
 
 private struct NewCollectionSheet: View {

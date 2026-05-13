@@ -216,6 +216,30 @@ final class QueueViewModel: ObservableObject {
         let outputURL = ConversionOutputResolver.epubOutputURL(
             forSource: url, suffix: outputSuffix
         )
+        addPDFInternal(url, outputURL: outputURL, bypassDedupe: false)
+    }
+
+    /// R-Library-Rescan. Enqueue a fresh conversion of `sourceURL`
+    /// that overwrites `targetEPUBURL` (the existing catalog entry's
+    /// EPUB) instead of computing a fresh output path. The job's
+    /// `bypassDedupe` flag is set so `JobRunner` skips the catalog
+    /// short-circuit — otherwise the source-hash already on the
+    /// existing entry would short-circuit the rescan to `.done`
+    /// without doing any work. `recordConversion` on success updates
+    /// the existing entry in place (canonical-URL match), so the
+    /// catalog row stays put — same id, preserved collection
+    /// memberships, preserved metadata edits.
+    ///
+    /// Options come from the launcher's current settings — the
+    /// rationale is that the user has already configured the
+    /// pipeline the way they want via the launcher's toggles. A
+    /// future iteration could add a per-rescan sheet for one-off
+    /// overrides.
+    func addPDFForRescan(_ sourceURL: URL, targetEPUBURL: URL) {
+        addPDFInternal(sourceURL, outputURL: targetEPUBURL, bypassDedupe: true)
+    }
+
+    private func addPDFInternal(_ url: URL, outputURL: URL, bypassDedupe: Bool) {
         // Non-PDF text inputs (TXT / MD / RTF) skip the OCR pipeline
         // and the document profiler entirely — they enqueue directly
         // and run through DocumentIngest in the JobRunner.
@@ -241,7 +265,8 @@ final class QueueViewModel: ObservableObject {
                 emitSiblingDocuments: emitSiblingDocuments,
                 forceOCRPageRangesString: forceOCRPageRangesString,
                 outputSuffix: outputSuffix,
-                emitSearchablePDF: emitSearchablePDF
+                emitSearchablePDF: emitSearchablePDF,
+                bypassDedupe: bypassDedupe
             ),
             status: .profiling
         )

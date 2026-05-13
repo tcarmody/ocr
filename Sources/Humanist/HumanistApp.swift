@@ -196,6 +196,8 @@ struct HumanistApp: App {
         Window("Humanist Library", id: "library") {
             LibraryWindowView()
                 .environmentObject(library)
+                .environmentObject(queueVM)
+                .environmentObject(jobRunner)
                 .environment(coverCache)
                 .humanistChrome()
         }
