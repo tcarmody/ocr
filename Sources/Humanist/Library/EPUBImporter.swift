@@ -289,13 +289,44 @@ final class EPUBImporter: ObservableObject {
             throw ImportError.sourceMissing(source)
         }
 
-        // 0. Quick-skip path: resolve where the import would land,
-        // then short-circuit when (a) a real EPUB already exists
-        // at that path AND (b) the catalog already lists it AND
-        // (c) either we're not indexing or the sidecar already
-        // matches the configured backend. At 1000-book scale this
-        // turns "re-run after interruption" from hours-of-rework
-        // into seconds-of-FS-checks.
+        // 0a. R-Library-Dedupe content-hash short-circuit. Hash
+        // the source bytes (~10 ms/MB; small relative to unpack +
+        // anchor + AFM costs) and check whether any catalog entry
+        // has already recorded this hash. If so, the user has
+        // dropped a byte-identical EPUB they already have — skip
+        // the import, append the source path to the existing
+        // entry's `priorPaths` for provenance, and return.
+        let sourceHash = try await Task.detached(priority: .userInitiated) {
+            try ContentHash.sha256(of: source)
+        }.value
+        try Task.checkCancellation()
+        if let dupeID = await MainActor.run(body: { () -> UUID? in
+            guard let dupe = library.findEntryBySourceHash(sourceHash)
+            else { return nil }
+            library.addPriorPath(source.path, to: dupe.id)
+            return dupe.id
+        }) {
+            // The existing entry's EPUB URL is the right
+            // destination to report back to the caller (so
+            // `imported` would point at the canonical copy if the
+            // loop ever started using it on the dedupe path). The
+            // ImportResult flags this as alreadyImported so the
+            // batch loop counts it under `skippedExisting`.
+            let canonical: URL = await MainActor.run {
+                library.entries.first(where: { $0.id == dupeID })?.epubURL
+                    ?? source
+            }
+            return ImportResult(destinationURL: canonical, alreadyImported: true)
+        }
+        try Task.checkCancellation()
+
+        // 0b. Quick-skip path: resolve where the import would
+        // land, then short-circuit when (a) a real EPUB already
+        // exists at that path AND (b) the catalog already lists
+        // it AND (c) either we're not indexing or the sidecar
+        // already matches the configured backend. At 1000-book
+        // scale this turns "re-run after interruption" from
+        // hours-of-rework into seconds-of-FS-checks.
         let destination = try await MainActor.run {
             try Self.destinationURL(for: source, library: library)
         }
@@ -305,6 +336,18 @@ final class EPUBImporter: ObservableObject {
             backend: backend,
             sidecarStore: sidecarStore
         ) {
+            // Stamp the source's hash onto whatever entry is
+            // already at this destination — pre-dedupe catalog
+            // rows don't have hashes yet, so this is how we
+            // backfill them lazily as the user re-runs imports.
+            await MainActor.run {
+                let canonical = destination.canonicalForFile
+                if let existing = library.entries.first(where: {
+                    $0.epubURL.canonicalForFile == canonical
+                }) {
+                    library.recordSourceHash(sourceHash, on: existing.id)
+                }
+            }
             return ImportResult(destinationURL: destination, alreadyImported: true)
         }
         try Task.checkCancellation()
@@ -423,9 +466,17 @@ final class EPUBImporter: ObservableObject {
             )
             // Read back the entry's UUID so the sidecar build can
             // key by it under R-Library-Sync Phase B.
-            return library.entries.first(where: {
+            let entryID = library.entries.first(where: {
                 $0.epubURL.canonicalForFile == destination.canonicalForFile
             })?.id
+            // R-Library-Dedupe: stamp the source's content hash on
+            // the freshly-created row so the next drop of the same
+            // bytes hits the 0a short-circuit and doesn't re-run
+            // the whole import pipeline.
+            if let entryID {
+                library.recordSourceHash(sourceHash, on: entryID)
+            }
+            return entryID
         }
 
         // 7. Build the embedding sidecar so library chat sees the
@@ -816,7 +867,9 @@ final class EPUBImporter: ObservableObject {
             at: booksDirectory, withIntermediateDirectories: true
         )
 
-        let stem = source.deletingPathExtension().lastPathComponent
+        let stem = truncateStemIfNeeded(
+            source.deletingPathExtension().lastPathComponent
+        )
         let base = booksDirectory
             .appendingPathComponent(stem)
             .appendingPathExtension("epub")
@@ -847,6 +900,42 @@ final class EPUBImporter: ObservableObject {
         throw ImportError.destinationConflict(
             "exhausted suffix range for \(stem)"
         )
+    }
+
+    /// R-Library-Dedupe truncation defense. APFS caps each path
+    /// component at 255 bytes. A source basename that's already
+    /// near that limit can blow it when we append `(N).epub` or
+    /// when iCloud appends sync-conflict suffixes (` 2`, ` (1)`)
+    /// — once we hit the cap, `FileManager.createFile` silently
+    /// returns false and the catalog row points at a path that
+    /// doesn't exist on disk.
+    ///
+    /// Budget chosen as 200 bytes for the stem so the headroom
+    /// covers: 8 bytes for the longest `(N).epub` we generate +
+    /// up to ~30 bytes of iCloud sync-conflict garnish. When the
+    /// budget is exceeded, hash the original stem and replace the
+    /// overflowing tail with `~<hash8>` so the truncated form is
+    /// deterministic and collision-resistant within the 16-bit
+    /// suffix space we use (more than enough for the tiny
+    /// population of basenames that hit this path).
+    nonisolated static func truncateStemIfNeeded(_ stem: String) -> String {
+        let maxStemBytes = 200
+        if stem.utf8.count <= maxStemBytes { return stem }
+        let hash8 = String(ContentHash.sha256(of: Data(stem.utf8))
+            .prefix(8))
+        let suffix = "~\(hash8)"
+        let suffixBytes = suffix.utf8.count
+        var truncated = stem
+        // Drop characters off the end until the remaining UTF-8
+        // length leaves room for the suffix. Operates on Character
+        // (not byte) units so we don't slice an emoji / CJK
+        // codepoint in half — at worst we drop a few extra bytes
+        // beyond budget, which is harmless.
+        while truncated.utf8.count + suffixBytes > maxStemBytes,
+              !truncated.isEmpty {
+            truncated.removeLast()
+        }
+        return truncated + suffix
     }
 
     /// Root directory for imported (and converted) EPUBs. Honors

@@ -185,6 +185,19 @@ final class JobRunner: ObservableObject {
             await runDocumentIngest(for: job)
             return
         }
+        // R-Library-Dedupe content-hash pre-flight. Hash the
+        // source PDF and check against the catalog's recorded
+        // source hashes. On a match, flip the job to .done with
+        // `skippedReason` set; the queue UI renders that in place
+        // of stats, no OCR runs, no EPUB gets written, and the
+        // existing catalog row is reused (Open / Reveal point at
+        // the canonical EPUB). Pre-feature catalogs have empty
+        // `sourceContentHashes`, so this only fires after a
+        // conversion has stamped a hash — exactly the scenarios
+        // the user runs into when they re-drop the same PDF.
+        if await runDedupeShortCircuit(for: job) {
+            return
+        }
         let pipeline = PDFToEPUBPipeline()
         let languages = job.options.languages.map { BCP47($0) }
         // Read the user's current AI processing mode + per-feature
@@ -332,6 +345,29 @@ final class JobRunner: ObservableObject {
                 languages: job.options.languages,
                 conversionType: convType
             )
+            // R-Library-Dedupe. Stamp the source PDF's content
+            // hash onto the freshly-created row so a future re-
+            // drop hits the pre-flight short-circuit. Hashing
+            // happens off the main actor; failures are silent
+            // (worst case: the next drop re-runs OCR, which is
+            // wasteful but not incorrect).
+            if let lib = library {
+                let sourceURL = job.sourceURL
+                let hashTask = Task.detached(priority: .background) {
+                    try ContentHash.sha256(of: sourceURL)
+                }
+                if let hash = try? await hashTask.value {
+                    let outputURL = job.outputURL
+                    await MainActor.run {
+                        let canonical = outputURL.canonicalForFile
+                        if let entryID = lib.entries.first(where: {
+                            $0.epubURL.canonicalForFile == canonical
+                        })?.id {
+                            lib.recordSourceHash(hash, on: entryID)
+                        }
+                    }
+                }
+            }
         } catch is CancellationError {
             store.update(jobID) { mutable in
                 mutable.status = .cancelled
@@ -344,6 +380,43 @@ final class JobRunner: ObservableObject {
                 mutable.finishedAt = Date()
             }
         }
+    }
+
+    /// R-Library-Dedupe pre-flight. Hashes `job.sourceURL` and
+    /// short-circuits the conversion when an existing catalog row
+    /// already records the same source hash. On a hit, the job is
+    /// transitioned to `.done` with `skippedReason` set, its
+    /// `outputURL` updated to point at the existing entry's EPUB
+    /// (so Open / Reveal target the canonical copy), and the
+    /// source path is appended to the entry's `priorPaths`. Returns
+    /// true when the short-circuit fired and the caller should bail
+    /// out without running the pipeline.
+    private func runDedupeShortCircuit(for job: Job) async -> Bool {
+        guard let library else { return false }
+        let sourceURL = job.sourceURL
+        let hashTask = Task.detached(priority: .userInitiated) {
+            try ContentHash.sha256(of: sourceURL)
+        }
+        guard let hash = try? await hashTask.value else { return false }
+        let sourcePath = job.sourceURL.path
+        let dupe: LibraryEntry? = await MainActor.run {
+            guard let match = library.findEntryBySourceHash(hash)
+            else { return nil }
+            library.addPriorPath(sourcePath, to: match.id)
+            return match
+        }
+        guard let dupe else { return false }
+        let jobID = job.id
+        let canonicalURL = dupe.epubURL
+        let title = dupe.title
+        store.update(jobID) { mutable in
+            mutable.status = .done
+            mutable.finishedAt = Date()
+            mutable.outputURL = canonicalURL
+            mutable.skippedReason = "Already in library: \(title)"
+            mutable.progress = nil
+        }
+        return true
     }
 
     /// Non-PDF text input → EPUB. Bypasses the OCR pipeline entirely:

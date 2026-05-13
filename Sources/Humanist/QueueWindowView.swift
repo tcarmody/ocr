@@ -27,7 +27,7 @@ struct QueueWindowView: View {
     var body: some View {
         Table(of: Job.self, sortOrder: $sortOrder) {
             TableColumn("", value: \.status.sortRank) { job in
-                statusIcon(for: job.status)
+                statusIcon(for: job)
                     .frame(width: 18, alignment: .center)
             }
             .width(28)
@@ -80,8 +80,8 @@ struct QueueWindowView: View {
     // MARK: - cells
 
     @ViewBuilder
-    private func statusIcon(for status: Job.Status) -> some View {
-        switch status {
+    private func statusIcon(for job: Job) -> some View {
+        switch job.status {
         case .profiling:
             ProgressView().controlSize(.small)
         case .queued:
@@ -89,7 +89,16 @@ struct QueueWindowView: View {
         case .running:
             ProgressView().controlSize(.small)
         case .done:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            if job.skippedReason != nil {
+                // R-Library-Dedupe: the "stacked docs" glyph reads
+                // as "duplicate detected" at a glance, distinct
+                // from a normal successful conversion.
+                Image(systemName: "doc.on.doc.fill")
+                    .foregroundStyle(.secondary)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         case .cancelled:
@@ -118,7 +127,16 @@ struct QueueWindowView: View {
                 Text("Starting…").foregroundStyle(.secondary)
             }
         case .done:
-            if let stats = job.stats {
+            if let reason = job.skippedReason {
+                // R-Library-Dedupe: pre-flight short-circuit fired.
+                // Render the reason in place of stats (which is nil
+                // because the conversion never ran).
+                Text(reason)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(.secondary)
+                    .help(reason)
+            } else if let stats = job.stats {
                 Text(stats.summary)
                     .lineLimit(1)
                     .truncationMode(.tail)

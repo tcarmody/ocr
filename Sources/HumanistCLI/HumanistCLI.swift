@@ -28,6 +28,7 @@ struct HumanistCLI: AsyncParsableCommand {
             CompareCommand.self,
             CompareCorpusCommand.self,
             ValidateCommand.self,
+            LibraryDedupeCommand.self,
         ],
         defaultSubcommand: ConvertCommand.self
     )

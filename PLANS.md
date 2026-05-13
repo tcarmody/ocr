@@ -916,39 +916,50 @@ Drivers for the current ordering:
     blanked the editor on 2026-05-12 (see
     `feedback_library_breaks_editor_rendering` memory for
     the original debugging path).
-15. **R-Library-Dedupe — Content-hash dedupe on import AND
-    scan**. The catalog accumulated parenthesized duplicates
-    (`Foo (2).epub`, `Foo (3).epub`, `Foo (2) (3).epub`)
-    primarily from two sources: (a) the user's PDF folder
-    contains physical duplicates from Finder copies / re-
-    downloads / iCloud conflict copies — each PDF scans
-    independently because the writer has no way to tell same-
-    content-different-basename apart; (b) the importer at
-    `EPUBImporter.destinationURL` suffixes `(N)` when a
-    different-source EPUB shares a basename with an existing
-    Books/ file. Compounding (`(2) (3)`) happens when the
-    source filename itself already carries a `(N)` suffix.
-    Fix: SHA-256 the source bytes (~10 ms / MB; effectively
-    free relative to OCR or unpack time) and check against a
-    hash→entryID map derived from the catalog. **Imports**:
-    on hash match, skip the import; append the source path
-    to a new `priorPaths: [String]` field on the existing
-    entry so the user knows where their copies live.
-    **Scans**: on hash match, skip the conversion entirely
-    (no OCR run, no EPUB write) and reuse the existing
-    catalog row — the queue UI marks the job as "Skipped
-    (already in library)". **Truncation defense**: when a
-    destination basename would exceed 200 bytes (giving 55
-    bytes of headroom for `(N)` + extension + sync-conflict
-    suffixes), hash the stem and shorten as
-    `<truncated>~<hash8>.epub` — deterministic, collision-
-    free, fits the 255-byte APFS cap. **One-time cleanup**:
-    `humanist-cli library-dedupe` walks the catalog, hashes
-    every EPUB on disk, surfaces content-identical groups
-    in a deterministic report (newest as the proposed
-    canonical), and with `--apply` removes redundant files
-    + catalog rows + collection memberships, atomically per
-    group. ~1.5 days. See
+15. ~~**R-Library-Dedupe — Content-hash dedupe on import AND
+    scan**~~ shipped 2026-05-12. All four pieces landed
+    together: (1) new `ContentHash` helper streams SHA-256
+    in 64 KB chunks via CryptoKit; two new fields on
+    `LibraryEntry` (`sourceContentHashes: [String]`,
+    `priorPaths: [String]`) with `decodeIfPresent` backward
+    compat for pre-feature catalogs. (2) `EPUBImporter.
+    importOne` hashes the incoming source EPUB and short-
+    circuits when an existing entry already records that
+    hash — appending the source path to `priorPaths` so the
+    breadcrumb survives. (3) `JobRunner.runPipeline` hashes
+    the incoming PDF before any OCR work and, on a hash
+    match, flips the job to `.done` with a new
+    `skippedReason` field (rendered as "Already in library:
+    <title>" in both the launcher queue and the QueueWindow
+    table, with a distinct `doc.on.doc.fill` icon to
+    differentiate from a normal success). Job's `outputURL`
+    is redirected to the existing entry's EPUB so Open /
+    Reveal target the canonical copy. (4) New
+    `truncateStemIfNeeded` in `EPUBImporter` rewrites any
+    stem exceeding 200 UTF-8 bytes as
+    `<truncated>~<hash8>` — deterministic, codepoint-safe,
+    fits the 255-byte APFS cap with headroom for `(N).epub`
+    + sync-conflict suffixes. (5) New `humanist-cli
+    library-dedupe` command reads `library.json` via raw
+    `JSONSerialization` (so unknown fields round-trip),
+    hashes every catalog EPUB, groups identical content,
+    and prints a deterministic report. With `--apply` it
+    moves redundant files to Trash via
+    `FileManager.trashItem`, snapshots the catalog to
+    `library.dedupe-backup.json`, and rewrites the entries
+    + every collection's `bookIDs`. 22 new tests across
+    `ContentHashTests`, `LibraryDedupeMutatorTests`, and
+    `EPUBImporterTruncateTests` cover the hash primitive
+    (streamed vs in-memory, known SHA-256 vector, missing
+    file, multi-chunk), the three store mutators
+    (`recordSourceHash`, `addPriorPath`,
+    `findEntryBySourceHash` — including legacy-catalog
+    decode), and the truncation defense (boundary,
+    determinism, distinct hashes for distinct overflowing
+    stems, Unicode codepoint safety). CLI smoke-tested
+    against a synthetic 3-entry catalog with a collection
+    membership — duplicate trashed, backup written,
+    catalog + collection rewritten correctly. See
     `feedback_library_breaks_editor_rendering` memory for
     how this pattern surfaced.
 

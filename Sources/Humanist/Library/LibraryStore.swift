@@ -515,6 +515,48 @@ final class LibraryStore: ObservableObject {
         return didFind
     }
 
+    /// R-Library-Dedupe. Append `hash` to `entryID`'s
+    /// `sourceContentHashes` (de-duped). Called once a fresh
+    /// conversion or import succeeds, so subsequent drops of the
+    /// same source bytes can hash-match into this entry.
+    func recordSourceHash(_ hash: String, on entryID: UUID) {
+        guard !hash.isEmpty else { return }
+        mutateEntries { entries in
+            guard let idx = entries.firstIndex(where: { $0.id == entryID })
+            else { return }
+            if !entries[idx].sourceContentHashes.contains(hash) {
+                entries[idx].sourceContentHashes.append(hash)
+            }
+        }
+    }
+
+    /// R-Library-Dedupe. Append `path` to `entryID`'s `priorPaths`
+    /// (de-duped). Called when an import / scan hashes the same as
+    /// an existing entry — the user gets to keep the breadcrumb to
+    /// the duplicate-on-disk file without us touching it.
+    func addPriorPath(_ path: String, to entryID: UUID) {
+        guard !path.isEmpty else { return }
+        mutateEntries { entries in
+            guard let idx = entries.firstIndex(where: { $0.id == entryID })
+            else { return }
+            if !entries[idx].priorPaths.contains(path) {
+                entries[idx].priorPaths.append(path)
+            }
+        }
+    }
+
+    /// R-Library-Dedupe. Look up an existing entry whose
+    /// `sourceContentHashes` already records `hash`. Returns nil
+    /// when no match — caller proceeds with the normal pipeline
+    /// and calls `recordSourceHash` once the conversion / import
+    /// succeeds. O(N) over `entries`, but N is small (<= library
+    /// size) and the call is gated by the much-more-expensive hash
+    /// computation before it, so the linear scan is fine.
+    func findEntryBySourceHash(_ hash: String) -> LibraryEntry? {
+        guard !hash.isEmpty else { return nil }
+        return entries.first { $0.sourceContentHashes.contains(hash) }
+    }
+
     /// Bump `lastOpened` for `epubURL`. No-op if the entry doesn't
     /// exist — opening an EPUB the library doesn't know about (e.g.
     /// a third-party file the user dragged in for editing) doesn't
@@ -685,6 +727,25 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
     /// backfill command `LibraryAutoCollections
     /// .classifyMissingGenres`.
     var genre: BookGenre?
+    /// R-Library-Dedupe. SHA-256 content hashes of every source
+    /// file that produced or mapped to this entry — source PDFs
+    /// for conversions, source EPUBs for imports. Populated as
+    /// fresh conversions / imports succeed, and appended whenever
+    /// a future drop hashes identically (so the catalog
+    /// accumulates the "I've seen these bytes" set without
+    /// re-running OCR or unpacking). Empty for pre-feature
+    /// entries — the one-time `humanist-cli library-dedupe`
+    /// cleanup backfills against EPUB hashes, not source hashes,
+    /// so the loss is bounded.
+    var sourceContentHashes: [String]
+    /// R-Library-Dedupe. Source paths that were dropped onto
+    /// Humanist a second (or third) time and hash-matched this
+    /// entry. Captured so the user can see "I tried to import
+    /// /Downloads/Foo.epub but it was already here as
+    /// ~/Books/Foo.epub" without losing the provenance of the
+    /// duplicate copy on disk. De-duped within the entry so
+    /// repeated re-runs don't blow the list up.
+    var priorPaths: [String]
 
     init(
         id: UUID = UUID(),
@@ -696,7 +757,9 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         relativePath: String? = nil,
         conversionType: BookConversionType? = nil,
         author: String? = nil,
-        genre: BookGenre? = nil
+        genre: BookGenre? = nil,
+        sourceContentHashes: [String] = [],
+        priorPaths: [String] = []
     ) {
         self.id = id
         self.epubURL = epubURL
@@ -708,6 +771,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.conversionType = conversionType
         self.author = author
         self.genre = genre
+        self.sourceContentHashes = sourceContentHashes
+        self.priorPaths = priorPaths
     }
 
     // MARK: - Codable (decodeIfPresent for relativePath)
@@ -739,11 +804,20 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         } else {
             self.genre = nil
         }
+        // R-Library-Dedupe added these post-1.x — decodeIfPresent
+        // so libraries written before this feature load cleanly.
+        self.sourceContentHashes = try c.decodeIfPresent(
+            [String].self, forKey: .sourceContentHashes
+        ) ?? []
+        self.priorPaths = try c.decodeIfPresent(
+            [String].self, forKey: .priorPaths
+        ) ?? []
     }
 
     enum CodingKeys: String, CodingKey {
         case id, epubURL, title, languages, addedAt, lastOpened, relativePath
         case conversionType, author, genre
+        case sourceContentHashes, priorPaths
     }
 }
 

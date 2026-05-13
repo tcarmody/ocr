@@ -57,6 +57,14 @@ struct Job: Identifiable, Codable, Equatable {
     /// persisted before this field existed (queue store decodes
     /// optionally and treats nil as empty in the UI).
     var profileWarnings: [ProfileWarning]?
+    /// R-Library-Dedupe. When the runner short-circuits a job
+    /// because its source PDF content-hashes into an existing
+    /// catalog row, status flips to `.done` and this human-readable
+    /// string is filled in (e.g. "Already in library: Discipline
+    /// and Punish"). The queue UI renders this in place of the
+    /// usual ConversionStats summary. Nil for normal completions
+    /// and for jobs persisted before this field existed.
+    var skippedReason: String?
 
     init(
         id: UUID = UUID(),
@@ -72,7 +80,8 @@ struct Job: Identifiable, Codable, Equatable {
         stats: ConversionStats? = nil,
         profile: DocumentProfile? = nil,
         costEstimate: CostEstimator.Estimate? = nil,
-        profileWarnings: [ProfileWarning]? = nil
+        profileWarnings: [ProfileWarning]? = nil,
+        skippedReason: String? = nil
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -88,6 +97,7 @@ struct Job: Identifiable, Codable, Equatable {
         self.profile = profile
         self.costEstimate = costEstimate
         self.profileWarnings = profileWarnings
+        self.skippedReason = skippedReason
     }
 
     /// Custom decoder so the optional `profile`, `costEstimate`,
@@ -96,7 +106,7 @@ struct Job: Identifiable, Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, sourceURL, outputURL, options, status, progress, error
         case addedAt, startedAt, finishedAt, stats, profile, costEstimate
-        case profileWarnings
+        case profileWarnings, skippedReason
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -117,6 +127,9 @@ struct Job: Identifiable, Codable, Equatable {
         )
         self.profileWarnings = try c.decodeIfPresent(
             [ProfileWarning].self, forKey: .profileWarnings
+        )
+        self.skippedReason = try c.decodeIfPresent(
+            String.self, forKey: .skippedReason
         )
     }
 }

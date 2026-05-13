@@ -731,7 +731,13 @@ private struct JobRow: View {
         case .running:
             ProgressView().controlSize(.small)
         case .done:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            if job.skippedReason != nil {
+                Image(systemName: "doc.on.doc.fill")
+                    .foregroundStyle(.secondary)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         case .cancelled:
@@ -775,17 +781,29 @@ private struct JobRow: View {
             }
         case .done:
             VStack(alignment: .leading, spacing: 2) {
-                Text("Done — \(job.outputURL.lastPathComponent)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let stats = job.stats {
-                    // Surface Cloud-mode usage so the user knows
-                    // whether Claude actually fired on this book.
-                    // Stats persisted on the Job, not recomputed.
-                    Text(stats.summary)
-                        .font(.caption2)
+                if let reason = job.skippedReason {
+                    // R-Library-Dedupe pre-flight short-circuit.
+                    // `outputURL` was redirected to the existing
+                    // entry's EPUB so Open / Reveal in the action
+                    // buttons still work — surface the reason here.
+                    Text(reason)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .help(statsTooltip(stats))
+                        .help(reason)
+                } else {
+                    Text("Done — \(job.outputURL.lastPathComponent)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let stats = job.stats {
+                        // Surface Cloud-mode usage so the user knows
+                        // whether Claude actually fired on this
+                        // book. Stats persisted on the Job, not
+                        // recomputed.
+                        Text(stats.summary)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help(statsTooltip(stats))
+                    }
                 }
             }
         case .failed:
