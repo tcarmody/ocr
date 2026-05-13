@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-11)
+## Status snapshot (as of 2026-05-13)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -653,6 +653,163 @@ L-Foundation-Models Phase 4):
   sensitive material when default is Cloud — partially obsoleted
   by the Private Mode toggle that already ships per-job override.
 
+**Done — Library chat performance (2026-05-13)**:
+- **Embeddings off iCloud** (commit `565203c`). The
+  `EmbeddingsSidecarStore`'s `sharedRootEmbeddingsDir` path
+  is gone; UUID-keyed sidecars always live in
+  `~/Library/Application Support/Humanist/Embeddings/`,
+  regardless of the share-library-across-machines toggle.
+  Embeddings at scale (53 GB across 1,212 files for the
+  current corpus) blew well past iCloud Drive's design
+  envelope and made every federated-index rebuild a multi-
+  minute stall via metadata-coordinated reads.
+  `EmbeddingsCloudMigration.runIfNeeded` ran on first launch
+  after the commit and moved every iCloud sidecar to local
+  Application Support (1,212 files, ~53 GB; iCloud dir
+  empty afterwards). Idempotent via a UserDefaults flag.
+  The share toggle still covers `library.json` + aliases —
+  small enough that iCloud handles them gracefully.
+- **On-disk federated index cache** (commit `caae52f`). New
+  `FederatedIndexCache` serializes the assembled
+  `(LibraryEmbeddingIndex, LibraryEntityIndex)` to a single
+  binary file under Application Support. Cache key: SHA-256
+  over (backendIdentifier, dimension, sorted [libraryID,
+  sidecar mtime, sidecar size]) — `stat`-only, cheap. VM
+  init loads the cache; misses rebuild + fire-and-forget
+  save. Result: library-chat cold-start dropped from
+  multi-minute to seconds when the fingerprint matches.
+  Cache wiped on chat-pane refresh + Settings "Clear all".
+  13 tests cover round-trip, drift rejection, corruption
+  handling.
+- **Binary sidecar format** (commit `a913e70`). New `.emb`
+  format: 8-byte magic + version + JSON header (paragraph
+  metadata + hierarchy + entities, debuggable with hex tools)
+  + packed Float32 vector blob. Defensive decoder rejects
+  short reads / bad magic / blob-size mismatch.
+  `EmbeddingsBinaryUpgrade.runIfNeeded` ran on first launch
+  and re-encoded every legacy `.json` sidecar to `.emb`,
+  deleting the original only after a successful atomic
+  write. Resume-safe via the stale-json-next-to-fresh-emb
+  detection branch. Disk dropped 53 GB → 35 GB (34%
+  reduction; the JSON header still dominates the savings
+  ceiling, but the Float32 blob saves substantial bytes per
+  file). 14 tests cover round-trip, corruption, idempotent
+  upgrade.
+
+**Done — Auto-scan / multi-Mac coordination (2026-05-13)**:
+- **Source-hash tombstones** (commit `d6be366`). New
+  `LibraryStore.rejectedSourceHashes: Set<String>` —
+  persisted in `library.json`, sync-friendly. The remove
+  dialog grows a "Trash & Don't Re-scan Source" button that
+  trashes the EPUB AND folds its source hashes into the
+  rejection set. `InputFolderScanner` becomes two-phase:
+  cheap path-based check first; survivors get SHA-256 hashed
+  off-main and tested against
+  `library.isSourceHashKnownOrRejected`. Per-path hash cache
+  keyed on (mtime, size) keeps repeat scans free.
+  In-flight scan task is cancellable so a Finder copy-storm
+  doesn't stack redundant work. 8 new tests.
+- **In-flight claims** (commit `6e63351`). New `ClaimMarker`
+  struct (`sourceHash`, `hostName`, `claimedAt`) on
+  `LibraryStore.claims` — small, sync-friendly, persisted
+  alongside entries + collections. `JobRunner.runPipeline`
+  stamps a claim before running the pipeline; peers see the
+  claim via iCloud catalog sync and skip the same source.
+  Stale-claim freshness window (30 min default) gets
+  overwritten on takeover + reaped on launch. 14 tests on
+  the claim primitives.
+- **Source-hash backfill** (commits `4ed2846`, `0d644b2`).
+  `SourceHashBackfill.runIfNeeded` walks entries with empty
+  `sourceContentHashes` and stamps them. Two probe paths:
+  (1) source PDF via `LibraryStore.locateSourcePDF` —
+  preferred for converted books (PDF hash matches what the
+  auto-scanner sees on re-drops); (2) catalog EPUB as
+  fallback — for imports (the EPUB *is* the source) and
+  conversions whose PDF source is gone. Bounded
+  concurrency (4 SHA-256 streams), single bulk save.
+  On the user's library: 100 / 2,209 entries had stamps
+  before; 2,209 / 2,209 after — every dedupe query now has
+  real data behind it.
+
+**Done — Chapter splitting (2026-05-13)**:
+- **TOC-driven splitter** (commit `71e0272`). New
+  `TOCDrivenSplitter` runs ahead of `ChapterSplitter` when a
+  parsed TOC is available. Walks each TOC entry to a block
+  index via the existing page-anchor table + offset
+  learning, segments blocks at each boundary. Heuristic
+  splitter remains the fallback for scanned-image PDFs and
+  books with no parseable TOC. Confidence gate at 50% of
+  arabic entries; fuzzy ±2-page lookup catches missing page
+  anchors. Solves the Écrits-shape failure (3 H1 section
+  dividers vs 44 essay-titles → previously 4 chapters,
+  now 42+). 8 tests.
+- **Ratio-based level override in ChapterSplitter** (commit
+  `24a3d69`). Fallback heuristic splitter now considers
+  promoting to a deeper level when (a) deeper level has ≥
+  5× more eligible breaks, (b) ≥ 5 absolute, (c) coverage
+  spans the document (first break in first third, last in
+  last third). No size assumptions — works for poetry,
+  short-story collections, dictionaries. Diagnostic
+  `levelOverriddenFrom` field surfaces the decision in the
+  debug log. 3 tests.
+- **Title-matching primary path in TOCDrivenSplitter** (commit
+  `2bec9a7`). Page-offset learning produced ambiguous winners
+  when page anchors are dense (every PDF page has one, every
+  plausible offset ties on match count). The first Lacan
+  rescan shifted every chapter by ~10 pages because the
+  offset learner picked +0 instead of the correct +10.
+  Title-matching keys on the actual OCR'd heading text:
+  word-bag containment (≥ 80% of TOC words appear in the
+  heading), TOC-order discipline, `canBreakChapter`
+  filtering to skip running heads. Diacritic-insensitive,
+  digit-strip for OCR'd page numbers in headings ("Functions
+  I25 of Psychoanalysis" → matches "Functions of
+  Psychoanalysis"). Strategy dispatch via `MatchStrategy`
+  enum; debug log shows which path fired. 5 new tests on top
+  of the existing 8.
+
+**Done — R-Library-Rescan (2026-05-13)**:
+- **Source-PDF probe chain** (commit `0b7f601`). New
+  `LibraryStore.locateSourcePDFForRescan(for: LibraryEntry)`
+  walks cheap heuristics → OPF `<dc:source>` (requires
+  unpacking the EPUB, slow but authoritative) → `priorPaths`
+  filtered to `.pdf`. Parses via `URL(string:)` so
+  percent-encoded paths decode correctly; rejects non-file
+  URIs. 8 tests cover the probe sites + edge cases.
+- **End-to-end wiring** (commit `02b1f9a`). Library row
+  context menu → "Re-scan with Current Settings…" → probe →
+  confirmation dialog (or file picker fallback) → job
+  queued. Uses the launcher's current settings — no per-
+  rescan sheet (future iteration). New
+  `ConversionOptions.bypassDedupe` lets the rescan skip
+  the dedupe short-circuit. JobRunner success path
+  preserves the user's edited title via canonical-URL match;
+  `recordConversion` updates in place, no duplicate row.
+  `.bak.epub` snapshot before overwrite for one-click
+  rollback. Confirmation dialog warns about unsaved editor
+  edits.
+
+**Done — Queue UX (2026-05-13)**:
+- **Always-visible Pause/Resume + start-paused-on-launch
+  preference** (commit `ea87fa1`). Dropped the
+  `hasPendingWork` gate on the launcher's pause button —
+  always visible, so the user can pre-emptively pause before
+  the auto-scanner picks up new PDFs. New Settings
+  "Conversion → Queue → Start paused on launch" preference:
+  when on, JobRunner.init forces `isPaused = true` and
+  re-stamps the persisted `pausedKey` so the state machine
+  keeps a single source of truth. 4 new tests.
+
+**Done — Library window polish (2026-05-13)**:
+- **Empty-state explainer for collection ∩ search** (commit
+  `7cb69cf`). When a populated library shows zero rows
+  because the current filter chain (collection + search +
+  language) doesn't overlap, the table renders a
+  `ContentUnavailableView` naming the active filters and
+  offering one-click escapes (Search All Books, Clear
+  Search, Show All Languages). Replaces the silently-blank
+  table that previously looked like a data-load bug.
+
 **Original-plan items still outstanding**:
 - Phase 10 — Distribution polish. Setup wizards (Surya / Tesseract /
   Ollama) ship in lieu of bundled runtimes, and the build script is
@@ -670,7 +827,7 @@ L-Foundation-Models Phase 4):
 
 ---
 
-## Sequencing (as of 2026-05-11)
+## Sequencing (as of 2026-05-13)
 
 What to work on next, in priority order. The first block is
 driven by concrete, currently-felt user needs; the second block
@@ -962,36 +1119,21 @@ Drivers for the current ordering:
     catalog + collection rewritten correctly. See
     `feedback_library_breaks_editor_rendering` memory for
     how this pattern surfaced.
-16. **R-Library-Rescan — Re-scan source PDF with new options**.
-    Surfaced 2026-05-12 when the 1978 Roth & Wittich Weber
-    translation came through as a single-chapter EPUB —
-    `ChapterHeadingPromoter` now (commit `be16be6`) catches
-    body-size chapter starts, but the *existing* EPUB has the
-    chapter info permanently lost. Today's only recovery path is
-    drag-the-PDF-back-into-the-launcher, which loses any metadata
-    edits the user already made on the catalog row and re-emits a
-    differently-named output. Wanted: Library window context menu
-    → "Re-scan with new options…" that (1) resolves the source
-    PDF for the selected entry (sidecar `sourcePDFPath` →
-    `<dc:source>` → sibling `.pdf` → file picker fallback);
-    (2) opens a sheet with the same option set as the launcher
-    (languages, OCR mode, manuscript / early-print toggles,
-    page ranges, debug-log toggle), pre-filled from whatever the
-    job last used when discoverable; (3) enqueues a fresh
-    conversion targeting the *same* `epubURL` so the catalog row
-    stays put (and the metadata / collection memberships stay
-    intact); (4) on success, the editor / queue UI surfaces the
-    updated EPUB. Open design questions: (a) confirmation modal
-    before overwriting an EPUB the user may have edited (probably
-    yes — surface "you have unsaved manual edits in this EPUB"
-    when the editor's dirty bit is set); (b) keep the prior EPUB
-    as a `.bak.epub` sibling for one-click rollback (probably yes,
-    cheap); (c) bulk re-scan for collection selections (later,
-    once the single-row path lands). Also gives us a clean home
-    for the eventual "this conversion lost chapters, try Claude
-    OCR instead?" nudge surfaced from `ChapterSplitter` diagnostics
-    (commit `be16be6`). ~1 day. Wait until current bulk job
-    finishes before starting.
+16. ~~**R-Library-Rescan — Re-scan source PDF with new options**~~
+    shipped 2026-05-13 (commits `0b7f601`, `02b1f9a`). Library row
+    context menu → "Re-scan with Current Settings…" → probe chain
+    (cheap heuristics → OPF `<dc:source>` → `priorPaths`) auto-
+    resolves the source PDF, or falls through to a file picker.
+    Confirmation dialog names the source + target + warns about
+    unsaved editor edits. Submits a job with the new
+    `bypassDedupe` flag so the dedupe short-circuit doesn't fire
+    against the existing entry's source-hash. JobRunner success
+    path preserves the user's edited title via canonical-URL match
+    in `recordConversion`. `.bak.epub` sibling copied before
+    overwrite for one-click rollback. Per-rescan options sheet
+    deferred — v1 uses the launcher's current settings; user
+    configures options in the launcher first. Bulk re-scan for
+    collection selections also deferred per original spec.
 
 ### Earn when you need it
 
