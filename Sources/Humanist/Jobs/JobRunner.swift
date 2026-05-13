@@ -63,7 +63,23 @@ final class JobRunner: ObservableObject {
         self.store = store
         self.library = library
         self.defaults = defaults
-        self.isPaused = defaults.bool(forKey: Self.pausedKey)
+        // Two paths to a paused launch state:
+        //   * Session pause: the user hit Pause last session,
+        //     `pausedKey` is true. Round-trip the choice.
+        //   * Persistent preference: "Start paused on launch" is on
+        //     in Settings. Override the session state so every
+        //     launch begins paused, regardless of how the user
+        //     left the queue last time. Persist the resulting
+        //     pause back into `pausedKey` so the rest of the
+        //     runner (pause()/resume()) keeps a single source of
+        //     truth.
+        let sessionPause = defaults.bool(forKey: Self.pausedKey)
+        let startPausedPref = defaults.bool(forKey: ConversionSettingsKeys.startPausedOnLaunch)
+        let initialPause = sessionPause || startPausedPref
+        self.isPaused = initialPause
+        if startPausedPref, !sessionPause {
+            defaults.set(true, forKey: Self.pausedKey)
+        }
     }
 
     /// Kick off the loop if nothing is in flight. Safe to call after

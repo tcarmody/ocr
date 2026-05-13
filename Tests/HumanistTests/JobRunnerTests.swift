@@ -109,4 +109,52 @@ final class JobRunnerTests: XCTestCase {
         XCTAssertFalse(runner.isRunning,
             "start() while paused must not enter the run loop")
     }
+
+    // MARK: - startPausedOnLaunch preference
+
+    func test_startPausedOnLaunch_pref_initializes_paused() {
+        // "Start paused on launch" preference forces the runner to
+        // begin paused even when the persisted session-pause flag
+        // is false. The use case: the user wants every launch to
+        // start quiet, regardless of how they left the queue last
+        // session.
+        defaults.set(true, forKey: ConversionSettingsKeys.startPausedOnLaunch)
+        let runner = makeRunner()
+        XCTAssertTrue(runner.isPaused,
+            "preference should override the session-pause default")
+        XCTAssertTrue(defaults.bool(forKey: JobRunner.pausedKey),
+            "init should persist the resulting pause so pause()/resume() and the persisted state stay in sync")
+    }
+
+    func test_startPausedOnLaunch_pref_combines_with_session_pause() {
+        // Both signals on — runner stays paused. Persisted flag
+        // was already true; the preference shouldn't need to
+        // re-stamp it.
+        defaults.set(true, forKey: JobRunner.pausedKey)
+        defaults.set(true, forKey: ConversionSettingsKeys.startPausedOnLaunch)
+        let runner = makeRunner()
+        XCTAssertTrue(runner.isPaused)
+    }
+
+    func test_startPausedOnLaunch_pref_off_respects_session_pause() {
+        // Preference off + previously paused → still paused. The
+        // session pause is the day-to-day control.
+        defaults.set(true, forKey: JobRunner.pausedKey)
+        defaults.set(false, forKey: ConversionSettingsKeys.startPausedOnLaunch)
+        let runner = makeRunner()
+        XCTAssertTrue(runner.isPaused)
+    }
+
+    func test_resume_clears_pause_even_with_startPausedOnLaunch_set() {
+        // The preference doesn't lock the queue paused — once the
+        // user explicitly resumes, the queue runs until next
+        // pause / quit. Next launch will re-pause via the
+        // preference (covered by the init test above); within a
+        // session, resume must work as normal.
+        defaults.set(true, forKey: ConversionSettingsKeys.startPausedOnLaunch)
+        let runner = makeRunner()
+        XCTAssertTrue(runner.isPaused)
+        runner.resume()
+        XCTAssertFalse(runner.isPaused)
+    }
 }

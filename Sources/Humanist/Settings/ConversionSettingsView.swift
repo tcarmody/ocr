@@ -18,6 +18,9 @@ struct ConversionSettingsView: View {
     @AppStorage(ConversionSettingsKeys.autoScanInputFolder)
     private var autoScanInputFolder: Bool = false
 
+    @AppStorage(ConversionSettingsKeys.startPausedOnLaunch)
+    private var startPausedOnLaunch: Bool = false
+
     @AppStorage(ConversionSettingsKeys.skipIndexingOnImport)
     private var skipIndexingOnImport: Bool = false
 
@@ -74,6 +77,15 @@ struct ConversionSettingsView: View {
                         Drop PDFs in and they get converted automatically with the launcher's current settings — output lands in `Books/`, `Searchable PDFs/`, `Text Files/`, etc. just like a drag-drop conversion. A PDF is skipped once its output EPUB exists; delete the EPUB to re-run.
                         """)
                 }
+            }
+            Section("Queue") {
+                Toggle(
+                    "Start paused on launch",
+                    isOn: $startPausedOnLaunch
+                )
+                helpText("""
+                    When on, the conversion queue starts in the paused state every launch — even if you left it running last session. Auto-scan still enqueues new PDFs from `Input/`, but they don't begin processing until you hit Resume in the launcher. Useful when you want to control when OCR runs (battery, focus mode, scheduled cloud-API usage) rather than relying on remembering to pause before quitting.
+                    """)
             }
             Section("EPUB import") {
                 Toggle(

@@ -14,6 +14,16 @@ public enum ConversionSettingsKeys {
     /// current default settings. Effective only when an output root
     /// is configured — no root means no `Input/` folder to watch.
     public static let autoScanInputFolder = "humanist.conversion.autoScanInputFolder"
+    /// When true, `JobRunner` initializes with `isPaused = true`
+    /// on every launch, regardless of the persisted session pause
+    /// state. The auto-scanner can still enqueue jobs but the
+    /// runner won't start processing them until the user hits
+    /// Resume. Useful when you keep a long pipeline of queued
+    /// books and want to control when conversions actually run
+    /// (battery, focus mode, scheduled cloud-API usage). The
+    /// per-session pause button stays the day-to-day control;
+    /// this is the "default behavior" override.
+    public static let startPausedOnLaunch = "humanist.conversion.startPausedOnLaunch"
     /// When true, `EPUBImporter.start` is invoked with
     /// `skipIndexing: true` — the import path runs through anchor
     /// injection + AFM metadata + chapter classification + catalog

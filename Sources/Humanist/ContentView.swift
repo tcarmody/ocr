@@ -252,23 +252,28 @@ struct ContentView: View {
                 .help("Open the full-queue window")
                 .accessibilityLabel("Show queue window")
             }
-            if store.hasPendingWork || runner.isPaused {
-                Button {
-                    if runner.isPaused {
-                        runner.resume()
-                    } else {
-                        runner.pause()
-                    }
-                } label: {
-                    if runner.isPaused {
-                        Label("Resume", systemImage: "play.fill")
-                    } else {
-                        Label("Pause", systemImage: "pause.fill")
-                    }
+            // Pause / Resume is always visible — pre-emptive pause
+            // before adding work is a valid intent, and the auto-
+            // scanner can enqueue items even when the launcher's
+            // queue is empty from the user's last view. Persisted
+            // pause state plus the "Start paused on launch"
+            // preference in Settings give the user control over
+            // how the queue behaves between sessions.
+            Button {
+                if runner.isPaused {
+                    runner.resume()
+                } else {
+                    runner.pause()
                 }
-                .help(runner.isPaused ? "Resume the queue" : "Pause the queue")
-                .accessibilityLabel(runner.isPaused ? "Resume queue" : "Pause queue")
+            } label: {
+                if runner.isPaused {
+                    Label("Resume", systemImage: "play.fill")
+                } else {
+                    Label("Pause", systemImage: "pause.fill")
+                }
             }
+            .help(runner.isPaused ? "Resume the queue" : "Pause the queue")
+            .accessibilityLabel(runner.isPaused ? "Resume queue" : "Pause queue")
             if store.hasPendingWork {
                 Button(role: .destructive) {
                     runner.cancelAll()
