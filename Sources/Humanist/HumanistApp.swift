@@ -50,6 +50,29 @@ struct HumanistApp: App {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
 
+        // U-Splitview-Frame-Clamp: defensively drop NSSplitView
+        // autosave entries that have grown larger than any attached
+        // screen could possibly fit. Guards against the 300-iteration
+        // SystemSplitView constraint loop documented in
+        // `feedback_library_breaks_editor_rendering` — a multi-monitor
+        // or hot-reload-mid-resize session can write 10,000+ px
+        // widths into UserDefaults that wedge the editor on next
+        // launch. AppKit reads these keys lazily when the first
+        // NSSplitView with a matching autosaveName comes onscreen,
+        // so clearing here (before any window is built) is safe.
+        let screens = NSScreen.screens.map { $0.frame.size }
+        let cleared = SplitViewFrameClamp.clampCorruptFrames(
+            in: .standard,
+            screenSizes: screens
+        )
+        if !cleared.isEmpty {
+            NSLog(
+                "Humanist: cleared %ld corrupt NSSplitView autosave key(s): %@",
+                cleared.count,
+                cleared.joined(separator: " | ")
+            )
+        }
+
         // Tier 9 / E-Warm: kick the Surya sidecar's Python
         // interpreter + Surya imports off the launch path so the
         // first conversion doesn't pay the ~5-15s spawn cost. Fire-

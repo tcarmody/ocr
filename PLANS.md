@@ -896,26 +896,26 @@ Drivers for the current ordering:
     `ConversionOutputResolver`), (5) post-flight verification
     (entry count, file-presence sample, re-read round-trip).
     ~1.5 days.
-14. **U-Splitview-Frame-Clamp — Defensive clamp of restored
-    NSSplitView frames**. macOS persists per-NSSplitView
-    column widths in UserDefaults
-    (`NSSplitView Subview Frames editor-AppWindow-N,
-    SidebarNavigationSplitView`). On 2026-05-12 a session
-    landed with saved widths of 5,198 px sidebar + 10,957 px
-    detail (screen is 1,512 px wide) — likely from a
-    multi-monitor session or a SwiftUI hot-reload mid-resize.
-    The corrupt frame caused a 300-iteration
-    `SystemSplitView` constraint loop on every editor open,
-    blanking the sidebar / WYSIWYG / Preview panes; rendering
-    only returned after manually `defaults delete`-ing the
-    two keys. Hardening: on app launch, walk every
-    `NSSplitView Subview Frames …` key and drop any entry
-    whose any-axis dimension exceeds `2 × max(NSScreen.frame
-    .{width,height})`. Belt-and-suspenders against the same
-    silent wedge recurring. ~half day; trivially unit-testable
-    via injected screen bounds. See
+14. ~~**U-Splitview-Frame-Clamp — Defensive clamp of restored
+    NSSplitView frames**~~ shipped 2026-05-12. New
+    `SplitViewFrameClamp` helper walks every UserDefaults key
+    prefixed `NSSplitView Subview Frames ` on app launch,
+    parses each persisted subview-frame string (six comma-
+    separated fields: `x, y, w, h, isCollapsed, isHidden`),
+    and removes the whole key when any subview's width or
+    height exceeds `2 × max(NSScreen.frame.{width,height})`.
+    Wired into `HumanistApp.init()` before any window is built
+    so AppKit's lazy autosave-read finds a clean slate.
+    Screen sizes are injected, so the helper is exercised
+    end-to-end without a real display. 11 unit tests cover
+    the limit math, malformed strings, multi-key walks,
+    non-splitview keys, empty-screen-list bail, multi-monitor
+    "largest screen wins", and defensive handling of weird
+    array element types. Belt-and-suspenders against the
+    300-iteration `SystemSplitView` constraint loop that
+    blanked the editor on 2026-05-12 (see
     `feedback_library_breaks_editor_rendering` memory for
-    the full debugging path.
+    the original debugging path).
 15. **R-Library-Dedupe — Content-hash dedupe on import AND
     scan**. The catalog accumulated parenthesized duplicates
     (`Foo (2).epub`, `Foo (3).epub`, `Foo (2) (3).epub`)
