@@ -2576,22 +2576,34 @@ existing growth can't trip the breakage either.
 
 ## R-Content-Aware-Rename — Rename chapters from their content
 
-**Status**: not started. Asked for 2026-05-12 alongside
-R-Split-Filename-Sanity. Two related surfaces:
+**Status**: manual rename **shipped** 2026-05-13 (commit
+`3d8d88b`). Auto-name-on-split still pending.
 
-1. **Auto-name on split.** When a chapter is split, the new
-   piece's filename should derive from its first `<h1>` /
+1. **Auto-name on split.** *Pending.* When a chapter is split,
+   the new piece's filename should derive from its first `<h1>` /
    `<h2>` / `<h3>` heading (slugified), not from the source
    chapter's filename. So splitting an essay collection
    right before "On the Program of the Coming Philosophy"
    produces `on-the-program-of-the-coming-philosophy.xhtml`
-   automatically, not `chapter-001_split_001.xhtml`.
-2. **Manual rename to match content.** Add `Edit Chapter
-   Filename…` to the editor's chapter context menu / Document
-   menu. Default the new name to the slugified first heading;
-   user can edit before confirm. Already-existing internal
-   links to the renamed resource get rewritten the same way
-   the existing rename-chapter path does it.
+   automatically, not `chapter-001_split_001.xhtml`. The slug
+   helper now exists (`EPUB.Slug.fromHeading`) so this is
+   ~½ day: wire it into `BookPackageEditor.splitChapter`
+   (or wherever the split-target href gets minted) and feed
+   the slug into `nextAvailableHref(near:)`'s collision check.
+2. ~~**Manual rename to match content.**~~ Shipped 2026-05-13
+   (commit `3d8d88b`). New `EPUB.Slug.fromHeading` helper +
+   `EditorViewModel.beginRenameChapterFromFirstHeading(at:)` +
+   "Rename Chapter from First Heading…" entry in BookBrowser's
+   chapter context menu. Reads the chapter's first heading from
+   the in-memory buffer (catching unsaved edits) or disk,
+   slugifies it (decode entities → strip tags → whitespace to
+   hyphens → whitelist filter to `[A-Za-z0-9._-]` → collapse
+   consecutive hyphens → trim → cap at 80 chars on a hyphen
+   boundary), and opens the existing rename prompt pre-filled
+   with the slug. User can still edit before commit; internal-
+   link rewriting + file-tree refresh reuse the standard
+   rename path. 19 SlugTests cover the spec; menu grays out
+   when no usable heading exists.
 
 ### Slug rules
 
