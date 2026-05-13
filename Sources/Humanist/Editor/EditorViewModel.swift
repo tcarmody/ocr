@@ -2005,6 +2005,54 @@ final class EditorViewModel: ObservableObject {
         pendingRename = nil
     }
 
+    /// R-Content-Aware-Rename. True when (a) the resource at `url`
+    /// is a renamable text file and (b) its first heading
+    /// slugifies to a non-empty basename. Used by the "Rename
+    /// Chapter from First Heading…" context-menu item to grey
+    /// itself out on a chapter that has no usable heading
+    /// (cover-only / colophon / image-only pages).
+    func canRenameChapterFromFirstHeading(at url: URL) -> Bool {
+        guard canRenameChapter(at: url) else { return false }
+        return firstHeadingSlug(for: url) != nil
+    }
+
+    /// R-Content-Aware-Rename. Open the rename prompt pre-filled
+    /// with a slug derived from the chapter's first heading.
+    /// Reuses the existing `pendingRename` machinery — the user
+    /// can still edit the default before committing — so internal
+    /// link rewriting and the file-tree refresh happen exactly
+    /// like a manual rename.
+    func beginRenameChapterFromFirstHeading(at url: URL) {
+        guard let slug = firstHeadingSlug(for: url) else { return }
+        beginRenameChapter(at: url)
+        // beginRenameChapter seeded `newBaseName` with the current
+        // stem; overwrite with the heading-derived slug. View
+        // binds to `pendingRename?.newBaseName`, so this propagates
+        // to the alert text field immediately.
+        pendingRename?.newBaseName = slug
+    }
+
+    /// Read the first `<h1>` / `<h2>` / `<h3>` text from the
+    /// chapter at `url` and run it through `Slug.fromHeading`.
+    /// Reads from the in-memory buffer first (the user might
+    /// have just edited the heading and want the rename to
+    /// match), falling back to the on-disk file when the
+    /// resource hasn't been loaded into a buffer yet.
+    private func firstHeadingSlug(for url: URL) -> String? {
+        let content: String
+        if let buffered = buffers[url] {
+            content = buffered
+        } else if let data = try? Data(contentsOf: url),
+                  let text = String(data: data, encoding: .utf8) {
+            content = text
+        } else {
+            return nil
+        }
+        guard let heading = PackageEditor.firstHeadingTitle(in: content)
+        else { return nil }
+        return Slug.fromHeading(heading)
+    }
+
     /// Commit the pending rename. Validates the new basename, runs
     /// the rename through the book (with internal-link rewriting),
     /// saves, and refreshes the file tree. No-op when the pending

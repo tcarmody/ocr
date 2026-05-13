@@ -54,6 +54,10 @@ struct BookBrowser: View {
                 vm.beginRenameChapter(at: node.id)
             }
             .disabled(!vm.canRenameChapter(at: node.id))
+            Button("Rename Chapter from First Heading…") {
+                vm.beginRenameChapterFromFirstHeading(at: node.id)
+            }
+            .disabled(!vm.canRenameChapterFromFirstHeading(at: node.id))
             Divider()
             Button("Move Chapter Up") {
                 vm.moveChapter(at: node.id, direction: .up)
