@@ -174,4 +174,80 @@ final class LibraryDedupeMutatorTests: XCTestCase {
         XCTAssertEqual(reopened.entries[0].sourceContentHashes, [])
         XCTAssertEqual(reopened.entries[0].priorPaths, [])
     }
+
+    // MARK: - rejectedSourceHashes (Phase D: auto-scanner tombstones)
+
+    func test_markSourcesRejected_adds_to_set() {
+        let store = makeStore()
+        store.markSourcesRejected(["aaa", "bbb"])
+        XCTAssertEqual(store.rejectedSourceHashes, Set(["aaa", "bbb"]))
+    }
+
+    func test_markSourcesRejected_dedupes_and_ignores_empty() {
+        let store = makeStore()
+        store.markSourcesRejected(["aaa", "aaa", "", "bbb"])
+        XCTAssertEqual(store.rejectedSourceHashes, Set(["aaa", "bbb"]))
+    }
+
+    func test_unmarkSourcesRejected_removes_subset() {
+        let store = makeStore()
+        store.markSourcesRejected(["aaa", "bbb", "ccc"])
+        store.unmarkSourcesRejected(["bbb", "missing"])
+        XCTAssertEqual(store.rejectedSourceHashes, Set(["aaa", "ccc"]))
+    }
+
+    func test_isSourceHashKnownOrRejected_true_for_rejected() {
+        let store = makeStore()
+        store.markSourcesRejected(["rejected-hash"])
+        XCTAssertTrue(store.isSourceHashKnownOrRejected("rejected-hash"))
+        XCTAssertFalse(store.isSourceHashKnownOrRejected("other-hash"))
+    }
+
+    func test_isSourceHashKnownOrRejected_true_for_known_entry_hash() {
+        let store = makeStore()
+        let epub = makeEPUBStub(name: "known")
+        store.recordConversion(epubURL: epub, title: "Known", languages: ["en"])
+        store.recordSourceHash("entry-hash", on: store.entries[0].id)
+        XCTAssertTrue(store.isSourceHashKnownOrRejected("entry-hash"))
+    }
+
+    func test_isSourceHashKnownOrRejected_empty_hash_returns_false() {
+        let store = makeStore()
+        // An empty hash should never match — defends against the
+        // ContentHash failure case (read error returns "" or nil).
+        XCTAssertFalse(store.isSourceHashKnownOrRejected(""))
+    }
+
+    func test_rejectedSourceHashes_persist_across_reopen() {
+        let store = makeStore()
+        store.markSourcesRejected(["persist-1", "persist-2"])
+
+        let reopened = makeStore()
+        XCTAssertEqual(
+            reopened.rejectedSourceHashes, Set(["persist-1", "persist-2"])
+        )
+    }
+
+    func test_rejectedSourceHashes_survive_entry_removal() {
+        // The whole point of the rejection signal: it has to survive
+        // entry deletion so the auto-scanner doesn't re-pick-up the
+        // source PDF after the user explicitly says "don't re-scan".
+        let store = makeStore()
+        let epub = makeEPUBStub(name: "soon-gone")
+        store.recordConversion(epubURL: epub, title: "Soon Gone", languages: ["en"])
+        let id = store.entries[0].id
+        store.recordSourceHash("survivor-hash", on: id)
+        // Read the entry AFTER recording the hash — captured-before
+        // would be empty and the mark below would no-op. Mirrors
+        // the real call site in LibraryWindowView.performRemove.
+        let hashes = store.entries[0].sourceContentHashes
+        store.markSourcesRejected(hashes)
+        store.remove(id)
+
+        XCTAssertEqual(store.entries.count, 0)
+        XCTAssertTrue(store.isSourceHashKnownOrRejected("survivor-hash"))
+        // Reopen — still rejected on disk too.
+        let reopened = makeStore()
+        XCTAssertTrue(reopened.isSourceHashKnownOrRejected("survivor-hash"))
+    }
 }

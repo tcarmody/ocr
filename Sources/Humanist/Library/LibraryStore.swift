@@ -30,6 +30,17 @@ import Pipeline  // BookGenre
 final class LibraryStore: ObservableObject {
     @Published private(set) var entries: [LibraryEntry] = []
     @Published private(set) var collections: [BookCollection] = []
+    /// Source PDFs the user has explicitly told the auto-scanner to
+    /// leave alone. Stamped by the Library window's remove flow when
+    /// the user picks "Move to Trash + Don't Re-scan Source" — at
+    /// that point the entry's `sourceContentHashes` get folded into
+    /// this set so a future `InputFolderScanner` pass over the same
+    /// PDF (file path unchanged or rehashed-identical) won't re-
+    /// enqueue it. Survives entry removal because it has to: the
+    /// signal is "I rejected this source", not "I scanned this
+    /// source." Persisted alongside `entries` + `collections` in the
+    /// catalog JSON.
+    @Published private(set) var rejectedSourceHashes: Set<String> = []
 
     /// Where the JSON actually lives on disk. Set at init based on
     /// `shareAcrossMachines` + output-root state. Stays stable
@@ -92,6 +103,7 @@ final class LibraryStore: ObservableObject {
         if let payload = try? decoder.decode(StoredPayload.self, from: data) {
             loadedEntries = payload.entries
             loadedCollections = payload.collections
+            rejectedSourceHashes = Set(payload.rejectedSourceHashes ?? [])
         } else if let legacy = try? decoder.decode([LibraryEntry].self, from: data) {
             // Pre-BookCollections file shape: a bare array of entries.
             loadedEntries = legacy
@@ -231,7 +243,15 @@ final class LibraryStore: ObservableObject {
         // gets picked up. Stored as forward slashes regardless of
         // platform — paths inside the JSON are filesystem-portable.
         let withRelative = entries.map(Self.populateRelativePath)
-        let payload = StoredPayload(entries: withRelative, collections: collections)
+        // Stable order so the JSON diffs cleanly across saves —
+        // Set's hash-ordered iteration would otherwise rewrite the
+        // file even when no membership changed.
+        let rejected = rejectedSourceHashes.sorted()
+        let payload = StoredPayload(
+            entries: withRelative,
+            collections: collections,
+            rejectedSourceHashes: rejected.isEmpty ? nil : rejected
+        )
         // Default date strategy (number-of-seconds-since-reference-
         // date) matches the default JSONDecoder, so the persistence
         // round-trip is symmetric without further configuration.
@@ -557,6 +577,42 @@ final class LibraryStore: ObservableObject {
         return entries.first { $0.sourceContentHashes.contains(hash) }
     }
 
+    /// Mark `hashes` as user-rejected source PDFs — the auto-scanner
+    /// will skip any Input-folder file whose content hashes to one
+    /// of these. Idempotent (Set semantics); callers can pass an
+    /// entry's `sourceContentHashes` directly without filtering.
+    /// Saves immediately so a crash between the remove confirmation
+    /// and the next launch can't lose the user's "don't re-scan"
+    /// intent.
+    func markSourcesRejected(_ hashes: [String]) {
+        let nonEmpty = hashes.filter { !$0.isEmpty }
+        guard !nonEmpty.isEmpty else { return }
+        let before = rejectedSourceHashes
+        rejectedSourceHashes.formUnion(nonEmpty)
+        if rejectedSourceHashes != before { save() }
+    }
+
+    /// Reverse of `markSourcesRejected` — used by tests + a future
+    /// "I changed my mind, please re-scan" UI affordance. No-op
+    /// when the hashes weren't marked to begin with.
+    func unmarkSourcesRejected(_ hashes: [String]) {
+        let before = rejectedSourceHashes
+        rejectedSourceHashes.subtract(hashes)
+        if rejectedSourceHashes != before { save() }
+    }
+
+    /// True if `hash` corresponds to a source the scanner should
+    /// leave alone: either already represented by a catalog entry
+    /// (via `sourceContentHashes`) or explicitly rejected. The
+    /// auto-scanner consults this before enqueueing; the dedupe
+    /// short-circuit in `JobRunner` covers the same ground for
+    /// already-cataloged sources but doesn't see rejections.
+    func isSourceHashKnownOrRejected(_ hash: String) -> Bool {
+        guard !hash.isEmpty else { return false }
+        if rejectedSourceHashes.contains(hash) { return true }
+        return entries.contains { $0.sourceContentHashes.contains(hash) }
+    }
+
     /// Bump `lastOpened` for `epubURL`. No-op if the entry doesn't
     /// exist — opening an EPUB the library doesn't know about (e.g.
     /// a third-party file the user dragged in for editing) doesn't
@@ -671,11 +727,15 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - storage shape
 
-    /// File payload: entries + collections in one wrapper. Reading
-    /// also tolerates the legacy bare-array shape (see `load`).
+    /// File payload: entries + collections + rejected-source set
+    /// in one wrapper. Reading also tolerates the legacy bare-array
+    /// shape (see `load`). `rejectedSourceHashes` is optional in
+    /// the wire shape so pre-feature catalogs decode cleanly with
+    /// the default empty set.
     private struct StoredPayload: Codable {
         var entries: [LibraryEntry]
         var collections: [BookCollection]
+        var rejectedSourceHashes: [String]?
     }
 }
 

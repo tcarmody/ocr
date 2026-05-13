@@ -300,10 +300,23 @@ struct LibraryWindowView: View {
                 presenting: removeContext
             ) { ctx in
                 Button("Move to Trash", role: .destructive) {
-                    performRemove(ctx, alsoTrashFiles: true)
+                    performRemove(ctx, alsoTrashFiles: true, rejectSource: false)
+                }
+                // Auto-scanner answer to "I deleted the bad EPUB
+                // and the scanner re-picked-up the same PDF." The
+                // entry's source hashes flow into the library's
+                // rejectedSourceHashes set, which the scanner
+                // consults before enqueuing. Hidden when none of
+                // the target entries carry a source hash —
+                // pre-dedupe entries would no-op the button and
+                // confuse the user.
+                if ctx.entries.contains(where: { !$0.sourceContentHashes.isEmpty }) {
+                    Button("Trash & Don\u{2019}t Re-scan Source", role: .destructive) {
+                        performRemove(ctx, alsoTrashFiles: true, rejectSource: true)
+                    }
                 }
                 Button("Remove from Library", role: .destructive) {
-                    performRemove(ctx, alsoTrashFiles: false)
+                    performRemove(ctx, alsoTrashFiles: false, rejectSource: false)
                 }
                 Button("Cancel", role: .cancel) { removeContext = nil }
             } message: { ctx in
@@ -602,8 +615,18 @@ struct LibraryWindowView: View {
     /// NSWorkspace. Per-file trash failures are aggregated into
     /// `removeError`; the library-side removal still proceeds so the
     /// catalog doesn't carry stale rows.
-    private func performRemove(_ ctx: RemoveContext, alsoTrashFiles: Bool) {
+    private func performRemove(
+        _ ctx: RemoveContext,
+        alsoTrashFiles: Bool,
+        rejectSource: Bool
+    ) {
         var failures: [(URL, String)] = []
+        // Collect source hashes BEFORE removing the entries — once
+        // they're gone from the catalog we can't look them up.
+        var hashesToReject: [String] = []
+        if rejectSource {
+            hashesToReject = ctx.entries.flatMap(\.sourceContentHashes)
+        }
         for entry in ctx.entries {
             coverCache.invalidate(entry.epubURL)
             if alsoTrashFiles {
@@ -617,6 +640,9 @@ struct LibraryWindowView: View {
             }
             library.remove(entry.id)
             selection.remove(entry.id)
+        }
+        if !hashesToReject.isEmpty {
+            library.markSourcesRejected(hashesToReject)
         }
         removeContext = nil
         if !failures.isEmpty {
@@ -649,9 +675,12 @@ struct LibraryWindowView: View {
                 : ""
             preamble = titles.joined(separator: ", ") + suffix
         }
-        return preamble
-            + "\n\nRemove from Library forgets the book but leaves the EPUB on disk."
+        var trailer = "\n\nRemove from Library forgets the book but leaves the EPUB on disk."
             + " Move to Trash also sends the EPUB file to the Trash."
+        if ctx.entries.contains(where: { !$0.sourceContentHashes.isEmpty }) {
+            trailer += " Trash & Don\u{2019}t Re-scan Source also tells the Input-folder auto-scanner to skip the source PDF on every Mac sharing this library."
+        }
+        return preamble + trailer
     }
 
     /// Restrict the library chat to just the selected rows and

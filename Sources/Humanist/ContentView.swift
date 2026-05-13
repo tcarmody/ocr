@@ -14,6 +14,7 @@ struct ContentView: View {
     @EnvironmentObject private var queue: QueueViewModel
     @Environment(JobStore.self) private var store
     @EnvironmentObject private var runner: JobRunner
+    @EnvironmentObject private var library: LibraryStore
     @State private var isTargeted = false
     @State private var showingWelcome = false
     @State private var showingSuryaSetup = false
@@ -159,13 +160,15 @@ struct ContentView: View {
     }
 
     /// Start or stop the Input-folder scanner to match current
-    /// Settings. The scanner is idempotent on `start(queue:)`, so
-    /// calling this from multiple `onAppear` / `onChange` paths is
-    /// safe.
+    /// Settings. The scanner is idempotent on
+    /// `start(queue:library:)`, so calling this from multiple
+    /// `onAppear` / `onChange` paths is safe. The library is
+    /// threaded through so the scanner can consult catalog source
+    /// hashes (dedupe + rejection) before enqueuing.
     private func refreshInputScannerLifecycle() {
         let shouldRun = autoScanInputFolder && !outputFolderPath.isEmpty
         if shouldRun {
-            inputScanner.start(queue: queue)
+            inputScanner.start(queue: queue, library: library)
         } else {
             inputScanner.stop()
         }
