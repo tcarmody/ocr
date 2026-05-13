@@ -3,17 +3,28 @@ import Foundation
 /// One-shot backfill for the `sourceContentHashes` field on
 /// `LibraryEntry`s that pre-date the R-Library-Dedupe feature.
 ///
-/// Why: before R-Library-Dedupe, conversions didn't stamp the source
-/// PDF's SHA-256 onto the catalog entry. `InputFolderScanner.runHashedScan`
-/// and `JobRunner.runDedupeShortCircuit` both consult that hash to
-/// decide whether to skip a re-dropped PDF — so books converted before
-/// the feature are invisible to the dedupe path, and the user re-OCRs
-/// them every time the auto-scanner picks the source up from Input/.
+/// Why: before R-Library-Dedupe, neither conversions nor EPUB imports
+/// stamped a content hash onto the catalog entry.
+/// `InputFolderScanner.runHashedScan`, `JobRunner.runDedupeShortCircuit`,
+/// and `EPUBImporter`'s pre-flight all consult that hash to decide
+/// whether to skip a re-dropped source — so legacy books are
+/// invisible to dedupe, and the user pays the OCR / import cost again
+/// every time the same bytes show up.
 ///
-/// Strategy: walk catalog entries with empty `sourceContentHashes`,
-/// locate the source PDF via `LibraryStore.locateSourcePDF` (same
-/// probe sites the conversion-type backfill already uses), hash the
-/// file via `ContentHash.sha256`, and stamp the result onto the entry.
+/// Strategy — two probe paths per entry, both writing into the same
+/// `sourceContentHashes` array:
+///   1. **Source PDF** (preferred for converted books): try
+///      `LibraryStore.locateSourcePDF`. When it returns a URL, hash
+///      that file. Stamps the *source* hash, which is what the
+///      auto-scanner compares against when a re-drop lands in
+///      `Input/`.
+///   2. **Catalog EPUB** (preferred for imports + fallback for
+///      conversions whose PDF source is gone): hash the entry's own
+///      `epubURL`. For imports the EPUB *is* the source — byte-for-
+///      byte identical to the file the user dragged in. For
+///      converted books with a missing PDF source, the EPUB hash
+///      doesn't help the auto-scanner but does catch re-imports of
+///      the converted EPUB onto a peer Mac.
 ///
 /// Semantics:
 ///   * **No global flag**. State lives on each entry: empty hashes
@@ -49,17 +60,31 @@ enum SourceHashBackfill {
     struct Result: Equatable {
         /// Entries already carrying a hash — skipped without IO.
         var alreadyStamped: Int
-        /// Entries whose source PDF we couldn't locate — typically
-        /// because the user converted from a path that's now gone
-        /// (downloads folder, external drive, etc.). Hashes stay
-        /// empty; subsequent launches retry.
-        var sourceMissing: Int
         /// Entries we tried to hash but the read failed (permission
-        /// denied, file got moved mid-flight). Empty hashes; retry
-        /// next launch.
+        /// denied, file got moved mid-flight, EPUB on dataless
+        /// iCloud path). Empty hashes; retry next launch.
         var hashFailed: Int
-        /// Entries successfully hashed + stamped.
-        var stamped: Int
+        /// Entries successfully hashed via their *source PDF*. Best
+        /// case for converted books: the resulting hash matches what
+        /// the auto-scanner sees when the same PDF re-lands in
+        /// `Input/`.
+        var stampedFromPDF: Int
+        /// Entries successfully hashed via the *catalog EPUB* (no
+        /// source PDF located, or the entry was an import to begin
+        /// with). Catches re-imports of byte-identical EPUBs across
+        /// Macs sharing the catalog.
+        var stampedFromEPUB: Int
+        /// Sum of the two stamping paths — common log statistic.
+        var stamped: Int { stampedFromPDF + stampedFromEPUB }
+    }
+
+    /// Which file an entry's hash came from. Tracked per-candidate
+    /// so the result counters can split PDF-stamped from EPUB-
+    /// stamped, and the NSLog summary tells the user where the
+    /// hashes came from.
+    private enum Provenance: Sendable {
+        case pdf
+        case epub
     }
 
     /// Run the backfill against `library`. Returns the per-run
@@ -70,32 +95,33 @@ enum SourceHashBackfill {
     static func runIfNeeded(library: LibraryStore) async -> Result {
         // Snapshot the work set on MainActor so the hashing loop
         // doesn't keep re-touching the published `entries` array
-        // while we read it.
-        let candidates: [(id: UUID, pdf: URL)] = await MainActor.run {
-            library.entries.compactMap { entry in
-                guard entry.sourceContentHashes.isEmpty else { return nil }
-                guard let pdf = LibraryStore.locateSourcePDF(for: entry.epubURL)
-                else { return nil }
-                return (entry.id, pdf)
+        // while we read it. For each entry without a hash, prefer
+        // the source PDF (when locatable) over the catalog EPUB.
+        // Imported books and conversions with a missing source
+        // both fall through to the EPUB path — every entry that
+        // survives load() has an EPUB on disk, so this fallback
+        // always has something to hash.
+        let candidates: [(id: UUID, url: URL, provenance: Provenance)] =
+            await MainActor.run {
+                library.entries.compactMap { entry in
+                    guard entry.sourceContentHashes.isEmpty else { return nil }
+                    if let pdf = LibraryStore.locateSourcePDF(for: entry.epubURL) {
+                        return (entry.id, pdf, .pdf)
+                    }
+                    return (entry.id, entry.epubURL, .epub)
+                }
             }
-        }
 
         let alreadyStamped = await MainActor.run {
             library.entries.filter { !$0.sourceContentHashes.isEmpty }.count
-        }
-        let sourceMissing = await MainActor.run {
-            library.entries.filter { entry in
-                entry.sourceContentHashes.isEmpty
-                    && LibraryStore.locateSourcePDF(for: entry.epubURL) == nil
-            }.count
         }
 
         guard !candidates.isEmpty else {
             let result = Result(
                 alreadyStamped: alreadyStamped,
-                sourceMissing: sourceMissing,
                 hashFailed: 0,
-                stamped: 0
+                stampedFromPDF: 0,
+                stampedFromEPUB: 0
             )
             logSummary(result)
             return result
@@ -106,10 +132,9 @@ enum SourceHashBackfill {
         // (`Task.detached`) so the launcher stays responsive
         // through the multi-minute backfill on large libraries.
         let hashes = await withTaskGroup(
-            of: (UUID, String?).self,
-            returning: [(UUID, String?)].self
+            of: (UUID, String?, Provenance).self,
+            returning: [(UUID, String?, Provenance)].self
         ) { group in
-            var enqueued = 0
             var iterator = candidates.makeIterator()
             // Prime the pump with up to maxConcurrentHashes tasks,
             // then refill as each completes — keeps the IO depth
@@ -117,18 +142,18 @@ enum SourceHashBackfill {
             func enqueueNext() -> Bool {
                 guard let next = iterator.next() else { return false }
                 let id = next.id
-                let pdf = next.pdf
+                let url = next.url
+                let provenance = next.provenance
                 group.addTask(priority: .utility) {
-                    let h = try? ContentHash.sha256(of: pdf)
-                    return (id, h)
+                    let h = try? ContentHash.sha256(of: url)
+                    return (id, h, provenance)
                 }
-                enqueued += 1
                 return true
             }
             for _ in 0..<maxConcurrentHashes {
                 if !enqueueNext() { break }
             }
-            var results: [(UUID, String?)] = []
+            var results: [(UUID, String?, Provenance)] = []
             while let r = await group.next() {
                 results.append(r)
                 _ = enqueueNext()
@@ -136,9 +161,16 @@ enum SourceHashBackfill {
             return results
         }
 
-        let stampedPairs = hashes.compactMap { (id, hash) -> (UUID, String)? in
-            guard let hash else { return nil }
-            return (id, hash)
+        var stampedFromPDF = 0
+        var stampedFromEPUB = 0
+        var stampedPairs: [(UUID, String)] = []
+        for (id, hash, provenance) in hashes {
+            guard let hash else { continue }
+            stampedPairs.append((id, hash))
+            switch provenance {
+            case .pdf:  stampedFromPDF += 1
+            case .epub: stampedFromEPUB += 1
+            }
         }
         let hashFailed = hashes.count - stampedPairs.count
 
@@ -156,9 +188,9 @@ enum SourceHashBackfill {
 
         let result = Result(
             alreadyStamped: alreadyStamped,
-            sourceMissing: sourceMissing,
             hashFailed: hashFailed,
-            stamped: stampedPairs.count
+            stampedFromPDF: stampedFromPDF,
+            stampedFromEPUB: stampedFromEPUB
         )
         logSummary(result)
         return result
@@ -169,14 +201,15 @@ enum SourceHashBackfill {
             // Quiet path — no work happened. Worth a single line
             // for ops diagnostics but no need to shout.
             NSLog(
-                "Humanist source-hash backfill: nothing to do (already stamped %d, source missing %d).",
-                r.alreadyStamped, r.sourceMissing
+                "Humanist source-hash backfill: nothing to do (already stamped %d).",
+                r.alreadyStamped
             )
             return
         }
         NSLog(
-            "Humanist source-hash backfill: stamped %d, hash-failed %d, source-missing %d, already-stamped %d.",
-            r.stamped, r.hashFailed, r.sourceMissing, r.alreadyStamped
+            "Humanist source-hash backfill: stamped %d (PDF: %d, EPUB: %d), hash-failed %d, already-stamped %d.",
+            r.stamped, r.stampedFromPDF, r.stampedFromEPUB,
+            r.hashFailed, r.alreadyStamped
         )
     }
 }

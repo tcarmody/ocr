@@ -162,6 +162,9 @@ final class SourceHashBackfillTests: XCTestCase {
         XCTAssertEqual(store.entries[0].sourceContentHashes, [])
 
         let result = await SourceHashBackfill.runIfNeeded(library: store)
+        XCTAssertEqual(result.stampedFromPDF, 1,
+            "source PDF was on disk — should hash via the PDF path")
+        XCTAssertEqual(result.stampedFromEPUB, 0)
         XCTAssertEqual(result.stamped, 1)
         XCTAssertEqual(result.hashFailed, 0)
         XCTAssertEqual(store.entries[0].sourceContentHashes.count, 1)
@@ -195,24 +198,55 @@ final class SourceHashBackfillTests: XCTestCase {
         )
     }
 
-    func test_counts_source_missing_entries_without_stamping() async throws {
-        // Entry exists but no source PDF on disk — the layout
-        // sets one up, then we delete the PDF.
+    func test_falls_back_to_epub_hash_when_no_source_pdf() async throws {
+        // No source PDF — the canonical EPUB-import case. Backfill
+        // should hash the catalog EPUB itself so re-imports of the
+        // same bytes dedupe across Macs sharing the library.
         let layout = try setUpCanonicalLayout(
-            bookBasename: "missing",
-            pdfContent: "x"
+            bookBasename: "import-only",
+            pdfContent: "irrelevant"
         )
         try FileManager.default.removeItem(at: layout.pdf)
+        // Replace the empty EPUB stub with real bytes so the hash
+        // is meaningful + reproducible.
+        let epubBytes = "imagine this is a real EPUB archive"
+        try Data(epubBytes.utf8).write(to: layout.epub)
+
         let store = makeStore()
         store.recordConversion(
-            epubURL: layout.epub, title: "Missing", languages: ["en"]
+            epubURL: layout.epub, title: "Import Only", languages: ["en"]
         )
 
         let result = await SourceHashBackfill.runIfNeeded(library: store)
-        XCTAssertEqual(result.stamped, 0)
-        XCTAssertEqual(result.sourceMissing, 1)
+        XCTAssertEqual(result.stampedFromPDF, 0)
+        XCTAssertEqual(result.stampedFromEPUB, 1,
+            "no PDF — should fall back to hashing the catalog EPUB")
         XCTAssertEqual(result.hashFailed, 0)
-        XCTAssertEqual(store.entries[0].sourceContentHashes, [])
+
+        let expected = try ContentHash.sha256(of: layout.epub)
+        XCTAssertEqual(store.entries[0].sourceContentHashes.first, expected,
+            "stamped hash should match the EPUB bytes — needed for re-import dedupe")
+    }
+
+    func test_pdf_path_preferred_over_epub_when_both_available() async throws {
+        // Defends the preference order: even though we could hash
+        // the EPUB, hashing the PDF gives the auto-scanner the
+        // signal it actually consults when a PDF re-lands in Input/.
+        let layout = try setUpCanonicalLayout(
+            bookBasename: "prefer-pdf",
+            pdfContent: "this is the pdf source"
+        )
+        try Data("this is the converted epub".utf8).write(to: layout.epub)
+        let store = makeStore()
+        store.recordConversion(
+            epubURL: layout.epub, title: "Prefer PDF", languages: ["en"]
+        )
+        let result = await SourceHashBackfill.runIfNeeded(library: store)
+        XCTAssertEqual(result.stampedFromPDF, 1)
+        XCTAssertEqual(result.stampedFromEPUB, 0)
+        let pdfHash = try ContentHash.sha256(of: layout.pdf)
+        XCTAssertEqual(store.entries[0].sourceContentHashes.first, pdfHash,
+            "PDF hash wins — that's what auto-scan compares re-drops against")
     }
 
     func test_handles_multiple_entries_in_one_pass() async throws {
@@ -288,5 +322,44 @@ final class SourceHashBackfillTests: XCTestCase {
 
         XCTAssertTrue(store.isSourceHashKnownOrRejected(hash),
             "post-backfill: scanner skips this source on next pass")
+    }
+
+    func test_epub_re_import_dedupes_after_backfill() async throws {
+        // The reason the EPUB-fallback exists: a peer Mac re-drops
+        // the same EPUB bytes (different filename / path) and the
+        // importer's dedupe path should fire instead of writing
+        // a second catalog row. We stand in for the importer here
+        // by hashing the EPUB ourselves and checking the
+        // isSourceHashKnownOrRejected query — same surface area.
+        let root = tempDir.appendingPathComponent("Library")
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true
+        )
+        UserDefaults.standard.set(
+            root.path, forKey: ConversionSettingsKeys.outputFolderPath
+        )
+        let epub = root.appendingPathComponent("Books/imported.epub")
+        try FileManager.default.createDirectory(
+            at: epub.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("real epub bytes".utf8).write(to: epub)
+
+        let store = makeStore()
+        store.recordConversion(
+            epubURL: epub, title: "Imported", languages: ["en"]
+        )
+        _ = await SourceHashBackfill.runIfNeeded(library: store)
+
+        // Same bytes, "different" file the user might re-drop:
+        let reDropPath = tempDir.appendingPathComponent("downloads/imported-renamed.epub")
+        try FileManager.default.createDirectory(
+            at: reDropPath.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("real epub bytes".utf8).write(to: reDropPath)
+        let reDropHash = try ContentHash.sha256(of: reDropPath)
+        XCTAssertTrue(store.isSourceHashKnownOrRejected(reDropHash),
+            "EPUB-fallback hash should be byte-identical, so a re-import dedupes")
     }
 }
