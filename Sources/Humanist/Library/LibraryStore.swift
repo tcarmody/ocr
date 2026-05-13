@@ -182,59 +182,74 @@ final class LibraryStore: ObservableObject {
     /// `conversionType`. An EPUB whose basename matches a PDF on
     /// disk (somewhere reasonable) is `.print`; otherwise
     /// `.digital`. Imperfect — the user can re-convert / re-import
-    /// to overwrite — but covers the common layouts:
-    ///
-    ///  * Sibling: PDF + EPUB in the same directory.
-    ///  * Configured output root: PDFs at `<root>/foo.pdf`,
-    ///    EPUBs at `<root>/Books/foo.epub` (the canonical layout
-    ///    when a configured output folder is set). Also accepts
-    ///    the `.split.pdf` variant Humanist's split-PDF tool
-    ///    emits, since `<root>/Books/foo.epub` was likely
-    ///    produced from `<root>/foo.split.pdf`.
+    /// to overwrite — but covers the common layouts (see
+    /// `locateSourcePDF` for the probe sites).
     static func inferConversionType(for epubURL: URL) -> BookConversionType {
-        let pdfSibling = epubURL
+        locateSourcePDF(for: epubURL) != nil ? .print : .digital
+    }
+
+    /// Try to locate the source PDF that produced `epubURL`. Same
+    /// probe sites as `inferConversionType`, but returns the URL on
+    /// hit so callers (catalog backfill, dedupe re-stamp) can hash
+    /// the file. Returns nil when no candidate matches.
+    ///
+    /// Probe order — first hit wins:
+    ///   * Sibling: `<EPUB stripped of .epub>.pdf` in the same
+    ///     directory.
+    ///   * Configured output root: `<root>/<basename>.pdf` (canonical
+    ///     layout when an output folder is set + the EPUB sits under
+    ///     `<root>/Books/`).
+    ///   * `.split` collapse: `<root>/<basename minus .split>.pdf`,
+    ///     since `Books/Foo.split.epub` was produced from `Foo.split.pdf`
+    ///     which itself was a split off `Foo.pdf`.
+    ///   * `.split` expansion: `<root>/<basename>.split.pdf`, when
+    ///     the EPUB doesn't carry the `.split` suffix but the PDF
+    ///     does (rare layout but cheap to check).
+    ///   * Auto-scan Input folder: `<root>/Input/<basename>.pdf`,
+    ///     for users who leave originals in `Input/` rather than
+    ///     moving them up to the root.
+    static func locateSourcePDF(for epubURL: URL) -> URL? {
+        let sibling = epubURL
             .deletingPathExtension()
             .appendingPathExtension("pdf")
-        if FileManager.default.fileExists(atPath: pdfSibling.path) {
-            return .print
+        if FileManager.default.fileExists(atPath: sibling.path) {
+            return sibling
         }
-        // Check at the configured output root — the
-        // PDFs-at-root + EPUBs-under-Books/ layout that most
-        // Humanist users have once an output folder is set.
-        if let root = ConversionOutputResolver.currentRoot() {
-            let basename = epubURL
-                .deletingPathExtension()
-                .lastPathComponent
-            // Direct match: <root>/<basename>.pdf
-            let direct = root
-                .appendingPathComponent(basename)
+        guard let root = ConversionOutputResolver.currentRoot()
+        else { return nil }
+        let basename = epubURL
+            .deletingPathExtension()
+            .lastPathComponent
+        let direct = root
+            .appendingPathComponent(basename)
+            .appendingPathExtension("pdf")
+        if FileManager.default.fileExists(atPath: direct.path) {
+            return direct
+        }
+        let stripped = basename.replacingOccurrences(of: ".split", with: "")
+        if stripped != basename {
+            let strippedPDF = root
+                .appendingPathComponent(stripped)
                 .appendingPathExtension("pdf")
-            if FileManager.default.fileExists(atPath: direct.path) {
-                return .print
-            }
-            // `.split` variant: the EPUB at
-            // `Books/Foo.split.epub` came from `Foo.split.pdf`,
-            // which itself was a split off `Foo.pdf`. Either is
-            // evidence of a print source.
-            let stripped = basename
-                .replacingOccurrences(of: ".split", with: "")
-            if stripped != basename {
-                let strippedPDF = root
-                    .appendingPathComponent(stripped)
-                    .appendingPathExtension("pdf")
-                if FileManager.default.fileExists(atPath: strippedPDF.path) {
-                    return .print
-                }
-            }
-            // Reverse: EPUB has no `.split` but the PDF does.
-            let splitPDF = root
-                .appendingPathComponent(basename + ".split")
-                .appendingPathExtension("pdf")
-            if FileManager.default.fileExists(atPath: splitPDF.path) {
-                return .print
+            if FileManager.default.fileExists(atPath: strippedPDF.path) {
+                return strippedPDF
             }
         }
-        return .digital
+        let splitPDF = root
+            .appendingPathComponent(basename + ".split")
+            .appendingPathExtension("pdf")
+        if FileManager.default.fileExists(atPath: splitPDF.path) {
+            return splitPDF
+        }
+        let inputCandidate = root
+            .appendingPathComponent(ConversionOutputSubfolder.input,
+                                    isDirectory: true)
+            .appendingPathComponent(basename)
+            .appendingPathExtension("pdf")
+        if FileManager.default.fileExists(atPath: inputCandidate.path) {
+            return inputCandidate
+        }
+        return nil
     }
 
     /// Rewrite `entry.epubURL` to point at the current machine's

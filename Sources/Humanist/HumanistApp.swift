@@ -105,6 +105,18 @@ struct HumanistApp: App {
             EmbeddingsBinaryUpgrade.runIfNeeded()
         }
 
+        // Backfill `sourceContentHashes` for catalog entries that
+        // pre-date R-Library-Dedupe. Without this, books converted
+        // before the dedupe feature are invisible to the scanner's
+        // hash check — the auto-scanner happily re-enqueues their
+        // source PDFs every time they show up in Input/. The
+        // backfill self-corrects across launches (state lives on
+        // each entry; empty hashes ⇒ try again) so a failed run
+        // doesn't strand the catalog.
+        Task.detached(priority: .utility) {
+            await SourceHashBackfill.runIfNeeded(library: lib)
+        }
+
         // Tier 9 / E-Warm: kick the Surya sidecar's Python
         // interpreter + Surya imports off the launch path so the
         // first conversion doesn't pay the ~5-15s spawn cost. Fire-
