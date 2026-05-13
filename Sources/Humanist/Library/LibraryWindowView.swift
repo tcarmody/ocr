@@ -323,10 +323,12 @@ struct LibraryWindowView: View {
                 // entry's source hashes flow into the library's
                 // rejectedSourceHashes set, which the scanner
                 // consults before enqueuing. Hidden when none of
-                // the target entries carry a source hash —
-                // pre-dedupe entries would no-op the button and
-                // confuse the user.
-                if ctx.entries.contains(where: { !$0.sourceContentHashes.isEmpty }) {
+                // the target entries was converted from a PDF —
+                // for EPUB imports the source hash is the EPUB's
+                // own bytes, never a PDF SHA-256, so the rejection
+                // would be a no-op (the auto-scanner only hashes
+                // PDFs).
+                if ctx.entries.contains(where: { entryHasRejectablePDFSource($0) }) {
                     Button("Trash & Don\u{2019}t Re-scan Source", role: .destructive) {
                         performRemove(ctx, alsoTrashFiles: true, rejectSource: true)
                     }
@@ -341,8 +343,9 @@ struct LibraryWindowView: View {
             // R-Library-Rescan: confirmation dialog after probe
             // succeeds. Shows the resolved PDF + target EPUB so the
             // user can verify before kicking off a multi-minute job.
+            // Title/body change shape for multi-select.
             .confirmationDialog(
-                "Re-scan \u{201C}\(rescanContext?.entry.title ?? "")\u{201D}?",
+                rescanConfirmationTitle,
                 isPresented: Binding(
                     get: { rescanContext != nil },
                     set: { if !$0 { rescanContext = nil } }
@@ -350,19 +353,12 @@ struct LibraryWindowView: View {
                 titleVisibility: .visible,
                 presenting: rescanContext
             ) { ctx in
-                Button("Re-scan", role: .destructive) {
+                Button(rescanConfirmationButtonLabel(for: ctx), role: .destructive) {
                     performRescan(ctx)
                 }
                 Button("Cancel", role: .cancel) { rescanContext = nil }
             } message: { ctx in
-                Text("Source PDF: \(ctx.sourcePDF.path)\n\n"
-                    + "Re-runs the OCR pipeline with the launcher's current settings "
-                    + "and overwrites the existing EPUB. The catalog row (and its "
-                    + "metadata edits, collection memberships) stays put. The old "
-                    + "EPUB is preserved as a `.bak.epub` sibling for one-click "
-                    + "rollback.\n\n"
-                    + "If this book is currently open in the editor, save your "
-                    + "changes first — the rescan will overwrite any unsaved edits.")
+                Text(rescanConfirmationMessage(for: ctx))
             }
             // R-Library-Rescan: file-picker fallback. Fires when the
             // probe chain couldn't auto-resolve a source PDF — user
@@ -380,7 +376,10 @@ struct LibraryWindowView: View {
                 rescanPickerEntry = nil
                 switch result {
                 case .success(let url):
-                    rescanContext = RescanContext(entry: entry, sourcePDF: url)
+                    rescanContext = RescanContext(
+                        resolved: [.init(entry: entry, sourcePDF: url)],
+                        unresolved: []
+                    )
                 case .failure(let error):
                     rescanError = error.localizedDescription
                 }
@@ -666,27 +665,122 @@ struct LibraryWindowView: View {
     /// whole selection; otherwise just the right-clicked row. Falls
     /// through silently on empty input so callers can pipe selection
     /// straight in without guarding.
-    /// R-Library-Rescan. Resolve the source PDF for `entry`. On
-    /// success → drop straight into the confirmation dialog. On
-    /// miss → trigger the file-picker fallback so the user can
-    /// point us at the original.
-    private func beginRescan(for entry: LibraryEntry) {
-        if let sourcePDF = LibraryStore.locateSourcePDFForRescan(for: entry) {
-            rescanContext = RescanContext(entry: entry, sourcePDF: sourcePDF)
-        } else {
-            rescanPickerEntry = entry
+    /// R-Library-Rescan. Resolve the source PDF for each entry in
+    /// `entries` and stage a confirmation. Three cases:
+    ///   * **Single entry, source auto-resolved** → drop straight
+    ///     into the confirmation dialog.
+    ///   * **Single entry, source not auto-resolved** → trigger
+    ///     the file-picker fallback so the user can point us at
+    ///     the original.
+    ///   * **Multiple entries** → resolve what we can, surface
+    ///     unresolved entries in the dialog body, skip the file
+    ///     picker (picker-per-entry would be obnoxious). User can
+    ///     re-scan unresolved entries individually if they want.
+    private func beginRescan(for entries: [LibraryEntry]) {
+        guard !entries.isEmpty else { return }
+        var resolved: [RescanContext.Match] = []
+        var unresolved: [LibraryEntry] = []
+        for entry in entries {
+            if let pdf = LibraryStore.locateSourcePDFForRescan(for: entry) {
+                resolved.append(.init(entry: entry, sourcePDF: pdf))
+            } else {
+                unresolved.append(entry)
+            }
+        }
+        // Single-entry no-resolve case: drop into the file picker
+        // so the user can point at the original. Multi-entry case:
+        // proceed with the resolved subset and just list the
+        // skipped books — popping a picker once per missing
+        // source would be obnoxious.
+        if entries.count == 1, resolved.isEmpty,
+           let onlyEntry = entries.first {
+            rescanPickerEntry = onlyEntry
+            return
+        }
+        guard !resolved.isEmpty else { return }
+        rescanContext = RescanContext(
+            resolved: resolved, unresolved: unresolved
+        )
+    }
+
+    /// R-Library-Rescan. Selection-aware target set: if `entry` is
+    /// part of the current selection, return every selected entry
+    /// in display order; otherwise just `entry`. Mirrors the
+    /// `removalTargets` pattern.
+    private func rescanTargets(for entry: LibraryEntry) -> [LibraryEntry] {
+        if selection.contains(entry.id) {
+            return selectedEntries
+        }
+        return [entry]
+    }
+
+    /// Dialog title for the rescan confirmation. Reads naturally
+    /// in both the single- and multi-book cases.
+    private var rescanConfirmationTitle: String {
+        let total = (rescanContext?.resolved.count ?? 0)
+            + (rescanContext?.unresolved.count ?? 0)
+        switch total {
+        case 0:
+            return "Re-scan?"
+        case 1:
+            let title = rescanContext?.first?.entry.title ?? ""
+            return "Re-scan \u{201C}\(title)\u{201D}?"
+        default:
+            return "Re-scan \(total) books?"
         }
     }
 
-    /// R-Library-Rescan. Submit a rescan job that overwrites the
-    /// existing EPUB. Uses the launcher's current options; bypasses
-    /// the dedupe short-circuit (otherwise the source-hash already
-    /// on the entry would short-circuit the rescan to .done without
-    /// doing any work).
+    /// Confirmation-button label — singular vs plural to match the
+    /// dialog title.
+    private func rescanConfirmationButtonLabel(for ctx: RescanContext) -> String {
+        ctx.resolved.count > 1
+            ? "Re-scan \(ctx.resolved.count) Books"
+            : "Re-scan"
+    }
+
+    /// Dialog body — names the resolved source PDF for single-book
+    /// rescan; for multi-book, summarizes the count + lists the
+    /// skipped unresolved books (auto-resolved books are
+    /// represented by the count).
+    private func rescanConfirmationMessage(for ctx: RescanContext) -> String {
+        var out = ""
+        if ctx.resolved.count == 1, let match = ctx.first {
+            out = "Source PDF: \(match.sourcePDF.path)\n\n"
+        } else if ctx.resolved.count > 1 {
+            out = "\(ctx.resolved.count) source PDF\(ctx.resolved.count == 1 ? "" : "s") auto-resolved. "
+        }
+        if !ctx.unresolved.isEmpty {
+            let titles = ctx.unresolved.prefix(5).map { "\u{201C}\($0.title)\u{201D}" }
+            let suffix = ctx.unresolved.count > 5
+                ? " and \(ctx.unresolved.count - 5) more"
+                : ""
+            out += "Skipped \(ctx.unresolved.count) book\(ctx.unresolved.count == 1 ? "" : "s") with no auto-resolvable source PDF: "
+                + titles.joined(separator: ", ") + suffix + ".\n\n"
+        }
+        out += "Re-runs the OCR pipeline with the launcher's current settings "
+            + "and overwrites the existing EPUB"
+        out += ctx.resolved.count > 1 ? "s" : ""
+        out += ". The catalog row(s) (and any metadata edits + "
+            + "collection memberships) stay put. The old EPUB"
+        out += ctx.resolved.count > 1 ? "s are" : " is"
+        out += " preserved as `.bak.epub` sibling"
+        out += ctx.resolved.count > 1 ? "s" : ""
+        out += " for one-click rollback.\n\n"
+        out += "If any book is currently open in the editor, save your "
+            + "changes first — the rescan will overwrite unsaved edits."
+        return out
+    }
+
+    /// R-Library-Rescan. Submit one rescan job per resolved entry.
+    /// Wraps the submissions in a single bulk window so the queue
+    /// fires one publish + one save (matters when the user picks
+    /// 50 books at once).
     private func performRescan(_ ctx: RescanContext) {
-        queue.addPDFForRescan(
-            ctx.sourcePDF, targetEPUBURL: ctx.entry.epubURL
-        )
+        for match in ctx.resolved {
+            queue.addPDFForRescan(
+                match.sourcePDF, targetEPUBURL: match.entry.epubURL
+            )
+        }
         rescanContext = nil
     }
 
@@ -723,6 +817,15 @@ struct LibraryWindowView: View {
         if rejectSource {
             hashesToReject = ctx.entries.flatMap(\.sourceContentHashes)
         }
+        // Wrap the whole sequence in a single bulk window so the
+        // catalog write fires once, not 2N+1 times (one per
+        // entry's `library.remove` plus the trailing
+        // `markSourcesRejected`). At library scale on an iCloud
+        // catalog, the back-to-back atomic writes is what made the
+        // single-row remove path appear to hang.
+        library.beginBulkUpdate()
+        defer { library.endBulkUpdate() }
+
         for entry in ctx.entries {
             coverCache.invalidate(entry.epubURL)
             if alsoTrashFiles {
@@ -773,10 +876,27 @@ struct LibraryWindowView: View {
         }
         var trailer = "\n\nRemove from Library forgets the book but leaves the EPUB on disk."
             + " Move to Trash also sends the EPUB file to the Trash."
-        if ctx.entries.contains(where: { !$0.sourceContentHashes.isEmpty }) {
+        if ctx.entries.contains(where: { entryHasRejectablePDFSource($0) }) {
             trailer += " Trash & Don\u{2019}t Re-scan Source also tells the Input-folder auto-scanner to skip the source PDF on every Mac sharing this library."
         }
         return preamble + trailer
+    }
+
+    /// True when the entry was converted from a PDF (Print /
+    /// Manuscript / Early Print) AND carries a source hash. EPUB
+    /// imports have `conversionType == .digital` and their stamped
+    /// hash is the EPUB's own bytes — not a PDF SHA-256 — so
+    /// adding it to `rejectedSourceHashes` would never match an
+    /// Input-folder PDF and the button would be a no-op. Hide the
+    /// button in that case so we don't mislead.
+    private func entryHasRejectablePDFSource(_ entry: LibraryEntry) -> Bool {
+        guard !entry.sourceContentHashes.isEmpty else { return false }
+        switch entry.conversionType {
+        case .print, .earlyPrint, .manuscript:
+            return true
+        case .digital, .none:
+            return false
+        }
     }
 
     /// Restrict the library chat to just the selected rows and
@@ -1591,8 +1711,12 @@ struct LibraryWindowView: View {
                 epubFilename: entry.epubURL.lastPathComponent
             )
         }
-        Button("Re-scan with Current Settings…") {
-            beginRescan(for: entry)
+        let rescanTargets = rescanTargets(for: entry)
+        let rescanLabel = rescanTargets.count > 1
+            ? "Re-scan \(rescanTargets.count) Books with Current Settings…"
+            : "Re-scan with Current Settings…"
+        Button(rescanLabel) {
+            beginRescan(for: rescanTargets)
         }
         Divider()
         addToCollectionMenu(for: entry)
@@ -1759,13 +1883,25 @@ private struct RemoveContext: Identifiable {
 }
 
 /// R-Library-Rescan. Payload for the rescan-confirmation dialog.
-/// Holds the resolved source PDF + the target EPUB URL so the
-/// dialog body can name both, and the submit step has everything
-/// it needs without re-running the probe.
+/// Holds every resolved (entry, source PDF) pair so the submit
+/// step has everything it needs without re-running the probe.
+/// `unresolved` carries entries whose source PDF couldn't be
+/// auto-located — surfaced in the dialog body so the user knows
+/// what got skipped. Multi-select: when the right-clicked row is
+/// part of the current selection, the context-menu hands every
+/// selected entry to `beginRescan` and they all flow through
+/// this struct.
 private struct RescanContext: Identifiable {
     let id = UUID()
-    let entry: LibraryEntry
-    let sourcePDF: URL
+    struct Match: Equatable {
+        let entry: LibraryEntry
+        let sourcePDF: URL
+    }
+    let resolved: [Match]
+    let unresolved: [LibraryEntry]
+
+    /// Convenience for the single-entry display path.
+    var first: Match? { resolved.first }
 }
 
 private struct NewCollectionSheet: View {

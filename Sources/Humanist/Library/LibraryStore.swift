@@ -420,6 +420,23 @@ final class LibraryStore: ObservableObject {
     /// collection mutations from firing N+1 publishes through
     /// every observer. Nil means "not in bulk mode."
     private var pendingCollections: [BookCollection]?
+    /// Flag for changes to the small auxiliary state (currently
+    /// just `rejectedSourceHashes`) made inside a bulk window.
+    /// Set to true by mutators that don't have their own staging
+    /// buffer; cleared at `endBulkUpdate()` after the consolidated
+    /// save fires. Defends against the save-storm pattern where
+    /// the Library window's "Trash & Don't Re-scan Source" path
+    /// would otherwise issue an extra `save()` on top of the
+    /// per-entry bulk save — at library scale on an iCloud catalog
+    /// that doubled the perceived hang time.
+    private var pendingAuxiliarySave: Bool = false
+
+    /// True iff we're currently inside a bulk-update window.
+    /// Mutators consult this to decide whether to save inline or
+    /// defer the save until `endBulkUpdate()`.
+    private var isInBulkUpdate: Bool {
+        pendingEntries != nil || pendingCollections != nil
+    }
 
     /// Begin a bulk-update window. Callers MUST pair this with
     /// `endBulkUpdate()` on every exit path (success, cancellation,
@@ -452,6 +469,10 @@ final class LibraryStore: ObservableObject {
         if let pendingC = pendingCollections {
             pendingCollections = nil
             collections = pendingC
+            didStage = true
+        }
+        if pendingAuxiliarySave {
+            pendingAuxiliarySave = false
             didStage = true
         }
         if didStage { save() }
@@ -694,7 +715,12 @@ final class LibraryStore: ObservableObject {
         guard !nonEmpty.isEmpty else { return }
         let before = rejectedSourceHashes
         rejectedSourceHashes.formUnion(nonEmpty)
-        if rejectedSourceHashes != before { save() }
+        guard rejectedSourceHashes != before else { return }
+        if isInBulkUpdate {
+            pendingAuxiliarySave = true
+        } else {
+            save()
+        }
     }
 
     /// Reverse of `markSourcesRejected` — used by tests + a future
@@ -703,7 +729,12 @@ final class LibraryStore: ObservableObject {
     func unmarkSourcesRejected(_ hashes: [String]) {
         let before = rejectedSourceHashes
         rejectedSourceHashes.subtract(hashes)
-        if rejectedSourceHashes != before { save() }
+        guard rejectedSourceHashes != before else { return }
+        if isInBulkUpdate {
+            pendingAuxiliarySave = true
+        } else {
+            save()
+        }
     }
 
     /// True if `hash` corresponds to a source the scanner should
