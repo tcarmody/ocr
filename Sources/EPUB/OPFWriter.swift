@@ -49,6 +49,17 @@ struct OPFWriter {
                 "<dc:identifier>urn:isbn:\(XMLEscape.text(isbn))</dc:identifier>"
             )
         }
+        if let source = book.sourceURL {
+            // Dublin Core `<dc:source>`: "A related resource from
+            // which the described resource is derived." For OCR
+            // conversions that's the source PDF; for re-imports it
+            // could be the original EPUB or a URL. Surfaces in
+            // generic EPUB tools (Calibre, Sigil) so the provenance
+            // travels with the file even outside Humanist.
+            extras.append(
+                "<dc:source>\(XMLEscape.text(source.absoluteString))</dc:source>"
+            )
+        }
         let extrasBlock = extras.isEmpty ? "" : extras.joined(separator: "\n") + "\n"
 
         let metadata = """

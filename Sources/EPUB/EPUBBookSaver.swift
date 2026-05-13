@@ -250,6 +250,7 @@ public struct EPUBBookSaver {
         upsertSimpleDC(metadataEl, localName: "language", value: metadata.language)
         upsertSimpleDC(metadataEl, localName: "date", value: metadata.year)
         upsertSimpleDC(metadataEl, localName: "publisher", value: metadata.publisher)
+        upsertSimpleDC(metadataEl, localName: "source", value: metadata.source)
         upsertISBNIdentifier(
             in: metadataEl,
             packageUniqueIdentifierID: root

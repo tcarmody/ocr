@@ -22,6 +22,14 @@ public struct Book: Sendable, Equatable {
     /// Stored as the raw digit string (no hyphens). Emitted as a
     /// secondary `<dc:identifier>` with `urn:isbn:` prefix.
     public var isbn: String?
+    /// URL of the resource this book was derived from — typically
+    /// the source PDF for OCR conversions, or a website / archive
+    /// for hand-built books. Optional. Emitted as `<dc:source>` in
+    /// the OPF when set (Dublin Core: "A related resource from
+    /// which the described resource is derived"). The pipeline
+    /// populates this from `pdfURL` at assembly time; manual
+    /// edits flow through `OPFReader` / `EPUBBookSaver`.
+    public var sourceURL: URL?
 
     public init(
         title: String,
@@ -31,7 +39,8 @@ public struct Book: Sendable, Equatable {
         chapters: [Chapter] = [],
         year: String? = nil,
         publisher: String? = nil,
-        isbn: String? = nil
+        isbn: String? = nil,
+        sourceURL: URL? = nil
     ) {
         self.title = title
         self.author = author
@@ -41,5 +50,6 @@ public struct Book: Sendable, Equatable {
         self.year = year
         self.publisher = publisher
         self.isbn = isbn
+        self.sourceURL = sourceURL
     }
 }

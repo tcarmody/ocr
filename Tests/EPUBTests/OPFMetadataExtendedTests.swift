@@ -244,6 +244,91 @@ final class OPFMetadataExtendedTests: XCTestCase {
         XCTAssertEqual(book.metadata.publisher, "X Press")
     }
 
+    // MARK: - dc:source round trip
+
+    func test_parse_dc_source_url() throws {
+        try buildEPUB(metadataBlock: """
+            <dc:identifier id="bookid">test-id</dc:identifier>
+            <dc:title>Book</dc:title>
+            <dc:language>en</dc:language>
+            <dc:source>file:///Users/me/Documents/foo.pdf</dc:source>
+            """)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        XCTAssertEqual(
+            book.metadata.source,
+            "file:///Users/me/Documents/foo.pdf"
+        )
+    }
+
+    func test_parse_missing_dc_source_is_nil() throws {
+        try buildEPUB(metadataBlock: """
+            <dc:identifier id="bookid">test-id</dc:identifier>
+            <dc:title>Book</dc:title>
+            <dc:language>en</dc:language>
+            """)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        XCTAssertNil(book.metadata.source)
+    }
+
+    func test_save_writes_dc_source_when_set() throws {
+        try buildEPUB(metadataBlock: """
+            <dc:identifier id="bookid">test-id</dc:identifier>
+            <dc:title>Book</dc:title>
+            <dc:language>en</dc:language>
+            """)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        book.metadata = OPFReader.Metadata(
+            title: book.metadata.title,
+            language: book.metadata.language,
+            source: "file:///Users/me/Documents/foo.pdf"
+        )
+        try EPUBBookSaver().save(book)
+
+        let reloaded = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        XCTAssertEqual(
+            reloaded.metadata.source,
+            "file:///Users/me/Documents/foo.pdf"
+        )
+    }
+
+    func test_save_clearing_dc_source_removes_the_element() throws {
+        try buildEPUB(metadataBlock: """
+            <dc:identifier id="bookid">test-id</dc:identifier>
+            <dc:title>Book</dc:title>
+            <dc:language>en</dc:language>
+            <dc:source>file:///old/path.pdf</dc:source>
+            """)
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        XCTAssertEqual(book.metadata.source, "file:///old/path.pdf")
+        book.metadata = OPFReader.Metadata(
+            title: book.metadata.title,
+            language: book.metadata.language,
+            source: nil
+        )
+        try EPUBBookSaver().save(book)
+
+        let reloaded = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        XCTAssertNil(reloaded.metadata.source)
+    }
+
     // MARK: - fixture helper
 
     private func buildEPUB(metadataBlock: String) throws {

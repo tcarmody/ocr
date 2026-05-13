@@ -2090,7 +2090,8 @@ public actor PDFToEPUBPipeline {
             options: options,
             budget: claudeBudget,
             title: title,
-            language: language
+            language: language,
+            sourceURL: pdfURL
         )
         var book = assembled.book
         let appliedTOC = assembled.appliedTOC
@@ -2200,7 +2201,8 @@ public actor PDFToEPUBPipeline {
         options: Options,
         budget: ClaudeCallBudget,
         title: String,
-        language: BCP47
+        language: BCP47,
+        sourceURL: URL? = nil
     ) async -> AssembledBook {
         // 1 + 2: dictionary cleanup, then typography pass.
         // Dictionary runs first so it sees pre-normalized forms
@@ -2295,7 +2297,8 @@ public actor PDFToEPUBPipeline {
             chapters: coherenceCleaned,
             year: extracted?.year,
             publisher: extracted?.publisher,
-            isbn: extracted?.isbn
+            isbn: extracted?.isbn,
+            sourceURL: sourceURL
         )
         return AssembledBook(book: book, appliedTOC: appliedTOC)
     }

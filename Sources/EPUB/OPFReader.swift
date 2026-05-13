@@ -38,6 +38,13 @@ public struct OPFReader {
         /// the ISBN even if it happens to be ISBN-shaped — it's
         /// the publishing identity and not necessarily an ISBN.
         public let isbn: String?
+        /// Dublin Core `<dc:source>` — the URI of the resource this
+        /// EPUB was derived from. Humanist writes the source PDF
+        /// path here for conversions; manual imports may carry a
+        /// URL or be nil. Stored as the raw string so non-file URIs
+        /// (http(s), file with hostname, etc.) round-trip without
+        /// truncation.
+        public let source: String?
 
         public init(
             title: String? = nil,
@@ -45,7 +52,8 @@ public struct OPFReader {
             language: String? = nil,
             year: String? = nil,
             publisher: String? = nil,
-            isbn: String? = nil
+            isbn: String? = nil,
+            source: String? = nil
         ) {
             self.title = title
             self.author = author
@@ -53,6 +61,7 @@ public struct OPFReader {
             self.year = year
             self.publisher = publisher
             self.isbn = isbn
+            self.source = source
         }
     }
 
@@ -143,9 +152,11 @@ public struct OPFReader {
         let year = firstText(doc: doc, localName: "date").flatMap(parseYearPrefix)
         let publisher = firstText(doc: doc, localName: "publisher")
         let isbn = parseISBN(doc: doc)
+        let source = firstText(doc: doc, localName: "source")
         return Metadata(
             title: title, author: author, language: language,
-            year: year, publisher: publisher, isbn: isbn
+            year: year, publisher: publisher, isbn: isbn,
+            source: source
         )
     }
 
