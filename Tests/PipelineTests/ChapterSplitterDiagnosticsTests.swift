@@ -105,4 +105,84 @@ final class ChapterSplitterDiagnosticsTests: XCTestCase {
         // Cover the happy degenerate-fallback case here; the
         // promoter+splitter integration covers the eligible path.
     }
+
+    // MARK: - Ratio override (Phase: hierarchy-aware level pick)
+
+    /// Lacan-shaped: 3 H1 section dividers ("I", "II", "III"), 25
+    /// H2 essay titles spread across the book. First-pass picks H1
+    /// (≥ 2 breaks); ratio override should promote to H2 because
+    /// the H2 count (25) is ≥ 5× the H1 count (3), ≥ 5 absolute,
+    /// and H2s span the whole document.
+    func test_diagnostics_ratio_override_promotes_to_deeper_level() {
+        var blocks: [Block] = []
+        // 3 H1 dividers, each followed by ~8 H2 essays with body.
+        for partIdx in 0..<3 {
+            blocks.append(.heading(level: 1, runs: [InlineRun("Part \(partIdx + 1)")]))
+            blocks.append(.paragraph(runs: [InlineRun("part intro")]))
+            for essayIdx in 0..<8 {
+                blocks.append(.heading(level: 2, runs: [InlineRun("Essay P\(partIdx)E\(essayIdx)")]))
+                blocks.append(.paragraph(runs: [InlineRun("essay body")]))
+            }
+        }
+        let result = ChapterSplitter.splitWithDiagnostics(
+            blocks: blocks, footnotes: [], pageAnchors: [],
+            bookFallbackTitle: "Book"
+        )
+        XCTAssertEqual(result.diagnostics.detectedChapterLevel, 2,
+            "ratio override should promote past the 3 H1s to the 24 H2s")
+        XCTAssertEqual(result.diagnostics.levelOverriddenFrom, 1)
+        XCTAssertEqual(result.diagnostics.eligibleBreakCount, 24)
+    }
+
+    /// Normal Part/Chapter hierarchy: 3 H1 parts × 4 H2 chapters
+    /// = 12 H2s. Ratio is 4× — below the 5× override threshold.
+    /// Detector should keep H1 so the Part structure survives.
+    func test_diagnostics_ratio_override_skips_on_modest_ratio() {
+        var blocks: [Block] = []
+        for partIdx in 0..<3 {
+            blocks.append(.heading(level: 1, runs: [InlineRun("Part \(partIdx + 1)")]))
+            blocks.append(.paragraph(runs: [InlineRun("part intro")]))
+            for chIdx in 0..<4 {
+                blocks.append(.heading(level: 2, runs: [InlineRun("Ch P\(partIdx)C\(chIdx)")]))
+                blocks.append(.paragraph(runs: [InlineRun("chapter body")]))
+            }
+        }
+        let result = ChapterSplitter.splitWithDiagnostics(
+            blocks: blocks, footnotes: [], pageAnchors: [],
+            bookFallbackTitle: "Book"
+        )
+        XCTAssertEqual(result.diagnostics.detectedChapterLevel, 1,
+            "4× ratio (12 H2s / 3 H1s) is below the 5× threshold — stay at H1")
+        XCTAssertNil(result.diagnostics.levelOverriddenFrom)
+    }
+
+    /// Deeper level has plenty of breaks (10x the count) but they
+    /// all cluster at the back — typical of an OCR'd index/glossary.
+    /// Coverage check must catch this: H1 stays as the chapter
+    /// level despite the count ratio.
+    func test_diagnostics_ratio_override_skips_when_coverage_clusters() {
+        var blocks: [Block] = []
+        blocks.append(.heading(level: 1, runs: [InlineRun("Part One")]))
+        blocks.append(.paragraph(runs: [InlineRun("part intro body content")]))
+        // Padding to make the document long enough that "back-loaded"
+        // is meaningful.
+        for _ in 0..<50 {
+            blocks.append(.paragraph(runs: [InlineRun("padding")]))
+        }
+        blocks.append(.heading(level: 1, runs: [InlineRun("Part Two")]))
+        blocks.append(.paragraph(runs: [InlineRun("part intro")]))
+        // 15 H2s all jammed at the back (index entries).
+        for entryIdx in 0..<15 {
+            blocks.append(.heading(level: 2, runs: [InlineRun("Index Entry \(entryIdx)")]))
+            blocks.append(.paragraph(runs: [InlineRun("entry body")]))
+        }
+        let result = ChapterSplitter.splitWithDiagnostics(
+            blocks: blocks, footnotes: [], pageAnchors: [],
+            bookFallbackTitle: "Book"
+        )
+        XCTAssertEqual(result.diagnostics.detectedChapterLevel, 1,
+            "deeper level clusters at the back — coverage check should block promotion")
+        XCTAssertNil(result.diagnostics.levelOverriddenFrom)
+    }
+
 }

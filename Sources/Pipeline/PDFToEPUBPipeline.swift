@@ -3382,6 +3382,9 @@ public actor PDFToEPUBPipeline {
             out += "by level: \(summary)\n"
         }
         out += "detected chapter level: H\(splitter.detectedChapterLevel)\n"
+        if let from = splitter.levelOverriddenFrom {
+            out += "(ratio override fired: first-pass picked H\(from), promoted to H\(splitter.detectedChapterLevel))\n"
+        }
         out += "eligible breaks: \(splitter.eligibleBreakCount)\n"
         out += "degenerate fallback used: \(splitter.degenerateFallbackUsed ? "yes" : "no")\n"
         if !splitter.filtered.isEmpty {

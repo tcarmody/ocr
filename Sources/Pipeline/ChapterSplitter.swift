@@ -74,6 +74,13 @@ public enum ChapterSplitter {
         /// no eligible breaks survived (or no headings existed in
         /// the first place).
         public var degenerateFallbackUsed: Bool
+        /// When the ratio override fired, the level that the
+        /// first-pass detector originally picked. Nil when no
+        /// override fired — `detectedChapterLevel` is the only
+        /// level considered. Surfaced in the debug log so a user
+        /// debugging "why isn't this splitting at the level I
+        /// expected?" can see the override decision.
+        public var levelOverriddenFrom: Int?
 
         public init(
             headingsSeen: Int = 0,
@@ -81,7 +88,8 @@ public enum ChapterSplitter {
             detectedChapterLevel: Int = 1,
             eligibleBreakCount: Int = 0,
             filtered: [Filtered] = [],
-            degenerateFallbackUsed: Bool = false
+            degenerateFallbackUsed: Bool = false,
+            levelOverriddenFrom: Int? = nil
         ) {
             self.headingsSeen = headingsSeen
             self.headingCountsByLevel = headingCountsByLevel
@@ -89,6 +97,7 @@ public enum ChapterSplitter {
             self.eligibleBreakCount = eligibleBreakCount
             self.filtered = filtered
             self.degenerateFallbackUsed = degenerateFallbackUsed
+            self.levelOverriddenFrom = levelOverriddenFrom
         }
     }
 
@@ -159,8 +168,10 @@ public enum ChapterSplitter {
             diagnostics.headingsSeen += 1
             diagnostics.headingCountsByLevel[level, default: 0] += 1
         }
-        let chapterLevel = detectChapterLevel(in: blocks)
+        let levelDecision = detectChapterLevelWithOverride(in: blocks)
+        let chapterLevel = levelDecision.level
         diagnostics.detectedChapterLevel = chapterLevel
+        diagnostics.levelOverriddenFrom = levelDecision.overrideFromLevel
 
         // Two-stage filter: only blocks that are (a) headings at the
         // chapter level *and* (b) "look like" real chapter titles open
@@ -259,8 +270,17 @@ public enum ChapterSplitter {
         return nil
     }
 
-    /// Pick the heading level to split chapters at. Prefers the
-    /// smallest (most prominent) level with at least
+    /// Pick the heading level to split chapters at. Returns the
+    /// level only; see `detectChapterLevelWithOverride` for the
+    /// override-aware variant.
+    static func detectChapterLevel(in blocks: [Block]) -> Int {
+        return detectChapterLevelWithOverride(in: blocks).level
+    }
+
+    /// Pick the heading level to split chapters at, with optional
+    /// override when a deeper level looks structurally stronger.
+    ///
+    /// First pass: smallest (most prominent) level with at least
     /// `minHeadingCountForSplit` *eligible* occurrences. Returns 1
     /// (H1) as the fallback when no level qualifies — same as the
     /// pre-detection behavior, so the degenerate single-chapter case
@@ -272,21 +292,83 @@ public enum ChapterSplitter {
     /// flooded with running-head H2s could trick the detector into
     /// splitting at that level even though every "heading" at that
     /// level is bogus.
-    static func detectChapterLevel(in blocks: [Block]) -> Int {
+    ///
+    /// Ratio override: after the first pass picks level L, walk
+    /// deeper levels for a candidate that satisfies *all three* of:
+    ///   * `>= deeperLevelCountRatio` times more eligible breaks
+    ///     than L.
+    ///   * `>= minDeeperLevelCountForOverride` eligible breaks
+    ///     absolute (so a 1-vs-5 jump doesn't trip the override).
+    ///   * Coverage spans the document — first break in the first
+    ///     third, last break in the last third (so a level that
+    ///     only clusters in the back-matter index doesn't get
+    ///     promoted).
+    /// This is deliberately not size-based: poetry / short-story
+    /// collections can have any chapter length and would fail a
+    /// pages-per-chapter heuristic. The signals here are purely
+    /// structural — "is the deeper level a fuller, evenly-spread
+    /// partition of the document?"
+    static func detectChapterLevelWithOverride(
+        in blocks: [Block]
+    ) -> (level: Int, overrideFromLevel: Int?) {
         let freq = headingTextFrequency(in: blocks)
-        var counts: [Int: Int] = [:]
-        for block in blocks {
+        var positions: [Int: [Int]] = [:]
+        for (i, block) in blocks.enumerated() {
             guard case .heading(let level, _) = block else { continue }
             guard canBreakChapter(block, headingFrequency: freq) else { continue }
-            counts[level, default: 0] += 1
+            positions[level, default: []].append(i)
         }
+
+        var initial = 1
         for level in 1...6 {
-            if (counts[level] ?? 0) >= minHeadingCountForSplit {
-                return level
+            if (positions[level]?.count ?? 0) >= minHeadingCountForSplit {
+                initial = level
+                break
             }
         }
-        return 1
+
+        let initialCount = positions[initial]?.count ?? 0
+        guard initialCount > 0, blocks.count > 0 else {
+            return (initial, nil)
+        }
+
+        for deeper in (initial + 1)...6 {
+            let deepPositions = positions[deeper] ?? []
+            let deepCount = deepPositions.count
+            guard deepCount >= minDeeperLevelCountForOverride else { continue }
+            guard deepCount >= initialCount * deeperLevelCountRatio else { continue }
+            guard coversDocument(positions: deepPositions, docSize: blocks.count) else { continue }
+            return (deeper, initial)
+        }
+        return (initial, nil)
     }
+
+    /// Coverage check for the ratio override: a level whose breaks
+    /// land in both the first third *and* the last third of the
+    /// document is treated as a "real" partition. Levels whose
+    /// breaks cluster (typical when an OCR'd index inflates a level
+    /// with hundreds of entries packed at the back) don't pass.
+    /// `docSize` is the total block count.
+    static func coversDocument(positions: [Int], docSize: Int) -> Bool {
+        guard let first = positions.first, let last = positions.last else {
+            return false
+        }
+        guard docSize > 0 else { return false }
+        let firstThird = docSize / 3
+        let lastThird = (docSize * 2) / 3
+        return first <= firstThird && last >= lastThird
+    }
+
+    /// Minimum count ratio between a deeper level and the chosen
+    /// level for the override to fire. 5× is high enough that a
+    /// real Part/Chapter hierarchy (e.g., 3 Parts × 4 chapters
+    /// each = 4× ratio) stays at the upper level; meanwhile,
+    /// Lacan's Écrits at 13× clears it easily.
+    public static let deeperLevelCountRatio = 5
+    /// Minimum absolute eligible-break count at the deeper level
+    /// for the override to fire. Defense against a 1-vs-5 case
+    /// where the ratio is satisfied but neither level is suitable.
+    public static let minDeeperLevelCountForOverride = 5
 
     /// Below this many same-level *eligible* headings, splitting at
     /// that level is too aggressive — a single section heading inside
