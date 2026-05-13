@@ -2096,6 +2096,22 @@ public actor PDFToEPUBPipeline {
         var book = assembled.book
         let appliedTOC = assembled.appliedTOC
 
+        // Dump the chapter-shape decision summary alongside the
+        // reflow log. The two together explain why the EPUB has the
+        // chapter structure it does — `log.txt` shows per-block
+        // classification, `chapters.txt` shows the
+        // promoter/splitter decisions that turned blocks into the
+        // chapter break list.
+        if options.emitDebugLog {
+            let chaptersURL = stagingDir.appendingPathComponent("chapters.txt")
+            try? Self.writeChapterDecisionLog(
+                promoter: assembled.chapterPromoterDiagnostics,
+                splitter: assembled.chapterSplitterDiagnostics,
+                chapters: book.chapters,
+                to: chaptersURL
+            )
+        }
+
         // Cover-from-page-0. Render the first PDF page as a JPEG
         // raster and attach it to chapter[0] as the dedicated
         // cover-image asset. The EPUB writer stamps
@@ -2178,6 +2194,15 @@ public actor PDFToEPUBPipeline {
     struct AssembledBook {
         let book: Book
         let appliedTOC: ParsedTOC?
+        /// Decision summary from `ChapterSplitter` — heading counts
+        /// per level, eligible-break count, per-filter reasons. Used
+        /// by the debug log to explain why splitting produced the
+        /// chapter shape it did.
+        let chapterSplitterDiagnostics: ChapterSplitter.Diagnostics
+        /// Promotion summary from `ChapterHeadingPromoter` — every
+        /// paragraph block that got upgraded to an H2 heading, with
+        /// the fused-title text when applicable.
+        let chapterPromoterDiagnostics: ChapterHeadingPromoter.Diagnostics
     }
 
     /// Take a reflowed block stream and produce a `Book` ready to
@@ -2214,16 +2239,30 @@ public actor PDFToEPUBPipeline {
         )
         let cleanBlocks = TypographyNormalizer.normalize(dehyphenated)
 
+        // 2.5: pattern-based chapter-marker promotion. Surya's
+        // layout model misses chapter starts when they're set in
+        // body-size or small-caps type (common in mid-century
+        // academic editions). This pass scans the flat block stream
+        // for paragraphs matching `CHAPTER 1`, `PART ONE`, `I.
+        // INTRODUCTION`, etc. and upgrades them to H2 headings so
+        // ChapterSplitter has something to break on. Conservative
+        // by design: a missed promotion preserves today's "one
+        // chapter" output, but a false-positive creates a bogus
+        // chapter the user has to fix manually.
+        let promotion = ChapterHeadingPromoter.promote(blocks: cleanBlocks)
+        let promotedBlocks = promotion.blocks
+
         // 3: split into chapters at the dominant heading level.
         // Footnotes, page anchors, and figure assets get distributed
         // to whichever chapter they fall inside.
-        let rawChapters = ChapterSplitter.split(
-            blocks: cleanBlocks,
+        let splitResult = ChapterSplitter.splitWithDiagnostics(
+            blocks: promotedBlocks,
             footnotes: reflowed.footnotes,
             pageAnchors: reflowed.pageAnchors,
             figureAssets: reflowed.figureAssets,
             bookFallbackTitle: title
         )
+        let rawChapters = splitResult.chapters
 
         // 4: TOC title override. Falls through to heuristic titles
         // when no TOC was parsed or no offset matched.
@@ -2300,7 +2339,12 @@ public actor PDFToEPUBPipeline {
             isbn: extracted?.isbn,
             sourceURL: sourceURL
         )
-        return AssembledBook(book: book, appliedTOC: appliedTOC)
+        return AssembledBook(
+            book: book,
+            appliedTOC: appliedTOC,
+            chapterSplitterDiagnostics: splitResult.diagnostics,
+            chapterPromoterDiagnostics: promotion.diagnostics
+        )
     }
 
     /// Write the conversion's three on-disk artifacts: the EPUB
@@ -3232,6 +3276,81 @@ public actor PDFToEPUBPipeline {
     ///   diagnosing pages that produced no content in the EPUB —
     ///   the parsed-empty flag pinpoints whether the parser dropped
     ///   valid content or Sonnet returned nothing usable.
+    /// Dump the chapter-promotion + chapter-split decision summary
+    /// to `chapters.txt` in the debug staging dir. Sits next to the
+    /// existing `log.txt` (reflow / observation-level) and
+    /// `claude-pages.txt` (raw Sonnet XHTML). The three together
+    /// give a full forensic trail from page observations → final
+    /// chapter shape.
+    private static func writeChapterDecisionLog(
+        promoter: ChapterHeadingPromoter.Diagnostics,
+        splitter: ChapterSplitter.Diagnostics,
+        chapters: [Chapter],
+        to url: URL
+    ) throws {
+        var out = "Chapter shape decision log\n"
+        out += "==========================\n\n"
+
+        out += "PROMOTER (pattern-based pre-splitter pass)\n"
+        out += "paragraphs scanned: \(promoter.paragraphsScanned)\n"
+        out += "promotions: \(promoter.promotions.count)\n"
+        if promoter.promotions.isEmpty {
+            out += "  (no chapter-marker paragraphs matched)\n"
+        } else {
+            for p in promoter.promotions {
+                if let fused = p.fusedTitle {
+                    out += "  + \(p.marker) ⇒ '\(p.headingText)' (fused: '\(fused)')\n"
+                } else {
+                    out += "  + \(p.marker) ⇒ '\(p.headingText)'\n"
+                }
+            }
+        }
+        out += "\n"
+
+        out += "SPLITTER\n"
+        out += "headings seen: \(splitter.headingsSeen)\n"
+        if !splitter.headingCountsByLevel.isEmpty {
+            let levels = splitter.headingCountsByLevel.keys.sorted()
+            let summary = levels.map { lvl in
+                "H\(lvl)=\(splitter.headingCountsByLevel[lvl] ?? 0)"
+            }.joined(separator: " ")
+            out += "by level: \(summary)\n"
+        }
+        out += "detected chapter level: H\(splitter.detectedChapterLevel)\n"
+        out += "eligible breaks: \(splitter.eligibleBreakCount)\n"
+        out += "degenerate fallback used: \(splitter.degenerateFallbackUsed ? "yes" : "no")\n"
+        if !splitter.filtered.isEmpty {
+            out += "filtered headings (\(splitter.filtered.count)):\n"
+            var byReason: [ChapterSplitter.Diagnostics.FilterReason: [ChapterSplitter.Diagnostics.Filtered]] = [:]
+            for f in splitter.filtered {
+                byReason[f.reason, default: []].append(f)
+            }
+            for reason in [
+                ChapterSplitter.Diagnostics.FilterReason.runningHead,
+                .tooShort, .startsLowercase, .midSentenceTerminator
+            ] {
+                guard let items = byReason[reason], !items.isEmpty else { continue }
+                out += "  [\(reason.rawValue)] \(items.count)\n"
+                for item in items.prefix(10) {
+                    let preview = String(item.text.prefix(80))
+                    out += "    - H\(item.level): \(preview)\n"
+                }
+                if items.count > 10 {
+                    out += "    ... and \(items.count - 10) more\n"
+                }
+            }
+        }
+        out += "\n"
+
+        out += "FINAL CHAPTERS (\(chapters.count))\n"
+        for (i, ch) in chapters.enumerated() {
+            let title = ch.title ?? "(untitled)"
+            out += "  \(i + 1). \(title) — \(ch.blocks.count) blocks\n"
+        }
+
+        try out.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     private static func writeClaudePageResponses(
         _ responses: [ClaudePageOCREngine.CapturedResponse],
         to url: URL

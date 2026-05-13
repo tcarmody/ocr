@@ -32,6 +32,75 @@ public enum ChapterSplitter {
     /// preferred — the heuristic lives entirely in this file.
     public static let frontMatterTitle = "Front Matter"
 
+    /// Decision summary for the debug log. Captures the level the
+    /// splitter chose, eligible vs. filtered heading counts, and a
+    /// per-filter accounting so a failed conversion can be diagnosed
+    /// from the log alone without re-running the pipeline.
+    public struct Diagnostics: Sendable, Equatable {
+        /// Reason a candidate heading failed `canBreakChapter`.
+        public enum FilterReason: String, Sendable, Equatable, Codable {
+            case tooShort
+            case startsLowercase
+            case midSentenceTerminator
+            case runningHead
+        }
+        public struct Filtered: Sendable, Equatable {
+            public var level: Int
+            public var text: String
+            public var reason: FilterReason
+            public init(level: Int, text: String, reason: FilterReason) {
+                self.level = level
+                self.text = text
+                self.reason = reason
+            }
+        }
+        /// Total heading-block count seen, regardless of level.
+        public var headingsSeen: Int
+        /// Per-level heading-block count (raw, before eligibility
+        /// filtering).
+        public var headingCountsByLevel: [Int: Int]
+        /// Level the splitter chose for the chapter break. 1 (H1)
+        /// when nothing qualified — paired with empty
+        /// `eligibleBreakCount`, signals the degenerate fallback.
+        public var detectedChapterLevel: Int
+        /// Number of *eligible* breaks at the detected level after
+        /// filtering. 0 ⇒ degenerate single-chapter fallback fired.
+        public var eligibleBreakCount: Int
+        /// Headings that survived level detection but failed
+        /// `canBreakChapter`. Each filter is recorded individually
+        /// so the debug log shows the long tail.
+        public var filtered: [Filtered]
+        /// True iff the splitter returned a single chapter because
+        /// no eligible breaks survived (or no headings existed in
+        /// the first place).
+        public var degenerateFallbackUsed: Bool
+
+        public init(
+            headingsSeen: Int = 0,
+            headingCountsByLevel: [Int: Int] = [:],
+            detectedChapterLevel: Int = 1,
+            eligibleBreakCount: Int = 0,
+            filtered: [Filtered] = [],
+            degenerateFallbackUsed: Bool = false
+        ) {
+            self.headingsSeen = headingsSeen
+            self.headingCountsByLevel = headingCountsByLevel
+            self.detectedChapterLevel = detectedChapterLevel
+            self.eligibleBreakCount = eligibleBreakCount
+            self.filtered = filtered
+            self.degenerateFallbackUsed = degenerateFallbackUsed
+        }
+    }
+
+    public struct Result: Sendable, Equatable {
+        public var chapters: [Chapter]
+        public var diagnostics: Diagnostics
+        public init(chapters: [Chapter], diagnostics: Diagnostics) {
+            self.chapters = chapters
+            self.diagnostics = diagnostics
+        }
+    }
+
     /// Split `blocks` into chapters at the document's *dominant
     /// heading level*. Splitting strictly at H1 was the original
     /// behavior, but Surya's layout model emits H1 only for the
@@ -56,30 +125,80 @@ public enum ChapterSplitter {
         figureAssets: [FigureAsset] = [],
         bookFallbackTitle: String
     ) -> [Chapter] {
+        // Convenience overload preserved for callers / tests that
+        // don't care about diagnostics. The real work lives in
+        // `splitWithDiagnostics`.
+        return splitWithDiagnostics(
+            blocks: blocks,
+            footnotes: footnotes,
+            pageAnchors: pageAnchors,
+            figureAssets: figureAssets,
+            bookFallbackTitle: bookFallbackTitle
+        ).chapters
+    }
+
+    /// Variant that returns both the chapter list and a
+    /// `Diagnostics` snapshot — heading counts per level, the
+    /// selected chapter level, eligible-break counts, and per-filter
+    /// reasons for the headings that didn't make the cut. The
+    /// production pipeline calls this so the debug log can record
+    /// the decision; the convenience `split` overload above just
+    /// forwards.
+    public static func splitWithDiagnostics(
+        blocks: [Block],
+        footnotes: [Footnote],
+        pageAnchors: [PageAnchor],
+        figureAssets: [FigureAsset] = [],
+        bookFallbackTitle: String
+    ) -> Result {
         let headingFreq = headingTextFrequency(in: blocks)
+        var diagnostics = Diagnostics()
+        // Count heading blocks by level (raw, before eligibility).
+        for block in blocks {
+            guard case .heading(let level, _) = block else { continue }
+            diagnostics.headingsSeen += 1
+            diagnostics.headingCountsByLevel[level, default: 0] += 1
+        }
         let chapterLevel = detectChapterLevel(in: blocks)
+        diagnostics.detectedChapterLevel = chapterLevel
+
         // Two-stage filter: only blocks that are (a) headings at the
         // chapter level *and* (b) "look like" real chapter titles open
         // a new chapter. Failing the eligibility check leaves the
         // heading rendered as `<h2>` (or whatever level Surya assigned)
         // in the chapter's body — we only suppress chapter-boundary
         // promotion. See `canBreakChapter` for the gates.
-        let breakIndices = blocks.indices.filter {
-            isHeading(blocks[$0], level: chapterLevel)
-                && canBreakChapter(blocks[$0], headingFrequency: headingFreq)
+        var breakIndices: [Int] = []
+        for idx in blocks.indices {
+            guard case .heading(let level, let runs) = blocks[idx],
+                  level == chapterLevel
+            else { continue }
+            if canBreakChapter(blocks[idx], headingFrequency: headingFreq) {
+                breakIndices.append(idx)
+            } else if let reason = filterReason(
+                level: level, runs: runs, headingFrequency: headingFreq
+            ) {
+                let text = runs.map(\.text).joined()
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                diagnostics.filtered.append(
+                    .init(level: level, text: text, reason: reason)
+                )
+            }
         }
+        diagnostics.eligibleBreakCount = breakIndices.count
 
         // Degenerate case: no qualifying heading found. One chapter,
         // everything in it — matches the pre-Phase-1 behavior so
         // EPUBs without heading structure still produce valid output.
         guard !breakIndices.isEmpty else {
-            return [Chapter(
+            diagnostics.degenerateFallbackUsed = true
+            return Result(chapters: [Chapter(
                 title: bookFallbackTitle,
                 blocks: blocks,
                 footnotes: footnotes,
                 pageAnchors: pageAnchors,
                 figureAssets: figureAssets
-            )]
+            )], diagnostics: diagnostics)
         }
 
         var chapters: [Chapter] = []
@@ -115,7 +234,29 @@ public enum ChapterSplitter {
             ))
         }
 
-        return chapters
+        return Result(chapters: chapters, diagnostics: diagnostics)
+    }
+
+    /// Diagnostic-only inverse of `canBreakChapter`: when a heading
+    /// fails to qualify, which gate killed it? Used by the debug log
+    /// to surface the long tail of running-head / drop-cap / body-
+    /// fragment misfires.
+    private static func filterReason(
+        level: Int, runs: [InlineRun], headingFrequency: [String: Int]
+    ) -> Diagnostics.FilterReason? {
+        let text = runs.map(\.text).joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.count < minChapterHeadingLength { return .tooShort }
+        if let first = text.first, first.isLowercase { return .startsLowercase }
+        let range = NSRange(text.startIndex..., in: text)
+        let matches = midSentenceTerminatorRegex.matches(in: text, range: range)
+        if matches.contains(where: { $0.range.location >= midSentenceTerminatorMinOffset }) {
+            return .midSentenceTerminator
+        }
+        if (headingFrequency[text] ?? 0) >= maxChapterHeadingRepetition {
+            return .runningHead
+        }
+        return nil
     }
 
     /// Pick the heading level to split chapters at. Prefers the
