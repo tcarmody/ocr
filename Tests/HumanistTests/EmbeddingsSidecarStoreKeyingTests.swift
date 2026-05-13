@@ -10,12 +10,12 @@ import EPUB
 /// always live under `~/Library/Application Support/Humanist/Embeddings/`.
 /// Routing collapses to:
 ///
-///   * `libraryID` provided → `<appSupport>/<uuid>.json`
+///   * `libraryID` provided → `<appSupport>/<uuid>.emb` (binary)
 ///   * no `libraryID` (uncataloged book) → legacy SHA-keyed at
 ///     `<appSupport>/<sha256>.json`
 ///
-/// The read fallback chain still consults the SHA-keyed path so
-/// pre-UUID-keying sidecars remain readable.
+/// The read fallback chain still consults legacy `.json` and
+/// SHA-keyed paths so pre-Phase-C sidecars remain readable.
 @MainActor
 final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
 
@@ -44,11 +44,11 @@ final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
 
     // MARK: - writeURL routing
 
-    func test_writeURL_with_libraryID_uses_appsupport_uuid() {
+    func test_writeURL_with_libraryID_uses_appsupport_uuid_emb() {
         let store = makeStore()
         let id = UUID()
         let url = store.writeURL(for: anyEpubURL(), libraryID: id)
-        XCTAssertEqual(url.lastPathComponent, "\(id.uuidString).json")
+        XCTAssertEqual(url.lastPathComponent, "\(id.uuidString).emb")
         XCTAssertTrue(url.path.contains("AppSupport"))
     }
 
@@ -65,21 +65,70 @@ final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
 
     // MARK: - read fallback chain
 
-    func test_read_finds_UUID_keyed_file_in_appsupport() {
+    func test_read_finds_UUID_keyed_emb_in_appsupport() throws {
         let appSupport = tempDir.appendingPathComponent("AppSupport")
-        try? FileManager.default.createDirectory(
+        try FileManager.default.createDirectory(
             at: appSupport, withIntermediateDirectories: true
         )
         let store = EmbeddingsSidecarStore(baseDirectory: appSupport)
         let id = UUID()
         let sidecar = EmbeddingsSidecar.empty(
-            backend: "app-backend", dimension: 16
+            backend: "emb-backend", dimension: 16
         )
-        try! JSONEncoder().encode(sidecar).write(
+        try EmbeddingsSidecarBinaryFormat.encode(sidecar).write(
+            to: appSupport.appendingPathComponent("\(id.uuidString).emb")
+        )
+        let found = store.read(for: anyEpubURL(), libraryID: id)
+        XCTAssertEqual(found?.backendIdentifier, "emb-backend")
+    }
+
+    func test_read_falls_back_to_legacy_uuid_json() throws {
+        // No `.emb` file present (pre-Phase-C library). The UUID-
+        // keyed `.json` still resolves via the next slot in the
+        // candidate chain so users see no break before the
+        // background binary upgrade has run.
+        let appSupport = tempDir.appendingPathComponent("AppSupport")
+        try FileManager.default.createDirectory(
+            at: appSupport, withIntermediateDirectories: true
+        )
+        let store = EmbeddingsSidecarStore(baseDirectory: appSupport)
+        let id = UUID()
+        let sidecar = EmbeddingsSidecar.empty(
+            backend: "legacy-json", dimension: 8
+        )
+        try JSONEncoder().encode(sidecar).write(
             to: appSupport.appendingPathComponent("\(id.uuidString).json")
         )
         let found = store.read(for: anyEpubURL(), libraryID: id)
-        XCTAssertEqual(found?.backendIdentifier, "app-backend")
+        XCTAssertEqual(found?.backendIdentifier, "legacy-json")
+    }
+
+    func test_read_prefers_emb_over_legacy_json_when_both_exist() throws {
+        // If both a `.emb` and a `.json` are present for the same
+        // UUID (mid-upgrade state), the binary file wins. Critical
+        // so a partial upgrade doesn't surface stale JSON data.
+        let appSupport = tempDir.appendingPathComponent("AppSupport")
+        try FileManager.default.createDirectory(
+            at: appSupport, withIntermediateDirectories: true
+        )
+        let store = EmbeddingsSidecarStore(baseDirectory: appSupport)
+        let id = UUID()
+
+        let embSidecar = EmbeddingsSidecar.empty(
+            backend: "winner-emb", dimension: 4
+        )
+        let jsonSidecar = EmbeddingsSidecar.empty(
+            backend: "loser-json", dimension: 4
+        )
+        try EmbeddingsSidecarBinaryFormat.encode(embSidecar).write(
+            to: appSupport.appendingPathComponent("\(id.uuidString).emb")
+        )
+        try JSONEncoder().encode(jsonSidecar).write(
+            to: appSupport.appendingPathComponent("\(id.uuidString).json")
+        )
+
+        let found = store.read(for: anyEpubURL(), libraryID: id)
+        XCTAssertEqual(found?.backendIdentifier, "winner-emb")
     }
 
     func test_read_falls_back_to_SHA_when_no_UUID_keyed_file_exists() {

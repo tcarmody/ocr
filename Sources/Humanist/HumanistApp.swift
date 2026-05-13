@@ -81,8 +81,16 @@ struct HumanistApp: App {
         // so the launch path doesn't wait on filesystem IO; the
         // migration is idempotent, so a failed run gets a free retry
         // on next launch (UserDefaults flag is only set on success).
+        //
+        // Sequenced with the binary upgrade so iCloud-resident files
+        // land locally *first*, then get re-encoded to the new `.emb`
+        // format in the same launch. Running the binary upgrade
+        // before the iCloud move would miss the iCloud sidecars; the
+        // explicit sequencing keeps the upgrade path coherent on a
+        // first-launch-after-Phase-C user.
         Task.detached(priority: .utility) {
             EmbeddingsCloudMigration.runIfNeeded()
+            EmbeddingsBinaryUpgrade.runIfNeeded()
         }
 
         // Tier 9 / E-Warm: kick the Surya sidecar's Python

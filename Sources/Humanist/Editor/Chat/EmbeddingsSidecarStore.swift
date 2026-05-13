@@ -191,11 +191,13 @@ struct EmbeddingsSidecarStore {
     /// Where to *write* the sidecar for this lookup. UUID-keyed
     /// under the local Application Support directory when
     /// `libraryID` is provided; SHA-keyed for uncataloged callers.
-    /// Public for tests + Settings cache-size compute.
+    /// Public for tests + Settings cache-size compute. UUID-keyed
+    /// writes use the `.emb` binary format; SHA-keyed (rare,
+    /// uncataloged) keeps the legacy `.json` shape.
     func writeURL(for epubURL: URL, libraryID: UUID?) -> URL {
         if let libraryID {
             return baseDirectory.appendingPathComponent(
-                "\(libraryID.uuidString).json"
+                "\(libraryID.uuidString).emb"
             )
         }
         return legacySHAFileURL(for: epubURL)
@@ -211,16 +213,20 @@ struct EmbeddingsSidecarStore {
 
     /// Ordered list of *read* candidates for this lookup. The
     /// load chain stops at the first file that exists + decodes
-    /// cleanly. Order: UUID-at-app-support → SHA-at-app-support.
-    /// Both candidates are local; iCloud paths are no longer
-    /// consulted (any pre-Phase-A files in iCloud have been moved
-    /// here by `EmbeddingsCloudMigration` on launch).
-    /// Visible-internal for tests.
+    /// cleanly. Order: UUID `.emb` (preferred binary), UUID `.json`
+    /// (pre-Phase-C legacy), SHA `.json` (uncataloged-fallback).
+    /// All local; iCloud paths are no longer consulted (any
+    /// pre-Phase-A files in iCloud have been moved here by
+    /// `EmbeddingsCloudMigration` on launch). Visible-internal
+    /// for tests.
     func readCandidateURLs(
         for epubURL: URL, libraryID: UUID?
     ) -> [URL] {
         var out: [URL] = []
         if let libraryID {
+            out.append(baseDirectory.appendingPathComponent(
+                "\(libraryID.uuidString).emb"
+            ))
             out.append(baseDirectory.appendingPathComponent(
                 "\(libraryID.uuidString).json"
             ))
@@ -231,16 +237,24 @@ struct EmbeddingsSidecarStore {
 
     /// Read the sidecar for `epubURL`. Walks the candidate chain
     /// returning the first usable file. Returns nil when none of
-    /// them exist or the schemaVersion is too old.
+    /// them exist or the schemaVersion is too old. Dispatches to
+    /// the binary decoder for `.emb` files and the legacy JSON
+    /// decoder for everything else.
     func read(for epubURL: URL, libraryID: UUID? = nil) -> EmbeddingsSidecar? {
         for url in readCandidateURLs(for: epubURL, libraryID: libraryID) {
             guard FileManager.default.fileExists(atPath: url.path),
-                  let data = try? Data(contentsOf: url),
-                  let payload = try? Self.decoder.decode(
-                    EmbeddingsSidecar.self, from: data
-                  )
+                  let data = try? Data(contentsOf: url)
             else { continue }
-            guard payload.schemaVersion >= EmbeddingsSidecar.currentSchemaVersion
+            let payload: EmbeddingsSidecar?
+            if url.pathExtension == "emb" {
+                payload = try? EmbeddingsSidecarBinaryFormat.decode(data)
+            } else {
+                payload = try? Self.decoder.decode(
+                    EmbeddingsSidecar.self, from: data
+                )
+            }
+            guard let payload,
+                  payload.schemaVersion >= EmbeddingsSidecar.currentSchemaVersion
             else { continue }
             return payload
         }
@@ -249,7 +263,9 @@ struct EmbeddingsSidecarStore {
 
     /// Write the sidecar for `epubURL`. Creates the storage directory
     /// if needed; failures are silent — losing the cache means a
-    /// rebuild on next open, not a broken editor.
+    /// rebuild on next open, not a broken editor. UUID-keyed
+    /// writes go through the `.emb` binary encoder; SHA-keyed
+    /// (uncataloged) writes keep the legacy JSON shape.
     func write(
         _ sidecar: EmbeddingsSidecar,
         for epubURL: URL,
@@ -260,7 +276,13 @@ struct EmbeddingsSidecarStore {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        guard let data = try? Self.encoder.encode(sidecar) else { return }
+        let data: Data?
+        if url.pathExtension == "emb" {
+            data = try? EmbeddingsSidecarBinaryFormat.encode(sidecar)
+        } else {
+            data = try? Self.encoder.encode(sidecar)
+        }
+        guard let data else { return }
         try? data.write(to: url, options: .atomic)
     }
 
