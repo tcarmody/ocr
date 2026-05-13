@@ -3353,13 +3353,18 @@ public actor PDFToEPUBPipeline {
         out += "\n"
 
         if let toc = tocDriven {
-            out += "SPLITTER (TOC-driven path)\n"
+            out += "SPLITTER (TOC-driven path, strategy: \(toc.matchStrategy.rawValue))\n"
             out += "entries seen: \(toc.entriesSeen)\n"
             out += "arabic entries: \(toc.arabicEntries)\n"
-            if let offset = toc.inferredOffset {
-                out += "inferred offset: \(offset) (pdf_index = display_page + \(offset) - 1)\n"
-            } else {
-                out += "inferred offset: (offset learning failed)\n"
+            switch toc.matchStrategy {
+            case .titleMatch:
+                out += "boundaries: matched by heading text (offset learning skipped)\n"
+            case .pageOffset:
+                if let offset = toc.inferredOffset {
+                    out += "inferred offset: \(offset) (pdf_index = display_page + \(offset) - 1)\n"
+                } else {
+                    out += "inferred offset: (offset learning failed)\n"
+                }
             }
             out += "resolved to block index: \(toc.resolvedEntries)\n"
             out += "unresolved: \(toc.unresolvedEntries)\n\n"

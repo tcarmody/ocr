@@ -41,11 +41,28 @@ import EPUB  // ParsedTOC
 ///      `ChapterSplitter`'s convention.
 public enum TOCDrivenSplitter {
 
+    /// Which strategy resolved the boundaries. Title-matching is
+    /// preferred because it's keyed on the actual heading text the
+    /// OCR produced — robust to ambiguous page offsets that the
+    /// anchor-based path can fall victim to. Page-offset is the
+    /// fallback for books where heading detection didn't pick up
+    /// the chapter titles or the TOC entries are too generic to
+    /// match cleanly.
+    public enum MatchStrategy: String, Sendable, Equatable, Codable {
+        case titleMatch
+        case pageOffset
+    }
+
     /// Diagnostic summary for the debug log. Mirrors the shape of
     /// `ChapterSplitter.Diagnostics` so the pipeline's log
     /// renderer can branch cleanly: "TOC-driven, X entries
     /// resolved" vs. "Heuristic, level L, N breaks".
     public struct Diagnostics: Sendable, Equatable {
+        /// Which path picked the boundaries. Recorded so a user
+        /// debugging a misaligned conversion can see at a glance
+        /// whether title-matching fired or the more error-prone
+        /// page-offset fallback took over.
+        public var matchStrategy: MatchStrategy
         /// Total TOC entries scanned.
         public var entriesSeen: Int
         /// Arabic display-page entries (the offset-learning input).
@@ -54,7 +71,8 @@ public enum TOCDrivenSplitter {
         /// `PageAnchor` exists.
         public var arabicEntries: Int
         /// Inferred display→PDF offset (`pdf_index = display + offset - 1`).
-        /// Nil when offset learning failed; caller falls back.
+        /// Set only on the `pageOffset` strategy. Nil for title-
+        /// matching because the strategy doesn't need an offset.
         public var inferredOffset: Int?
         /// Entries that resolved to a block index — these become
         /// chapter boundaries.
@@ -65,12 +83,14 @@ public enum TOCDrivenSplitter {
         public var unresolvedEntries: Int
 
         public init(
+            matchStrategy: MatchStrategy = .pageOffset,
             entriesSeen: Int = 0,
             arabicEntries: Int = 0,
             inferredOffset: Int? = nil,
             resolvedEntries: Int = 0,
             unresolvedEntries: Int = 0
         ) {
+            self.matchStrategy = matchStrategy
             self.entriesSeen = entriesSeen
             self.arabicEntries = arabicEntries
             self.inferredOffset = inferredOffset
@@ -108,13 +128,22 @@ public enum TOCDrivenSplitter {
     /// cases.
     public static let candidateOffsets: [Int] = [0, 1, -1, 5, 10, 12, 15, 18, 20, 22, 25]
 
-    /// Run the TOC-driven split. Returns nil when:
-    ///   * No page anchors are available (blocks have no `.anchor`
-    ///     markers, e.g. a synthetic test input).
-    ///   * No TOC entry has a parseable arabic display page.
-    ///   * Offset learning matched fewer than
-    ///     `minResolvedFraction` of arabic entries.
-    /// Caller falls through to `ChapterSplitter` in those cases.
+    /// Run the TOC-driven split. Two strategies in order:
+    ///
+    ///   1. **Title-matching (primary)**: for each TOC entry, scan
+    ///      the block stream for a heading whose normalized text
+    ///      contains ≥ 80% of the entry's words. Robust because it
+    ///      keys on the actual OCR'd heading text. Used when at
+    ///      least `minResolvedFraction` of arabic entries match.
+    ///
+    ///   2. **Page-offset (fallback)**: existing offset-learning
+    ///      against `pageAnchors`. Used when title-matching can't
+    ///      resolve enough entries — e.g. the TOC has very short
+    ///      entries that match too generously, or the OCR mangled
+    ///      headings beyond recognition.
+    ///
+    /// Returns nil when both strategies fail (caller falls through
+    /// to `ChapterSplitter`).
     public static func split(
         blocks: [Block],
         footnotes: [Footnote],
@@ -123,35 +152,186 @@ public enum TOCDrivenSplitter {
         toc: ParsedTOC,
         bookFallbackTitle: String
     ) -> Result? {
-        var diag = Diagnostics(entriesSeen: toc.entries.count)
-
-        // Index 1: pdfPage → blockIndex of the matching `.anchor`.
-        let pdfPageToBlockIndex = indexAnchorsByPDFPage(
-            blocks: blocks, pageAnchors: pageAnchors
-        )
-        guard !pdfPageToBlockIndex.isEmpty else { return nil }
-
-        // Index 2: anchor pdf-pages, sorted. Used for "nearest
-        // available page" fallback when the TOC's exact computed
-        // page has no anchor (typical when the splitter loses a
-        // page break to a layout glitch — fall back to the next-
-        // closest break).
-        let sortedAnchorPDFs = pdfPageToBlockIndex.keys.sorted()
-
-        // Pull arabic display-page entries for offset learning.
-        // Roman-numeral entries are tagged as front-matter; they
-        // don't drive boundaries, but they're still counted toward
-        // entriesSeen so the diagnostic delta makes sense.
         let arabicEntries: [(displayPage: Int, title: String)] = toc.entries.compactMap {
             guard let n = $0.displayPageInt, n > 0 else { return nil }
             return (n, $0.title)
         }
-        diag.arabicEntries = arabicEntries.count
         guard !arabicEntries.isEmpty else { return nil }
+        let minRequired = max(2, Int(
+            ceil(Double(arabicEntries.count) * minResolvedFraction)
+        ))
 
-        // Step 2: offset learning. For each candidate offset, count
-        // how many entries map to an anchor PDF page (exact match
-        // or ±1). Pick the offset with the most matches.
+        // Strategy 1: title matching.
+        if let titleResult = splitByTitleMatching(
+            blocks: blocks,
+            footnotes: footnotes,
+            pageAnchors: pageAnchors,
+            figureAssets: figureAssets,
+            toc: toc,
+            arabicEntryCount: arabicEntries.count,
+            minRequired: minRequired
+        ) {
+            return titleResult
+        }
+
+        // Strategy 2: page-offset fallback.
+        return splitByPageOffset(
+            blocks: blocks,
+            footnotes: footnotes,
+            pageAnchors: pageAnchors,
+            figureAssets: figureAssets,
+            toc: toc,
+            arabicEntries: arabicEntries,
+            minRequired: minRequired
+        )
+    }
+
+    // MARK: - Strategy: title matching
+
+    /// Match each TOC entry against the block stream by heading
+    /// text. Word-bag containment (≥ 80% of the TOC entry's words
+    /// must appear in the heading), TOC-order discipline (each
+    /// subsequent entry searches from the previous match's index
+    /// + 1), and `ChapterSplitter.canBreakChapter` filtering so
+    /// running heads / drop caps / body-fragment misclassifications
+    /// don't seduce a TOC entry into the wrong block.
+    ///
+    /// Returns nil when fewer than `minRequired` TOC entries match —
+    /// caller falls through to the page-offset strategy.
+    private static func splitByTitleMatching(
+        blocks: [Block],
+        footnotes: [Footnote],
+        pageAnchors: [PageAnchor],
+        figureAssets: [FigureAsset],
+        toc: ParsedTOC,
+        arabicEntryCount: Int,
+        minRequired: Int
+    ) -> Result? {
+        let headingFreq = ChapterSplitter.headingTextFrequency(in: blocks)
+
+        var matches: [(blockIdx: Int, title: String)] = []
+        var cursor = 0
+        for entry in toc.entries {
+            let titleWords = normalizeForMatching(entry.title)
+            // Refuse to match on TOC entries that normalize to
+            // nothing (single-letter or all-punctuation) — too
+            // noisy. They get folded into the previous chapter.
+            guard !titleWords.isEmpty else { continue }
+            // Defend against ultra-short generic entries ("I",
+            // "II", "Note") that would match anywhere. Require at
+            // least one ≥ 4-character word OR ≥ 3 words total —
+            // either signal means the entry is specific enough.
+            let hasLongWord = titleWords.contains { $0.count >= 4 }
+            guard hasLongWord || titleWords.count >= 3 else { continue }
+
+            var foundAt: Int?
+            for idx in cursor..<blocks.count {
+                guard case .heading(_, let runs) = blocks[idx] else { continue }
+                guard ChapterSplitter.canBreakChapter(
+                    blocks[idx], headingFrequency: headingFreq
+                ) else { continue }
+                let headingText = runs.map(\.text).joined()
+                if titleMatches(
+                    headingText: headingText, tocTitleWords: titleWords
+                ) {
+                    foundAt = idx
+                    break
+                }
+            }
+            if let foundAt {
+                matches.append((foundAt, entry.title))
+                cursor = foundAt + 1
+            }
+        }
+
+        guard matches.count >= minRequired else { return nil }
+
+        let chapters = assembleChapters(
+            blocks: blocks,
+            boundaries: matches,
+            footnotes: footnotes,
+            pageAnchors: pageAnchors,
+            figureAssets: figureAssets
+        )
+        guard !chapters.isEmpty else { return nil }
+
+        let diag = Diagnostics(
+            matchStrategy: .titleMatch,
+            entriesSeen: toc.entries.count,
+            arabicEntries: arabicEntryCount,
+            inferredOffset: nil,
+            resolvedEntries: matches.count,
+            unresolvedEntries: arabicEntryCount - matches.count
+        )
+        return Result(chapters: chapters, diagnostics: diag)
+    }
+
+    /// Normalize a string into a bag of words for matching: strip
+    /// diacritics, lowercase, split on any non-letter, drop tokens
+    /// shorter than 2 chars. Drops digits so OCR'd page-number
+    /// artifacts in headings (e.g. "Functions I25 of Psychoanalysis")
+    /// don't pollute the bag.
+    static func normalizeForMatching(_ s: String) -> Set<String> {
+        let folded = s.applyingTransform(.stripDiacritics, reverse: false) ?? s
+        let lower = folded.lowercased()
+        var words: [String] = []
+        var current = ""
+        for char in lower {
+            if char.isLetter {
+                current.append(char)
+            } else {
+                if current.count >= 2 { words.append(current) }
+                current = ""
+            }
+        }
+        if current.count >= 2 { words.append(current) }
+        return Set(words)
+    }
+
+    /// Decide whether `headingText` likely refers to the same
+    /// chapter as the TOC entry whose normalized words are
+    /// `tocTitleWords`. Containment: ≥ `titleMatchCoverage` of the
+    /// TOC's words must appear in the heading. Cheap, robust to
+    /// extra OCR garbage in either direction.
+    static func titleMatches(
+        headingText: String, tocTitleWords: Set<String>
+    ) -> Bool {
+        guard !tocTitleWords.isEmpty else { return false }
+        let headingWords = normalizeForMatching(headingText)
+        let overlap = tocTitleWords.intersection(headingWords).count
+        let coverage = Double(overlap) / Double(tocTitleWords.count)
+        return coverage >= titleMatchCoverage
+    }
+
+    /// Fraction of a TOC entry's words that must appear in the
+    /// heading for a match. 0.8 catches typical OCR variance (a
+    /// stray page number, a missing accent) without admitting
+    /// loosely-related headings.
+    public static let titleMatchCoverage: Double = 0.8
+
+    // MARK: - Strategy: page-offset fallback
+
+    /// Page-offset learning + block-index resolution. The original
+    /// strategy — works when page anchors map cleanly to display
+    /// pages, but is vulnerable to ambiguous offsets when anchors
+    /// are dense (every PDF page has one, every plausible offset
+    /// ties at max matches). Title-matching wins where possible;
+    /// this is the safety net.
+    private static func splitByPageOffset(
+        blocks: [Block],
+        footnotes: [Footnote],
+        pageAnchors: [PageAnchor],
+        figureAssets: [FigureAsset],
+        toc: ParsedTOC,
+        arabicEntries: [(displayPage: Int, title: String)],
+        minRequired: Int
+    ) -> Result? {
+        let pdfPageToBlockIndex = indexAnchorsByPDFPage(
+            blocks: blocks, pageAnchors: pageAnchors
+        )
+        guard !pdfPageToBlockIndex.isEmpty else { return nil }
+        let sortedAnchorPDFs = pdfPageToBlockIndex.keys.sorted()
+
         var bestOffset: Int = 0
         var bestMatches = -1
         for offset in candidateOffsets {
@@ -167,19 +347,8 @@ public enum TOCDrivenSplitter {
                 bestOffset = offset
             }
         }
-
-        // Step 4: confidence gate. Below half the arabic entries
-        // resolving the offset is too uncertain to drive splits.
-        let minRequired = max(2, Int(
-            ceil(Double(arabicEntries.count) * minResolvedFraction)
-        ))
         guard bestMatches >= minRequired else { return nil }
-        diag.inferredOffset = bestOffset
 
-        // Step 3: resolve each TOC entry to a block index. Use
-        // exact match where possible, ±2-page fuzzy lookup
-        // otherwise. Entries that still don't resolve are counted
-        // toward `unresolvedEntries` but don't abort the split.
         var boundaries: [(blockIdx: Int, title: String)] = []
         for entry in toc.entries {
             guard let n = entry.displayPageInt, n > 0 else { continue }
@@ -192,27 +361,51 @@ public enum TOCDrivenSplitter {
             ) else { continue }
             boundaries.append((blockIdx, entry.title))
         }
-        diag.resolvedEntries = boundaries.count
-        diag.unresolvedEntries = arabicEntries.count - boundaries.count
 
-        // Dedupe block indices (two TOC entries on the same page
-        // collapse to one boundary; first title wins). Preserve
-        // TOC order for ties at the same anchor.
         var seen = Set<Int>()
         let orderedBoundaries = boundaries.filter { tuple in
             seen.insert(tuple.blockIdx).inserted
         }
         guard !orderedBoundaries.isEmpty else { return nil }
-
-        // Sort by block index ascending. TOC entries are usually
-        // already in page order, but a noisy parse could shuffle
-        // them — sorting is cheap insurance.
         let sortedBoundaries = orderedBoundaries.sorted { $0.blockIdx < $1.blockIdx }
 
-        // Step 5: segment blocks at each boundary. Pre-first-
-        // boundary content → Front Matter (if substantive).
+        let chapters = assembleChapters(
+            blocks: blocks,
+            boundaries: sortedBoundaries,
+            footnotes: footnotes,
+            pageAnchors: pageAnchors,
+            figureAssets: figureAssets
+        )
+        guard !chapters.isEmpty else { return nil }
+
+        let diag = Diagnostics(
+            matchStrategy: .pageOffset,
+            entriesSeen: toc.entries.count,
+            arabicEntries: arabicEntries.count,
+            inferredOffset: bestOffset,
+            resolvedEntries: boundaries.count,
+            unresolvedEntries: arabicEntries.count - boundaries.count
+        )
+        return Result(chapters: chapters, diagnostics: diag)
+    }
+
+    // MARK: - Chapter assembly (shared by both strategies)
+
+    /// Segment `blocks` at each boundary's block index. Pre-first-
+    /// boundary content becomes "Front Matter" when it carries any
+    /// substantive (non-anchor) content. Shared between title-
+    /// matching and page-offset strategies so they produce
+    /// identically-shaped output.
+    private static func assembleChapters(
+        blocks: [Block],
+        boundaries: [(blockIdx: Int, title: String)],
+        footnotes: [Footnote],
+        pageAnchors: [PageAnchor],
+        figureAssets: [FigureAsset]
+    ) -> [Chapter] {
+        guard !boundaries.isEmpty else { return [] }
         var chapters: [Chapter] = []
-        let firstBoundaryIdx = sortedBoundaries[0].blockIdx
+        let firstBoundaryIdx = boundaries[0].blockIdx
         if firstBoundaryIdx > 0 {
             let frontMatterBlocks = Array(blocks[0..<firstBoundaryIdx])
             if hasSubstantiveContent(frontMatterBlocks) {
@@ -225,9 +418,9 @@ public enum TOCDrivenSplitter {
                 ))
             }
         }
-        for (i, b) in sortedBoundaries.enumerated() {
-            let endIdx = (i + 1 < sortedBoundaries.count)
-                ? sortedBoundaries[i + 1].blockIdx : blocks.count
+        for (i, b) in boundaries.enumerated() {
+            let endIdx = (i + 1 < boundaries.count)
+                ? boundaries[i + 1].blockIdx : blocks.count
             let segment = Array(blocks[b.blockIdx..<endIdx])
             chapters.append(buildChapter(
                 title: b.title,
@@ -237,14 +430,7 @@ public enum TOCDrivenSplitter {
                 allFigureAssets: figureAssets
             ))
         }
-
-        // Final guard: if we somehow ended up with zero chapters,
-        // return nil so the caller falls back. Shouldn't happen
-        // given the boundaries-not-empty check above, but
-        // belt-and-braces.
-        guard !chapters.isEmpty else { return nil }
-
-        return Result(chapters: chapters, diagnostics: diag)
+        return chapters
     }
 
     // MARK: - Helpers
