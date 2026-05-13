@@ -868,6 +868,8 @@ struct LibraryWindowView: View {
     private var browserColumn: some View {
         if library.entries.isEmpty {
             emptyState
+        } else if displayedEntries.isEmpty {
+            filteredEmptyState
         } else {
             table
         }
@@ -1240,6 +1242,96 @@ struct LibraryWindowView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
+    }
+
+    /// Empty state shown when the library has rows but the current
+    /// filter chain (collection ∩ language ∩ search) produces zero
+    /// matches. Without this, the table renders a blank list and the
+    /// user can't tell whether the library failed to load, the
+    /// collection is empty, or the search is hiding everything —
+    /// exactly the confusion that made this look like a bug.
+    /// Surfaces the active filter terms and offers one-click escapes
+    /// (Search All Books / Clear Search / Show All Languages) so the
+    /// user can back out without hunting for the toolbar control.
+    @ViewBuilder
+    private var filteredEmptyState: some View {
+        let trimmedQuery = searchQuery
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasSearch = !trimmedQuery.isEmpty
+        let collection = activeCollection
+        let hasLanguage = languageFilter != nil
+
+        ContentUnavailableView {
+            Label(emptyStateTitle(
+                collection: collection,
+                query: trimmedQuery,
+                hasLanguage: hasLanguage
+            ), systemImage: hasSearch
+                ? "magnifyingglass"
+                : "line.3.horizontal.decrease.circle")
+        } description: {
+            Text(emptyStateMessage(
+                collection: collection,
+                query: trimmedQuery,
+                hasLanguage: hasLanguage
+            ))
+        } actions: {
+            VStack(spacing: 8) {
+                if collection != nil, hasSearch {
+                    Button("Search All Books") {
+                        activeCollectionID = nil
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                if hasSearch {
+                    Button("Clear Search") {
+                        searchQuery = ""
+                    }
+                }
+                if hasLanguage {
+                    Button("Show All Languages") {
+                        languageFilter = nil
+                    }
+                }
+            }
+        }
+    }
+
+    private func emptyStateTitle(
+        collection: BookCollection?,
+        query: String,
+        hasLanguage: Bool
+    ) -> String {
+        if !query.isEmpty {
+            return "No matches for \u{201C}\(query)\u{201D}"
+        }
+        if let collection {
+            return "\(collection.name) is empty"
+        }
+        if hasLanguage {
+            return "No books in the selected language"
+        }
+        return "No books to display"
+    }
+
+    private func emptyStateMessage(
+        collection: BookCollection?,
+        query: String,
+        hasLanguage: Bool
+    ) -> String {
+        if !query.isEmpty, let collection {
+            return "No books in \(collection.name) match this search. Try Search All Books to look across your whole library."
+        }
+        if !query.isEmpty, hasLanguage {
+            return "No books in the selected language match this search."
+        }
+        if !query.isEmpty {
+            return "Nothing in your library matches this search."
+        }
+        if collection != nil {
+            return "This collection has no books yet."
+        }
+        return "Try clearing the active filters."
     }
 
     // MARK: - table
