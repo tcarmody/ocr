@@ -353,6 +353,12 @@ struct ChatSettingsView: View {
                         .foregroundStyle(.secondary)
                     Button("Clear all") {
                         _ = EmbeddingsSidecarStore().clearAll()
+                        // Wipe the federated-index snapshot too —
+                        // it's an aggregate of the per-book sidecars
+                        // we just deleted, so leaving it on disk
+                        // would let the next library-chat send
+                        // resurrect the cleared state.
+                        FederatedIndexCache.invalidate()
                         refreshEmbeddingsCacheSize()
                     }
                     .disabled(embeddingsCacheBytes == 0)

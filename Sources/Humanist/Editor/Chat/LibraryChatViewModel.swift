@@ -453,13 +453,62 @@ final class LibraryChatViewModel: ObservableObject {
         // acceptable for tests; the Library window always wires
         // the live reference so the production path is free.
         let entries = (library?.entries) ?? LibraryStore().entries
-        let (index, entityIndex) = await Task.detached(priority: .userInitiated) {
+        let backendID = backend.identifier
+        let backendDim = backend.dimension
+
+        // Disk-cache fast path: fingerprint the catalog (stat-only,
+        // no sidecar bytes read) and try to load a matching snapshot
+        // off `FederatedIndexCache.defaultCacheURL`. A hit
+        // re-hydrates the same `(LibraryEmbeddingIndex,
+        // LibraryEntityIndex)` shape the slow path produces, without
+        // re-walking every sidecar.
+        let detached = await Task.detached(
+            priority: .userInitiated
+        ) { () -> (
+            LibraryEmbeddingIndex,
+            LibraryEntityIndex,
+            String,
+            Bool
+        ) in
+            let fingerprint = FederatedIndexCache.fingerprint(
+                backendIdentifier: backendID,
+                dimension: backendDim,
+                entries: entries
+            )
+            if let payload = FederatedIndexCache.load(
+                expectedFingerprint: fingerprint,
+                backendIdentifier: backendID,
+                dimension: backendDim
+            ) {
+                let idx = LibraryEmbeddingIndex(
+                    sources: payload.sources,
+                    backend: backend,
+                    stats: payload.stats
+                )
+                return (idx, payload.entityIndex, fingerprint, true)
+            }
             let idx = LibraryEmbeddingIndex.build(
                 libraryEntries: entries, backend: backend
             )
             let entityIdx = LibraryEntityIndex.build(libraryEntries: entries)
-            return (idx, entityIdx)
+            // Side-effect: write a fresh cache. Fire-and-forget at
+            // utility priority — if the save fails the next send
+            // just rebuilds, no user-visible breakage.
+            let snapshot = FederatedIndexCache.Payload(
+                backendIdentifier: backendID,
+                dimension: backendDim,
+                fingerprint: fingerprint,
+                stats: idx.stats,
+                sources: idx.sources,
+                entityIndex: entityIdx
+            )
+            Task.detached(priority: .utility) {
+                FederatedIndexCache.save(snapshot)
+            }
+            return (idx, entityIdx, fingerprint, false)
         }.value
+
+        let (index, entityIndex, _, _) = detached
         libraryIndex = index
         libraryEntityIndex = entityIndex
         libraryStatus = .ready(
@@ -472,11 +521,15 @@ final class LibraryChatViewModel: ObservableObject {
 
     /// Force a fresh library-index rebuild on the next send.
     /// Surfaced via the chat pane so the user can pick up
-    /// newly-indexed books without quitting the app.
+    /// newly-indexed books without quitting the app. Wipes both
+    /// the in-memory cache and the on-disk snapshot — the latter
+    /// would otherwise re-hydrate the same stale shape on next
+    /// send and defeat the user's explicit "rebuild" intent.
     func invalidateLibraryIndex() {
         libraryIndex = nil
         libraryEntityIndex = nil
         libraryStatus = .idle
+        FederatedIndexCache.invalidate()
     }
 
     /// Restrict retrieval to a subset of the library — used by the
