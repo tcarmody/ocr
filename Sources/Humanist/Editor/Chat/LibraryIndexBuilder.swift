@@ -136,13 +136,13 @@ final class LibraryIndexBuilder: ObservableObject {
 /// (per-book on import) can build the same shape without duplicating
 /// the cache / backend / EPUB-open machinery.
 ///
-/// R-Library-Sync Phase B: takes `libraryID` so the sidecar is
-/// keyed by the catalog entry's UUID rather than the EPUB's path
-/// SHA. When sharing is on, the file lands at
-/// `<outputRoot>/.humanist/Embeddings/<uuid>.json` and travels
-/// with the catalog. nil libraryID means an uncataloged book —
-/// the store falls back to legacy SHA-keyed storage in
-/// Application Support.
+/// Takes `libraryID` so the sidecar is keyed by the catalog
+/// entry's UUID rather than the EPUB's path SHA — UUIDs survive
+/// rename / move, paths don't. The file lands under
+/// `~/Library/Application Support/Humanist/Embeddings/<uuid>.json`
+/// (always local; embeddings don't participate in cross-Mac sync).
+/// nil libraryID means an uncataloged book — the store falls
+/// back to legacy SHA-keyed storage in the same directory.
 enum BookSidecarBuilder {
     static func buildIfNeeded(
         epubURL: URL,

@@ -175,7 +175,7 @@ struct ConversionSettingsView: View {
                 )
             )
             helpText("""
-                When on, `library.json`, the embedding / hierarchy / entity sidecars, and the alias dictionary all live under `<output folder>/.humanist/` instead of `~/Library/Application Support/`. The same catalog resolves correctly on a second Mac sharing the folder via iCloud / Dropbox / SyncThing. Per-book chat history, the conversion queue, and per-app preferences stay machine-local.
+                When on, `library.json` and the alias dictionary live under `<output folder>/.humanist/` instead of `~/Library/Application Support/`. The same catalog resolves correctly on a second Mac sharing the folder via iCloud / Dropbox / SyncThing. Embedding sidecars, per-book chat history, the conversion queue, and per-app preferences stay machine-local.
 
                 Toggling this requires an app relaunch to take effect.
                 """)
@@ -208,16 +208,8 @@ struct ConversionSettingsView: View {
     private func sidecarsAliasesSummary(
         _ result: LibrarySyncMigration.PhaseBResult
     ) -> String {
-        var parts: [String] = []
-        if result.sidecarsCopied > 0 {
-            let n = result.sidecarsCopied
-            parts.append("\(n) embedding sidecar\(n == 1 ? "" : "s") copied")
-        }
-        if result.aliasesCopied {
-            parts.append("alias dictionary copied")
-        }
-        guard !parts.isEmpty else { return "" }
-        return " " + parts.joined(separator: " · ") + "."
+        guard result.aliasesCopied else { return "" }
+        return " Alias dictionary copied."
     }
 
     private func resetConversionDefaults() {

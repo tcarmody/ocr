@@ -142,12 +142,17 @@ struct EmbeddingsSidecar: Codable, Sendable {
 /// coexist:
 ///
 ///   * **UUID-keyed** (preferred when a `LibraryEntry.id` is
-///     available): the sidecar filename is `<uuid>.json`. With
-///     R-Library-Sync Phase B's "share across machines" toggle
-///     enabled, these files live in
-///     `<outputRoot>/.humanist/Embeddings/` so cloud-synced
-///     folders carry them across Macs. Without sharing, they live
+///     available): the sidecar filename is `<uuid>.json`, stored
 ///     in `~/Library/Application Support/Humanist/Embeddings/`.
+///     Always local — embeddings are *not* synced across Macs.
+///     The share-library-across-machines toggle covers
+///     `library.json` and aliases only; embeddings would blow
+///     well past iCloud sync's design envelope (53 GB / 1k+ JSON
+///     files across one user library) and double the federated
+///     index build cost from local-disk speed to iCloud-metadata
+///     speed. Pre-Phase-A sidecars that lived in the iCloud root
+///     are moved into this directory on first launch by
+///     `EmbeddingsCloudMigration.runIfNeeded`.
 ///
 ///   * **SHA-keyed** (legacy / uncataloged-fallback): the filename
 ///     is `SHA256(canonicalEpubPath).json`, always under
@@ -183,17 +188,12 @@ struct EmbeddingsSidecarStore {
         }
     }
 
-    /// Where to *write* the sidecar for this lookup. Honors
-    /// sharing toggle + libraryID. UUID-keyed when libraryID is
-    /// provided; SHA-keyed in Application Support as the legacy
-    /// fallback. Public for tests + Settings cache-size compute.
+    /// Where to *write* the sidecar for this lookup. UUID-keyed
+    /// under the local Application Support directory when
+    /// `libraryID` is provided; SHA-keyed for uncataloged callers.
+    /// Public for tests + Settings cache-size compute.
     func writeURL(for epubURL: URL, libraryID: UUID?) -> URL {
         if let libraryID {
-            if let shared = Self.sharedRootEmbeddingsDir() {
-                return shared.appendingPathComponent(
-                    "\(libraryID.uuidString).json"
-                )
-            }
             return baseDirectory.appendingPathComponent(
                 "\(libraryID.uuidString).json"
             )
@@ -211,18 +211,16 @@ struct EmbeddingsSidecarStore {
 
     /// Ordered list of *read* candidates for this lookup. The
     /// load chain stops at the first file that exists + decodes
-    /// cleanly. Order: UUID-at-shared-root → UUID-at-app-support →
-    /// SHA-at-app-support. Visible-internal for tests.
+    /// cleanly. Order: UUID-at-app-support → SHA-at-app-support.
+    /// Both candidates are local; iCloud paths are no longer
+    /// consulted (any pre-Phase-A files in iCloud have been moved
+    /// here by `EmbeddingsCloudMigration` on launch).
+    /// Visible-internal for tests.
     func readCandidateURLs(
         for epubURL: URL, libraryID: UUID?
     ) -> [URL] {
         var out: [URL] = []
         if let libraryID {
-            if let shared = Self.sharedRootEmbeddingsDir() {
-                out.append(shared.appendingPathComponent(
-                    "\(libraryID.uuidString).json"
-                ))
-            }
             out.append(baseDirectory.appendingPathComponent(
                 "\(libraryID.uuidString).json"
             ))
@@ -266,10 +264,9 @@ struct EmbeddingsSidecarStore {
         try? data.write(to: url, options: .atomic)
     }
 
-    /// Drop every known location for this book's sidecar (UUID at
-    /// shared root, UUID at app support, SHA at app support).
-    /// Used by Settings → "Clear all indexes" (per-book variant)
-    /// and tests.
+    /// Drop every known location for this book's sidecar (UUID +
+    /// SHA at app support). Used by Settings → "Clear all indexes"
+    /// (per-book variant) and tests.
     func clear(for epubURL: URL, libraryID: UUID? = nil) {
         for url in readCandidateURLs(for: epubURL, libraryID: libraryID) {
             try? FileManager.default.removeItem(at: url)
@@ -283,25 +280,6 @@ struct EmbeddingsSidecarStore {
         let digest = SHA256.hash(data: Data(canonical.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         return baseDirectory.appendingPathComponent("\(hex).json")
-    }
-
-    /// `<outputRoot>/.humanist/Embeddings/` when the user has the
-    /// share-library-across-machines toggle on AND has configured
-    /// an output folder. Nil otherwise — the caller falls back to
-    /// `baseDirectory` (Application Support).
-    private static func sharedRootEmbeddingsDir() -> URL? {
-        guard UserDefaults.standard.bool(
-            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
-        ) else { return nil }
-        guard let root = ConversionOutputResolver.currentRoot()
-        else { return nil }
-        let dir = root
-            .appendingPathComponent(".humanist", isDirectory: true)
-            .appendingPathComponent("Embeddings", isDirectory: true)
-        try? FileManager.default.createDirectory(
-            at: dir, withIntermediateDirectories: true
-        )
-        return dir
     }
 
     /// Wipe every sidecar under the storage root. Used by Settings

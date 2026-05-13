@@ -4,25 +4,22 @@ import CryptoKit
 import EPUB
 @testable import Humanist
 
-/// R-Library-Sync Phase B coverage for `EmbeddingsSidecarStore`'s
-/// dual keying scheme. The store routes by libraryID + sharing
-/// mode + output root:
+/// Coverage for `EmbeddingsSidecarStore`'s keying scheme. Embeddings
+/// are local-only — the share-library-across-machines toggle covers
+/// `library.json` + aliases but does *not* affect embeddings, which
+/// always live under `~/Library/Application Support/Humanist/Embeddings/`.
+/// Routing collapses to:
 ///
-///   * `libraryID + sharing on + root configured` →
-///     `<root>/.humanist/Embeddings/<uuid>.json`
-///   * `libraryID` (sharing off) → `<appSupport>/<uuid>.json`
+///   * `libraryID` provided → `<appSupport>/<uuid>.json`
 ///   * no `libraryID` (uncataloged book) → legacy SHA-keyed at
 ///     `<appSupport>/<sha256>.json`
 ///
-/// Reads walk the candidate chain so existing SHA-keyed sidecars
-/// stay usable during the migration window; writes go to the
-/// preferred location for the current call.
+/// The read fallback chain still consults the SHA-keyed path so
+/// pre-UUID-keying sidecars remain readable.
 @MainActor
 final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
 
     private var tempDir: URL!
-    private var savedOutputRoot: String?
-    private var savedShareToggle: Bool?
 
     override func setUp() async throws {
         try await super.setUp()
@@ -31,37 +28,9 @@ final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: tempDir, withIntermediateDirectories: true
         )
-        savedOutputRoot = UserDefaults.standard.string(
-            forKey: ConversionSettingsKeys.outputFolderPath
-        )
-        savedShareToggle = UserDefaults.standard.bool(
-            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
-        )
-        // Reset to a clean baseline so test ordering doesn't bite.
-        UserDefaults.standard.removeObject(
-            forKey: ConversionSettingsKeys.outputFolderPath
-        )
-        UserDefaults.standard.set(false,
-            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines)
     }
 
     override func tearDown() async throws {
-        if let saved = savedOutputRoot {
-            UserDefaults.standard.set(saved,
-                forKey: ConversionSettingsKeys.outputFolderPath)
-        } else {
-            UserDefaults.standard.removeObject(
-                forKey: ConversionSettingsKeys.outputFolderPath
-            )
-        }
-        if let saved = savedShareToggle {
-            UserDefaults.standard.set(saved,
-                forKey: ConversionSettingsKeys.shareLibraryAcrossMachines)
-        } else {
-            UserDefaults.standard.removeObject(
-                forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
-            )
-        }
         if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
         tempDir = nil
         try await super.tearDown()
@@ -75,30 +44,12 @@ final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
 
     // MARK: - writeURL routing
 
-    func test_writeURL_with_libraryID_and_sharing_off_uses_appsupport_uuid() {
+    func test_writeURL_with_libraryID_uses_appsupport_uuid() {
         let store = makeStore()
         let id = UUID()
         let url = store.writeURL(for: anyEpubURL(), libraryID: id)
         XCTAssertEqual(url.lastPathComponent, "\(id.uuidString).json")
         XCTAssertTrue(url.path.contains("AppSupport"))
-    }
-
-    func test_writeURL_with_libraryID_and_sharing_on_uses_root_uuid() {
-        let root = tempDir.appendingPathComponent("Library")
-        try? FileManager.default.createDirectory(
-            at: root, withIntermediateDirectories: true
-        )
-        UserDefaults.standard.set(root.path,
-            forKey: ConversionSettingsKeys.outputFolderPath)
-        UserDefaults.standard.set(true,
-            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines)
-
-        let store = makeStore()
-        let id = UUID()
-        let url = store.writeURL(for: anyEpubURL(), libraryID: id)
-        XCTAssertEqual(url.lastPathComponent, "\(id.uuidString).json")
-        XCTAssertTrue(url.path.contains(".humanist/Embeddings"))
-        XCTAssertTrue(url.path.hasPrefix(root.path))
     }
 
     func test_writeURL_without_libraryID_uses_legacy_SHA_keyed_path() {
@@ -114,57 +65,11 @@ final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
 
     // MARK: - read fallback chain
 
-    func test_read_prefers_UUID_at_root_over_appsupport_under_sharing() {
-        let root = tempDir.appendingPathComponent("Library")
+    func test_read_finds_UUID_keyed_file_in_appsupport() {
         let appSupport = tempDir.appendingPathComponent("AppSupport")
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
-        UserDefaults.standard.set(root.path,
-            forKey: ConversionSettingsKeys.outputFolderPath)
-        UserDefaults.standard.set(true,
-            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines)
-
-        let store = EmbeddingsSidecarStore(baseDirectory: appSupport)
-        let id = UUID()
-        let epub = anyEpubURL()
-
-        // Plant a sidecar at the in-root location (preferred) and
-        // a different one at AppSupport. Reader must return the
-        // in-root one.
-        let rootSidecar = EmbeddingsSidecar.empty(
-            backend: "root-backend", dimension: 4
+        try? FileManager.default.createDirectory(
+            at: appSupport, withIntermediateDirectories: true
         )
-        let appSidecar = EmbeddingsSidecar.empty(
-            backend: "app-backend", dimension: 8
-        )
-        let rootDir = root
-            .appendingPathComponent(".humanist/Embeddings")
-        try? FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        try! JSONEncoder().encode(rootSidecar).write(
-            to: rootDir.appendingPathComponent("\(id.uuidString).json")
-        )
-        try! JSONEncoder().encode(appSidecar).write(
-            to: appSupport.appendingPathComponent("\(id.uuidString).json")
-        )
-
-        let found = store.read(for: epub, libraryID: id)
-        XCTAssertEqual(found?.backendIdentifier, "root-backend",
-            "root location should win when both exist")
-    }
-
-    func test_read_falls_back_to_appsupport_UUID_when_root_missing() {
-        // Sharing-on but the root location hasn't been written
-        // yet (typical pre-migration state). The AppSupport
-        // UUID-keyed file should still be readable.
-        let root = tempDir.appendingPathComponent("Library")
-        let appSupport = tempDir.appendingPathComponent("AppSupport")
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
-        UserDefaults.standard.set(root.path,
-            forKey: ConversionSettingsKeys.outputFolderPath)
-        UserDefaults.standard.set(true,
-            forKey: ConversionSettingsKeys.shareLibraryAcrossMachines)
-
         let store = EmbeddingsSidecarStore(baseDirectory: appSupport)
         let id = UUID()
         let sidecar = EmbeddingsSidecar.empty(
@@ -178,10 +83,9 @@ final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
     }
 
     func test_read_falls_back_to_SHA_when_no_UUID_keyed_file_exists() {
-        // Pure migration-window case: a pre-Phase-B book that has
-        // a SHA-keyed sidecar in AppSupport. Reads with a
-        // libraryID should still find it via the SHA fallback in
-        // the candidate chain.
+        // Pre-UUID-keying sidecar still readable when only the
+        // SHA-keyed file exists. Important for users whose oldest
+        // sidecars predate the dual-keying scheme.
         let store = makeStore()
         let epub = anyEpubURL()
         let canonical = epub.canonicalForFile.standardizedFileURL.path

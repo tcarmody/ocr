@@ -73,6 +73,18 @@ struct HumanistApp: App {
             )
         }
 
+        // One-shot: move pre-Phase-A embedding sidecars out of
+        // iCloud (`<outputRoot>/.humanist/Embeddings/`) into local
+        // Application Support. The federated index now always reads
+        // from local disk; iCloud's metadata-coordinated reads were
+        // the main reason library-chat sends took minutes. Detached
+        // so the launch path doesn't wait on filesystem IO; the
+        // migration is idempotent, so a failed run gets a free retry
+        // on next launch (UserDefaults flag is only set on success).
+        Task.detached(priority: .utility) {
+            EmbeddingsCloudMigration.runIfNeeded()
+        }
+
         // Tier 9 / E-Warm: kick the Surya sidecar's Python
         // interpreter + Surya imports off the launch path so the
         // first conversion doesn't pay the ~5-15s spawn cost. Fire-
