@@ -962,6 +962,36 @@ Drivers for the current ordering:
     catalog + collection rewritten correctly. See
     `feedback_library_breaks_editor_rendering` memory for
     how this pattern surfaced.
+16. **R-Library-Rescan — Re-scan source PDF with new options**.
+    Surfaced 2026-05-12 when the 1978 Roth & Wittich Weber
+    translation came through as a single-chapter EPUB —
+    `ChapterHeadingPromoter` now (commit `be16be6`) catches
+    body-size chapter starts, but the *existing* EPUB has the
+    chapter info permanently lost. Today's only recovery path is
+    drag-the-PDF-back-into-the-launcher, which loses any metadata
+    edits the user already made on the catalog row and re-emits a
+    differently-named output. Wanted: Library window context menu
+    → "Re-scan with new options…" that (1) resolves the source
+    PDF for the selected entry (sidecar `sourcePDFPath` →
+    `<dc:source>` → sibling `.pdf` → file picker fallback);
+    (2) opens a sheet with the same option set as the launcher
+    (languages, OCR mode, manuscript / early-print toggles,
+    page ranges, debug-log toggle), pre-filled from whatever the
+    job last used when discoverable; (3) enqueues a fresh
+    conversion targeting the *same* `epubURL` so the catalog row
+    stays put (and the metadata / collection memberships stay
+    intact); (4) on success, the editor / queue UI surfaces the
+    updated EPUB. Open design questions: (a) confirmation modal
+    before overwriting an EPUB the user may have edited (probably
+    yes — surface "you have unsaved manual edits in this EPUB"
+    when the editor's dirty bit is set); (b) keep the prior EPUB
+    as a `.bak.epub` sibling for one-click rollback (probably yes,
+    cheap); (c) bulk re-scan for collection selections (later,
+    once the single-row path lands). Also gives us a clean home
+    for the eventual "this conversion lost chapters, try Claude
+    OCR instead?" nudge surfaced from `ChapterSplitter` diagnostics
+    (commit `be16be6`). ~1 day. Wait until current bulk job
+    finishes before starting.
 
 ### Earn when you need it
 
