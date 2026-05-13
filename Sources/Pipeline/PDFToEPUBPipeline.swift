@@ -2107,6 +2107,7 @@ public actor PDFToEPUBPipeline {
             try? Self.writeChapterDecisionLog(
                 promoter: assembled.chapterPromoterDiagnostics,
                 splitter: assembled.chapterSplitterDiagnostics,
+                tocDriven: assembled.tocDrivenSplitterDiagnostics,
                 chapters: book.chapters,
                 to: chaptersURL
             )
@@ -2197,12 +2198,18 @@ public actor PDFToEPUBPipeline {
         /// Decision summary from `ChapterSplitter` — heading counts
         /// per level, eligible-break count, per-filter reasons. Used
         /// by the debug log to explain why splitting produced the
-        /// chapter shape it did.
+        /// chapter shape it did. Empty when the TOC-driven splitter
+        /// ran instead (check `tocDrivenSplitterDiagnostics` first).
         let chapterSplitterDiagnostics: ChapterSplitter.Diagnostics
         /// Promotion summary from `ChapterHeadingPromoter` — every
         /// paragraph block that got upgraded to an H2 heading, with
         /// the fused-title text when applicable.
         let chapterPromoterDiagnostics: ChapterHeadingPromoter.Diagnostics
+        /// Decision summary from `TOCDrivenSplitter` when it ran
+        /// in lieu of the heuristic splitter. Nil when the
+        /// heuristic path won (no parsed TOC, or TOC alignment
+        /// confidence below threshold).
+        let tocDrivenSplitterDiagnostics: TOCDrivenSplitter.Diagnostics?
     }
 
     /// Take a reflowed block stream and produce a `Book` ready to
@@ -2252,32 +2259,68 @@ public actor PDFToEPUBPipeline {
         let promotion = ChapterHeadingPromoter.promote(blocks: cleanBlocks)
         let promotedBlocks = promotion.blocks
 
-        // 3: split into chapters at the dominant heading level.
-        // Footnotes, page anchors, and figure assets get distributed
-        // to whichever chapter they fall inside.
-        let splitResult = ChapterSplitter.splitWithDiagnostics(
-            blocks: promotedBlocks,
-            footnotes: reflowed.footnotes,
-            pageAnchors: reflowed.pageAnchors,
-            figureAssets: reflowed.figureAssets,
-            bookFallbackTitle: title
-        )
-        let rawChapters = splitResult.chapters
-
-        // 4: TOC title override. Falls through to heuristic titles
-        // when no TOC was parsed or no offset matched.
+        // 3: split into chapters. Two paths compete:
+        //   * TOC-driven (primary, when a confident parsed TOC is
+        //     available): consumes the TOC directly to drive
+        //     chapter boundaries. Resolves Lacan-style books where
+        //     the heuristic latches onto Part-level dividers and
+        //     loses the dozens of essay-titles underneath.
+        //   * Heuristic (fallback): the original `ChapterSplitter`,
+        //     picks the dominant heading level. Used when no TOC
+        //     was parsed, when offset learning can't align it to
+        //     page anchors, or when the TOC has too few entries to
+        //     drive a confident split.
+        // Footnotes, page anchors, and figure assets get
+        // distributed to whichever chapter they fall inside.
         let chapters: [Chapter]
         let appliedTOC: ParsedTOC?
-        if let toc = parsedTOC {
-            let outcome = TOCTitleApplier.apply(toc: toc, chapters: rawChapters)
-            chapters = outcome.chapters
+        let splitDiagnostics: ChapterSplitter.Diagnostics
+        let tocDrivenDiagnostics: TOCDrivenSplitter.Diagnostics?
+
+        if let toc = parsedTOC,
+           let tocSplit = TOCDrivenSplitter.split(
+               blocks: promotedBlocks,
+               footnotes: reflowed.footnotes,
+               pageAnchors: reflowed.pageAnchors,
+               figureAssets: reflowed.figureAssets,
+               toc: toc,
+               bookFallbackTitle: title
+           ) {
+            // TOC-driven path won. Titles are already applied (the
+            // splitter consumed the TOC for both boundaries and
+            // titles). Stamp the inferred offset on `appliedTOC`
+            // for the editor sidecar.
+            chapters = tocSplit.chapters
             appliedTOC = ParsedTOC(
                 entries: toc.entries,
-                inferredOffset: outcome.inferredOffset
+                inferredOffset: tocSplit.diagnostics.inferredOffset
             )
+            splitDiagnostics = ChapterSplitter.Diagnostics()  // unused
+            tocDrivenDiagnostics = tocSplit.diagnostics
         } else {
-            chapters = rawChapters
-            appliedTOC = nil
+            // Heuristic path. Run the splitter, then apply the TOC
+            // for title polish if one was parsed.
+            let splitResult = ChapterSplitter.splitWithDiagnostics(
+                blocks: promotedBlocks,
+                footnotes: reflowed.footnotes,
+                pageAnchors: reflowed.pageAnchors,
+                figureAssets: reflowed.figureAssets,
+                bookFallbackTitle: title
+            )
+            let rawChapters = splitResult.chapters
+            if let toc = parsedTOC {
+                let outcome = TOCTitleApplier.apply(toc: toc, chapters: rawChapters)
+                chapters = outcome.chapters
+                appliedTOC = ParsedTOC(
+                    entries: toc.entries,
+                    inferredOffset: outcome.inferredOffset
+                )
+            } else {
+                chapters = rawChapters
+                appliedTOC = nil
+            }
+            splitDiagnostics = splitResult.diagnostics
+            tocDrivenDiagnostics = nil
         }
 
         // 5: semantic classification (capped concurrency so a
@@ -2342,8 +2385,9 @@ public actor PDFToEPUBPipeline {
         return AssembledBook(
             book: book,
             appliedTOC: appliedTOC,
-            chapterSplitterDiagnostics: splitResult.diagnostics,
-            chapterPromoterDiagnostics: promotion.diagnostics
+            chapterSplitterDiagnostics: splitDiagnostics,
+            chapterPromoterDiagnostics: promotion.diagnostics,
+            tocDrivenSplitterDiagnostics: tocDrivenDiagnostics
         )
     }
 
@@ -3285,6 +3329,7 @@ public actor PDFToEPUBPipeline {
     private static func writeChapterDecisionLog(
         promoter: ChapterHeadingPromoter.Diagnostics,
         splitter: ChapterSplitter.Diagnostics,
+        tocDriven: TOCDrivenSplitter.Diagnostics?,
         chapters: [Chapter],
         to url: URL
     ) throws {
@@ -3306,6 +3351,26 @@ public actor PDFToEPUBPipeline {
             }
         }
         out += "\n"
+
+        if let toc = tocDriven {
+            out += "SPLITTER (TOC-driven path)\n"
+            out += "entries seen: \(toc.entriesSeen)\n"
+            out += "arabic entries: \(toc.arabicEntries)\n"
+            if let offset = toc.inferredOffset {
+                out += "inferred offset: \(offset) (pdf_index = display_page + \(offset) - 1)\n"
+            } else {
+                out += "inferred offset: (offset learning failed)\n"
+            }
+            out += "resolved to block index: \(toc.resolvedEntries)\n"
+            out += "unresolved: \(toc.unresolvedEntries)\n\n"
+            out += "FINAL CHAPTERS (\(chapters.count))\n"
+            for (i, ch) in chapters.enumerated() {
+                let title = ch.title ?? "(untitled)"
+                out += "  \(i + 1). \(title) — \(ch.blocks.count) blocks\n"
+            }
+            try out.write(to: url, atomically: true, encoding: .utf8)
+            return
+        }
 
         out += "SPLITTER\n"
         out += "headings seen: \(splitter.headingsSeen)\n"
