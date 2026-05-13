@@ -34,6 +34,18 @@ struct HumanistApp: App {
         _jobRunner = StateObject(wrappedValue: runner)
         _queueVM   = StateObject(wrappedValue: vm)
 
+        // Reap in-flight conversion claims that out-lived their Mac
+        // (force-quit, crash, OS reboot, power loss). The release
+        // path in `JobRunner.runPipeline` covers the clean exits;
+        // this catches everything else. Run here at init so the
+        // first scanner pass / first dropped PDF sees a clean
+        // claims table rather than re-enqueuing-blocked state from
+        // a previous session.
+        let dropped = lib.pruneStaleClaims()
+        if dropped > 0 {
+            NSLog("Humanist: pruned %ld stale conversion claim(s) on launch.", dropped)
+        }
+
         // When launched as a raw executable (e.g. `swift run` or
         // `./.build/debug/Humanist`) instead of from a notarized
         // `.app` bundle, macOS treats the process as `.accessory`

@@ -226,6 +226,14 @@ final class InputFolderScanner: ObservableObject {
             if library.isSourceHashKnownOrRejected(hash) {
                 continue
             }
+            // Multi-Mac in-flight protection — a peer Mac that
+            // started converting this same source bytes has
+            // stamped a fresh claim on the catalog (iCloud-synced).
+            // Skip until the claim is released (peer completion)
+            // or expires (peer crashed).
+            if library.freshClaim(forSourceHash: hash) != nil {
+                continue
+            }
             queue.addPDF(url)
             enqueued += 1
         }

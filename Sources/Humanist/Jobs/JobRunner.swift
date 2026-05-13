@@ -195,8 +195,39 @@ final class JobRunner: ObservableObject {
         // `sourceContentHashes`, so this only fires after a
         // conversion has stamped a hash — exactly the scenarios
         // the user runs into when they re-drop the same PDF.
-        if await runDedupeShortCircuit(for: job) {
+        //
+        // Returns the computed hash on the no-dedupe path so the
+        // claim step below can reuse it — hashing once is enough.
+        let (dedupeHit, sourceHash) = await runDedupeShortCircuitWithHash(for: job)
+        if dedupeHit { return }
+
+        // Multi-Mac claim pre-flight. When a peer Mac sharing the
+        // catalog is already converting this exact source, stamp
+        // the job as skipped and bail without running the pipeline.
+        // The claim *itself* is recorded by `tryClaimForJob` so
+        // peers see our reservation; release happens unconditionally
+        // via `defer` below so a crash / cancel / failure doesn't
+        // strand the claim.
+        var claimedHash: String?
+        if let hash = sourceHash,
+           await tryClaimForJob(job, sourceHash: hash) {
+            claimedHash = hash
+        } else if sourceHash != nil {
+            // tryClaimForJob already updated the job to .done with
+            // the "being converted by <host>" skippedReason. We're
+            // done.
             return
+        }
+        // sourceHash == nil means hashing failed (file moved/locked
+        // mid-flight). Proceed without claim; worst case is the
+        // dedupe short-circuit catches a peer's conversion after
+        // the catalog syncs.
+        defer {
+            if let claimedHash {
+                library?.releaseClaim(
+                    hash: claimedHash, hostName: Self.localHostName
+                )
+            }
         }
         let pipeline = PDFToEPUBPipeline()
         let languages = job.options.languages.map { BCP47($0) }
@@ -388,16 +419,22 @@ final class JobRunner: ObservableObject {
     /// transitioned to `.done` with `skippedReason` set, its
     /// `outputURL` updated to point at the existing entry's EPUB
     /// (so Open / Reveal target the canonical copy), and the
-    /// source path is appended to the entry's `priorPaths`. Returns
-    /// true when the short-circuit fired and the caller should bail
-    /// out without running the pipeline.
-    private func runDedupeShortCircuit(for job: Job) async -> Bool {
-        guard let library else { return false }
+    /// source path is appended to the entry's `priorPaths`.
+    ///
+    /// Returns `(true, hash)` when the short-circuit fired,
+    /// `(false, hash)` when the conversion should proceed, and
+    /// `(false, nil)` when hashing failed (caller proceeds without
+    /// a claim — the in-flight protection degrades to "no
+    /// coordination across Macs for this job"). The hash is plumbed
+    /// to the caller so the claim step doesn't re-hash the same
+    /// file.
+    private func runDedupeShortCircuitWithHash(for job: Job) async -> (hit: Bool, hash: String?) {
+        guard let library else { return (false, nil) }
         let sourceURL = job.sourceURL
         let hashTask = Task.detached(priority: .userInitiated) {
             try ContentHash.sha256(of: sourceURL)
         }
-        guard let hash = try? await hashTask.value else { return false }
+        guard let hash = try? await hashTask.value else { return (false, nil) }
         let sourcePath = job.sourceURL.path
         let dupe: LibraryEntry? = await MainActor.run {
             guard let match = library.findEntryBySourceHash(hash)
@@ -405,7 +442,7 @@ final class JobRunner: ObservableObject {
             library.addPriorPath(sourcePath, to: match.id)
             return match
         }
-        guard let dupe else { return false }
+        guard let dupe else { return (false, hash) }
         let jobID = job.id
         let canonicalURL = dupe.epubURL
         let title = dupe.title
@@ -416,7 +453,42 @@ final class JobRunner: ObservableObject {
             mutable.skippedReason = "Already in library: \(title)"
             mutable.progress = nil
         }
-        return true
+        return (true, hash)
+    }
+
+    /// Attempt to claim `sourceHash` for the local Mac. Returns
+    /// true when the claim was taken (caller proceeds and the
+    /// `defer`d release fires on every exit path). Returns false
+    /// when a peer Mac holds a fresh claim; in that case the job
+    /// is updated to `.done` with a "being converted by <host>"
+    /// skippedReason and the caller bails. No-op (returns true)
+    /// when no library is attached — tests and standalone usage
+    /// shouldn't have to set up a real catalog to exercise the
+    /// runner.
+    private func tryClaimForJob(_ job: Job, sourceHash: String) async -> Bool {
+        guard let library else { return true }
+        let hostName = Self.localHostName
+        let result = library.tryClaim(hash: sourceHash, hostName: hostName)
+        switch result {
+        case .claimed:
+            return true
+        case .heldByOther(let marker):
+            store.update(job.id) { mutable in
+                mutable.status = .done
+                mutable.finishedAt = Date()
+                mutable.skippedReason = "Being converted by \(marker.hostName)"
+                mutable.progress = nil
+            }
+            return false
+        }
+    }
+
+    /// Friendly device name shown to peers in the "being converted
+    /// by <host>" skippedReason. Falls back to the FQDN when the
+    /// localized name isn't available — better than nothing.
+    static var localHostName: String {
+        Host.current().localizedName
+            ?? ProcessInfo.processInfo.hostName
     }
 
     /// Non-PDF text input → EPUB. Bypasses the OCR pipeline entirely:

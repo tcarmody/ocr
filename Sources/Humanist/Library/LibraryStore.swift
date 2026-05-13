@@ -42,6 +42,22 @@ final class LibraryStore: ObservableObject {
     /// catalog JSON.
     @Published private(set) var rejectedSourceHashes: Set<String> = []
 
+    /// In-flight conversion claims. Each Mac that starts a conversion
+    /// stamps a `ClaimMarker` here BEFORE running the pipeline; on
+    /// completion (success, failure, cancel) the claim is released.
+    /// The auto-scanner consults this list to skip PDFs another Mac
+    /// is already converting — the answer to "we both share an
+    /// Input folder over iCloud and both jumped on the same PDF".
+    /// Persisted alongside entries + collections so iCloud sync
+    /// carries the claim to peer Macs.
+    ///
+    /// Stale-claim semantics: a claim older than 30 minutes (default)
+    /// is treated as "the Mac that took it crashed" and reaped on
+    /// next access. Conversions that legitimately run >30 minutes
+    /// still get released cleanly on completion; the stale window is
+    /// just a safety net for crashes / kill-9 / power loss.
+    @Published private(set) var claims: [ClaimMarker] = []
+
     /// Where the JSON actually lives on disk. Set at init based on
     /// `shareAcrossMachines` + output-root state. Stays stable
     /// across reads/writes for the store's lifetime — toggling the
@@ -104,6 +120,7 @@ final class LibraryStore: ObservableObject {
             loadedEntries = payload.entries
             loadedCollections = payload.collections
             rejectedSourceHashes = Set(payload.rejectedSourceHashes ?? [])
+            claims = payload.claims ?? []
         } else if let legacy = try? decoder.decode([LibraryEntry].self, from: data) {
             // Pre-BookCollections file shape: a bare array of entries.
             loadedEntries = legacy
@@ -250,7 +267,8 @@ final class LibraryStore: ObservableObject {
         let payload = StoredPayload(
             entries: withRelative,
             collections: collections,
-            rejectedSourceHashes: rejected.isEmpty ? nil : rejected
+            rejectedSourceHashes: rejected.isEmpty ? nil : rejected,
+            claims: claims.isEmpty ? nil : claims
         )
         // Default date strategy (number-of-seconds-since-reference-
         // date) matches the default JSONDecoder, so the persistence
@@ -613,6 +631,116 @@ final class LibraryStore: ObservableObject {
         return entries.contains { $0.sourceContentHashes.contains(hash) }
     }
 
+    // MARK: - In-flight claims
+
+    /// Default stale-claim window. A claim older than this is
+    /// treated as "the Mac that took it crashed" — `tryClaim` will
+    /// overwrite it, and `pruneStaleClaims` will drop it. 30 minutes
+    /// is comfortably longer than typical conversions but short
+    /// enough that a crash doesn't lock the source for the rest of
+    /// the user's session.
+    static let defaultClaimFreshness: TimeInterval = 30 * 60
+
+    /// Outcome of an attempted claim. `.claimed` means we now hold a
+    /// fresh marker for the hash (refreshing an existing self-claim
+    /// counts). `.heldByOther` returns the offending claim so the
+    /// caller can render a "being converted by <host>" message.
+    enum ClaimResult: Equatable {
+        case claimed
+        case heldByOther(ClaimMarker)
+    }
+
+    /// Try to claim `hash` for `hostName`. Returns `.claimed` when
+    /// the claim is now ours (whether we added it fresh or refreshed
+    /// an existing self-claim); returns `.heldByOther(...)` when a
+    /// different host has a fresh claim already and the caller
+    /// should defer the conversion. `freshness` lets tests bypass
+    /// the default 30-minute window.
+    @discardableResult
+    func tryClaim(
+        hash: String,
+        hostName: String,
+        freshness: TimeInterval = LibraryStore.defaultClaimFreshness,
+        now: Date = Date()
+    ) -> ClaimResult {
+        guard !hash.isEmpty, !hostName.isEmpty else { return .claimed }
+        let cutoff = now.addingTimeInterval(-freshness)
+
+        // Walk in reverse so we can drop stale entries without
+        // shifting indices we still need to read.
+        var workingClaims = claims
+        var blocker: ClaimMarker?
+        for idx in workingClaims.indices.reversed() {
+            let claim = workingClaims[idx]
+            if claim.sourceHash != hash { continue }
+            if claim.claimedAt < cutoff {
+                workingClaims.remove(at: idx)        // stale: reap
+                continue
+            }
+            if claim.hostName == hostName {
+                workingClaims.remove(at: idx)        // refresh below
+                continue
+            }
+            blocker = claim
+        }
+        if let blocker {
+            // A different host already owns this conversion. Persist
+            // any reaping we did even though we couldn't claim.
+            if workingClaims != claims {
+                claims = workingClaims
+                save()
+            }
+            return .heldByOther(blocker)
+        }
+        workingClaims.append(ClaimMarker(
+            sourceHash: hash, hostName: hostName, claimedAt: now
+        ))
+        claims = workingClaims
+        save()
+        return .claimed
+    }
+
+    /// Release any claim from `hostName` on `hash`. No-op if no
+    /// matching claim exists (re-release on the success + failure
+    /// branches is safe).
+    func releaseClaim(hash: String, hostName: String) {
+        let before = claims.count
+        claims.removeAll { $0.sourceHash == hash && $0.hostName == hostName }
+        if claims.count != before { save() }
+    }
+
+    /// Drop every claim older than `freshness`. Called on app
+    /// launch so a crashed Mac doesn't strand its claims forever.
+    /// Returns the number of claims dropped — surfaced via NSLog
+    /// for diagnostics.
+    @discardableResult
+    func pruneStaleClaims(
+        freshness: TimeInterval = LibraryStore.defaultClaimFreshness,
+        now: Date = Date()
+    ) -> Int {
+        let cutoff = now.addingTimeInterval(-freshness)
+        let before = claims.count
+        claims.removeAll { $0.claimedAt < cutoff }
+        let dropped = before - claims.count
+        if dropped > 0 { save() }
+        return dropped
+    }
+
+    /// Look up a fresh claim on `hash`. The scanner uses this to
+    /// skip PDFs another Mac is actively converting — distinct from
+    /// the "rejected" check because the conversion may still
+    /// succeed and produce a catalog entry the scanner already
+    /// dedupes against.
+    func freshClaim(
+        forSourceHash hash: String,
+        freshness: TimeInterval = LibraryStore.defaultClaimFreshness,
+        now: Date = Date()
+    ) -> ClaimMarker? {
+        guard !hash.isEmpty else { return nil }
+        let cutoff = now.addingTimeInterval(-freshness)
+        return claims.first { $0.sourceHash == hash && $0.claimedAt >= cutoff }
+    }
+
     /// Bump `lastOpened` for `epubURL`. No-op if the entry doesn't
     /// exist — opening an EPUB the library doesn't know about (e.g.
     /// a third-party file the user dragged in for editing) doesn't
@@ -727,15 +855,16 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - storage shape
 
-    /// File payload: entries + collections + rejected-source set
-    /// in one wrapper. Reading also tolerates the legacy bare-array
-    /// shape (see `load`). `rejectedSourceHashes` is optional in
-    /// the wire shape so pre-feature catalogs decode cleanly with
-    /// the default empty set.
+    /// File payload: entries + collections + rejected-source set +
+    /// in-flight claims. Reading also tolerates the legacy bare-
+    /// array shape (see `load`). The two newest fields are optional
+    /// in the wire shape so pre-feature catalogs decode cleanly with
+    /// the defaults.
     private struct StoredPayload: Codable {
         var entries: [LibraryEntry]
         var collections: [BookCollection]
         var rejectedSourceHashes: [String]?
+        var claims: [ClaimMarker]?
     }
 }
 
@@ -879,6 +1008,31 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         case conversionType, author, genre
         case sourceContentHashes, priorPaths
     }
+}
+
+/// In-flight conversion marker. One Mac stamps a `ClaimMarker` on
+/// the library before kicking off the OCR pipeline; peer Macs (who
+/// also share the iCloud-synced catalog) see it and skip the same
+/// source. The marker is keyed by source content hash, not by
+/// path — paths differ across Macs but bytes don't, so a PDF
+/// dropped on Mac A and a different-looking copy of the same PDF
+/// on Mac B still collide on `sourceHash`.
+struct ClaimMarker: Codable, Equatable, Hashable, Sendable {
+    /// SHA-256 of the source PDF. Same hash format as
+    /// `LibraryEntry.sourceContentHashes` so a future "did this
+    /// PDF ever finish?" lookup can fuse claim + entry tables.
+    var sourceHash: String
+    /// `Host.current().localizedName` of the Mac that took the
+    /// claim — surfaced in the queue UI ("being converted by
+    /// Tim's MacBook Pro") and used to detect self-claims when
+    /// re-running on the same Mac.
+    var hostName: String
+    /// When the claim was taken. Used for stale-claim reaping —
+    /// a claim older than the freshness window is treated as
+    /// abandoned (the Mac crashed, was force-quit, lost power,
+    /// etc.). Not updated mid-conversion; we just keep the
+    /// freshness window comfortably larger than typical run time.
+    var claimedAt: Date
 }
 
 /// Named grouping of `LibraryEntry`s. The user creates collections
