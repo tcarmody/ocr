@@ -1237,6 +1237,13 @@ public actor PDFToEPUBPipeline {
         // and re-loading from URL is the only public way to flush.
         var pdf = try loader.load(pdfURL)
         let totalPages = pdf.pageCount
+        // Pull the PDF's outline (publisher-set bookmarks) once, up
+        // front. Used by `PDFOutlineSplitter` as the highest-
+        // confidence chapter-boundary source. Empty array when the
+        // PDF carries no outline — common for scanned books — and
+        // the splitter chain falls through to the parsed-TOC /
+        // heuristic paths in that case.
+        let pdfOutline = PDFOutlineExtractor.extract(from: pdf.document)
         // Reload every N pages. 25 is the empirical sweet spot —
         // small enough that PDFKit's per-page cache stays bounded
         // across long books, large enough that the re-parse cost
@@ -2086,6 +2093,7 @@ public actor PDFToEPUBPipeline {
         let assembled = await Self.assembleBook(
             reflowed: reflowed,
             parsedTOC: await parsedTOCTask?.value,
+            pdfOutline: pdfOutline,
             dictionaryCorrector: dictionaryCorrector,
             options: options,
             budget: claudeBudget,
@@ -2108,6 +2116,7 @@ public actor PDFToEPUBPipeline {
                 promoter: assembled.chapterPromoterDiagnostics,
                 splitter: assembled.chapterSplitterDiagnostics,
                 tocDriven: assembled.tocDrivenSplitterDiagnostics,
+                outline: assembled.outlineSplitterDiagnostics,
                 chapters: book.chapters,
                 to: chaptersURL
             )
@@ -2210,6 +2219,11 @@ public actor PDFToEPUBPipeline {
         /// heuristic path won (no parsed TOC, or TOC alignment
         /// confidence below threshold).
         let tocDrivenSplitterDiagnostics: TOCDrivenSplitter.Diagnostics?
+        /// Decision summary from `PDFOutlineSplitter` when the
+        /// outline path won. Non-nil iff the source PDF carried
+        /// usable bookmarks; trumps both TOCDriven and the
+        /// heuristic splitter's diagnostics in the debug log.
+        let outlineSplitterDiagnostics: PDFOutlineSplitter.Diagnostics?
     }
 
     /// Take a reflowed block stream and produce a `Book` ready to
@@ -2229,6 +2243,7 @@ public actor PDFToEPUBPipeline {
     static func assembleBook(
         reflowed: ReflowOutput,
         parsedTOC: ParsedTOC?,
+        pdfOutline: [OutlineEntry] = [],
         dictionaryCorrector: DictionaryCorrector,
         options: Options,
         budget: ClaudeCallBudget,
@@ -2259,25 +2274,47 @@ public actor PDFToEPUBPipeline {
         let promotion = ChapterHeadingPromoter.promote(blocks: cleanBlocks)
         let promotedBlocks = promotion.blocks
 
-        // 3: split into chapters. Two paths compete:
-        //   * TOC-driven (primary, when a confident parsed TOC is
-        //     available): consumes the TOC directly to drive
-        //     chapter boundaries. Resolves Lacan-style books where
-        //     the heuristic latches onto Part-level dividers and
-        //     loses the dozens of essay-titles underneath.
-        //   * Heuristic (fallback): the original `ChapterSplitter`,
-        //     picks the dominant heading level. Used when no TOC
-        //     was parsed, when offset learning can't align it to
-        //     page anchors, or when the TOC has too few entries to
-        //     drive a confident split.
+        // 3: split into chapters. Strategy dispatch in order of
+        // confidence:
+        //   * **PDF outline** (when the source PDF carries
+        //     publisher-set bookmarks — ~73% of professionally-
+        //     published books). Authoritative: real PDF page
+        //     indices, no offset learning needed.
+        //   * **TOC-driven** (when a parsed printed TOC is
+        //     available): title-matching against OCR'd headings
+        //     first; page-offset learning as the fallback. Catches
+        //     scanned books that have a printed contents page but
+        //     no PDF outline.
+        //   * **Heuristic `ChapterSplitter`** (fallback): dominant-
+        //     heading-level detection. Used when no outline and
+        //     no parseable TOC, or when the TOC has too few
+        //     entries to drive a confident split.
         // Footnotes, page anchors, and figure assets get
         // distributed to whichever chapter they fall inside.
         let chapters: [Chapter]
         let appliedTOC: ParsedTOC?
         let splitDiagnostics: ChapterSplitter.Diagnostics
         let tocDrivenDiagnostics: TOCDrivenSplitter.Diagnostics?
+        let outlineDiagnostics: PDFOutlineSplitter.Diagnostics?
 
-        if let toc = parsedTOC,
+        if let outlineSplit = PDFOutlineSplitter.split(
+            blocks: promotedBlocks,
+            footnotes: reflowed.footnotes,
+            pageAnchors: reflowed.pageAnchors,
+            figureAssets: reflowed.figureAssets,
+            outline: pdfOutline
+        ) {
+            // Outline path won. Boundaries + titles came straight
+            // from the PDF's bookmarks. The parsed TOC, if any,
+            // still rides on `appliedTOC` so the editor's TOC
+            // sidecar carries the printed-TOC entries for cross-
+            // reference — they just didn't drive splits.
+            chapters = outlineSplit.chapters
+            appliedTOC = parsedTOC
+            splitDiagnostics = ChapterSplitter.Diagnostics()
+            tocDrivenDiagnostics = nil
+            outlineDiagnostics = outlineSplit.diagnostics
+        } else if let toc = parsedTOC,
            let tocSplit = TOCDrivenSplitter.split(
                blocks: promotedBlocks,
                footnotes: reflowed.footnotes,
@@ -2297,6 +2334,7 @@ public actor PDFToEPUBPipeline {
             )
             splitDiagnostics = ChapterSplitter.Diagnostics()  // unused
             tocDrivenDiagnostics = tocSplit.diagnostics
+            outlineDiagnostics = nil
         } else {
             // Heuristic path. Run the splitter, then apply the TOC
             // for title polish if one was parsed.
@@ -2321,6 +2359,7 @@ public actor PDFToEPUBPipeline {
             }
             splitDiagnostics = splitResult.diagnostics
             tocDrivenDiagnostics = nil
+            outlineDiagnostics = nil
         }
 
         // 5: semantic classification (capped concurrency so a
@@ -2387,7 +2426,8 @@ public actor PDFToEPUBPipeline {
             appliedTOC: appliedTOC,
             chapterSplitterDiagnostics: splitDiagnostics,
             chapterPromoterDiagnostics: promotion.diagnostics,
-            tocDrivenSplitterDiagnostics: tocDrivenDiagnostics
+            tocDrivenSplitterDiagnostics: tocDrivenDiagnostics,
+            outlineSplitterDiagnostics: outlineDiagnostics
         )
     }
 
@@ -3330,6 +3370,7 @@ public actor PDFToEPUBPipeline {
         promoter: ChapterHeadingPromoter.Diagnostics,
         splitter: ChapterSplitter.Diagnostics,
         tocDriven: TOCDrivenSplitter.Diagnostics?,
+        outline: PDFOutlineSplitter.Diagnostics?,
         chapters: [Chapter],
         to url: URL
     ) throws {
@@ -3351,6 +3392,20 @@ public actor PDFToEPUBPipeline {
             }
         }
         out += "\n"
+
+        if let outline {
+            out += "SPLITTER (PDF outline path)\n"
+            out += "outline entries: \(outline.entriesSeen)\n"
+            out += "resolved to block index: \(outline.resolvedEntries)\n"
+            out += "unresolved: \(outline.unresolvedEntries)\n\n"
+            out += "FINAL CHAPTERS (\(chapters.count))\n"
+            for (i, ch) in chapters.enumerated() {
+                let title = ch.title ?? "(untitled)"
+                out += "  \(i + 1). \(title) — \(ch.blocks.count) blocks\n"
+            }
+            try out.write(to: url, atomically: true, encoding: .utf8)
+            return
+        }
 
         if let toc = tocDriven {
             out += "SPLITTER (TOC-driven path, strategy: \(toc.matchStrategy.rawValue))\n"

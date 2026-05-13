@@ -394,9 +394,11 @@ public enum TOCDrivenSplitter {
     /// Segment `blocks` at each boundary's block index. Pre-first-
     /// boundary content becomes "Front Matter" when it carries any
     /// substantive (non-anchor) content. Shared between title-
-    /// matching and page-offset strategies so they produce
-    /// identically-shaped output.
-    private static func assembleChapters(
+    /// matching and page-offset strategies, and by
+    /// `PDFOutlineSplitter`, so all paths produce identically-
+    /// shaped output. Visible-internal so the outline splitter can
+    /// reuse it.
+    static func assembleChapters(
         blocks: [Block],
         boundaries: [(blockIdx: Int, title: String)],
         footnotes: [Footnote],
@@ -479,7 +481,7 @@ public enum TOCDrivenSplitter {
     /// Find the block index for `pdfPage`. Exact match wins;
     /// otherwise walks outward up to `tolerance` pages in either
     /// direction. Returns nil when no anchor is within range.
-    private static func nearestBlockIndex(
+    static func nearestBlockIndex(
         forPDFPage pdfPage: Int,
         pageMap: [Int: Int],
         sortedAnchorPDFs: [Int],
