@@ -252,6 +252,78 @@ final class LibraryStore: ObservableObject {
         return nil
     }
 
+    /// Locate the source PDF for `entry` using *all* available
+    /// probes, including expensive ones (EPUB unpack to read
+    /// `<dc:source>`; scanning `priorPaths` for matching files).
+    /// Used by the R-Library-Rescan flow — slow is acceptable for
+    /// a user-triggered button.
+    ///
+    /// Probe order:
+    ///   1. Cheap heuristics via `locateSourcePDF` (sibling, root,
+    ///      `.split` variants, `Input/`). Fast — no IO past `stat`.
+    ///   2. The EPUB's `<dc:source>` metadata. Authoritative when
+    ///      present — Humanist stamps the source PDF's URL on the
+    ///      OPF at conversion time — but requires unpacking the
+    ///      EPUB to read.
+    ///   3. `priorPaths` filtered to `.pdf` and existing on disk —
+    ///      the user previously dropped this exact PDF onto
+    ///      Humanist (or a peer Mac did), so the path is a real
+    ///      hint even when the file moved.
+    ///
+    /// Returns nil when every probe misses; the rescan flow then
+    /// falls back to a file picker.
+    static func locateSourcePDFForRescan(for entry: LibraryEntry) -> URL? {
+        if let direct = locateSourcePDF(for: entry.epubURL) {
+            return direct
+        }
+        if let viaOPF = locateSourcePDFViaOPF(epubURL: entry.epubURL) {
+            return viaOPF
+        }
+        for path in entry.priorPaths where path.hasSuffix(".pdf") {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    /// Read the EPUB's `<dc:source>` metadata and return it as a
+    /// `file://` URL when (a) the value parses as a file URL and
+    /// (b) the referenced file actually exists. Returns nil for
+    /// non-file sources (http(s)) — the rescan flow needs a local
+    /// PDF on disk, not a URL the user has to download. Silently
+    /// returns nil on any unpack / parse error; the caller falls
+    /// through to the next probe.
+    private static func locateSourcePDFViaOPF(epubURL: URL) -> URL? {
+        guard FileManager.default.fileExists(atPath: epubURL.path)
+        else { return nil }
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Humanist-rescan-probe-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        do {
+            try FileManager.default.createDirectory(
+                at: tmp, withIntermediateDirectories: true
+            )
+            let unpacker = EPUBUnpacker()
+            let rootDir = try unpacker.unpack(epubURL: epubURL, into: tmp)
+            let pkg = try OPFReader().read(rootDir: rootDir)
+            guard let sourceString = pkg.metadata.source else { return nil }
+            // Parse via `URL(string:)` so percent-encoded paths
+            // (spaces, Unicode) decode correctly. Reject non-file
+            // sources — http(s) URIs in dc:source are valid per
+            // Dublin Core but the rescan flow needs a local PDF.
+            guard let url = URL(string: sourceString),
+                  url.isFileURL else { return nil }
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+        } catch {
+            return nil
+        }
+        return nil
+    }
+
     /// Rewrite `entry.epubURL` to point at the current machine's
     /// `<outputRoot>/<relativePath>` when both are available.
     /// Falls through unchanged when the entry has no relative
