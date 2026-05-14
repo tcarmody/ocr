@@ -274,6 +274,11 @@ struct LibraryWindowView: View {
             )) { _ in
                 updateLibraryFromOutputFolder()
             }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .humanistDetectDuplicatesRequested
+            )) { _ in
+                startDuplicateReview()
+            }
     }
 
     /// Scan the configured conversion output folder for `.epub`
@@ -1262,17 +1267,6 @@ struct LibraryWindowView: View {
             }
             .help("Build embedding indexes for every book")
             .accessibilityLabel("Build embedding indexes")
-
-            // Detect-duplicates entry point. Opens the review
-            // sheet which kicks off the 4-tier detector and lets
-            // the user pick a canonical entry per group.
-            Button {
-                startDuplicateReview()
-            } label: {
-                Image(systemName: "doc.on.doc")
-            }
-            .help("Detect duplicates — groups likely-duplicate books and lets you pick a canonical entry per group")
-            .accessibilityLabel("Detect duplicates")
 
             // Chat-pane button — same triple-duty action as before
             // (selection → chatWithSelected; collection →

@@ -276,6 +276,7 @@ private struct FileOpenCommands: Commands {
             ConvertCommand()
             ImportEPUBCommand()
             UpdateLibraryCommand()
+            DetectDuplicatesCommand()
             RestoreLibraryCatalogCommand()
             Divider()
             SplitTwoUpCommand()
@@ -522,6 +523,23 @@ private struct UpdateLibraryCommand: View {
     }
 }
 
+/// Reveal the Library window and post a detect-duplicates request.
+/// The Library window's `.onReceive` opens
+/// `DuplicateReviewSheet` against its live `LibraryStore`. Pure
+/// menu-bar surface — no toolbar button — since the operation is
+/// occasional library maintenance, not a per-row workflow.
+private struct DetectDuplicatesCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Detect Duplicates in Library…") {
+            openWindow(id: "library")
+            NotificationCenter.default.post(
+                name: .humanistDetectDuplicatesRequested, object: nil
+            )
+        }
+    }
+}
+
 /// Reveal the Library window and post the restore-catalog request.
 /// The Library window's `.onReceive` opens the SnapshotRestoreSheet
 /// against its live `LibraryStore`. Surfaced in the File menu so
@@ -757,5 +775,14 @@ extension Notification.Name {
     /// pass.
     static let humanistUpdateLibraryRequested = Notification.Name(
         "humanistUpdateLibraryRequested"
+    )
+
+    /// Posted by File → Detect Duplicates in Library…; the
+    /// Library window's listener opens `DuplicateReviewSheet` and
+    /// kicks off the four-tier detector against the catalog.
+    /// Same notification-routed pattern as the other library-
+    /// maintenance commands.
+    static let humanistDetectDuplicatesRequested = Notification.Name(
+        "humanistDetectDuplicatesRequested"
     )
 }
