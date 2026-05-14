@@ -2,6 +2,19 @@ import Foundation
 import AI
 import EPUB
 
+/// Raised when a single book's index build exceeds
+/// `LibraryIndexBuilder.perBookTimeout` and the watchdog cancels
+/// the work. Carries the timeout that was hit so the UI can show
+/// `"Timed out after 120s"` rather than a bare CancellationError.
+/// Distinct from CancellationError so the bulk-index path can
+/// separate "user clicked Cancel" from "this one book is stuck."
+struct IndexBuildTimedOut: Error, LocalizedError {
+    let seconds: TimeInterval
+    var errorDescription: String? {
+        "Indexing stalled — gave up after \(Int(seconds))s."
+    }
+}
+
 /// Bulk-index every book in the library so library-scope chat has
 /// something to retrieve from. Each book gets its embedding +
 /// hierarchy + entity sidecar built (or rebuilt if the persisted
@@ -11,6 +24,14 @@ import EPUB
 /// pane once" — necessary on first use of library chat after
 /// flipping backends, and useful any time the user wants to refresh
 /// the federation in one shot.
+///
+/// Per-book timeout: each book's build is wrapped in a watchdog
+/// (`perBookTimeout`, default 120s). A pathological EPUB that
+/// stalls on extraction, unzip, or backend embed gets a hard ceiling
+/// — the watchdog cancels the work task and the failure is recorded
+/// as a timeout in the UI so the bulk run moves on. Without this,
+/// one bad book could freeze the whole indexer for tens of minutes;
+/// "the run eventually skipped it" was the user-reported symptom.
 @MainActor
 final class LibraryIndexBuilder: ObservableObject {
 
@@ -40,6 +61,39 @@ final class LibraryIndexBuilder: ObservableObject {
     /// paragraph. Surfaced so the user knows the bulk run wasn't
     /// a no-op for their library.
     @Published private(set) var skippedExistingCount: Int = 0
+
+    /// Per-book timeout strategy. Default scales with the EPUB's
+    /// on-disk size so a 1MB novella gets a tight ceiling and a
+    /// 50MB scanned-book monster gets enough slack to legitimately
+    /// finish. Exposed as a closure so tests can substitute a
+    /// constant (e.g. 0.05s) without poking at file sizes.
+    var perBookTimeout: (LibraryEntry) -> TimeInterval =
+        LibraryIndexBuilder.smartTimeout(for:)
+
+    /// Default smart-timeout: `60s base + 10s per MB of EPUB`,
+    /// capped at 30 minutes. The base covers extract + serialize
+    /// overhead even for tiny books; the per-MB slope tracks the
+    /// rough linear relationship between file size and paragraph
+    /// count (the embed loop is the slow path); the 30-min cap
+    /// catches the truly pathological cases — anything that needs
+    /// longer than that is almost certainly stuck, and surfacing
+    /// it as a timed-out failure is the right call so the bulk run
+    /// can move on. File size is read via a single `stat`; an
+    /// unreadable / missing source falls back to the base value
+    /// (the build will surface a real error a moment later anyway).
+    nonisolated static func smartTimeout(
+        for entry: LibraryEntry
+    ) -> TimeInterval {
+        let base: TimeInterval = 60
+        let perMB: TimeInterval = 10
+        let cap: TimeInterval = 30 * 60
+        let attrs = try? FileManager.default.attributesOfItem(
+            atPath: entry.epubURL.path
+        )
+        let bytes = (attrs?[.size] as? NSNumber)?.doubleValue ?? 0
+        let mb = bytes / 1_000_000
+        return min(cap, base + perMB * mb)
+    }
 
     private var task: Task<Void, Never>?
 
@@ -74,6 +128,7 @@ final class LibraryIndexBuilder: ObservableObject {
                 ? "Rebuilding library indexes"
                 : "Indexing library books"
         )
+        let timeoutFor = perBookTimeout
         task = Task { [weak self] in
             for (idx, entry) in snapshot.enumerated() {
                 if Task.isCancelled { break }
@@ -81,14 +136,25 @@ final class LibraryIndexBuilder: ObservableObject {
                     self?.current = idx + 1
                     self?.currentBookTitle = entry.title
                 }
+                let bookTimeout = timeoutFor(entry)
                 do {
-                    let didBuild = try await Self.buildOneBook(
-                        entry: entry, backend: backend,
-                        store: store, forceRebuild: forceRebuild
-                    )
+                    let didBuild = try await Self.runWithTimeout(
+                        seconds: bookTimeout
+                    ) {
+                        try await Self.buildOneBook(
+                            entry: entry, backend: backend,
+                            store: store, forceRebuild: forceRebuild
+                        )
+                    }
                     if !didBuild {
                         await MainActor.run { self?.skippedExistingCount += 1 }
                     }
+                } catch is CancellationError {
+                    // User clicked Cancel — outer loop will break on
+                    // the next iteration's isCancelled check. Don't
+                    // record this as a per-book failure; it's a
+                    // run-level signal, not a book-level one.
+                    break
                 } catch {
                     await MainActor.run {
                         self?.failures.append(
@@ -128,6 +194,51 @@ final class LibraryIndexBuilder: ObservableObject {
             store: store,
             forceRebuild: forceRebuild
         )
+    }
+
+    /// Race `operation` against a `seconds` deadline. A watchdog
+    /// `Task` sleeps for the deadline and then cancels the work
+    /// task; if cancellation propagates (it does for the network /
+    /// AFM `await`s that dominate this path) the operation throws
+    /// `CancellationError`, which we translate to
+    /// `IndexBuildTimedOut`. If the outer task is cancelled by the
+    /// user clicking Cancel, the CancellationError passes through
+    /// unchanged so the bulk-index loop can distinguish "this one
+    /// book is stuck" from "stop the whole run."
+    ///
+    /// Generic in `T` so the helper isn't pinned to the Bool that
+    /// `buildOneBook` returns — also lets the tests in
+    /// `LibraryIndexBuilderTimeoutTests` exercise it with a Void
+    /// dummy operation.
+    static func runWithTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let work = Task<T, Error> {
+            try await operation()
+        }
+        let watchdog = Task<Void, Never> {
+            try? await Task.sleep(
+                nanoseconds: UInt64(seconds * 1_000_000_000)
+            )
+            // Cancel the work task on timeout. If the work already
+            // finished, `cancel()` is a no-op.
+            work.cancel()
+        }
+        defer { watchdog.cancel() }
+
+        do {
+            return try await work.value
+        } catch is CancellationError {
+            // Distinguish "user clicked Cancel on the outer Task"
+            // from "watchdog cancelled this book." The outer-task
+            // case is signalled by `Task.isCancelled` being true
+            // here; the watchdog case leaves the outer task running.
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw IndexBuildTimedOut(seconds: seconds)
+        }
     }
 }
 
