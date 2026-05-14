@@ -51,9 +51,32 @@ struct AISettingsView: View {
                     }
                 }
 
+                Section("Page OCR Provider") {
+                    Picker("Provider", selection: $vm.settings.pageOCRProvider) {
+                        Text("Claude Sonnet 4.6")
+                            .tag(PageOCRProvider.claude)
+                        Text("Gemini 2.5 Flash (lower cost)")
+                            .tag(PageOCRProvider.gemini25Flash)
+                    }
+                    .pickerStyle(.radioGroup)
+                    Text("Selects the model that converts each rendered page into structured XHTML when Claude OCR / Early-print mode is on at the launcher. Gemini 2.5 Flash runs ~7–10× cheaper per page with comparable quality on typeset prose; Sonnet still wins on dense academic layouts and unusual scripts. Manuscript mode always uses Claude Opus regardless of this setting.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if vm.settings.pageOCRProvider == .gemini25Flash {
+                        geminiKeyEntryRow
+                    }
+                }
+
                 Section("Cloud Features") {
                     Toggle("Use Claude (Sonnet) for hard-region OCR",
                            isOn: $vm.settings.cloudFeatures.hardRegionOCR)
+                    Toggle("Google Document OCR in cascade (Stage 2.5, ~$0.0015/call)",
+                           isOn: $vm.settings.cloudFeatures.googleDocumentOCRInCascade)
+                    if vm.settings.cloudFeatures.googleDocumentOCRInCascade {
+                        googleCloudVisionKeyEntryRow
+                            .padding(.leading, 16)
+                    }
                     Toggle("Use Claude (Sonnet) for table extraction",
                            isOn: $vm.settings.cloudFeatures.tableExtraction)
                     Toggle("Post-OCR character cleanup (Haiku)",
@@ -65,7 +88,7 @@ struct AISettingsView: View {
                            isOn: $vm.settings.cloudFeatures.semanticClassification)
                     Toggle("Parse printed TOC (Haiku)",
                            isOn: $vm.settings.cloudFeatures.tocParsing)
-                    Text("Each toggle gates a separate Claude-backed feature. Costs are roughly $0.01–$2 per book depending on which are enabled.")
+                    Text("Each toggle gates a separate Cloud feature. Costs are roughly $0.01–$2 per book depending on which are enabled. Google Document OCR sits in the cascade between Tesseract and Claude — it absorbs most of the hard-region work at $0.0015/call before falling through to Sonnet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -209,6 +232,60 @@ struct AISettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var geminiKeyEntryRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                SecureField(
+                    vm.hasGeminiKey
+                        ? "•••• Gemini key stored — paste to replace ••••"
+                        : "Google AI Studio API key (AIza…)",
+                    text: $vm.pendingGeminiKey
+                )
+                Button(vm.hasGeminiKey ? "Replace" : "Save") {
+                    vm.commitGeminiKey()
+                }
+                .disabled(vm.pendingGeminiKey.isEmpty)
+                if vm.hasGeminiKey {
+                    Button("Remove", role: .destructive) {
+                        vm.deleteGeminiKey()
+                    }
+                }
+            }
+            Text("Issue from aistudio.google.com → API keys. Used for Gemini 2.5 Flash page OCR. Without a key the engine silently falls back to Claude.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var googleCloudVisionKeyEntryRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                SecureField(
+                    vm.hasGoogleCloudVisionKey
+                        ? "•••• Cloud Vision key stored — paste to replace ••••"
+                        : "Google Cloud Vision API key",
+                    text: $vm.pendingGoogleCloudVisionKey
+                )
+                Button(vm.hasGoogleCloudVisionKey ? "Replace" : "Save") {
+                    vm.commitGoogleCloudVisionKey()
+                }
+                .disabled(vm.pendingGoogleCloudVisionKey.isEmpty)
+                if vm.hasGoogleCloudVisionKey {
+                    Button("Remove", role: .destructive) {
+                        vm.deleteGoogleCloudVisionKey()
+                    }
+                }
+            }
+            Text("Issue from Google Cloud Console with the Vision API enabled. Distinct from the Gemini key. Without it, Stage 2.5 is skipped and hard regions go straight from Tesseract to Claude.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

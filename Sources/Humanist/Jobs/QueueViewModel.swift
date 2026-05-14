@@ -302,7 +302,8 @@ final class QueueViewModel: ObservableObject {
                     profile: profile,
                     cloudFeatures: aiSettings.cloudFeatures,
                     perBookCallCap: aiSettings.perBookCallCap,
-                    useClaudePageOCR: pageOCROn
+                    useClaudePageOCR: pageOCROn,
+                    pageOCRProvider: aiSettings.pageOCRProvider
                 )
             } else {
                 estimate = .empty

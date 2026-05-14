@@ -115,6 +115,21 @@ public enum CostEstimator {
             return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 4000, outputTokens: 2000
             ))
+        case .pageOCRGemini:
+            // Gemini 2.5 Flash: ~1000 input (image tiles bill at
+            // ~258 tokens/tile vs Claude's ~1500) + ~2000 output.
+            // Per-page cost lands around $0.005 vs Sonnet's ~$0.04
+            // — a 400-page book runs ~$2-3.
+            return AnthropicModel.gemini25Flash.pricing.cost(for: Usage(
+                inputTokens: 1000, outputTokens: 2000
+            ))
+        case .googleDocumentOCR:
+            // Cloud Vision DOCUMENT_TEXT_DETECTION: fixed $0.0015
+            // per call. Encoded in `AnthropicModel.pricing` as one
+            // synthetic output token × $1500/M.
+            return AnthropicModel.googleDocumentOCR.pricing.cost(for: Usage(
+                inputTokens: 0, outputTokens: 1
+            ))
         }
     }
 
@@ -124,6 +139,12 @@ public enum CostEstimator {
         case postOCRCleanupVision
         case tableExtraction
         case pageOCR
+        /// Gemini 2.5 Flash page-OCR. ~7-10× cheaper per page than
+        /// `.pageOCR` (Sonnet 4.6); same XHTML output schema.
+        case pageOCRGemini
+        /// Cloud Vision DOCUMENT_TEXT_DETECTION — cascade Stage 2.5.
+        /// Fixed $0.0015 per call regardless of region size.
+        case googleDocumentOCR
     }
 
     /// Compute a coarse pre-flight cost estimate. When
@@ -136,7 +157,8 @@ public enum CostEstimator {
         profile: DocumentProfile,
         cloudFeatures: AISettings.CloudFeatures,
         perBookCallCap: Int,
-        useClaudePageOCR: Bool = false
+        useClaudePageOCR: Bool = false,
+        pageOCRProvider: PageOCRProvider = .claude
     ) -> Estimate {
         guard profile.pageCount > 0 else { return .empty }
         let regions = Double(profile.pageCount) * regionsPerPageEstimate
@@ -145,15 +167,27 @@ public enum CostEstimator {
         var totalCalls = 0
         var totalCost: Double = 0
 
-        // Page-OCR mode: one Sonnet call per page; replaces the
+        // Page-OCR mode: one call per page; replaces the
         // hard-region-OCR + post-OCR-cleanup line items entirely.
-        // Table extraction can still run as a separate feature.
+        // Provider pick changes both per-call cost and the label.
         if useClaudePageOCR {
             let calls = profile.pageCount
-            let cost = Double(calls) * costPerCall(.pageOCR)
+            let feature: Feature
+            let label: String
+            let modelId: String
+            switch pageOCRProvider {
+            case .claude:
+                feature = .pageOCR
+                label = "Page OCR (whole-page Sonnet)"
+                modelId = AnthropicModel.sonnet4_6.rawValue
+            case .gemini25Flash:
+                feature = .pageOCRGemini
+                label = "Page OCR (Gemini 2.5 Flash)"
+                modelId = AnthropicModel.gemini25Flash.rawValue
+            }
+            let cost = Double(calls) * costPerCall(feature)
             lines.append(.init(
-                label: "Page OCR (whole-page Sonnet)",
-                model: AnthropicModel.sonnet4_6.rawValue,
+                label: label, model: modelId,
                 calls: calls, costUSD: cost
             ))
             totalCalls += calls

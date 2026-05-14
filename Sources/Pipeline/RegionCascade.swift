@@ -13,11 +13,15 @@ import Layout
 ///   Vision → Surya (whole-page re-OCR, region-by-region replacement)
 ///         → Tesseract (per-region crop + re-OCR for any region still
 ///           problematic after Surya)
+///         → Google Document OCR (Cloud-mode only; per-region crop)
+///         → Claude (Cloud-mode only; per-region crop, final tier)
 ///
 /// Surya re-OCR is once-per-page (we render the page anyway, and Surya
 /// pages are easier to feed than crops), then we project Surya lines
 /// into the problematic regions. Tesseract is per-region because it's
-/// fast and crops are easy.
+/// fast and crops are easy. Google Document OCR (Cloud Vision API
+/// DOCUMENT_TEXT_DETECTION) at $0.0015/call absorbs most of the hard
+/// tail before falling through to Claude.
 enum RegionCascade {
 
     /// Mean region confidence below this triggers re-OCR. Raised
@@ -82,6 +86,7 @@ enum RegionCascade {
         hints: OCRHints,
         suryaEngine: (any OCREngine)?,
         tesseractEngine: (any OCREngine)?,
+        documentAIEngine: (any OCREngine)? = nil,
         claudeEngine: (any OCREngine)? = nil,
         forceClaudeOnAllRegions: Bool = false
     ) async -> [TextObservation] {
@@ -148,6 +153,59 @@ enum RegionCascade {
             }
             // Re-evaluate after Tesseract so Claude only fires on
             // regions Tesseract didn't fix.
+            problemIndices = problematicRegionIndices(
+                observations: result, regions: regions, candidates: problemIndices
+            )
+        }
+
+        // --- Stage 2.5: per-region Google Document OCR (Cloud-mode only) ---
+        //
+        // Cloud Vision DOCUMENT_TEXT_DETECTION at ~$0.0015/call sits
+        // between Tesseract and Claude. Absorbs the bulk of the
+        // hard-region tail (degraded scans, skew, low contrast) that
+        // Tesseract can't read; only the genuinely difficult cases
+        // (polytonic Greek, Hebrew, vertical CJK, manuscript) fall
+        // through to Claude. Guardrail-gated against the prior tier
+        // same as Stage 3.
+        if !problemIndices.isEmpty, let docAI = documentAIEngine,
+           !forceClaudeOnAllRegions {
+            let stageProblems = problemIndices
+            cascadeDocAILoop: for i in stageProblems {
+                let region = regions[i]
+                guard let cropped = cropImage(pageImage, to: region.box) else { continue }
+
+                let priorObs = filter(observations: result, inRegion: region)
+                    .sorted { $0.box.midY > $1.box.midY }
+                let priorText = priorObs.map(\.text).joined(separator: " ")
+
+                let cropResult: OCRResult
+                do {
+                    cropResult = try await docAI.recognize(image: cropped, hints: hints)
+                } catch GoogleDocumentOCREngine.DocumentOCRError.budgetExhausted {
+                    break cascadeDocAILoop
+                } catch {
+                    continue
+                }
+
+                let candidateText = cropResult.observations.map(\.text)
+                    .joined(separator: " ")
+                let decision = OCRChangeGuardrail.accept(
+                    prior: priorText, candidate: candidateText
+                )
+                guard decision.accepted else { continue }
+
+                let translated = translate(
+                    observations: cropResult.observations,
+                    fromCropOf: region.box,
+                    intoFullPage: pageImage
+                )
+                let confined = filter(observations: translated, inRegion: region)
+                result = replace(
+                    observations: result, inRegion: region, with: confined
+                )
+            }
+            // Re-evaluate after Doc OCR so Claude only fires on the
+            // residual tail it didn't fix.
             problemIndices = problematicRegionIndices(
                 observations: result, regions: regions, candidates: problemIndices
             )

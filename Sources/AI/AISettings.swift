@@ -7,9 +7,26 @@ import Foundation
 /// via `AnthropicAPIKeyStore`. Phase 1 only builds the storage
 /// layer + the Settings UI; the pipeline reads `processingMode`
 /// in Phase 2 onward.
+/// Which provider runs end-to-end page OCR when the user has Cloud
+/// mode + page-OCR (Claude OCR / Manuscript / Early-print) enabled.
+/// Claude was the only option through Phase 2; Gemini 2.5 Flash was
+/// added as a much-cheaper alternative — same XHTML output schema,
+/// ~7-10× lower per-page cost, comparable quality on typeset prose.
+/// Stored at the top level of `AISettings` (not inside `CloudFeatures`)
+/// because it picks the engine, not a feature toggle.
+public enum PageOCRProvider: String, Sendable, Codable, Equatable, CaseIterable {
+    case claude
+    case gemini25Flash
+}
+
 public struct AISettings: Sendable, Codable, Equatable {
     public var processingMode: ProcessingMode
     public var cloudFeatures: CloudFeatures
+    /// Active page-OCR provider when `processingMode == .cloud` AND
+    /// the user has page-OCR mode on (Claude OCR / Manuscript /
+    /// Early-print). Manuscript mode forces `.claude` regardless of
+    /// this setting — handwriting needs Opus.
+    public var pageOCRProvider: PageOCRProvider
     /// On-device feature toggles, gated by `processingMode ==
     /// .privateLocal` and runtime availability (Apple Intelligence
     /// must be enabled in System Settings). Lets Private-mode users
@@ -35,18 +52,21 @@ public struct AISettings: Sendable, Codable, Equatable {
         cloudFeatures: CloudFeatures = CloudFeatures(),
         localFeatures: LocalFeatures = LocalFeatures(),
         perBookCallCap: Int = 200,
-        forceOCR: Bool = false
+        forceOCR: Bool = false,
+        pageOCRProvider: PageOCRProvider = .claude
     ) {
         self.processingMode = processingMode
         self.cloudFeatures = cloudFeatures
         self.localFeatures = localFeatures
         self.perBookCallCap = perBookCallCap
         self.forceOCR = forceOCR
+        self.pageOCRProvider = pageOCRProvider
     }
 
     private enum CodingKeys: String, CodingKey {
         case processingMode, cloudFeatures, localFeatures
         case perBookCallCap, forceOCR
+        case pageOCRProvider
     }
 
     public init(from decoder: Decoder) throws {
@@ -60,6 +80,11 @@ public struct AISettings: Sendable, Codable, Equatable {
         self.localFeatures = try c.decodeIfPresent(
             LocalFeatures.self, forKey: .localFeatures
         ) ?? LocalFeatures()
+        // Default to Claude so existing users see no behavior change
+        // until they explicitly pick Gemini in Settings.
+        self.pageOCRProvider = try c.decodeIfPresent(
+            PageOCRProvider.self, forKey: .pageOCRProvider
+        ) ?? .claude
     }
 
     /// On-device feature toggles backed by Apple's Foundation Models
@@ -138,6 +163,13 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// Vision OCR for hard regions where Vision + Tesseract both
         /// scored below the quality floor (Sonnet 4.6).
         public var hardRegionOCR: Bool
+        /// Google Cloud Document OCR (Vision API DOCUMENT_TEXT_DETECTION)
+        /// added to the per-region cascade as Stage 2.5, sitting between
+        /// Tesseract and Claude. ~$1.50 per 1000 images vs Claude's
+        /// ~$1.50 per 100 calls; absorbs most of the hard-region tail
+        /// before falling through to Claude. Independently keyed
+        /// (Google Cloud Vision API key, not the AI Studio Gemini key).
+        public var googleDocumentOCRInCascade: Bool
         /// Table-structure extraction from cropped table region
         /// images (Sonnet 4.6).
         public var tableExtraction: Bool
@@ -203,6 +235,7 @@ public struct AISettings: Sendable, Codable, Equatable {
 
         public init(
             hardRegionOCR: Bool = true,
+            googleDocumentOCRInCascade: Bool = true,
             tableExtraction: Bool = true,
             postOCRCleanup: Bool = false,
             postOCRCleanupVisionMode: Bool = false,
@@ -215,6 +248,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             parallelPageOCRConcurrency: Int = 1
         ) {
             self.hardRegionOCR = hardRegionOCR
+            self.googleDocumentOCRInCascade = googleDocumentOCRInCascade
             self.tableExtraction = tableExtraction
             self.postOCRCleanup = postOCRCleanup
             self.postOCRCleanupVisionMode = postOCRCleanupVisionMode
@@ -239,10 +273,17 @@ public struct AISettings: Sendable, Codable, Equatable {
             case adaptivePageRouting
             case useBatchAPI
             case parallelPageOCRConcurrency
+            case googleDocumentOCRInCascade
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.hardRegionOCR = try c.decode(Bool.self, forKey: .hardRegionOCR)
+            // Default-on: cheap Stage 2.5 in the cascade that absorbs
+            // most hard-region work before falling through to Claude.
+            // No-op until a Google Cloud Vision key is configured.
+            self.googleDocumentOCRInCascade = try c.decodeIfPresent(
+                Bool.self, forKey: .googleDocumentOCRInCascade
+            ) ?? true
             self.tableExtraction = try c.decode(Bool.self, forKey: .tableExtraction)
             self.postOCRCleanup = try c.decode(Bool.self, forKey: .postOCRCleanup)
             self.postOCRCleanupVisionMode = try c.decodeIfPresent(

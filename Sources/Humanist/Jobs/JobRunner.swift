@@ -266,6 +266,8 @@ final class JobRunner: ObservableObject {
         // setting applies to every queued conversion.
         let aiSettings = AISettingsStore().load()
         let keyStore = AnthropicAPIKeyStore()
+        let geminiKeyStore = GeminiAPIKeyStore()
+        let googleCloudVisionKeyStore = GoogleCloudVisionAPIKeyStore()
         // Private Mode override: zero out every cloud surface for
         // this conversion regardless of global Settings. Empty
         // `CloudFeatures` makes every `make*ClaudeX` factory return
@@ -289,10 +291,16 @@ final class JobRunner: ObservableObject {
         )
         let cloudEnhancedOCR = false
         let keyProvider: @Sendable () -> String?
+        let geminiKeyProvider: @Sendable () -> String?
+        let googleCloudVisionKeyProvider: @Sendable () -> String?
         if privateOn {
             keyProvider = { nil }
+            geminiKeyProvider = { nil }
+            googleCloudVisionKeyProvider = { nil }
         } else {
             keyProvider = { keyStore.read() }
+            geminiKeyProvider = { geminiKeyStore.read() }
+            googleCloudVisionKeyProvider = { googleCloudVisionKeyStore.read() }
         }
         let options = PDFToEPUBPipeline.Options(
             documentProfile: job.profile,
@@ -309,6 +317,9 @@ final class JobRunner: ObservableObject {
             // Settings UI takes effect on the next request without
             // rebuilding the pipeline.
             anthropicAPIKeyProvider: keyProvider,
+            geminiAPIKeyProvider: geminiKeyProvider,
+            googleCloudVisionAPIKeyProvider: googleCloudVisionKeyProvider,
+            pageOCRProvider: aiSettings.pageOCRProvider,
             useClaudePageOCR: claudePageOCR,
             useManuscriptMode: !job.options.privateMode
                 && job.options.useManuscriptMode,

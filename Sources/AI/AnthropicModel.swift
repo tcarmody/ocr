@@ -45,6 +45,21 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// recognition justifies the routing.
     public static let opus4_7 = AnthropicModel(rawValue: "claude-opus-4-7")
 
+    /// Gemini 2.5 Flash — Google's fast multimodal model, used as the
+    /// budget alternative to Sonnet for page-OCR. Same XHTML output
+    /// schema; ~7-10× cheaper per page on typical book content. The
+    /// `AnthropicModel` type name is a slight lie here — this struct
+    /// is the project's generic "LLM model id with pricing" carrier,
+    /// not strictly Anthropic-only. Rename deferred to avoid churn.
+    public static let gemini25Flash = AnthropicModel(rawValue: "gemini-2.5-flash")
+
+    /// Google Cloud Vision API DOCUMENT_TEXT_DETECTION — classical OCR
+    /// (not an LLM). Tracked here so `ClaudeCallBudget.recordUsage`
+    /// can attribute the per-page cost; pricing is fixed per request,
+    /// so input/output tokens are repurposed: `inputTokens = 0`,
+    /// `outputTokens = 1` per page → multiplied by the per-image rate.
+    public static let googleDocumentOCR = AnthropicModel(rawValue: "google-document-ocr")
+
     /// Per-million-token pricing in USD. Used by `ConversionStats` to
     /// produce ≈-cost estimates for the post-conversion summary.
     /// Treat as estimates, not invoices — Anthropic's billing is the
@@ -57,6 +72,20 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
             return Pricing(inputPerMTok: 1.00, outputPerMTok: 5.00)
         case "claude-opus-4-7":
             return Pricing(inputPerMTok: 5.00, outputPerMTok: 25.00)
+        case "gemini-2.5-flash":
+            // Gemini 2.5 Flash list price as of late 2025: $0.30/M
+            // input, $2.50/M output (text + image). Cache and batch
+            // discounts not modelled — same posture as the Claude
+            // rates above.
+            return Pricing(inputPerMTok: 0.30, outputPerMTok: 2.50)
+        case "google-document-ocr":
+            // Cloud Vision DOCUMENT_TEXT_DETECTION: $1.50 per 1000
+            // images = $0.0015/image. Encoded as $1500/M output
+            // tokens with one synthetic token per call, so a usage
+            // of (in=0, out=1) bills at $0.0015. Keeps the
+            // existing pricing/cost helpers working without
+            // adding a per-request rate carrier.
+            return Pricing(inputPerMTok: 0.00, outputPerMTok: 1500.00)
         default:
             // Unknown / future model — assume Sonnet rates as a
             // safe upper-middle estimate. Surface in the UI as

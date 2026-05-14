@@ -16,9 +16,18 @@ final class AISettingsViewModel: ObservableObject {
     /// of `apiKey`; used by the view to switch between "Add Key" and
     /// "Replace Key" affordances.
     @Published private(set) var hasAPIKey: Bool
+    /// Mirrored "is a Gemini key stored." Drives the Replace/Save
+    /// affordance for the Gemini key field.
+    @Published private(set) var hasGeminiKey: Bool
+    /// Mirrored "is a Google Cloud Vision key stored." Same shape.
+    @Published private(set) var hasGoogleCloudVisionKey: Bool
     /// Plain-text API key for the entry field. Only populated when
     /// the user is actively editing — saved to keychain on `commit`.
     @Published var pendingAPIKey: String = ""
+    /// Plain-text Gemini key entry buffer.
+    @Published var pendingGeminiKey: String = ""
+    /// Plain-text Google Cloud Vision key entry buffer.
+    @Published var pendingGoogleCloudVisionKey: String = ""
     /// Result of the last "Test Connection" call. Nil before any
     /// test fires; non-nil shows an inline status message.
     @Published var testResult: TestResult?
@@ -30,6 +39,8 @@ final class AISettingsViewModel: ObservableObject {
 
     let settingsStore: AISettingsStore
     let keyStore: AnthropicAPIKeyStore
+    let geminiKeyStore: GeminiAPIKeyStore
+    let googleCloudVisionKeyStore: GoogleCloudVisionAPIKeyStore
     /// Closure that builds an API client from the current key. Held
     /// as a closure so tests can swap in a mocked transport.
     let clientFactory: @MainActor (AnthropicAPIKeyStore) -> AnthropicAPIClient
@@ -37,15 +48,21 @@ final class AISettingsViewModel: ObservableObject {
     init(
         settingsStore: AISettingsStore = AISettingsStore(),
         keyStore: AnthropicAPIKeyStore = AnthropicAPIKeyStore(),
+        geminiKeyStore: GeminiAPIKeyStore = GeminiAPIKeyStore(),
+        googleCloudVisionKeyStore: GoogleCloudVisionAPIKeyStore = GoogleCloudVisionAPIKeyStore(),
         clientFactory: @escaping @MainActor (AnthropicAPIKeyStore) -> AnthropicAPIClient = { keyStore in
             AnthropicAPIClient(apiKeyProvider: { keyStore.read() })
         }
     ) {
         self.settingsStore = settingsStore
         self.keyStore = keyStore
+        self.geminiKeyStore = geminiKeyStore
+        self.googleCloudVisionKeyStore = googleCloudVisionKeyStore
         self.clientFactory = clientFactory
         self.settings = settingsStore.load()
         self.hasAPIKey = keyStore.hasKey
+        self.hasGeminiKey = geminiKeyStore.hasKey
+        self.hasGoogleCloudVisionKey = googleCloudVisionKeyStore.hasKey
     }
 
     // MARK: - API key flow
@@ -77,6 +94,65 @@ final class AISettingsViewModel: ObservableObject {
             testResult = nil
         } catch {
             testResult = .failure("Couldn't remove key: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Gemini key flow
+
+    func commitGeminiKey() {
+        let trimmed = pendingGeminiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if trimmed.isEmpty {
+                try geminiKeyStore.delete()
+            } else {
+                try geminiKeyStore.write(trimmed)
+            }
+            hasGeminiKey = geminiKeyStore.hasKey
+            pendingGeminiKey = ""
+        } catch {
+            testResult = .failure("Couldn't save Gemini key: \(error.localizedDescription)")
+        }
+    }
+
+    func deleteGeminiKey() {
+        do {
+            try geminiKeyStore.delete()
+            hasGeminiKey = geminiKeyStore.hasKey
+            pendingGeminiKey = ""
+        } catch {
+            testResult = .failure("Couldn't remove Gemini key: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Google Cloud Vision key flow
+
+    func commitGoogleCloudVisionKey() {
+        let trimmed = pendingGoogleCloudVisionKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if trimmed.isEmpty {
+                try googleCloudVisionKeyStore.delete()
+            } else {
+                try googleCloudVisionKeyStore.write(trimmed)
+            }
+            hasGoogleCloudVisionKey = googleCloudVisionKeyStore.hasKey
+            pendingGoogleCloudVisionKey = ""
+        } catch {
+            testResult = .failure(
+                "Couldn't save Cloud Vision key: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func deleteGoogleCloudVisionKey() {
+        do {
+            try googleCloudVisionKeyStore.delete()
+            hasGoogleCloudVisionKey = googleCloudVisionKeyStore.hasKey
+            pendingGoogleCloudVisionKey = ""
+        } catch {
+            testResult = .failure(
+                "Couldn't remove Cloud Vision key: \(error.localizedDescription)"
+            )
         }
     }
 

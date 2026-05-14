@@ -29,7 +29,9 @@ import OCR
 ///   * **Pipeline**: ColumnSplitter / RegionCascade / RegionAwareReflow
 ///     don't run for pages that take this path. Surya layout still
 ///     runs (figures, table bboxes); figure extraction is unchanged.
-public struct ClaudePageOCREngine: Sendable {
+public struct ClaudePageOCREngine: PageOCREngine, Sendable {
+    public var providerId: String { "claude" }
+
     /// What the engine is reading. The base XHTML-output contract
     /// is shared; mode picks the model + appends mode-specific
     /// instructions to the system prompt.

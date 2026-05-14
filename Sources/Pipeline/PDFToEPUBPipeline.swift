@@ -95,6 +95,20 @@ public actor PDFToEPUBPipeline {
         /// nil → Cloud mode degrades silently to local-only with a
         /// debug-log line.
         public var anthropicAPIKeyProvider: @Sendable () -> String?
+        /// Google AI Studio key resolver (Gemini generative models).
+        /// Powers `GeminiPageOCREngine` when `pageOCRProvider ==
+        /// .gemini25Flash`. Nil/empty → falls back to Claude page OCR.
+        public var geminiAPIKeyProvider: @Sendable () -> String?
+        /// Google Cloud Vision API key resolver (Cloud Vision API for
+        /// `DOCUMENT_TEXT_DETECTION`). Powers the Stage 2.5
+        /// `GoogleDocumentOCREngine` in `RegionCascade`. Distinct from
+        /// the Gemini key — Cloud Vision uses a Cloud Console key, not
+        /// an AI Studio key. Nil/empty → Stage 2.5 is skipped.
+        public var googleCloudVisionAPIKeyProvider: @Sendable () -> String?
+        /// Which provider runs end-to-end page OCR. Mirrors
+        /// `AISettings.pageOCRProvider`. Manuscript mode ignores this
+        /// (Opus only).
+        public var pageOCRProvider: PageOCRProvider
         /// **Experimental / spike use only.** When true and
         /// `processingMode == .cloud`, the OCR cascade pulls Surya
         /// + Tesseract out of the escalation chain *and* feeds every
@@ -215,6 +229,9 @@ public actor PDFToEPUBPipeline {
             localFeatures: AISettings.LocalFeatures = AISettings.LocalFeatures(),
             perBookCallCap: Int = 200,
             anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
+            geminiAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
+            googleCloudVisionAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
+            pageOCRProvider: PageOCRProvider = .claude,
             disableLocalCascadeEscalation: Bool = false,
             useClaudePageOCR: Bool = false,
             useManuscriptMode: Bool = false,
@@ -246,6 +263,9 @@ public actor PDFToEPUBPipeline {
             self.localFeatures = localFeatures
             self.perBookCallCap = perBookCallCap
             self.anthropicAPIKeyProvider = anthropicAPIKeyProvider
+            self.geminiAPIKeyProvider = geminiAPIKeyProvider
+            self.googleCloudVisionAPIKeyProvider = googleCloudVisionAPIKeyProvider
+            self.pageOCRProvider = pageOCRProvider
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
             self.useClaudePageOCR = useClaudePageOCR
             self.useManuscriptMode = useManuscriptMode
@@ -348,6 +368,23 @@ public actor PDFToEPUBPipeline {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.hardRegionOCR
         ) { ClaudeOCREngine(client: $0, budget: $1) }
+    }
+
+    /// Build the Google Cloud Vision Stage-2.5 cascade engine. Gates
+    /// on `processingMode == .cloud`, the `googleDocumentOCRInCascade`
+    /// feature flag, and a configured Cloud Vision key. Returns nil
+    /// otherwise — the cascade then jumps from Tesseract straight to
+    /// Claude as before.
+    static func makeGoogleDocumentOCREngine(
+        options: Options, budget: ClaudeCallBudget
+    ) -> GoogleDocumentOCREngine? {
+        guard options.processingMode == .cloud,
+              options.cloudFeatures.googleDocumentOCRInCascade,
+              let key = options.googleCloudVisionAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        return GoogleDocumentOCREngine(
+            apiKeyProvider: { key }, budget: budget
+        )
     }
 
     static func makeClaudePostProcessor(
@@ -533,6 +570,54 @@ public actor PDFToEPUBPipeline {
         ) }
     }
 
+    /// Build the active page-OCR engine based on the user's provider
+    /// pick. Returns the Claude engine for `.claude` (or when the
+    /// user is in manuscript mode — handwriting requires Opus
+    /// regardless of provider preference). Returns the Gemini engine
+    /// for `.gemini25Flash` when the Gemini key is configured; falls
+    /// back to Claude when Gemini is selected but its key is missing.
+    /// Returns nil when no page-OCR mode flag is set OR when neither
+    /// provider has a usable key.
+    static func makeActivePageOCREngine(
+        options: Options, budget: ClaudeCallBudget,
+        captureSink: ClaudePageOCREngine.CaptureSink? = nil
+    ) -> (any PageOCREngine)? {
+        guard options.useClaudePageOCR
+            || options.useManuscriptMode
+            || options.useEarlyPrintMode
+        else { return nil }
+        // Manuscript mode hard-pins Claude (Opus). Provider pick is
+        // ignored — Gemini doesn't handle handwriting reliably.
+        if options.useManuscriptMode {
+            return makeClaudePageOCREngine(
+                options: options, budget: budget, captureSink: captureSink
+            )
+        }
+        switch options.pageOCRProvider {
+        case .claude:
+            return makeClaudePageOCREngine(
+                options: options, budget: budget, captureSink: captureSink
+            )
+        case .gemini25Flash:
+            guard options.processingMode == .cloud,
+                  let key = options.geminiAPIKeyProvider(),
+                  !key.isEmpty
+            else {
+                // Gemini selected but no key configured. Try Claude as
+                // a fallback so the user gets *some* page OCR rather
+                // than silent no-op.
+                return makeClaudePageOCREngine(
+                    options: options, budget: budget, captureSink: captureSink
+                )
+            }
+            return GeminiPageOCREngine(
+                apiKeyProvider: { key },
+                budget: budget,
+                captureSink: captureSink
+            )
+        }
+    }
+
     /// Per-conversion capture store for `ClaudePageOCREngine` debug
     /// dumps. Created in `convert(...)` only when `emitDebugLog` is
     /// on; passed to the engine factory via its `captureSink`. Pages
@@ -560,6 +645,10 @@ public actor PDFToEPUBPipeline {
     struct ClaudeEngines {
         let budget: ClaudeCallBudget
         let ocr: ClaudeOCREngine?
+        /// Cascade Stage 2.5 — Google Cloud Vision DOCUMENT_TEXT_DETECTION.
+        /// Sits between Tesseract and `ocr` (Claude) in `RegionCascade`.
+        /// Nil when not in `.cloud` mode or no Cloud Vision key.
+        let googleDocumentOCR: GoogleDocumentOCREngine?
         /// Post-OCR cleanup processor — Cloud (Haiku) or AFM
         /// depending on processingMode + feature toggles +
         /// runtime availability. Held as the protocol type so
@@ -568,25 +657,39 @@ public actor PDFToEPUBPipeline {
         let postProcessor: (any PostOCRProcessor)?
         let tocParser: ClaudeTOCParser?
         let tableExtractor: ClaudeTableExtractor?
-        let pageEngine: ClaudePageOCREngine?
+        /// Active page-OCR engine. Either `ClaudePageOCREngine` or
+        /// `GeminiPageOCREngine` depending on the user's provider
+        /// pick. Manuscript mode forces Claude.
+        let pageEngine: (any PageOCREngine)?
+        /// Concrete Claude page engine for the batch dispatch path.
+        /// Non-nil only when `pageEngine` is the Claude variant —
+        /// batch / prompt-cache features are Anthropic-only, so
+        /// Gemini-selected runs silently fall back to serial.
+        let claudeBatchPageEngine: ClaudePageOCREngine?
 
         static func make(
             options: Options,
             captures: CapturedResponseStore?
         ) -> ClaudeEngines {
             let budget = ClaudeCallBudget(cap: options.perBookCallCap)
+            let captureSink: ClaudePageOCREngine.CaptureSink? = captures.map { store in
+                { @Sendable entry in store.record(entry) }
+            }
+            let pageEngine = makeActivePageOCREngine(
+                options: options, budget: budget, captureSink: captureSink
+            )
+            let claudeBatch = pageEngine as? ClaudePageOCREngine
             return ClaudeEngines(
                 budget: budget,
                 ocr: makeClaudeOCREngine(options: options, budget: budget),
+                googleDocumentOCR: makeGoogleDocumentOCREngine(
+                    options: options, budget: budget
+                ),
                 postProcessor: makePostProcessor(options: options, budget: budget),
                 tocParser: makeClaudeTOCParser(options: options, budget: budget),
                 tableExtractor: makeClaudeTableExtractor(options: options, budget: budget),
-                pageEngine: makeClaudePageOCREngine(
-                    options: options, budget: budget,
-                    captureSink: captures.map { store in
-                        { @Sendable entry in store.record(entry) }
-                    }
-                )
+                pageEngine: pageEngine,
+                claudeBatchPageEngine: claudeBatch
             )
         }
     }
@@ -1341,10 +1444,12 @@ public actor PDFToEPUBPipeline {
         )
         let claudeBudget = claudeEngines.budget
         let claudeOCREngine = claudeEngines.ocr
+        let googleDocumentOCREngine = claudeEngines.googleDocumentOCR
         let claudePostProcessor = claudeEngines.postProcessor
         let claudeTOCParser = claudeEngines.tocParser
         let claudeTableExtractor = claudeEngines.tableExtractor
-        let claudePageEngine = claudeEngines.pageEngine
+        let activePageEngine = claudeEngines.pageEngine
+        let claudeBatchPageEngine = claudeEngines.claudeBatchPageEngine
 
         // Dictionary-match cleanup runs unconditionally — it's
         // free, fast, and gated on language-supported tokens
@@ -1378,7 +1483,7 @@ public actor PDFToEPUBPipeline {
         var correctionTrailEntries: [CorrectionTrail.Entry] = []
 
         // Phase 2 hidden flag accumulators. Populated only when
-        // `claudePageEngine` is non-nil; consumed at the reflow step
+        // `activePageEngine` is non-nil; consumed at the reflow step
         // below to bypass `RegionAwareReflow`. Page anchors mirror
         // the IDs `RegionAwareReflow` would have produced so the
         // editor's linked-navigation feature works identically.
@@ -1511,7 +1616,7 @@ public actor PDFToEPUBPipeline {
             // `parallelPageOCRConcurrency` setting (Tier 9 /
             // E-Parallel). Concurrency=1 preserves the original
             // serial rhythm.
-            if claudePageEngine != nil {
+            if activePageEngine != nil {
                 pageOCRPageIndices.append(i)
                 continue
             }
@@ -1719,6 +1824,7 @@ public actor PDFToEPUBPipeline {
                             hints: hints,
                             suryaEngine: cascadeSurya,
                             tesseractEngine: cascadeTess,
+                            documentAIEngine: googleDocumentOCREngine,
                             claudeEngine: claudeOCREngine,
                             forceClaudeOnAllRegions: options.disableLocalCascadeEscalation
                         )
@@ -1885,7 +1991,7 @@ public actor PDFToEPUBPipeline {
         // `parallelPageOCRConcurrency` setting; concurrency=1 keeps
         // the original serial rhythm. Each task returns a
         // `PendingPageOCR` we slot into the dict by index.
-        if let pageEngine = claudePageEngine, !pageOCRPageIndices.isEmpty {
+        if let pageEngine = activePageEngine, !pageOCRPageIndices.isEmpty {
             let concurrency = max(
                 1, options.cloudFeatures.parallelPageOCRConcurrency
             )
@@ -1896,17 +2002,18 @@ public actor PDFToEPUBPipeline {
             let freshIndices = pageOCRPageIndices.filter {
                 pageOCRPendingByIndex[$0] == nil
             }
-            // Tier 9 / E-Batches step 2: when the toggle is on,
-            // dispatch all fresh Sonnet calls as a single
-            // Anthropic Messages Batches API request — 50%
-            // input/output token discount in exchange for async
-            // wall time. Trust-routed pages still skip Sonnet,
-            // and figure extraction still runs per page (parallel
-            // with the batch wait via the same TaskGroup shape).
-            // Falls back to the synchronous TaskGroup dispatch
-            // when batches are off OR when the run produces no
-            // batch requests (every page hit the trust path).
+            // Tier 9 / E-Batches step 2: when the toggle is on AND
+            // Claude is the active page-OCR provider, dispatch all
+            // fresh Sonnet calls as a single Anthropic Messages
+            // Batches API request — 50% input/output token discount
+            // in exchange for async wall time. Gemini has no equivalent
+            // batch path, so a Gemini-selected run silently falls back
+            // to the synchronous TaskGroup dispatch even when
+            // useBatchAPI is on. Trust-routed pages still skip the
+            // network entirely; figure extraction runs per page in
+            // parallel.
             if options.cloudFeatures.useBatchAPI && !freshIndices.isEmpty,
+               let claudeBatchEngine = claudeBatchPageEngine,
                let key = options.anthropicAPIKeyProvider(),
                !key.isEmpty {
                 try await dispatchPageOCRViaBatch(
@@ -1914,7 +2021,7 @@ public actor PDFToEPUBPipeline {
                     pdf: pdf,
                     options: options,
                     stagingDir: stagingDir,
-                    pageEngine: pageEngine,
+                    pageEngine: claudeBatchEngine,
                     figureExtractor: figureExtractor,
                     apiKey: key,
                     progress: progress,
@@ -2036,7 +2143,7 @@ public actor PDFToEPUBPipeline {
 
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).
         let reflowed: ReflowOutput
-        if claudePageEngine != nil {
+        if activePageEngine != nil {
             // Phase 2/4: blocks came from Sonnet per page; figures
             // were extracted via Surya layout + FigureExtractor and
             // appended at the end of each page (Phase 4b end-of-page
@@ -2687,7 +2794,7 @@ public actor PDFToEPUBPipeline {
         pdf: LoadedPDF,
         options: Options,
         stagingDir: URL,
-        pageEngine: ClaudePageOCREngine,
+        pageEngine: any PageOCREngine,
         figureExtractor: FigureExtractor
     ) async throws -> PendingPageOCR {
         try Task.checkCancellation()
