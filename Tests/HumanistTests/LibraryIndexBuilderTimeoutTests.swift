@@ -89,6 +89,46 @@ final class LibraryIndexBuilderTimeoutTests: XCTestCase {
         )
     }
 
+    /// Regression: when the OUTER caller's Task is cancelled (the
+    /// user-clicks-Cancel path), `runWithTimeout` must unstick
+    /// immediately rather than waiting for the in-flight operation
+    /// to naturally finish. Pre-fix, the unstructured work-Task's
+    /// `value` await silently ignored the outer cancellation; the
+    /// indexer would freeze on a stuck book until its own watchdog
+    /// fired (minutes for a large EPUB). The
+    /// `withTaskCancellationHandler` plumbing inside the helper
+    /// is what makes Cancel actually responsive — assert that
+    /// here so a future refactor can't quietly regress it.
+    func test_runWithTimeout_propagates_outer_task_cancellation() async {
+        let started = Date()
+        let outer = Task<Void, Error> {
+            try await LibraryIndexBuilder.runWithTimeout(
+                seconds: 600  // 10 minutes — comfortably longer than the test
+            ) { @Sendable () async throws -> Void in
+                // Long sleep that respects cooperative cancellation.
+                try await Task.sleep(nanoseconds: 600 * 1_000_000_000)
+            }
+        }
+        // Give the inner work a moment to start.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        outer.cancel()
+        do {
+            try await outer.value
+            XCTFail("Expected outer-cancelled task to throw")
+        } catch is CancellationError {
+            // Expected — outer's cancellation was forwarded into
+            // the work task; work bailed via cooperative cancel;
+            // runWithTimeout re-threw CancellationError so the
+            // outer loop can break on this signal.
+        } catch {
+            XCTFail("Wrong error type: \(error)")
+        }
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started), 5.0,
+            "Outer cancel must unstick the helper within seconds, not wait for the inner operation to finish"
+        )
+    }
+
     // MARK: - smart timeout sizing
 
     /// Tiny EPUB → base ceiling. The base is generous enough to

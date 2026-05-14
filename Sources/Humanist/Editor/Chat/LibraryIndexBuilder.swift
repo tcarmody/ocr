@@ -67,7 +67,7 @@ final class LibraryIndexBuilder: ObservableObject {
     /// 50MB scanned-book monster gets enough slack to legitimately
     /// finish. Exposed as a closure so tests can substitute a
     /// constant (e.g. 0.05s) without poking at file sizes.
-    var perBookTimeout: (LibraryEntry) -> TimeInterval =
+    var perBookTimeout: @Sendable (LibraryEntry) -> TimeInterval =
         LibraryIndexBuilder.smartTimeout(for:)
 
     /// Default smart-timeout: `60s base + 10s per MB of EPUB`,
@@ -129,7 +129,15 @@ final class LibraryIndexBuilder: ObservableObject {
                 : "Indexing library books"
         )
         let timeoutFor = perBookTimeout
-        task = Task { [weak self] in
+        // Detached on purpose. `Task { … }` from a @MainActor class
+        // inherits the main-actor isolation, which would pin the
+        // synchronous heavy steps (EPUB unzip, paragraph extraction,
+        // sidecar serialize) to the main thread. With those running
+        // on main, the Cancel button can't even repaint between
+        // books, never mind register a click. Detaching pushes the
+        // loop onto the cooperative thread pool; UI updates hop
+        // back via the existing `await MainActor.run` blocks.
+        task = Task.detached(priority: .userInitiated) { [weak self] in
             for (idx, entry) in snapshot.enumerated() {
                 if Task.isCancelled { break }
                 await MainActor.run {
@@ -228,7 +236,24 @@ final class LibraryIndexBuilder: ObservableObject {
         defer { watchdog.cancel() }
 
         do {
-            return try await work.value
+            // `withTaskCancellationHandler` is load-bearing for the
+            // user's Cancel button. Without it, an unstructured
+            // `Task<>` doesn't pick up cancellation from the
+            // enclosing task — so when the indexer's outer Task is
+            // cancelled, `work.value` keeps blocking until the work
+            // task naturally finishes (which, on a stuck book, is
+            // the entire problem we set out to fix). The onCancel
+            // handler runs synchronously when the outer task is
+            // cancelled and forwards the signal into the work +
+            // watchdog tasks; the cooperative awaits inside the
+            // build pipeline then bail, work.value throws, and the
+            // outer indexer loop can break.
+            return try await withTaskCancellationHandler {
+                try await work.value
+            } onCancel: {
+                work.cancel()
+                watchdog.cancel()
+            }
         } catch is CancellationError {
             // Distinguish "user clicked Cancel on the outer Task"
             // from "watchdog cancelled this book." The outer-task
