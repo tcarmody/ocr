@@ -430,13 +430,20 @@ final class LibraryStore: ObservableObject {
     /// per-entry bulk save — at library scale on an iCloud catalog
     /// that doubled the perceived hang time.
     private var pendingAuxiliarySave: Bool = false
+    /// Nesting depth for `beginBulkUpdate` / `endBulkUpdate`. The
+    /// first begin snapshots; every subsequent begin just bumps
+    /// the counter; only the outermost end (depth → 0) commits +
+    /// saves. Without this, an inner end inside e.g. `remove(_:)`
+    /// would fire its own save *during* an outer bulk window —
+    /// in the dedupe-Apply path that produced ~60 catalog writes
+    /// per Apply on an iCloud-synced library and hung the UI for
+    /// minutes.
+    private var bulkDepth: Int = 0
 
     /// True iff we're currently inside a bulk-update window.
     /// Mutators consult this to decide whether to save inline or
     /// defer the save until `endBulkUpdate()`.
-    private var isInBulkUpdate: Bool {
-        pendingEntries != nil || pendingCollections != nil
-    }
+    private var isInBulkUpdate: Bool { bulkDepth > 0 }
 
     /// Begin a bulk-update window. Callers MUST pair this with
     /// `endBulkUpdate()` on every exit path (success, cancellation,
@@ -444,8 +451,10 @@ final class LibraryStore: ObservableObject {
     /// recommended idiom is `defer { library.endBulkUpdate() }`
     /// at the top of the bulk loop. Nested begin/end pairs share
     /// the same buffer — the first begin snapshots, subsequent
-    /// begins are no-ops; only the outermost end commits.
+    /// begins just bump the depth counter; only the outermost
+    /// end (depth back to 0) commits + saves.
     func beginBulkUpdate() {
+        bulkDepth += 1
         if pendingEntries == nil {
             pendingEntries = entries
         }
@@ -457,9 +466,14 @@ final class LibraryStore: ObservableObject {
     /// Commit pending mutations from the bulk window. Fires a
     /// single @Published republish on `entries` and on
     /// `collections` (if either was staged) and a single save() to
-    /// disk. Safe to call when not in bulk mode — it's a no-op
-    /// then. Idempotent on re-call within the same bulk.
+    /// disk. Inner ends (depth > 0 after decrement) are no-ops so
+    /// the outer window keeps its staging buffer; only the
+    /// outermost end actually commits. Safe to call when not in
+    /// bulk mode — it's a no-op then.
     func endBulkUpdate() {
+        guard bulkDepth > 0 else { return }
+        bulkDepth -= 1
+        guard bulkDepth == 0 else { return }
         var didStage = false
         if let pendingE = pendingEntries {
             pendingEntries = nil
@@ -476,6 +490,20 @@ final class LibraryStore: ObservableObject {
             didStage = true
         }
         if didStage { save() }
+    }
+
+    /// Save inline, or set the auxiliary-save flag and defer to
+    /// `endBulkUpdate()` if we're inside a bulk window. Used by
+    /// mutators that touch state outside the entries/collections
+    /// staging buffers (rejected hashes, claims, collection-list
+    /// edits) to participate in the bulk window's "save once"
+    /// guarantee.
+    private func saveOrDefer() {
+        if isInBulkUpdate {
+            pendingAuxiliarySave = true
+        } else {
+            save()
+        }
     }
 
     /// Route a closure-shaped mutation against either the staged
@@ -495,7 +523,7 @@ final class LibraryStore: ObservableObject {
             return op(&pendingEntries!)
         }
         let result = op(&entries)
-        save()
+        saveOrDefer()
         return result
     }
 
@@ -514,7 +542,7 @@ final class LibraryStore: ObservableObject {
             return op(&pendingCollections!)
         }
         let result = op(&collections)
-        save()
+        saveOrDefer()
         return result
     }
 
@@ -716,11 +744,7 @@ final class LibraryStore: ObservableObject {
         let before = rejectedSourceHashes
         rejectedSourceHashes.formUnion(nonEmpty)
         guard rejectedSourceHashes != before else { return }
-        if isInBulkUpdate {
-            pendingAuxiliarySave = true
-        } else {
-            save()
-        }
+        saveOrDefer()
     }
 
     /// Reverse of `markSourcesRejected` — used by tests + a future
@@ -730,11 +754,7 @@ final class LibraryStore: ObservableObject {
         let before = rejectedSourceHashes
         rejectedSourceHashes.subtract(hashes)
         guard rejectedSourceHashes != before else { return }
-        if isInBulkUpdate {
-            pendingAuxiliarySave = true
-        } else {
-            save()
-        }
+        saveOrDefer()
     }
 
     /// True if `hash` corresponds to a source the scanner should
@@ -806,7 +826,7 @@ final class LibraryStore: ObservableObject {
             // any reaping we did even though we couldn't claim.
             if workingClaims != claims {
                 claims = workingClaims
-                save()
+                saveOrDefer()
             }
             return .heldByOther(blocker)
         }
@@ -814,7 +834,7 @@ final class LibraryStore: ObservableObject {
             sourceHash: hash, hostName: hostName, claimedAt: now
         ))
         claims = workingClaims
-        save()
+        saveOrDefer()
         return .claimed
     }
 
@@ -824,7 +844,7 @@ final class LibraryStore: ObservableObject {
     func releaseClaim(hash: String, hostName: String) {
         let before = claims.count
         claims.removeAll { $0.sourceHash == hash && $0.hostName == hostName }
-        if claims.count != before { save() }
+        if claims.count != before { saveOrDefer() }
     }
 
     /// Drop every claim older than `freshness`. Called on app
@@ -840,7 +860,7 @@ final class LibraryStore: ObservableObject {
         let before = claims.count
         claims.removeAll { $0.claimedAt < cutoff }
         let dropped = before - claims.count
-        if dropped > 0 { save() }
+        if dropped > 0 { saveOrDefer() }
         return dropped
     }
 
@@ -917,22 +937,25 @@ final class LibraryStore: ObservableObject {
             bookIDs: bookIDs.filter { live.contains($0) },
             createdAt: Date()
         )
-        collections.append(collection)
-        save()
+        mutateCollections { collections in
+            collections.append(collection)
+        }
         return collection
     }
 
     func renameCollection(_ id: UUID, to name: String) {
-        guard let idx = collections.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        collections[idx].name = trimmed
-        save()
+        mutateCollections { collections in
+            guard let idx = collections.firstIndex(where: { $0.id == id }) else { return }
+            collections[idx].name = trimmed
+        }
     }
 
     func deleteCollection(_ id: UUID) {
-        collections.removeAll { $0.id == id }
-        save()
+        mutateCollections { collections in
+            collections.removeAll { $0.id == id }
+        }
     }
 
     /// Append `bookIDs` to `collectionID`'s membership. Duplicates
@@ -940,14 +963,15 @@ final class LibraryStore: ObservableObject {
     /// missing entries are dropped. Order is preserved: existing
     /// members stay first, new ones appended in input order.
     func addToCollection(_ collectionID: UUID, bookIDs: [UUID]) {
-        guard let idx = collections.firstIndex(where: { $0.id == collectionID })
-        else { return }
         let live = Set(entries.map(\.id))
-        let existing = Set(collections[idx].bookIDs)
-        let additions = bookIDs.filter { live.contains($0) && !existing.contains($0) }
-        guard !additions.isEmpty else { return }
-        collections[idx].bookIDs.append(contentsOf: additions)
-        save()
+        mutateCollections { collections in
+            guard let idx = collections.firstIndex(where: { $0.id == collectionID })
+            else { return }
+            let existing = Set(collections[idx].bookIDs)
+            let additions = bookIDs.filter { live.contains($0) && !existing.contains($0) }
+            guard !additions.isEmpty else { return }
+            collections[idx].bookIDs.append(contentsOf: additions)
+        }
     }
 
     /// Wholesale replace the collections list. Used exclusively
@@ -956,18 +980,17 @@ final class LibraryStore: ObservableObject {
     /// caller composes the desired final list and hands it back
     /// here in one shot). No partial-state intermediate save.
     func replaceCollections(_ newCollections: [BookCollection]) {
-        collections = newCollections
-        save()
+        mutateCollections { collections in
+            collections = newCollections
+        }
     }
 
     func removeFromCollection(_ collectionID: UUID, bookIDs: [UUID]) {
-        guard let idx = collections.firstIndex(where: { $0.id == collectionID })
-        else { return }
         let drop = Set(bookIDs)
-        let before = collections[idx].bookIDs.count
-        collections[idx].bookIDs.removeAll { drop.contains($0) }
-        if collections[idx].bookIDs.count != before {
-            save()
+        mutateCollections { collections in
+            guard let idx = collections.firstIndex(where: { $0.id == collectionID })
+            else { return }
+            collections[idx].bookIDs.removeAll { drop.contains($0) }
         }
     }
 

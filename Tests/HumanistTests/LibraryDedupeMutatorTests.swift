@@ -260,6 +260,77 @@ final class LibraryDedupeMutatorTests: XCTestCase {
         XCTAssertTrue(reopened.isSourceHashKnownOrRejected("inside-bulk-hash"))
     }
 
+    /// Nested begin/endBulkUpdate pairs only commit when the
+    /// outermost one ends. This is the regression that hung the
+    /// dedupe Apply flow: the no-counter version committed + saved
+    /// on every inner end, so an N-entry Apply incurred N+1 saves
+    /// to iCloud-Drive `library.json`.
+    func test_nestedBulkUpdate_only_commits_at_outermost_end() {
+        let store = makeStore()
+        let a = makeEPUBStub(name: "a")
+        store.recordConversion(epubURL: a, title: "A", languages: ["en"])
+        let aID = store.entries[0].id
+
+        store.beginBulkUpdate()              // depth 1
+        store.beginBulkUpdate()              // depth 2
+
+        // Inner remove() begins+ends internally — depth 2→3→2.
+        // Without the counter, the inner end would write to disk
+        // here, exactly the hang shape.
+        store.remove(aID)
+        // While the outer window is still open, a fresh reader of
+        // the catalog on disk must NOT see the removal yet — proves
+        // nothing has been written.
+        let midRead = LibraryStore(
+            storeURL: tempDir.appendingPathComponent("library.json")
+        )
+        XCTAssertEqual(midRead.entries.count, 1,
+            "Catalog on disk should still hold the pre-bulk state")
+
+        store.endBulkUpdate()                // depth 1, no commit
+        let afterInner = LibraryStore(
+            storeURL: tempDir.appendingPathComponent("library.json")
+        )
+        XCTAssertEqual(afterInner.entries.count, 1,
+            "Inner end must not flush to disk")
+
+        store.endBulkUpdate()                // depth 0, commits
+        let afterOuter = LibraryStore(
+            storeURL: tempDir.appendingPathComponent("library.json")
+        )
+        XCTAssertEqual(afterOuter.entries.count, 0,
+            "Outer end finally writes the staged removal")
+    }
+
+    /// addToCollection inside an outer bulk window must land in the
+    /// staging buffer, not overwrite-stomp pendingCollections at
+    /// commit time. The dedupe Apply path calls remove() (which
+    /// mutates pendingCollections to drop refs) followed by
+    /// addToCollection (to reassign the canonical to the same
+    /// collection). Pre-fix, the direct-`collections` mutation was
+    /// silently discarded when endBulkUpdate committed the staged
+    /// pendingCollections back over it.
+    func test_addToCollection_inside_bulk_window_persists() {
+        let store = makeStore()
+        let canonical = makeEPUBStub(name: "canonical")
+        let dup = makeEPUBStub(name: "dup")
+        store.recordConversion(epubURL: canonical, title: "Canonical", languages: ["en"])
+        store.recordConversion(epubURL: dup, title: "Dup", languages: ["en"])
+        let canonicalID = store.entries.first { $0.title == "Canonical" }!.id
+        let dupID = store.entries.first { $0.title == "Dup" }!.id
+        let collection = store.createCollection(name: "Reading", bookIDs: [dupID])
+
+        store.beginBulkUpdate()
+        store.remove(dupID)                                       // drops dup from collection
+        store.addToCollection(collection.id, bookIDs: [canonicalID])
+        store.endBulkUpdate()
+
+        let reopened = makeStore()
+        let live = reopened.collections.first { $0.id == collection.id }
+        XCTAssertEqual(live?.bookIDs, [canonicalID],
+            "Canonical must be present in the reading collection after commit")
+    }
+
     func test_rejectedSourceHashes_survive_entry_removal() {
         // The whole point of the rejection signal: it has to survive
         // entry deletion so the auto-scanner doesn't re-pick-up the
