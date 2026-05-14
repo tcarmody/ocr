@@ -152,6 +152,25 @@ struct LibraryWindowView: View {
     @StateObject private var duplicateReviewModel = DuplicateReviewModel()
     @State private var showDuplicateReview: Bool = false
 
+    /// R-Library-Export. Drives the "Export Selected Books…" flow:
+    /// `NSOpenPanel` for destination, then `LibraryExporter` copies
+    /// each entry as `Author - Title.epub` (or just `Title.epub`
+    /// when no author). @StateObject decouples per-book progress
+    /// publishes from the parent window's render path — same
+    /// rationale as `importer` / `indexBuilder`.
+    @StateObject private var exporter = LibraryExporter()
+    @State private var showExportProgress: Bool = false
+    /// Surfaced when the user invokes export with an empty selection.
+    /// Commands can't observe per-window selection state, so the
+    /// menu item is always live and the validity check happens in
+    /// the Library window's listener.
+    @State private var exportEmptySelectionAlert: Bool = false
+    /// Surfaced when the destination picker or copy fails outright
+    /// (sandbox denial, disk full). Per-file failures land in
+    /// `exporter.failed` and surface in the progress sheet's done
+    /// summary instead.
+    @State private var exportError: String?
+
     /// R-Library-Rescan. Pending rescan confirmation: the user
     /// asked to re-OCR an existing catalog row. Carries the
     /// resolved source PDF + the entry's EPUB so the confirmation
@@ -278,6 +297,28 @@ struct LibraryWindowView: View {
                 for: .humanistDetectDuplicatesRequested
             )) { _ in
                 startDuplicateReview()
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .humanistExportLibraryRequested
+            )) { _ in
+                startExport(targets: selectedEntries)
+            }
+            .alert("Select books to export",
+                   isPresented: $exportEmptySelectionAlert) {
+                Button("OK", role: .cancel) {
+                    exportEmptySelectionAlert = false
+                }
+            } message: {
+                Text("Choose one or more books in the library list, then run File → Export Selected Books… again.")
+            }
+            .alert("Export failed",
+                   isPresented: Binding(
+                       get: { exportError != nil },
+                       set: { if !$0 { exportError = nil } }
+                   )) {
+                Button("OK", role: .cancel) { exportError = nil }
+            } message: {
+                Text(exportError ?? "")
             }
     }
 
@@ -510,6 +551,24 @@ struct LibraryWindowView: View {
                     showClassifyProgress = false
                 },
                 onDismiss: { showClassifyProgress = false }
+            )
+        }
+        .sheet(isPresented: $showExportProgress) {
+            AsyncWorkProgressSheet(
+                workingIcon: "square.and.arrow.up",
+                workingTitle: "Exporting Books…",
+                doneTitle: "Export Complete",
+                noopMessage: "Nothing to export — the selection was empty.",
+                progressLabel: { c, t in "Book \(c) of \(t)" },
+                doneSummary: { _, _ in exportDoneSummary },
+                current: exporter.current,
+                total: exporter.total,
+                done: exporter.done,
+                onCancel: {
+                    exporter.cancel()
+                    showExportProgress = false
+                },
+                onDismiss: { showExportProgress = false }
             )
         }
         .sheet(isPresented: $showRefreshProgress) {
@@ -820,6 +879,18 @@ struct LibraryWindowView: View {
         return [entry]
     }
 
+    /// Same Finder-style selection adoption as `removalTargets`,
+    /// reused by the row context menu's Export entry. Kept distinct
+    /// from the removal-side helper so future changes (e.g. export
+    /// excluding sample chapters, etc.) don't ripple into the
+    /// removal flow.
+    private func exportTargets(for entry: LibraryEntry) -> [LibraryEntry] {
+        if selection.contains(entry.id) {
+            return selectedEntries
+        }
+        return [entry]
+    }
+
     /// Execute the staged removal. Always detaches the entries from
     /// every collection and forgets them from the catalog. When the
     /// user picked "Move to Trash," also recycles the .epub file via
@@ -1111,6 +1182,65 @@ struct LibraryWindowView: View {
         Task {
             await duplicateReviewModel.startDetection(entries: entries)
         }
+    }
+
+    /// R-Library-Export. Validates the selection, picks a destination
+    /// folder, then hands the run off to `LibraryExporter`. Called
+    /// from both the File menu (operates on `selectedEntries`) and
+    /// the row context menu (passes `[entry]` or the selection
+    /// depending on Finder-style adoption rules).
+    private func startExport(targets: [LibraryEntry]) {
+        guard !targets.isEmpty else {
+            exportEmptySelectionAlert = true
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Export Selected Books"
+        panel.message = targets.count == 1
+            ? "Choose a folder. The selected book will be copied there as ‘Author - Title.epub’."
+            : "Choose a folder. The \(targets.count) selected books will be copied there as ‘Author - Title.epub’."
+        panel.prompt = "Export"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK,
+              let destination = panel.url
+        else { return }
+        showExportProgress = true
+        exporter.start(entries: targets, destination: destination)
+    }
+
+    /// Honest done-state copy for the export sheet — three buckets
+    /// (copied / skipped / failed) so the user sees exactly what
+    /// landed in the destination. Skipped + failed get truncated
+    /// lists so the sheet stays readable on a 200-book run.
+    private var exportDoneSummary: String {
+        let c = exporter.copied
+        let sk = exporter.skipped
+        let fl = exporter.failed
+        var lines: [String] = []
+        if c > 0 {
+            lines.append(
+                "Copied \(c) book\(c == 1 ? "" : "s") to the destination folder."
+            )
+        } else if sk.isEmpty, fl.isEmpty {
+            lines.append("No books were exported.")
+        }
+        if !sk.isEmpty {
+            let head = sk.prefix(3).joined(separator: ", ")
+            let tail = sk.count > 3 ? " and \(sk.count - 3) more" : ""
+            lines.append(
+                "Skipped \(sk.count) (already in destination): \(head)\(tail)."
+            )
+        }
+        if !fl.isEmpty {
+            let head = fl.prefix(3)
+                .map { "\($0.0) — \($0.1)" }
+                .joined(separator: "; ")
+            let tail = fl.count > 3 ? "; and \(fl.count - 3) more" : ""
+            lines.append("Failed \(fl.count): \(head)\(tail).")
+        }
+        return lines.joined(separator: "\n\n")
     }
 
     private func startBulkIndex(forceRebuild: Bool = false) {
@@ -1767,6 +1897,14 @@ struct LibraryWindowView: View {
             Button("Remove from \(collection.name)") {
                 library.removeFromCollection(collection.id, bookIDs: [entry.id])
             }
+        }
+        Divider()
+        let exportRowTargets = exportTargets(for: entry)
+        let exportLabel = exportRowTargets.count > 1
+            ? "Export \(exportRowTargets.count) Books…"
+            : "Export…"
+        Button(exportLabel) {
+            startExport(targets: exportRowTargets)
         }
         Divider()
         let removeTargets = removalTargets(for: entry)

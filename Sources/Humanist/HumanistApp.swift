@@ -276,8 +276,7 @@ private struct FileOpenCommands: Commands {
             ConvertCommand()
             ImportEPUBCommand()
             UpdateLibraryCommand()
-            DetectDuplicatesCommand()
-            RestoreLibraryCatalogCommand()
+            LibraryMaintenanceCommands()
             Divider()
             SplitTwoUpCommand()
             Divider()
@@ -520,6 +519,40 @@ private struct UpdateLibraryCommand: View {
                 name: .humanistUpdateLibraryRequested, object: nil
             )
         }
+    }
+}
+
+/// Library-maintenance commands that group naturally in the File
+/// menu: detect duplicates, export selected books, restore the
+/// catalog from a snapshot. Wrapped in a sub-View so the parent
+/// `FileOpenCommands` body stays under SwiftUI's @CommandsBuilder
+/// 10-element cap; see `feedback_swiftui_commandsbuilder_cap`.
+private struct LibraryMaintenanceCommands: View {
+    var body: some View {
+        DetectDuplicatesCommand()
+        ExportSelectedBooksCommand()
+        RestoreLibraryCatalogCommand()
+    }
+}
+
+/// Reveal the Library window and post an export request. The
+/// Library window's `.onReceive` opens an `NSOpenPanel` for the
+/// destination folder, then drives `LibraryExporter` against the
+/// current row selection. Disabled by `EnvironmentObject` plumbing
+/// on the Library window — the menu item itself is always live
+/// because Commands can't @FocusedBinding to per-window selection
+/// state. When the user invokes it with an empty selection, the
+/// Library window shows an inline alert explaining the requirement.
+private struct ExportSelectedBooksCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Export Selected Books…") {
+            openWindow(id: "library")
+            NotificationCenter.default.post(
+                name: .humanistExportLibraryRequested, object: nil
+            )
+        }
+        .keyboardShortcut("e", modifiers: [.command, .shift])
     }
 }
 
@@ -784,5 +817,14 @@ extension Notification.Name {
     /// maintenance commands.
     static let humanistDetectDuplicatesRequested = Notification.Name(
         "humanistDetectDuplicatesRequested"
+    )
+
+    /// Posted by File → Export Selected Books… (⇧⌘E); the Library
+    /// window's listener pops `NSOpenPanel` to pick a destination
+    /// folder, then runs `LibraryExporter` against the row
+    /// selection. Same notification-routed pattern as the other
+    /// library-maintenance commands.
+    static let humanistExportLibraryRequested = Notification.Name(
+        "humanistExportLibraryRequested"
     )
 }
