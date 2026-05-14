@@ -598,7 +598,7 @@ public actor PDFToEPUBPipeline {
             return makeClaudePageOCREngine(
                 options: options, budget: budget, captureSink: captureSink
             )
-        case .gemini25Flash:
+        case .gemini25Flash, .gemini3FlashPreview:
             guard options.processingMode == .cloud,
                   let key = options.geminiAPIKeyProvider(),
                   !key.isEmpty
@@ -610,10 +610,25 @@ public actor PDFToEPUBPipeline {
                     options: options, budget: budget, captureSink: captureSink
                 )
             }
+            // Pin `thinking_level: minimal` for 3 Flash since OCR
+            // doesn't benefit from reasoning and any thinking inflates
+            // output tokens. 2.5 Flash has no thinking config; leave nil.
+            let modelId: String
+            let thinking: String?
+            switch options.pageOCRProvider {
+            case .gemini3FlashPreview:
+                modelId = "gemini-3-flash-preview"
+                thinking = "minimal"
+            default:
+                modelId = "gemini-2.5-flash"
+                thinking = nil
+            }
             return GeminiPageOCREngine(
                 apiKeyProvider: { key },
                 budget: budget,
-                captureSink: captureSink
+                model: modelId,
+                captureSink: captureSink,
+                thinkingLevel: thinking
             )
         }
     }

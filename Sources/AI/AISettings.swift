@@ -17,6 +17,14 @@ import Foundation
 public enum PageOCRProvider: String, Sendable, Codable, Equatable, CaseIterable {
     case claude
     case gemini25Flash
+    /// Gemini 3 Flash preview — newer than 2.5 Flash, but **preview**
+    /// status (API id `gemini-3-flash-preview`). Adds Pro-tier
+    /// reasoning at Flash latency, ~25% more expensive on input and
+    /// ~20% more on output than 2.5 Flash. `thinking_level` is pinned
+    /// to `minimal` for OCR — transcription doesn't benefit from
+    /// reasoning and would otherwise inflate output token count.
+    /// Opt-in: 2.5 Flash stays default until 3 Flash hits GA.
+    case gemini3FlashPreview
 }
 
 public struct AISettings: Sendable, Codable, Equatable {

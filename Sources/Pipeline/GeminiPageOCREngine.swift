@@ -22,7 +22,7 @@ import OCR
 /// budget is shared via `ClaudeCallBudget` (the name is the existing
 /// generic LLM budget; cost cap applies across providers).
 public struct GeminiPageOCREngine: PageOCREngine, Sendable {
-    public var providerId: String { "gemini-2.5-flash" }
+    public var providerId: String { model }
 
     public let apiKeyProvider: @Sendable () -> String?
     public let budget: ClaudeCallBudget
@@ -31,6 +31,14 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
     public var captureSink: ClaudePageOCREngine.CaptureSink?
     public var baseURL: URL
     public var requestTimeout: TimeInterval
+    /// Optional `thinking_level` value passed under `thinkingConfig`
+    /// in the generation config. Gemini 3 Flash and newer reasoning
+    /// models default to non-zero thinking, which inflates output
+    /// token count without helping pure transcription. Pin to
+    /// `"minimal"` for OCR. Nil for 2.5 Flash (no reasoning to
+    /// disable; field is ignored / would fail validation on older
+    /// models).
+    public var thinkingLevel: String?
 
     public init(
         apiKeyProvider: @escaping @Sendable () -> String?,
@@ -39,7 +47,8 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
         maxOutputTokens: Int = 8192,
         captureSink: ClaudePageOCREngine.CaptureSink? = nil,
         baseURL: URL = URL(string: "https://generativelanguage.googleapis.com")!,
-        requestTimeout: TimeInterval = 120
+        requestTimeout: TimeInterval = 120,
+        thinkingLevel: String? = nil
     ) {
         self.apiKeyProvider = apiKeyProvider
         self.budget = budget
@@ -48,6 +57,7 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
         self.captureSink = captureSink
         self.baseURL = baseURL
         self.requestTimeout = requestTimeout
+        self.thinkingLevel = thinkingLevel
     }
 
     public enum PageOCRError: Error, LocalizedError {
@@ -140,7 +150,10 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
             ],
             generationConfig: GenerationConfig(
                 maxOutputTokens: maxOutputTokens,
-                temperature: 0.1
+                temperature: 0.1,
+                thinkingConfig: thinkingLevel.map {
+                    ThinkingConfig(thinkingLevel: $0)
+                }
             )
         )
 
@@ -194,12 +207,15 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
         }
 
         if let usage = envelope.usageMetadata {
+            // Attribute usage to the actual model so cost rolls up
+            // correctly when the user picks 3 Flash preview (different
+            // rates from 2.5 Flash).
             await budget.recordUsage(
                 Usage(
                     inputTokens: usage.promptTokenCount ?? 0,
                     outputTokens: usage.candidatesTokenCount ?? 0
                 ),
-                for: .gemini25Flash
+                for: AnthropicModel(rawValue: model)
             )
         }
 
@@ -384,6 +400,33 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
     private struct GenerationConfig: Encodable {
         let maxOutputTokens: Int
         let temperature: Double
+        let thinkingConfig: ThinkingConfig?
+
+        enum CodingKeys: String, CodingKey {
+            case maxOutputTokens, temperature
+            case thinkingConfig
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(maxOutputTokens, forKey: .maxOutputTokens)
+            try c.encode(temperature, forKey: .temperature)
+            // Only emit `thinkingConfig` when set — sending it on
+            // models that don't support `thinking_level` (e.g. 2.5
+            // Flash) would fail request validation.
+            if let t = thinkingConfig {
+                try c.encode(t, forKey: .thinkingConfig)
+            }
+        }
+    }
+
+    /// `generationConfig.thinkingConfig` for Gemini 3-series reasoning
+    /// models. `thinkingLevel` accepts `"minimal"` / `"low"` /
+    /// `"medium"` / `"high"`; `"minimal"` matches the "no thinking"
+    /// posture and minimizes both latency and output token count for
+    /// pure-transcription tasks.
+    private struct ThinkingConfig: Encodable {
+        let thinkingLevel: String
     }
 
     private struct ResponseBody: Decodable {

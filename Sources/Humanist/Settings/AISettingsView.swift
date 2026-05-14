@@ -57,13 +57,16 @@ struct AISettingsView: View {
                             .tag(PageOCRProvider.claude)
                         Text("Gemini 2.5 Flash (lower cost)")
                             .tag(PageOCRProvider.gemini25Flash)
+                        Text("Gemini 3 Flash (preview)")
+                            .tag(PageOCRProvider.gemini3FlashPreview)
                     }
                     .pickerStyle(.radioGroup)
-                    Text("Selects the model that converts each rendered page into structured XHTML when Claude OCR / Early-print mode is on at the launcher. Gemini 2.5 Flash runs ~7–10× cheaper per page with comparable quality on typeset prose; Sonnet still wins on dense academic layouts and unusual scripts. Manuscript mode always uses Claude Opus regardless of this setting.")
+                    Text("Selects the model that converts each rendered page into structured XHTML when Claude OCR / Early-print mode is on at the launcher. Gemini 2.5 Flash runs ~7–10× cheaper per page than Sonnet with comparable quality on typeset prose. Gemini 3 Flash is the newer preview with Pro-tier reasoning (thinking pinned to minimal for transcription); ~25–67% more expensive than 2.5 Flash and preview status means the API can change without notice. Manuscript mode always uses Claude Opus regardless of this setting.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    if vm.settings.pageOCRProvider == .gemini25Flash {
+                    if vm.settings.pageOCRProvider == .gemini25Flash
+                        || vm.settings.pageOCRProvider == .gemini3FlashPreview {
                         geminiKeyEntryRow
                     }
                 }
