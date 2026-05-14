@@ -1573,6 +1573,15 @@ struct LibraryWindowView: View {
                 }
             }
         }
+        // ContentUnavailableView doesn't claim available space on
+        // its own inside an HSplitView column — without this, the
+        // center column collapses to the icon+text intrinsic height
+        // and drags the sidebar + chat panes down with it (HSplitView
+        // sizes to its tallest child, which becomes the empty state
+        // itself once the table goes away). Forces the empty state
+        // to fill so the surrounding panes keep their height when
+        // the user types a no-match search.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func emptyStateTitle(
