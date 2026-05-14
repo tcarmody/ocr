@@ -25,4 +25,53 @@ public protocol PageOCREngine: Sendable {
         pageIndex: Int,
         languages: [BCP47]
     ) async throws -> ClaudePageResult
+
+    /// Classify a thrown error into a `ProviderStatus`. Lets the
+    /// pipeline distinguish refusals from API errors from
+    /// budget-exhaustion when aggregating refusal-rate stats —
+    /// the runner sees `any Error` from `recognize` and asks the
+    /// active engine to bucket it. Default impl returns
+    /// `.apiError` for anything unrecognized.
+    func classify(error: any Error) -> ProviderStatus
+}
+
+public extension PageOCREngine {
+    func classify(error: any Error) -> ProviderStatus {
+        if error is CancellationError { return .canceled }
+        return .apiError
+    }
+}
+
+/// What the page-OCR provider did with one page. Drives refusal-rate
+/// reporting in `ConversionStats` and the page-OCR debug-log header.
+/// Orthogonal to the "did Vision back-fill empty results" question —
+/// `PendingPageOCR` tracks both: the provider's status (this enum) and
+/// `usedLocalFallback` for the post-failure backfill.
+public enum ProviderStatus: String, Sendable, Equatable, Codable {
+    /// Provider returned parseable blocks. Vision fallback didn't fire.
+    case succeeded
+    /// Provider explicitly refused (Anthropic `stop_reason: refusal`,
+    /// Gemini `finishReason: SAFETY` / `RECITATION`). The single
+    /// stat most users want — recurring refusals on book content
+    /// usually mean a content-policy mismatch worth investigating
+    /// (copyrighted passages, sensitive content) rather than a bug.
+    case refused
+    /// Provider returned without refusal but with no parseable text.
+    /// Different from refusal — usually a model hiccup rather than a
+    /// policy decision; commonly recovers on retry.
+    case empty
+    /// HTTP / network / decode error. Includes Anthropic 5xx, Gemini
+    /// non-2xx, decode failures, transport errors. Retryable.
+    case apiError
+    /// Per-book Claude call budget exhausted before this page got a
+    /// turn. Tracked separately so the user can distinguish "policy
+    /// refused" from "we capped you."
+    case budgetExhausted
+    /// E-Routing trust verdict skipped the call entirely — embedded
+    /// PDF text was good enough to use. Page contributes to the EPUB
+    /// from embedded extraction; provider was never invoked.
+    case skippedTrustRouted
+    /// Task was canceled (user clicked Stop, app quit, etc.) before
+    /// the call completed.
+    case canceled
 }

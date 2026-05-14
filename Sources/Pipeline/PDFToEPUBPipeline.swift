@@ -1549,9 +1549,14 @@ public actor PDFToEPUBPipeline {
                         } ?? .reocr,
                         qualityScore: nil,
                         extractorDiagnostics: nil,
-                        // Skip checkpoint re-write during assembly
-                        // (already on disk).
-                        sonnetSucceeded: false,
+                        // Resumed from disk — the original call's
+                        // status isn't checkpointed. Treat as
+                        // `.succeeded` since the page made it to
+                        // checkpoint (we only checkpoint successful
+                        // pages); refusal-rate stats ignore resumed
+                        // pages.
+                        pageOCRStatus: .succeeded,
+                        providerId: "",
                         usedLocalFallback: false
                     )
                     pageOCRPendingByIndex[i] = pending
@@ -2294,12 +2299,45 @@ public actor PDFToEPUBPipeline {
         let visionFallback = pageOCRPendingByIndex.values.filter {
             $0.usedLocalFallback
         }.count
+        // Q-Refusal-Rate (2026-05-14): split the fallback bucket by
+        // cause so the user can see refusal rate (the headline) vs
+        // empty responses vs API errors. Page-OCR only; cascade
+        // refusals aren't tracked yet.
+        var refused = 0
+        var emptyResp = 0
+        var apiError = 0
+        var refusedIndices: [Int] = []
+        var providerId = ""
+        for (_, pending) in pageOCRPendingByIndex {
+            if providerId.isEmpty, !pending.providerId.isEmpty {
+                providerId = pending.providerId
+            }
+            switch pending.pageOCRStatus {
+            case .refused:
+                refused += 1
+                refusedIndices.append(pending.pageIndex)
+            case .empty:           emptyResp += 1
+            case .apiError:        apiError += 1
+            case .succeeded, .skippedTrustRouted,
+                 .budgetExhausted, .canceled:
+                break
+            }
+        }
+        refusedIndices.sort()
+        // Cap at 200 indices in the persisted stats — the debug-log
+        // dump carries the full set when the user needs it.
+        let refusedIndicesCapped = Array(refusedIndices.prefix(200))
         return ConversionStats.make(
             elapsed: Date().timeIntervalSince(conversionStart),
             observationsBySource: bySource,
             pagesTrustedEmbeddedText: trusted,
             pagesReOCRd: reocrd,
             pagesUsingVisionFallback: visionFallback,
+            pagesRefused: refused,
+            pagesEmpty: emptyResp,
+            pagesAPIError: apiError,
+            refusedPageIndices: refusedIndicesCapped,
+            pageOCRProviderId: providerId,
             claudeCallCount: claudeCallCount,
             claudeUsageByModel: claudeUsage
         )
@@ -2766,13 +2804,23 @@ public actor PDFToEPUBPipeline {
         let verdict: EmbeddedTextQualityScorer.Verdict
         let qualityScore: EmbeddedTextQualityScorer.Score?
         let extractorDiagnostics: EmbeddedTextExtractor.Diagnostics?
-        let sonnetSucceeded: Bool
-        /// True when Sonnet failed for this page and the local
+        /// What the page-OCR provider did. `.succeeded` means blocks
+        /// came from the provider directly; `.refused` / `.empty` /
+        /// `.apiError` mean the provider failed and (possibly)
+        /// Vision filled in (`usedLocalFallback`).
+        let pageOCRStatus: ProviderStatus
+        /// Which provider was invoked. Empty for trust-routed pages
+        /// (no provider call). "claude" / "gemini-2.5-flash" etc.
+        let providerId: String
+        /// True when the provider failed for this page and the local
         /// Vision-OCR fallback produced blocks instead. Surfaced in
         /// the debug log so the user can see which pages didn't get
-        /// the full Sonnet treatment (typical causes: Anthropic
+        /// the full provider treatment (typical causes: refusal,
         /// content-filter false positives, transient API overload).
         let usedLocalFallback: Bool
+
+        /// Convenience: page-OCR call returned usable content.
+        var sonnetSucceeded: Bool { pageOCRStatus == .succeeded }
     }
 
     /// Process one page through the page-OCR (Sonnet) path. Handles
@@ -2842,7 +2890,8 @@ public actor PDFToEPUBPipeline {
                     verdict: .trust,
                     qualityScore: score,
                     extractorDiagnostics: extracted.diagnostics,
-                    sonnetSucceeded: true,
+                    pageOCRStatus: .skippedTrustRouted,
+                    providerId: pageEngine.providerId,
                     usedLocalFallback: false
                 )
             }
@@ -2877,7 +2926,7 @@ public actor PDFToEPUBPipeline {
 
         var sonnetBlocks: [Block] = []
         var sonnetFootnotes: [Footnote] = []
-        var sonnetSucceeded = false
+        var pageOCRStatus: ProviderStatus = .empty
         var usedLocalFallback = false
         do {
             let result = try await pageEngine.recognize(
@@ -2886,19 +2935,21 @@ public actor PDFToEPUBPipeline {
             )
             sonnetBlocks = result.blocks
             sonnetFootnotes = result.footnotes
-            sonnetSucceeded = true
+            pageOCRStatus = .succeeded
         } catch is CancellationError {
             // Cancel the layout task too before propagating.
             layoutTask.cancel()
             throw CancellationError()
         } catch {
-            // Sonnet failed for this page — refusal, content-filter
+            // Provider failed for this page — refusal, content-filter
             // false positive, transient network/overload error, etc.
-            // Fall back to local Vision OCR so the page contributes
-            // *something* to the EPUB instead of going blank.
-            // Quality is lower than Sonnet but beats an empty page;
-            // the user can always Re-OCR a single page from the
-            // editor if they want to retry Sonnet later.
+            // Classify the error so the refusal-rate stat can bucket
+            // it, then fall back to local Vision OCR so the page
+            // contributes *something* to the EPUB instead of going
+            // blank. Quality is lower than provider output but beats
+            // an empty page; the user can always Re-OCR a single page
+            // from the editor if they want to retry the provider later.
+            pageOCRStatus = pageEngine.classify(error: error)
             let hints = OCRHints(
                 languages: options.languages,
                 quality: options.ocrQuality
@@ -2917,7 +2968,7 @@ public actor PDFToEPUBPipeline {
             } catch {
                 // Vision also failed — leave the page empty. The
                 // claude-pages.txt dump still records the original
-                // Sonnet error so the user can diagnose.
+                // provider error so the user can diagnose.
             }
         }
 
@@ -2939,7 +2990,8 @@ public actor PDFToEPUBPipeline {
             verdict: .reocr,
             qualityScore: routingScore,
             extractorDiagnostics: routingDiagnostics,
-            sonnetSucceeded: sonnetSucceeded,
+            pageOCRStatus: pageOCRStatus,
+            providerId: pageEngine.providerId,
             usedLocalFallback: usedLocalFallback
         )
     }
@@ -3132,30 +3184,31 @@ public actor PDFToEPUBPipeline {
             guard let prep = prepared[pageIndex] else { continue }
             let parsedBlocks: [Block]
             let parsedFootnotes: [Footnote]
-            let success: Bool
+            let status: ProviderStatus
             switch line.result {
             case .succeeded(let msg):
                 await pageEngine.recordBatchUsage(msg.usage)
-                if let parsed = pageEngine.parseBatchMessage(
+                let outcome = pageEngine.parseBatchMessageOutcome(
                     msg, pageIndex: pageIndex
-                ) {
+                )
+                if let parsed = outcome.result {
                     parsedBlocks = parsed.blocks
                     parsedFootnotes = parsed.footnotes
-                    success = true
+                    status = .succeeded
                 } else {
                     parsedBlocks = []
                     parsedFootnotes = []
-                    success = false
+                    status = outcome.status
                 }
             case .refused(let msg):
                 await pageEngine.recordBatchUsage(msg.usage)
                 parsedBlocks = []
                 parsedFootnotes = []
-                success = false
+                status = .refused
             case .errored, .canceled, .expired:
                 parsedBlocks = []
                 parsedFootnotes = []
-                success = false
+                status = .apiError
             }
             // Re-emit a final PendingPageOCR with Sonnet content
             // merged in. Preserves the partial's anchor / bounds /
@@ -3173,7 +3226,8 @@ public actor PDFToEPUBPipeline {
                 verdict: prep.partial.verdict,
                 qualityScore: prep.partial.qualityScore,
                 extractorDiagnostics: prep.partial.extractorDiagnostics,
-                sonnetSucceeded: success,
+                pageOCRStatus: status,
+                providerId: pageEngine.providerId,
                 usedLocalFallback: false
             )
             pendingByIndex[pageIndex] = final
@@ -3224,6 +3278,11 @@ public actor PDFToEPUBPipeline {
                     visionResult.observations
                 )
                 guard !blocks.isEmpty else { continue }
+                // Preserve the original failure status so refusal-rate
+                // stats count this page correctly even though Vision
+                // filled in the body.
+                let priorStatus = pendingByIndex[i]?.pageOCRStatus
+                    ?? .apiError
                 pendingByIndex[i] = PendingPageOCR(
                     pageIndex: prep.partial.pageIndex,
                     anchorId: prep.partial.anchorId,
@@ -3234,7 +3293,8 @@ public actor PDFToEPUBPipeline {
                     verdict: prep.partial.verdict,
                     qualityScore: prep.partial.qualityScore,
                     extractorDiagnostics: prep.partial.extractorDiagnostics,
-                    sonnetSucceeded: false,
+                    pageOCRStatus: priorStatus,
+                    providerId: pageEngine.providerId,
                     usedLocalFallback: true
                 )
             } catch {
@@ -3302,7 +3362,8 @@ public actor PDFToEPUBPipeline {
                     verdict: .trust,
                     qualityScore: score,
                     extractorDiagnostics: extracted.diagnostics,
-                    sonnetSucceeded: true,
+                    pageOCRStatus: .skippedTrustRouted,
+                    providerId: pageEngine.providerId,
                     usedLocalFallback: false
                 )
                 return (i, pending, nil)
@@ -3340,6 +3401,11 @@ public actor PDFToEPUBPipeline {
             pageImage: image, languages: options.languages
         )
 
+        // Placeholder status — Phase C overwrites with the real
+        // result. `.empty` is the right default for "Sonnet entry
+        // built, no response yet"; pages that never get a result
+        // surface as empty (their pending stays at this default
+        // in `dispatchPageOCRViaBatch`'s "didn't show up" fallthrough).
         let partial = PendingPageOCR(
             pageIndex: i,
             anchorId: anchorId,
@@ -3350,7 +3416,8 @@ public actor PDFToEPUBPipeline {
             verdict: .reocr,
             qualityScore: routingScore,
             extractorDiagnostics: routingDiagnostics,
-            sonnetSucceeded: false,
+            pageOCRStatus: .empty,
+            providerId: pageEngine.providerId,
             usedLocalFallback: false
         )
         return (i, partial, request)
@@ -3590,10 +3657,55 @@ public actor PDFToEPUBPipeline {
         _ responses: [ClaudePageOCREngine.CapturedResponse],
         to url: URL
     ) throws {
-        var out = "Claude page-OCR raw responses\n"
-        out += "==============================\n"
-        out += "pages captured: \(responses.count)\n"
-        out += "parsed-empty: \(responses.filter(\.parsedBlocksEmpty).count)\n\n"
+        // Bucket every response into a single status tag for the
+        // header summary. Sentinel-only raw bodies start with "["
+        // (e.g. "[REFUSED]", "[REFUSED: SAFETY]", "[EMPTY]",
+        // "[FINISH: …]", "[API ERROR…]"); everything else is a
+        // model-produced XHTML body.
+        var refused: [Int] = []
+        var empty: [Int] = []
+        var apiError: [Int] = []
+        var succeeded = 0
+        for r in responses {
+            let raw = r.rawXHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+            if raw.hasPrefix("[REFUSED") {
+                refused.append(r.pageIndex)
+            } else if raw.hasPrefix("[EMPTY") || raw.hasPrefix("[FINISH") {
+                empty.append(r.pageIndex)
+            } else if raw.hasPrefix("[API ERROR")
+                || raw.hasPrefix("[SEND FAILED")
+                || raw.hasPrefix("[DECODE FAILED") {
+                apiError.append(r.pageIndex)
+            } else {
+                succeeded += 1
+            }
+        }
+        refused.sort()
+        empty.sort()
+        apiError.sort()
+
+        let total = max(1, responses.count)
+        let refusalPct = Double(refused.count) / Double(total) * 100
+        var out = "Page-OCR raw responses\n"
+        out += "======================\n"
+        out += "pages captured:  \(responses.count)\n"
+        out += "succeeded:       \(succeeded)\n"
+        out += String(format: "refused:         %d (%.1f%%)\n",
+                      refused.count, refusalPct)
+        out += "empty:           \(empty.count)\n"
+        out += "api-error:       \(apiError.count)\n"
+        out += "parsed-empty:    \(responses.filter(\.parsedBlocksEmpty).count)\n"
+        if !refused.isEmpty {
+            let preview = refused.prefix(50)
+                .map { String($0) }
+                .joined(separator: ", ")
+            out += "refused pages:   \(preview)"
+            if refused.count > 50 {
+                out += " (+ \(refused.count - 50) more)"
+            }
+            out += "\n"
+        }
+        out += "\n"
         for r in responses.sorted(by: { $0.pageIndex < $1.pageIndex }) {
             let emptyTag = r.parsedBlocksEmpty ? " (parsed-empty: yes)" : ""
             out += "--- page \(r.pageIndex)\(emptyTag) ---\n"

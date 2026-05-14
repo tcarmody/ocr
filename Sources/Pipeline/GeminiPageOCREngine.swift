@@ -54,7 +54,12 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
         case budgetExhausted
         case missingAPIKey
         case pngEncodeFailed
-        case emptyResponse
+        /// Gemini returned `finishReason: SAFETY` / `RECITATION` /
+        /// other policy-decline reasons with no text parts.
+        case refused
+        /// Response decoded but yielded no text — model hiccup,
+        /// not a refusal.
+        case empty
         case http(status: Int, body: String?)
         case decode(String)
         case underlying(any Error)
@@ -64,11 +69,24 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
             case .budgetExhausted:     return "Per-book call budget exhausted."
             case .missingAPIKey:       return "Missing Google AI Studio API key."
             case .pngEncodeFailed:     return "Could not encode page image as PNG."
-            case .emptyResponse:       return "Gemini returned no text for this page."
+            case .refused:             return "Gemini refused to transcribe this page."
+            case .empty:               return "Gemini returned no text for this page."
             case .http(let s, let b):  return "Gemini HTTP \(s): \(b ?? "")"
             case .decode(let m):       return "Gemini response decode: \(m)"
             case .underlying(let e):   return e.localizedDescription
             }
+        }
+    }
+
+    public func classify(error: any Error) -> ProviderStatus {
+        if error is CancellationError { return .canceled }
+        guard let e = error as? PageOCRError else { return .apiError }
+        switch e {
+        case .budgetExhausted: return .budgetExhausted
+        case .refused:         return .refused
+        case .empty:           return .empty
+        case .missingAPIKey, .pngEncodeFailed, .http, .decode, .underlying:
+            return .apiError
         }
     }
 
@@ -193,9 +211,25 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
         let text = parts.compactMap { $0.text }.joined()
 
         if text.isEmpty {
+            // SAFETY / RECITATION / PROHIBITED_CONTENT are Gemini's
+            // refusal-shaped finish reasons. STOP / MAX_TOKENS / OTHER
+            // with empty text are non-refusal "no output" cases —
+            // classify as empty so the refusal-rate stat stays clean.
+            let refusalReasons: Set<String> = [
+                "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"
+            ]
+            let upper = finishReason.uppercased()
+            if refusalReasons.contains(upper) {
+                capture(
+                    pageIndex: pageIndex,
+                    raw: "[REFUSED: \(finishReason)]",
+                    parseEmpty: true
+                )
+                throw PageOCRError.refused
+            }
             let marker = finishReason.isEmpty ? "[EMPTY]" : "[FINISH: \(finishReason)]"
             capture(pageIndex: pageIndex, raw: marker, parseEmpty: true)
-            throw PageOCRError.emptyResponse
+            throw PageOCRError.empty
         }
 
         // Gemini sometimes wraps the XHTML in a ```xml or ```html

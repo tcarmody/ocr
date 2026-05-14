@@ -98,16 +98,33 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     public enum PageOCRError: Error, LocalizedError {
         case budgetExhausted
         case pngEncodeFailed
-        case emptyResponse
+        /// Anthropic returned `stop_reason: "refusal"`. Distinct from
+        /// `.empty` so refusal-rate stats can split policy refusals
+        /// from "model returned nothing" model hiccups.
+        case refused
+        /// Response was successful but produced no parseable text.
+        case empty
         case underlying(any Error)
 
         public var errorDescription: String? {
             switch self {
             case .budgetExhausted:    return "Per-book Claude call budget exhausted."
             case .pngEncodeFailed:    return "Could not encode page image as PNG."
-            case .emptyResponse:      return "Claude returned no text for this page."
+            case .refused:            return "Claude refused to transcribe this page."
+            case .empty:              return "Claude returned no text for this page."
             case .underlying(let e):  return e.localizedDescription
             }
+        }
+    }
+
+    public func classify(error: any Error) -> ProviderStatus {
+        if error is CancellationError { return .canceled }
+        guard let e = error as? PageOCRError else { return .apiError }
+        switch e {
+        case .budgetExhausted: return .budgetExhausted
+        case .refused:         return .refused
+        case .empty:           return .empty
+        case .pngEncodeFailed, .underlying: return .apiError
         }
     }
 
@@ -179,11 +196,11 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         await budget.recordUsage(response.usage, for: model)
         if response.didRefuse {
             capture(pageIndex: pageIndex, raw: "[REFUSED]", parseEmpty: true)
-            throw PageOCRError.emptyResponse
+            throw PageOCRError.refused
         }
         guard let xhtml = response.primaryText, !xhtml.isEmpty else {
             capture(pageIndex: pageIndex, raw: "[EMPTY]", parseEmpty: true)
-            throw PageOCRError.emptyResponse
+            throw PageOCRError.empty
         }
 
         let parser = ClaudePageXHTMLParser()
@@ -219,13 +236,22 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     public func parseBatchMessage(
         _ response: AnthropicMessageResponse, pageIndex: Int
     ) -> ClaudePageResult? {
+        parseBatchMessageOutcome(response, pageIndex: pageIndex).result
+    }
+
+    /// Same as `parseBatchMessage` but also reports whether the
+    /// failure (if any) was a refusal vs an empty response. Drives
+    /// refusal-rate stats for the batch dispatch path.
+    public func parseBatchMessageOutcome(
+        _ response: AnthropicMessageResponse, pageIndex: Int
+    ) -> (result: ClaudePageResult?, status: ProviderStatus) {
         if response.didRefuse {
             capture(pageIndex: pageIndex, raw: "[REFUSED]", parseEmpty: true)
-            return nil
+            return (nil, .refused)
         }
         guard let xhtml = response.primaryText, !xhtml.isEmpty else {
             capture(pageIndex: pageIndex, raw: "[EMPTY]", parseEmpty: true)
-            return nil
+            return (nil, .empty)
         }
         let parser = ClaudePageXHTMLParser()
         let result = parser.parse(xhtml, pageIndex: pageIndex)
@@ -233,7 +259,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
             pageIndex: pageIndex, raw: xhtml,
             parseEmpty: result.blocks.isEmpty
         )
-        return result
+        return (result, .succeeded)
     }
 
     /// Record token usage from a batch result. Mirrors

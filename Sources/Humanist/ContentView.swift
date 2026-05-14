@@ -697,10 +697,34 @@ private struct JobRow: View {
         if stats.claudeCallCount > 0 {
             lines.append("Estimated cost: \(stats.formattedCost)")
         }
+        if stats.pagesRefused > 0 {
+            let pct = String(format: "%.1f%%", stats.refusalRate * 100)
+            let providerLabel = stats.pageOCRProviderId.isEmpty
+                ? "" : " (\(stats.pageOCRProviderId))"
+            lines.append(
+                "Refusal rate\(providerLabel) — \(stats.pagesRefused) of \(stats.pagesReOCRd) pages refused (\(pct))"
+            )
+            // Show the first handful of refused page numbers so the
+            // user can jump to them. 1-based for human display.
+            let preview = stats.refusedPageIndices.prefix(10)
+                .map { String($0 + 1) }
+                .joined(separator: ", ")
+            if !preview.isEmpty {
+                let more = stats.refusedPageIndices.count > 10
+                    ? " (+ \(stats.refusedPageIndices.count - 10) more)" : ""
+                lines.append("Refused pages — \(preview)\(more)")
+            }
+        }
+        if stats.pagesEmpty > 0 {
+            lines.append("Empty responses — \(stats.pagesEmpty) page\(stats.pagesEmpty == 1 ? "" : "s")")
+        }
+        if stats.pagesAPIError > 0 {
+            lines.append("API errors — \(stats.pagesAPIError) page\(stats.pagesAPIError == 1 ? "" : "s")")
+        }
         if stats.pagesUsingVisionFallback > 0 {
             let n = stats.pagesUsingVisionFallback
             lines.append(
-                "Vision fallback — \(n) page\(n == 1 ? "" : "s") (Claude refused or errored; "
+                "Vision fallback — \(n) page\(n == 1 ? "" : "s") (provider failure; "
                 + "Vision OCR'd them locally instead of leaving them blank)"
             )
         }

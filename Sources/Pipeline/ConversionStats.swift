@@ -34,8 +34,29 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     /// the EPUB. Surfaced to make quality degradation visible —
     /// otherwise a user looking at a poorly-rendered page can't
     /// tell whether it's a Sonnet bug or expected lower-quality
-    /// fallback. 0 when Claude wasn't invoked at all.
+    /// fallback. 0 when Claude wasn't invoked at all. Subdivided
+    /// by cause via `pagesRefused` / `pagesEmpty` / `pagesAPIError`.
     public var pagesUsingVisionFallback: Int
+    /// Pages where the provider explicitly refused (Anthropic
+    /// `stop_reason: refusal`, Gemini SAFETY / RECITATION). The
+    /// headline measurement for content-policy mismatch.
+    public var pagesRefused: Int
+    /// Pages where the provider returned without refusal but with
+    /// no parseable text. Usually a model hiccup rather than a
+    /// policy decision; commonly recovers on retry.
+    public var pagesEmpty: Int
+    /// Pages where the provider call failed at the HTTP / network /
+    /// decode layer. Transient by nature; would benefit from retry.
+    public var pagesAPIError: Int
+    /// First N page indices (0-based) that were refused. Capped to
+    /// keep the persisted size bounded; the debug log carries the
+    /// full set when the user wants to dig.
+    public var refusedPageIndices: [Int]
+    /// Which page-OCR provider ran for this conversion. Stamped
+    /// onto stats so future runs of the same book on a different
+    /// provider can be compared. Empty when page-OCR mode wasn't
+    /// used (cascade-only conversions).
+    public var pageOCRProviderId: String
     /// Number of Claude API calls granted by the budget over this
     /// conversion. Includes refused calls (which still cost tokens)
     /// but not budget-exhausted attempts (which never reached the
@@ -56,6 +77,11 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         pagesTrustedEmbeddedText: Int = 0,
         pagesReOCRd: Int = 0,
         pagesUsingVisionFallback: Int = 0,
+        pagesRefused: Int = 0,
+        pagesEmpty: Int = 0,
+        pagesAPIError: Int = 0,
+        refusedPageIndices: [Int] = [],
+        pageOCRProviderId: String = "",
         claudeCallCount: Int = 0,
         claudeUsageByModel: [String: ClaudeCallBudget.AggregateUsage] = [:],
         estimatedCostUSD: Double = 0
@@ -65,6 +91,11 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         self.pagesTrustedEmbeddedText = pagesTrustedEmbeddedText
         self.pagesReOCRd = pagesReOCRd
         self.pagesUsingVisionFallback = pagesUsingVisionFallback
+        self.pagesRefused = pagesRefused
+        self.pagesEmpty = pagesEmpty
+        self.pagesAPIError = pagesAPIError
+        self.refusedPageIndices = refusedPageIndices
+        self.pageOCRProviderId = pageOCRProviderId
         self.claudeCallCount = claudeCallCount
         self.claudeUsageByModel = claudeUsageByModel
         self.estimatedCostUSD = estimatedCostUSD
@@ -74,6 +105,8 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         case elapsed, observationsBySource
         case pagesTrustedEmbeddedText, pagesReOCRd
         case pagesUsingVisionFallback
+        case pagesRefused, pagesEmpty, pagesAPIError
+        case refusedPageIndices, pageOCRProviderId
         case claudeCallCount, claudeUsageByModel, estimatedCostUSD
     }
 
@@ -89,18 +122,56 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         // older queue rows persisted before Q-Refused-Fallback-Surface
         // (2026-05-12) don't carry it.
         self.pagesUsingVisionFallback = try c.decodeIfPresent(Int.self, forKey: .pagesUsingVisionFallback) ?? 0
+        // Refusal-rate fields land in 2026-05-14; default to zero so
+        // older queue rows round-trip unchanged.
+        self.pagesRefused = try c.decodeIfPresent(Int.self, forKey: .pagesRefused) ?? 0
+        self.pagesEmpty = try c.decodeIfPresent(Int.self, forKey: .pagesEmpty) ?? 0
+        self.pagesAPIError = try c.decodeIfPresent(Int.self, forKey: .pagesAPIError) ?? 0
+        self.refusedPageIndices = try c.decodeIfPresent([Int].self, forKey: .refusedPageIndices) ?? []
+        self.pageOCRProviderId = try c.decodeIfPresent(String.self, forKey: .pageOCRProviderId) ?? ""
         self.claudeCallCount = try c.decode(Int.self, forKey: .claudeCallCount)
         self.claudeUsageByModel = try c.decode([String: ClaudeCallBudget.AggregateUsage].self, forKey: .claudeUsageByModel)
         self.estimatedCostUSD = try c.decode(Double.self, forKey: .estimatedCostUSD)
+    }
+
+    /// Pages where the page-OCR provider succeeded — derived from
+    /// the failure counts and the re-OCR'd total.
+    public var pagesProviderSucceeded: Int {
+        max(0, pagesReOCRd - pagesRefused - pagesEmpty - pagesAPIError)
+    }
+
+    /// Fraction of provider-invoked pages that came back refused.
+    /// 0.0 when no provider call ran. Surface in the UI as a
+    /// percentage; the absolute count is in `pagesRefused`.
+    public var refusalRate: Double {
+        // Denominator: every page where the provider was actually
+        // asked. Trust-routed pages don't count (no call was made);
+        // budget-exhausted pages don't count either (no call reached
+        // the network). Approximated by `pagesReOCRd` since every
+        // re-OCR'd page either succeeded with the provider or
+        // failed through one of the tracked statuses.
+        guard pagesReOCRd > 0 else { return 0 }
+        return Double(pagesRefused) / Double(pagesReOCRd)
     }
 
     /// One-line summary for log output and quick UI rendering.
     /// Calls out the trust verdict explicitly when *every* page was
     /// trusted (so OCR didn't run at all) — that's a frequent
     /// source of "the output looks bad and Claude wasn't invoked,
-    /// what gives" confusion.
+    /// what gives" confusion. When the page-OCR provider refused
+    /// any pages, the refusal count + rate lead the summary —
+    /// users with high refusal rates need to see the headline first.
     public var summary: String {
         let totalPages = pagesTrustedEmbeddedText + pagesReOCRd
+        let refusalSuffix: String
+        if pagesRefused > 0 {
+            let pct = String(format: "%.0f%%", refusalRate * 100)
+            let providerLabel = pageOCRProviderId.isEmpty
+                ? "" : " (\(pageOCRProviderId))"
+            refusalSuffix = " · \(pagesRefused) refused (\(pct))\(providerLabel)"
+        } else {
+            refusalSuffix = ""
+        }
         let fallbackSuffix = pagesUsingVisionFallback > 0
             ? " · \(pagesUsingVisionFallback) page\(pagesUsingVisionFallback == 1 ? "" : "s") fell back to Vision"
             : ""
@@ -110,13 +181,13 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         }
         if claudeCallCount > 0 {
             return "Claude: \(claudeCallCount) calls (~\(formattedCost))"
-                + fallbackSuffix
+                + refusalSuffix + fallbackSuffix
         }
         if pagesTrustedEmbeddedText > 0 && pagesReOCRd > 0 {
             return "OCR'd \(pagesReOCRd) of \(totalPages) pages (rest trusted embedded text); Claude not invoked"
-                + fallbackSuffix
+                + refusalSuffix + fallbackSuffix
         }
-        return "Claude not invoked" + fallbackSuffix
+        return "Claude not invoked" + refusalSuffix + fallbackSuffix
     }
 
     /// Formatted cost string with sensible precision: "<$0.01" for
@@ -138,6 +209,11 @@ extension ConversionStats {
         pagesTrustedEmbeddedText: Int = 0,
         pagesReOCRd: Int = 0,
         pagesUsingVisionFallback: Int = 0,
+        pagesRefused: Int = 0,
+        pagesEmpty: Int = 0,
+        pagesAPIError: Int = 0,
+        refusedPageIndices: [Int] = [],
+        pageOCRProviderId: String = "",
         claudeCallCount: Int,
         claudeUsageByModel: [AnthropicModel: ClaudeCallBudget.AggregateUsage]
     ) -> ConversionStats {
@@ -160,6 +236,11 @@ extension ConversionStats {
             pagesTrustedEmbeddedText: pagesTrustedEmbeddedText,
             pagesReOCRd: pagesReOCRd,
             pagesUsingVisionFallback: pagesUsingVisionFallback,
+            pagesRefused: pagesRefused,
+            pagesEmpty: pagesEmpty,
+            pagesAPIError: pagesAPIError,
+            refusedPageIndices: refusedPageIndices,
+            pageOCRProviderId: pageOCRProviderId,
             claudeCallCount: claudeCallCount,
             claudeUsageByModel: usage,
             estimatedCostUSD: cost
