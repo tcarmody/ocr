@@ -144,6 +144,14 @@ struct LibraryWindowView: View {
     /// sidebar context menu fires "Rename…".
     @State private var renameContext: RenameContext?
 
+    /// Duplicate-review session. Non-nil → the sheet is open.
+    /// The `DuplicateReviewModel` owns the detection + apply
+    /// state machine; we keep it on the view so SwiftUI's
+    /// @StateObject lifecycle stays predictable across sheet
+    /// presentations.
+    @StateObject private var duplicateReviewModel = DuplicateReviewModel()
+    @State private var showDuplicateReview: Bool = false
+
     /// R-Library-Rescan. Pending rescan confirmation: the user
     /// asked to re-OCR an existing catalog row. Carries the
     /// resolved source PDF + the entry's EPUB so the confirmation
@@ -548,6 +556,14 @@ struct LibraryWindowView: View {
                     }
                 },
                 onCancel: { showRestoreSnapshotSheet = false }
+            )
+        }
+        .sheet(isPresented: $showDuplicateReview) {
+            DuplicateReviewSheet(
+                model: duplicateReviewModel,
+                library: library,
+                coverCache: coverCache,
+                isPresented: $showDuplicateReview
             )
         }
         .sheet(item: $metadataEditContext) { ctx in
@@ -1080,6 +1096,18 @@ struct LibraryWindowView: View {
     /// user's chosen embedding backend (and surfaces a friendly
     /// alert if it can't), then hands off to `indexBuilder` and
     /// reveals the progress sheet.
+    /// Open the duplicate-review sheet + kick off the 4-tier
+    /// detector against the current catalog. The model owns the
+    /// detection task; we just present the sheet and feed it
+    /// the entry snapshot.
+    private func startDuplicateReview() {
+        let entries = library.entries
+        showDuplicateReview = true
+        Task {
+            await duplicateReviewModel.startDetection(entries: entries)
+        }
+    }
+
     private func startBulkIndex(forceRebuild: Bool = false) {
         indexBuildError = nil
         let entries = library.entries
@@ -1234,6 +1262,17 @@ struct LibraryWindowView: View {
             }
             .help("Build embedding indexes for every book")
             .accessibilityLabel("Build embedding indexes")
+
+            // Detect-duplicates entry point. Opens the review
+            // sheet which kicks off the 4-tier detector and lets
+            // the user pick a canonical entry per group.
+            Button {
+                startDuplicateReview()
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .help("Detect duplicates — groups likely-duplicate books and lets you pick a canonical entry per group")
+            .accessibilityLabel("Detect duplicates")
 
             // Chat-pane button — same triple-duty action as before
             // (selection → chatWithSelected; collection →
