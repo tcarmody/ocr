@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-13)
+## Status snapshot (as of 2026-05-14)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -810,6 +810,53 @@ L-Foundation-Models Phase 4):
   Search, Show All Languages). Replaces the silently-blank
   table that previously looked like a data-load bug.
 
+**Done — Multi-provider page OCR + cascade Stage 2.5 + refusal-rate stats (2026-05-14)**:
+- **P-Page-Provider-Choice — Gemini Flash as alternative to Claude
+  Sonnet for page OCR** (commits `e11722c`, `8625ed4`). New
+  `PageOCREngine` protocol with two concrete impls:
+  `ClaudePageOCREngine` (existing Sonnet path) and
+  `GeminiPageOCREngine` (Generative Language API). Same XHTML
+  output schema parsed by `ClaudePageXHTMLParser`. Provider
+  selector in Settings → AI; three choices (Claude Sonnet 4.6,
+  Gemini 2.5 Flash, Gemini 3 Flash preview). 2.5 Flash runs
+  ~7–10× cheaper than Sonnet on typeset prose with comparable
+  quality. 3 Flash is preview status with Pro-tier reasoning;
+  `thinking_level` pinned to `"minimal"` so OCR doesn't get
+  charged for unused reasoning. Manuscript mode hard-pins
+  Claude Opus regardless of provider pick. Batch API stays
+  Claude-only — Gemini-selected runs silently fall back to
+  the serial TaskGroup. New `GoogleCloudVisionAPIKeyStore`
+  (separate from the AI Studio key store — different consoles).
+  Per-provider usage attribution in `ClaudeCallBudget`; cost
+  estimate updates per provider.
+- **P-Doc-OCR-Cascade — Google Document OCR as Stage 2.5**
+  (commit `e11722c`). `GoogleDocumentOCREngine` slotted into
+  `RegionCascade` between Tesseract and Claude (Cloud Vision
+  `DOCUMENT_TEXT_DETECTION`, ~$0.0015/call). Guardrail-gated
+  against the prior tier same as Stage 3. Absorbs most of the
+  hard-region tail at classical-OCR pricing before falling
+  through to Sonnet for the residual. Gated on Cloud mode +
+  `googleDocumentOCRInCascade` toggle + Cloud Vision key.
+- **Q-Refusal-Rate — per-page refusal classification** (commit
+  `a5dd6dc`). New `ProviderStatus` enum threaded through
+  `PendingPageOCR` — `.succeeded` / `.refused` / `.empty` /
+  `.apiError` / `.budgetExhausted` / `.skippedTrustRouted` /
+  `.canceled`. Both engines map their own error shapes via a
+  `classify(error:)` protocol method; Anthropic `stop_reason:
+  refusal` and Gemini `finishReason: SAFETY / RECITATION /
+  PROHIBITED_CONTENT / BLOCKLIST` route to `.refused`.
+  `ConversionStats` adds `pagesRefused` / `pagesEmpty` /
+  `pagesAPIError` / `refusedPageIndices` (capped at 200) +
+  `pageOCRProviderId` + derived `refusalRate`. Summary string
+  leads with refusal count + percentage when non-zero;
+  `claude-pages.txt` debug header summarizes refused / empty
+  / api-error counts with first 50 refused page numbers;
+  queue stats tooltip surfaces refusal rate, first 10 refused
+  pages (1-based), and breakouts for empty / API error /
+  Vision fallback. Per-provider tagging means head-to-head
+  Claude vs Gemini refusal numbers on the same book are
+  directly comparable.
+
 **Original-plan items still outstanding**:
 - Phase 10 — Distribution polish. Setup wizards (Surya / Tesseract /
   Ollama) ship in lieu of bundled runtimes, and the build script is
@@ -827,7 +874,7 @@ L-Foundation-Models Phase 4):
 
 ---
 
-## Sequencing (as of 2026-05-13)
+## Sequencing (as of 2026-05-14)
 
 What to work on next, in priority order. The first block is
 driven by concrete, currently-felt user needs; the second block
@@ -1564,15 +1611,19 @@ individual Claude calls and let the user dial cost up or down.
 
 | Feature | Model | Why |
 |---|---|---|
+| Hard-region OCR (Cloud cascade Stage 2.5) | Google Cloud Vision `DOCUMENT_TEXT_DETECTION` | Classical OCR at ~$0.0015/call; absorbs most of the hard-region tail before falling through to Claude |
 | Hard-region OCR (Cloud cascade tail) | Sonnet 4.6 | Trusted as ground truth; multilingual + ancient scripts demand the strongest visual reasoning |
+| Page OCR (whole-page → XHTML) | User-selectable: Sonnet 4.6 (default; best on dense academic layouts), Gemini 2.5 Flash (~7–10× cheaper; GA), or Gemini 3 Flash preview (newer reasoning model; `thinking_level: minimal` pinned) | Manuscript mode hard-pins Opus regardless of pick. See P-Page-Provider-Choice in the shipped log. |
+| Manuscript-mode page OCR | Opus 4.7 | Handwriting recognition; Sonnet drops detail on secretary / round hand; Gemini Flash family hasn't been validated on diplomatic-transcription prompts |
 | Table extraction (replacing Path A) | Sonnet 4.6 | Spatial reasoning + structure understanding; tables are rare per book so cost is bounded |
 | Post-OCR character cleanup | Haiku 4.5 | Targeted edits (ligatures, diacritics, long-s); no need for Sonnet |
 | Semantic chapter classification | Haiku 4.5 | Tiny prompt, closed label set, ~per-chapter |
 | TOC parsing | Haiku 4.5 (Sonnet escalation if quality bad) | One call per book, ~$0.001 either way |
 
-Mental model: **Haiku for "polish / classify text we already
-have," Sonnet for "look at this image and produce ground-truth
-content."**
+Mental model: **classical OCR (Document AI) at the cascade's
+cheap tier, Haiku for "polish / classify text we already have,"
+Sonnet or Gemini Flash for "look at this image and produce
+ground-truth content."**
 
 ## Cloud-migration phase status
 
@@ -1590,6 +1641,9 @@ content."**
 | 6e | Printed-TOC parsing (Haiku, Sonnet escalation if needed) | **Done** (commits `bd466f3`, `e3eb46c`) |
 | 7 | First-run UX polish (Cloud-upgrade prompt, README docs) | **Done** (commit `e42253f`) |
 | Page-OCR | Whole-page Sonnet OCR pathway (parallel to the cascade) | **Done** (commits `569c421`, `cba7f64`, `0130e34`) |
+| Page-OCR-Multi | User-selectable page-OCR provider (Sonnet / Gemini 2.5 Flash / Gemini 3 Flash preview); per-provider key store | **Done** (commits `e11722c`, `8625ed4`) |
+| Cascade 2.5 | Google Cloud Vision `DOCUMENT_TEXT_DETECTION` slotted between Tesseract and Claude in `RegionCascade` | **Done** (commit `e11722c`) |
+| Refusal-Rate | Per-page `ProviderStatus` classification (refused / empty / apiError); surfaced in `ConversionStats`, summary string, `claude-pages.txt` header, queue tooltip | **Done** (commit `a5dd6dc`) |
 | 8 | (Deferred) Per-book mode override for sensitive material when default is Cloud | Largely covered by Private Mode (commit `8442e37`); formal per-book persistence still deferred |
 
 Phases 1–2 ship the foundation; everything else is incremental
