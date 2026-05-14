@@ -57,9 +57,23 @@ struct LibraryIndexProgressSheet: View {
                     value: Double(builder.current),
                     total: Double(max(builder.total, 1))
                 )
-                Text("Indexing book \(builder.current) of \(builder.total): \(builder.currentBookTitle)")
+                // Two-line layout: the counter stays fully visible on
+                // every tick, and the book title truncates if it's
+                // too long for the 460pt sheet width. Without
+                // `.lineLimit(1, reservesSpace: true)` the title's
+                // wrapped second line — present for some books,
+                // absent for others — grows + shrinks the sheet on
+                // every per-book publish, which reads as a flicker /
+                // jitter as the indexer steps through the library.
+                Text("Indexing book \(builder.current) of \(builder.total)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                Text(builder.currentBookTitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1, reservesSpace: true)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             case .completed:
                 let built = builder.current
                     - builder.failures.count
