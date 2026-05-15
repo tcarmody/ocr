@@ -6,6 +6,7 @@
 \
 {\f1 Surya}  layout analysis and table recognition (Python). GPL-3.0.\
 {\f1 Tesseract}  classical-script OCR. Apache 2.0.\
+{\f1 Leptonica}  image processing library used by Tesseract. BSD-2-Clause.\
 {\f1 CodeMirror 5}  XHTML source-pane editor. MIT.\
 {\f1 epubcheck}  EPUB validation wrapper. BSD-3-Clause.\
 {\f1 ZIPFoundation}  EPUB ZIP packaging in Swift. MIT.\
@@ -13,8 +14,19 @@
 {\f1 Ollama}  optional local LLM runtime. MIT.\
 {\f1 Gemma}  optional local chat model. Gemma Terms of Use.\
 \
+Bundled image-format libraries (transitive dependencies of Tesseract / Leptonica, shipped inside the .app):\
+{\f1 libpng}  PNG read/write. libpng License.\
+{\f1 libjpeg-turbo}  JPEG read/write. BSD/IJG license.\
+{\f1 libtiff}  TIFF read/write. libtiff (BSD-style).\
+{\f1 giflib}  GIF read/write. MIT.\
+{\f1 libwebp}  WebP read/write. BSD-3-Clause.\
+{\f1 OpenJPEG}  JPEG 2000 read/write. BSD-2-Clause.\
+{\f1 libarchive}  tessdata archive support. BSD-2-Clause.\
+{\f1 zstd / xz (liblzma) / lz4 / libb2}  compression libraries used by libarchive and libtiff. BSD / Public Domain / BSD / CC0.\
+{\f1 Tesseract traineddata}  eng, grc, lat, heb language models from the Tesseract project. Apache 2.0.\
+\
 Optional cloud services (opt-in per feature):\
-{\f1 Anthropic Claude API}, {\f1 Voyage AI Embeddings}, {\f1 Google Gemini Embeddings}.\
+{\f1 Anthropic Claude API}, {\f1 Google Gemini API}, {\f1 Google Cloud Vision API}, {\f1 Voyage AI Embeddings}.\
 \
 Built on Apple frameworks (system-provided):\
 Vision, NaturalLanguage, FoundationModels, PDFKit, WebKit, AppKit, SwiftUI.\

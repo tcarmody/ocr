@@ -1,6 +1,11 @@
+// Headers only — no `link` directives here. Linking the actual
+// libtesseract / libleptonica dylibs is handled in Package.swift's
+// OCR target linkerSettings via `-weak-l` flags so the .app can
+// launch on Macs without the dylibs present (or with them at
+// unexpected paths). Every call site is gated behind
+// `TesseractOCREngine.detect()`, which probes the dylib via
+// `dlsym` before any Tesseract symbol is touched.
 module CTesseract [system] {
     header "shim.h"
-    link "tesseract"
-    link "leptonica"
     export *
 }

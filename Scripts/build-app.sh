@@ -58,6 +58,129 @@ else
     warn "CodeMirror assets not found at $CODEMIRROR_DIR — source editor will fall back to plain text"
 fi
 
+# Bundle Tesseract + Leptonica + transitive image-format dylibs into
+# Contents/Frameworks/ so the app works on Macs without Homebrew.
+# Source-of-truth lookup chain is /opt/homebrew/opt/<pkg>/lib/ first
+# (real binaries — symlinks at /opt/homebrew/lib/ resolve here), then
+# /opt/homebrew/lib/ as a fallback. The list mirrors what `otool -L`
+# walks transitively from libtesseract/libleptonica; if any dylib is
+# missing we abort the bundle step rather than ship a half-bundled
+# .app that would crash on real-world content (libtiff being absent
+# wouldn't fail on a simple eng-only page but would on a JPEG-in-TIFF
+# scan).
+#
+# Each dylib has its LC_ID_DYLIB and every LC_LOAD_DYLIB referencing
+# another bundled dylib rewritten to `@rpath/libfoo.N.dylib` via
+# install_name_tool. The main binary's LC_LOAD_DYLIB entries for the
+# weak-linked tesseract/leptonica are rewritten the same way, and an
+# LC_RPATH of `@executable_path/../Frameworks` is added so dyld
+# resolves the @rpath references against the bundled copies.
+log "Bundling Tesseract + Leptonica + transitive dylibs"
+APP_FRAMEWORKS="$APP_CONTENTS/Frameworks"
+mkdir -p "$APP_FRAMEWORKS"
+
+# Map of pkg-path → dylib basename. Each entry is what otool reports
+# when walking transitively from libtesseract / libleptonica. Order
+# doesn't matter for copying but is preserved for log readability.
+DYLIB_SOURCES=(
+    "/opt/homebrew/opt/tesseract/lib/libtesseract.5.dylib"
+    "/opt/homebrew/opt/leptonica/lib/libleptonica.6.dylib"
+    "/opt/homebrew/opt/libarchive/lib/libarchive.13.dylib"
+    "/opt/homebrew/opt/libpng/lib/libpng16.16.dylib"
+    "/opt/homebrew/opt/jpeg-turbo/lib/libjpeg.8.dylib"
+    "/opt/homebrew/opt/giflib/lib/libgif.dylib"
+    "/opt/homebrew/opt/libtiff/lib/libtiff.6.dylib"
+    "/opt/homebrew/opt/webp/lib/libwebp.7.dylib"
+    "/opt/homebrew/opt/webp/lib/libwebpmux.3.dylib"
+    "/opt/homebrew/opt/webp/lib/libsharpyuv.0.dylib"
+    "/opt/homebrew/opt/openjpeg/lib/libopenjp2.7.dylib"
+    "/opt/homebrew/opt/zstd/lib/libzstd.1.dylib"
+    "/opt/homebrew/opt/xz/lib/liblzma.5.dylib"
+    "/opt/homebrew/opt/lz4/lib/liblz4.1.dylib"
+    "/opt/homebrew/opt/libb2/lib/libb2.1.dylib"
+)
+
+for src in "${DYLIB_SOURCES[@]}"; do
+    if [[ ! -f "$src" ]]; then
+        die "Missing source dylib: $src — run \`brew install tesseract\` first"
+    fi
+    base="$(basename "$src")"
+    # Copy with -L to dereference symlinks (brew exposes versioned
+    # names via symlinks pointing at the real binary).
+    cp -L "$src" "$APP_FRAMEWORKS/$base"
+    chmod +w "$APP_FRAMEWORKS/$base"
+done
+log "Copied $(echo "${DYLIB_SOURCES[@]}" | wc -w | tr -d ' ') dylibs into Frameworks/"
+
+# Rewrite install names. For each bundled dylib:
+#   1. Set its own LC_ID_DYLIB to `@rpath/<basename>`.
+#   2. For each LC_LOAD_DYLIB referencing another bundled dylib
+#      (whether by absolute /opt/homebrew/... path or by @rpath/...),
+#      rewrite it to `@rpath/<that basename>`.
+# Building the "bundled set" first so we can match by basename in
+# step 2 without re-walking the source paths.
+BUNDLED_BASENAMES=()
+for src in "${DYLIB_SOURCES[@]}"; do
+    BUNDLED_BASENAMES+=("$(basename "$src")")
+done
+
+for dylib in "$APP_FRAMEWORKS"/*.dylib; do
+    base="$(basename "$dylib")"
+    install_name_tool -id "@rpath/$base" "$dylib"
+
+    # Walk this dylib's LC_LOAD_DYLIB entries. `otool -L` gives one
+    # path per line after the header line.
+    otool -L "$dylib" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+        # Bail on system / SDK paths — those stay as-is.
+        case "$dep" in
+            /usr/lib/*|/System/*) continue ;;
+        esac
+        dep_base="$(basename "$dep")"
+        # Only rewrite when the dep is a dylib we're bundling.
+        for bundled in "${BUNDLED_BASENAMES[@]}"; do
+            if [[ "$dep_base" == "$bundled" ]]; then
+                install_name_tool -change "$dep" "@rpath/$bundled" "$dylib"
+                break
+            fi
+        done
+    done
+done
+log "Rewrote install names to @rpath/"
+
+# Rewrite the main binary's LC_LOAD_DYLIB entries for tesseract +
+# leptonica (the two weak-linked direct deps) to @rpath/ as well.
+# Then add an LC_RPATH of @executable_path/../Frameworks so dyld
+# can resolve the @rpath references against the bundled copies.
+BINARY="$APP_MACOS/$APP_NAME"
+for src in "${DYLIB_SOURCES[@]}"; do
+    base="$(basename "$src")"
+    if otool -L "$BINARY" | grep -q "$src"; then
+        install_name_tool -change "$src" "@rpath/$base" "$BINARY"
+    fi
+done
+# add_rpath fails if the rpath is already present; suppress the error
+# so re-builds of an existing bundle don't break.
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$BINARY" 2>/dev/null || true
+log "Rewrote main binary deps to @rpath; added LC_RPATH"
+
+# Bundle Tesseract traineddata (Phase C). Default is the four
+# languages this project targets: English + ancient Greek + Latin +
+# Hebrew. The bundled-tessdata path is picked up automatically by
+# `TesseractOCREngine.detect()` via `Bundle.main.resourceURL`.
+log "Bundling Tesseract traineddata"
+TESSDATA_SRC="/opt/homebrew/share/tessdata"
+TESSDATA_DEST="$APP_RESOURCES/tessdata"
+mkdir -p "$TESSDATA_DEST"
+for lang in eng grc lat heb; do
+    src_file="$TESSDATA_SRC/$lang.traineddata"
+    if [[ -f "$src_file" ]]; then
+        cp -L "$src_file" "$TESSDATA_DEST/$lang.traineddata"
+    else
+        warn "Missing traineddata: $src_file — language $lang unavailable in bundled tessdata (run \`brew install tesseract-lang\`)"
+    fi
+done
+log "Bundled traineddata: $(ls "$TESSDATA_DEST" 2>/dev/null | tr '\n' ' ')"
+
 # Pin to the developer's Developer ID Application certificate by
 # SHA-1 hash. Hash is unambiguous — name-based selection breaks when
 # the keychain has multiple certs of the same name (e.g. one valid +
@@ -87,6 +210,25 @@ SIGN_OPTS=(--force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTI
 if [[ "$CODESIGN_IDENTITY_RESOLVED" == "-" ]]; then
     SIGN_OPTS=(--force --deep --options runtime --sign -)
 fi
+
+# Sign every bundled dylib before signing the main binary. The
+# --deep flag on the binary signing pass would do this transitively,
+# but signing them explicitly first lets us pin per-dylib options
+# (no entitlements; dylibs aren't entry points) and produces clearer
+# error output when a dylib fails to sign. Order matters when one
+# bundled dylib loads another — the dependency must be signed first
+# — but for notarization-valid signatures we just need them all
+# signed by the same identity, which happens in any traversal order.
+DYLIB_SIGN_OPTS=(--force --options runtime --sign "$CODESIGN_IDENTITY_RESOLVED")
+if [[ "$CODESIGN_IDENTITY_RESOLVED" == "-" ]]; then
+    DYLIB_SIGN_OPTS=(--force --options runtime --sign -)
+else
+    DYLIB_SIGN_OPTS+=(--timestamp)
+fi
+for dylib in "$APP_FRAMEWORKS"/*.dylib; do
+    codesign "${DYLIB_SIGN_OPTS[@]}" "$dylib"
+done
+log "Signed $(ls "$APP_FRAMEWORKS"/*.dylib 2>/dev/null | wc -l | tr -d ' ') bundled dylibs"
 
 codesign "${SIGN_OPTS[@]}" --entitlements "$ENTITLEMENTS" "$APP_MACOS/$APP_NAME"
 codesign "${SIGN_OPTS[@]}" --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"

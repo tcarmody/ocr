@@ -48,7 +48,24 @@ let package = Package(
                 .unsafeFlags(["-Xcc", "-I/opt/homebrew/include"])
             ],
             linkerSettings: [
-                .unsafeFlags(["-L/opt/homebrew/lib"])
+                // `-weak-l` marks the libraries (and all their imported
+                // symbols) as weak, so dyld lets the binary launch when
+                // the dylibs are absent. Every call site is gated by
+                // `TesseractOCREngine.detect()`, which probes the dylib
+                // via `dlsym` before touching any Tesseract symbol —
+                // so a null function pointer never gets called.
+                //
+                // At distribute time we bundle the dylibs into
+                // `Contents/Frameworks/` via `Scripts/build-app.sh`
+                // (Phase B); the runtime resolver tries the bundled
+                // copies first, then falls back to Homebrew. Users on
+                // a Mac with no Tesseract installation at all get
+                // the bundled dylibs and the app just works.
+                .unsafeFlags([
+                    "-L/opt/homebrew/lib",
+                    "-Xlinker", "-weak-ltesseract",
+                    "-Xlinker", "-weak-lleptonica",
+                ])
             ]
         ),
         .target(

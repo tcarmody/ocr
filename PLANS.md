@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-14)
+## Status snapshot (as of 2026-05-15)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -810,6 +810,45 @@ L-Foundation-Models Phase 4):
   Search, Show All Languages). Replaces the silently-blank
   table that previously looked like a data-load bug.
 
+**Done — P-Bundled-Tesseract: self-contained Tesseract distribution (2026-05-15)**:
+- **Weak-linked dylibs + dlsym runtime gate** (Phase A). Removed
+  `link "tesseract"` / `link "leptonica"` directives from the
+  CTesseract modulemap; added `-weak-ltesseract -weak-lleptonica`
+  to the OCR target's linker settings in `Package.swift`. dyld
+  now lets the binary launch when the dylibs are absent. New
+  `TesseractOCREngine.runtimeAvailable` probes `dlsym(RTLD_DEFAULT,
+  "TessBaseAPICreate")` once on first access; `detect()` gates on
+  it before any Tesseract symbol is touched. Every existing call
+  site already routed through `detect()` — no callers changed.
+  Verified by moving the bundled dylibs aside and confirming the
+  app still boots cleanly.
+- **Bundled dylibs in `Contents/Frameworks/`** (Phase B). Build
+  script (`Scripts/build-app.sh`) gained a step that copies the
+  15-dylib closure (libtesseract, libleptonica, libarchive, libpng,
+  libjpeg, libgif, libtiff, libwebp, libwebpmux, libsharpyuv,
+  libopenjp2, libzstd, liblzma, liblz4, libb2) into Frameworks,
+  rewrites every LC_ID_DYLIB + cross-dylib LC_LOAD_DYLIB to
+  `@rpath/<basename>` via `install_name_tool`, adds an LC_RPATH of
+  `@executable_path/../Frameworks` to the main binary, and signs
+  each dylib individually with the same identity used for the
+  binary. Bundle grew 20 → 39 MB.
+- **Bundled traineddata** (Phase C). eng (4 MB) + grc (2 MB) +
+  lat (3 MB) + heb (1 MB) copied into `Resources/tessdata/`;
+  `detect()` prefers `Bundle.main.resourceURL/tessdata` before
+  falling back to Homebrew paths. Users who want additional
+  Tesseract languages (Arabic, Chinese, Japanese, Korean, Sanskrit,
+  Coptic, Syriac, etc.) still go through `brew install
+  tesseract-lang` and the cascade picks them up automatically.
+- **Credits.rtf** updated with attributions for the 13 bundled
+  image-format / compression libraries (all permissive: BSD-2 /
+  BSD-3 / MIT / libpng / libtiff / CC0 / Public Domain). Tesseract
+  Apache 2.0 and Leptonica BSD-2 attributions already existed.
+- **Wizard reframed** in the Welcome sheet: with bundled tessdata
+  present, the "Set up Tesseract…" branch self-hides via the
+  `detect() != nil` gate. The Tesseract setup sheet remains
+  available for users who want to install additional languages
+  but is no longer the default path.
+
 **Done — Multi-provider page OCR + cascade Stage 2.5 + refusal-rate stats (2026-05-14)**:
 - **P-Page-Provider-Choice — Gemini Flash as alternative to Claude
   Sonnet for page OCR** (commits `e11722c`, `8625ed4`). New
@@ -874,7 +913,7 @@ L-Foundation-Models Phase 4):
 
 ---
 
-## Sequencing (as of 2026-05-14)
+## Sequencing (as of 2026-05-15)
 
 What to work on next, in priority order. The first block is
 driven by concrete, currently-felt user needs; the second block

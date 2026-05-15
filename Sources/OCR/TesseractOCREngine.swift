@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import Darwin
 import CTesseract
 import Document
 
@@ -25,19 +26,62 @@ public struct TesseractOCREngine: OCREngine {
     }
 
     /// Look for tessdata in standard install locations. Returns nil
-    /// if not found — caller can fall back to Vision.
+    /// if not found OR if the libtesseract/libleptonica dylibs failed
+    /// to load (e.g. user has tessdata installed but uninstalled
+    /// brew tesseract since then). Caller falls back to Vision.
     public static func detect() -> TesseractOCREngine? {
-        let candidates = [
+        guard runtimeAvailable else { return nil }
+        // Prefer bundled tessdata when the app ships one — that's the
+        // self-contained distribution case where the user has no
+        // Homebrew install at all. Falls back to Homebrew locations,
+        // then any system path.
+        var candidates: [String] = []
+        if let bundled = bundledTessdataPath() {
+            candidates.append(bundled)
+        }
+        candidates.append(contentsOf: [
             "/opt/homebrew/share/tessdata",   // Apple Silicon Homebrew
             "/usr/local/share/tessdata",      // Intel Homebrew
             "/usr/share/tessdata",            // System (rare on macOS)
-        ]
+        ])
         for path in candidates {
             if FileManager.default.fileExists(atPath: "\(path)/eng.traineddata") {
                 return TesseractOCREngine(dataPath: path)
             }
         }
         return nil
+    }
+
+    /// True when libtesseract / libleptonica are loaded into the
+    /// process. Probed via `dlsym(RTLD_DEFAULT, ...)`. Weak-linked at
+    /// build time so the binary launches when the dylibs are absent;
+    /// this check is the runtime gate that keeps any code path from
+    /// calling a null function pointer.
+    ///
+    /// Computed once at first access and cached. Loading state can't
+    /// change at runtime (dyld doesn't lazy-load weak-linked dylibs
+    /// after the binary has loaded), so a one-shot probe is correct.
+    public static let runtimeAvailable: Bool = {
+        // RTLD_DEFAULT is `-2` cast to a void*. macOS doesn't expose
+        // a typed constant for it from Swift, so we construct the
+        // sentinel directly. `dlsym` returns NULL if the symbol
+        // isn't loaded — that's our "dylib not present" signal.
+        let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
+        return dlsym(rtldDefault, "TessBaseAPICreate") != nil
+            && dlsym(rtldDefault, "pixReadMemPng") != nil
+    }()
+
+    /// `<App>.app/Contents/Resources/tessdata` when the .app bundles
+    /// traineddata (Phase C). Nil during `swift test` / `swift run`
+    /// where there's no bundle.
+    private static func bundledTessdataPath() -> String? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        let candidate = resourceURL.appendingPathComponent("tessdata")
+        let engURL = candidate.appendingPathComponent("eng.traineddata")
+        guard FileManager.default.fileExists(atPath: engURL.path) else {
+            return nil
+        }
+        return candidate.path
     }
 
     public enum TesseractError: Error, LocalizedError {
