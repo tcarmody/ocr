@@ -34,10 +34,20 @@ public actor SuryaConnection {
 
     private static func detectSuryaPython() -> String? {
         let home = NSHomeDirectory()
-        let candidates = [
+        var candidates: [String] = []
+        // Honor `UV_TOOL_DIR` first — uv documents it as the override
+        // for tool install locations, and users running uv with a
+        // custom home (a synced dotfiles setup, an XDG layout, a
+        // shared team prefix) would otherwise slip through detection
+        // even after a successful `uv tool install surya-ocr`.
+        if let env = ProcessInfo.processInfo.environment["UV_TOOL_DIR"],
+           !env.isEmpty {
+            candidates.append("\(env)/surya-ocr/bin/python")
+        }
+        candidates.append(contentsOf: [
             "\(home)/.local/share/uv/tools/surya-ocr/bin/python",
             "/usr/local/share/uv/tools/surya-ocr/bin/python",
-        ]
+        ])
         for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
             return path
         }
