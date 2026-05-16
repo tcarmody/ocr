@@ -155,6 +155,16 @@ public enum CostEstimator {
             return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 80_000, outputTokens: 500
             ))
+        case .frontBackMatterSplitting:
+            // Sonnet 4.6: one call per book scanning only the
+            // chapters identified as front-matter / back-matter.
+            // Typical book: ~5 candidate chapters × ~3K chars each
+            // ≈ 15K-20K input tokens + ~300 output. Lands around
+            // $0.05-0.07 per book; floor at $0 when the book has
+            // no front/back-matter chapters (call doesn't fire).
+            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+                inputTokens: 18_000, outputTokens: 300
+            ))
         }
     }
 
@@ -181,6 +191,10 @@ public enum CostEstimator {
         /// per book reading the full document to find missed
         /// chapter breaks.
         case chapterMissedBreakDetection
+        /// P-Sonnet-Structure (bundled front/back-matter pass). One
+        /// Sonnet call per book scanning chapters identified as
+        /// front-matter / back-matter for bundling.
+        case frontBackMatterSplitting
     }
 
     /// Compute a coarse pre-flight cost estimate. When
@@ -274,6 +288,16 @@ public enum CostEstimator {
                 totalCalls += 1
                 totalCost += cost
             }
+            if cloudFeatures.frontBackMatterSplitting {
+                let cost = costPerCall(.frontBackMatterSplitting)
+                lines.append(.init(
+                    label: "Front/back-matter splitting (Sonnet)",
+                    model: AnthropicModel.sonnet4_6.rawValue,
+                    calls: 1, costUSD: cost
+                ))
+                totalCalls += 1
+                totalCost += cost
+            }
 
             return clamp(
                 lines: lines,
@@ -356,6 +380,19 @@ public enum CostEstimator {
             let cost = costPerCall(.chapterMissedBreakDetection)
             lines.append(.init(
                 label: "Missed chapter breaks (Sonnet, full text)",
+                model: AnthropicModel.sonnet4_6.rawValue,
+                calls: 1, costUSD: cost
+            ))
+            totalCalls += 1
+            totalCost += cost
+        }
+        // Front/back-matter splitting (Sonnet). One call per book
+        // when the book has any front/back-matter chapters; floors
+        // at zero otherwise (the call never fires).
+        if cloudFeatures.frontBackMatterSplitting {
+            let cost = costPerCall(.frontBackMatterSplitting)
+            lines.append(.init(
+                label: "Front/back-matter splitting (Sonnet)",
                 model: AnthropicModel.sonnet4_6.rawValue,
                 calls: 1, costUSD: cost
             ))

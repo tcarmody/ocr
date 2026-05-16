@@ -440,6 +440,15 @@ public actor PDFToEPUBPipeline {
         ) { ClaudeChapterBreakDetector(client: $0, budget: $1) }
     }
 
+    static func makeClaudeFrontBackMatterSplitter(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeFrontBackMatterSplitter? {
+        makeClaudeEngine(
+            options: options, budget: budget,
+            feature: \.frontBackMatterSplitting
+        ) { ClaudeFrontBackMatterSplitter(client: $0, budget: $1) }
+    }
+
     static func makeClaudeMetadataExtractor(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeMetadataExtractor? {
@@ -2458,6 +2467,22 @@ public actor PDFToEPUBPipeline {
             options: options, budget: claudeBudget
         ) {
             book.chapters = await analyzer.analyzeAndApply(
+                chapters: book.chapters
+            )
+        }
+
+        // P-Sonnet-Structure (bundled front/back-matter pass).
+        // Runs AFTER the validator so candidate selection sees
+        // refined `epub:type` values. Targeted: only scans chapters
+        // whose epub:type marks them as front-matter / back-matter
+        // and proposes splits when one chapter bundles multiple
+        // distinct sections (Dedication + Epigraph + Preface, etc).
+        // Cheap (~$0.05–$0.10/book) because the candidate set is
+        // small.
+        if let splitter = Self.makeClaudeFrontBackMatterSplitter(
+            options: options, budget: claudeBudget
+        ) {
+            book.chapters = await splitter.analyzeAndApply(
                 chapters: book.chapters
             )
         }

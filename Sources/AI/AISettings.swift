@@ -237,6 +237,18 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// validator sees the augmented chapter list and can still
         /// reject any false adds.
         public var chapterMissedBreakDetection: Bool
+        /// P-Sonnet-Structure (bundled front/back-matter pass).
+        /// Targeted pass that scans only chapters whose `epub:type`
+        /// places them in front-matter or back-matter (preface,
+        /// foreword, appendix, bibliography, index, notes, etc.)
+        /// and proposes splits inside each one when it bundles
+        /// multiple distinct sections — e.g., a "Preface" chapter
+        /// that's actually Dedication + Epigraph + Preface stacked
+        /// together. Cheap (~$0.05–$0.10/book) because it sees only
+        /// the candidate chapters, not the full book. Runs AFTER
+        /// `chapterStructurePass` so the candidate set is based on
+        /// the refined `epub:type` values.
+        public var frontBackMatterSplitting: Bool
         /// Tier 9 / E-Routing. When `useClaudePageOCR` is on and
         /// this flag is on, pages whose embedded text passes the
         /// quality scorer's `.trust` verdict skip the Sonnet call
@@ -276,6 +288,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             coherencePass: Bool = true,
             chapterStructurePass: Bool = false,
             chapterMissedBreakDetection: Bool = false,
+            frontBackMatterSplitting: Bool = false,
             adaptivePageRouting: Bool = true,
             useBatchAPI: Bool = false,
             parallelPageOCRConcurrency: Int = 1
@@ -291,6 +304,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.coherencePass = coherencePass
             self.chapterStructurePass = chapterStructurePass
             self.chapterMissedBreakDetection = chapterMissedBreakDetection
+            self.frontBackMatterSplitting = frontBackMatterSplitting
             self.adaptivePageRouting = adaptivePageRouting
             self.useBatchAPI = useBatchAPI
             self.parallelPageOCRConcurrency = max(1, parallelPageOCRConcurrency)
@@ -311,6 +325,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             case googleDocumentOCRInCascade
             case chapterStructurePass
             case chapterMissedBreakDetection
+            case frontBackMatterSplitting
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -349,6 +364,9 @@ public struct AISettings: Sendable, Codable, Equatable {
             // expensive of the two structural passes.
             self.chapterMissedBreakDetection = try c.decodeIfPresent(
                 Bool.self, forKey: .chapterMissedBreakDetection
+            ) ?? false
+            self.frontBackMatterSplitting = try c.decodeIfPresent(
+                Bool.self, forKey: .frontBackMatterSplitting
             ) ?? false
             // Default-on: existing users with page-OCR enabled
             // get the cost saving without a re-save; opting out
