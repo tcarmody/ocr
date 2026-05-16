@@ -214,6 +214,16 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// by default in Cloud mode — single Haiku call, real
         /// quality win on long books.
         public var coherencePass: Bool
+        /// P-Sonnet-Structure (chapter pass). One Sonnet call per
+        /// book that walks the local splitter's chapter list and
+        /// validates each break: real chapter vs mid-chapter
+        /// section header promoted by mistake, plus title
+        /// normalization and `epub:type` refinement. Rejected
+        /// breaks get merged into the previous chapter
+        /// (content preserved, not deleted). ~$0.03–$0.05 per
+        /// book; off by default until validated on the corpus
+        /// harness.
+        public var chapterStructurePass: Bool
         /// Tier 9 / E-Routing. When `useClaudePageOCR` is on and
         /// this flag is on, pages whose embedded text passes the
         /// quality scorer's `.trust` verdict skip the Sonnet call
@@ -251,6 +261,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             tocParsing: Bool = false,
             metadataExtraction: Bool = true,
             coherencePass: Bool = true,
+            chapterStructurePass: Bool = false,
             adaptivePageRouting: Bool = true,
             useBatchAPI: Bool = false,
             parallelPageOCRConcurrency: Int = 1
@@ -264,6 +275,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.tocParsing = tocParsing
             self.metadataExtraction = metadataExtraction
             self.coherencePass = coherencePass
+            self.chapterStructurePass = chapterStructurePass
             self.adaptivePageRouting = adaptivePageRouting
             self.useBatchAPI = useBatchAPI
             self.parallelPageOCRConcurrency = max(1, parallelPageOCRConcurrency)
@@ -282,6 +294,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             case useBatchAPI
             case parallelPageOCRConcurrency
             case googleDocumentOCRInCascade
+            case chapterStructurePass
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -311,6 +324,11 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.coherencePass = try c.decodeIfPresent(
                 Bool.self, forKey: .coherencePass
             ) ?? true
+            // Default-off: experimental Sonnet-backed feature
+            // off until measured on the corpus harness.
+            self.chapterStructurePass = try c.decodeIfPresent(
+                Bool.self, forKey: .chapterStructurePass
+            ) ?? false
             // Default-on: existing users with page-OCR enabled
             // get the cost saving without a re-save; opting out
             // restores the every-page-Sonnet behavior.

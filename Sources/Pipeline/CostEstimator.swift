@@ -139,6 +139,14 @@ public enum CostEstimator {
             return AnthropicModel.googleDocumentOCR.pricing.cost(for: Usage(
                 inputTokens: 0, outputTokens: 1
             ))
+        case .chapterStructurePass:
+            // Sonnet 4.6: one call per book validating the chapter
+            // list. ~5K input tokens (chapter titles + opening text
+            // per chapter, capped at 16K) + ~1K output (per-chapter
+            // decision JSON). Lands around $0.03-0.05 per book.
+            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+                inputTokens: 5000, outputTokens: 1000
+            ))
         }
     }
 
@@ -158,6 +166,9 @@ public enum CostEstimator {
         /// Cloud Vision DOCUMENT_TEXT_DETECTION — cascade Stage 2.5.
         /// Fixed $0.0015 per call regardless of region size.
         case googleDocumentOCR
+        /// P-Sonnet-Structure (chapter pass). One Sonnet call per
+        /// book validating the splitter's chapter list.
+        case chapterStructurePass
     }
 
     /// Compute a coarse pre-flight cost estimate. When
@@ -228,6 +239,20 @@ public enum CostEstimator {
                 }
             }
 
+            // Chapter structure refinement — also independent of
+            // OCR mode; one Sonnet call validating the splitter's
+            // chapter list.
+            if cloudFeatures.chapterStructurePass {
+                let cost = costPerCall(.chapterStructurePass)
+                lines.append(.init(
+                    label: "Chapter structure (Sonnet)",
+                    model: AnthropicModel.sonnet4_6.rawValue,
+                    calls: 1, costUSD: cost
+                ))
+                totalCalls += 1
+                totalCost += cost
+            }
+
             return clamp(
                 lines: lines,
                 totalCalls: totalCalls,
@@ -291,6 +316,18 @@ public enum CostEstimator {
                 totalCalls += calls
                 totalCost += cost
             }
+        }
+
+        // Chapter structure refinement (Sonnet). One call per book.
+        if cloudFeatures.chapterStructurePass {
+            let cost = costPerCall(.chapterStructurePass)
+            lines.append(.init(
+                label: "Chapter structure (Sonnet)",
+                model: AnthropicModel.sonnet4_6.rawValue,
+                calls: 1, costUSD: cost
+            ))
+            totalCalls += 1
+            totalCost += cost
         }
 
         return clamp(

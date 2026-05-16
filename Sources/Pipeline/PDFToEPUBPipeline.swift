@@ -423,6 +423,14 @@ public actor PDFToEPUBPipeline {
         ) { ClaudeCoherenceAnalyzer(client: $0, budget: $1) }
     }
 
+    static func makeClaudeChapterStructureAnalyzer(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeChapterStructureAnalyzer? {
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.chapterStructurePass
+        ) { ClaudeChapterStructureAnalyzer(client: $0, budget: $1) }
+    }
+
     static func makeClaudeMetadataExtractor(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeMetadataExtractor? {
@@ -2412,6 +2420,22 @@ public actor PDFToEPUBPipeline {
         )
         var book = assembled.book
         let appliedTOC = assembled.appliedTOC
+
+        // P-Sonnet-Structure (chapter pass). Optional Sonnet pass
+        // that validates the local splitter's chapter list and
+        // refines titles / `epub:type`. Rejected breaks merge
+        // backwards into the previous chapter; the breaking content
+        // becomes a section heading inside the merged chapter.
+        // Same factory gate as the other Cloud features — opted in
+        // via `cloudFeatures.chapterStructurePass`, no-op when the
+        // toggle is off / no API key / not in Cloud mode.
+        if let analyzer = Self.makeClaudeChapterStructureAnalyzer(
+            options: options, budget: claudeBudget
+        ) {
+            book.chapters = await analyzer.analyzeAndApply(
+                chapters: book.chapters
+            )
+        }
 
         // Dump the chapter-shape decision summary alongside the
         // reflow log. The two together explain why the EPUB has the
