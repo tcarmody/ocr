@@ -431,6 +431,15 @@ public actor PDFToEPUBPipeline {
         ) { ClaudeChapterStructureAnalyzer(client: $0, budget: $1) }
     }
 
+    static func makeClaudeChapterBreakDetector(
+        options: Options, budget: ClaudeCallBudget
+    ) -> ClaudeChapterBreakDetector? {
+        makeClaudeEngine(
+            options: options, budget: budget,
+            feature: \.chapterMissedBreakDetection
+        ) { ClaudeChapterBreakDetector(client: $0, budget: $1) }
+    }
+
     static func makeClaudeMetadataExtractor(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudeMetadataExtractor? {
@@ -2420,6 +2429,22 @@ public actor PDFToEPUBPipeline {
         )
         var book = assembled.book
         let appliedTOC = assembled.appliedTOC
+
+        // P-Sonnet-Structure (missed-break pass). Optional Sonnet
+        // pass that reads the full text of each existing chapter
+        // and proposes NEW chapter breaks the local splitter missed
+        // — front-matter to body transitions, body to back-matter
+        // transitions, titles set in regular type. Runs BEFORE the
+        // validator below so the validator sees the augmented
+        // chapter list and can still reject false adds. Same
+        // Cloud-feature gating as the other Sonnet passes.
+        if let detector = Self.makeClaudeChapterBreakDetector(
+            options: options, budget: claudeBudget
+        ) {
+            book.chapters = await detector.analyzeAndApply(
+                chapters: book.chapters
+            )
+        }
 
         // P-Sonnet-Structure (chapter pass). Optional Sonnet pass
         // that validates the local splitter's chapter list and

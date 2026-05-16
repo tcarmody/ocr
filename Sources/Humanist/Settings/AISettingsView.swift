@@ -93,6 +93,8 @@ struct AISettingsView: View {
                            isOn: $vm.settings.cloudFeatures.tocParsing)
                     Toggle("Chapter structure refinement (Sonnet, experimental)",
                            isOn: $vm.settings.cloudFeatures.chapterStructurePass)
+                    Toggle("Missed chapter break detection (Sonnet full-text, ~$0.25/book)",
+                           isOn: $vm.settings.cloudFeatures.chapterMissedBreakDetection)
                     Text("Each toggle gates a separate Cloud feature. Costs are roughly $0.01–$2 per book depending on which are enabled. Google Document OCR sits in the cascade between Tesseract and Claude — it absorbs most of the hard-region work at $0.0015/call before falling through to Sonnet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)

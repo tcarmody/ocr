@@ -147,6 +147,14 @@ public enum CostEstimator {
             return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 5000, outputTokens: 1000
             ))
+        case .chapterMissedBreakDetection:
+            // Sonnet 4.6: one call per book reading the full text.
+            // ~80K input tokens (capped via mid-chapter truncation
+            // for very long books) + ~500 output (typically 0-3
+            // insertions). Lands around $0.24-0.30 per book.
+            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+                inputTokens: 80_000, outputTokens: 500
+            ))
         }
     }
 
@@ -169,6 +177,10 @@ public enum CostEstimator {
         /// P-Sonnet-Structure (chapter pass). One Sonnet call per
         /// book validating the splitter's chapter list.
         case chapterStructurePass
+        /// P-Sonnet-Structure (missed-break pass). One Sonnet call
+        /// per book reading the full document to find missed
+        /// chapter breaks.
+        case chapterMissedBreakDetection
     }
 
     /// Compute a coarse pre-flight cost estimate. When
@@ -252,6 +264,16 @@ public enum CostEstimator {
                 totalCalls += 1
                 totalCost += cost
             }
+            if cloudFeatures.chapterMissedBreakDetection {
+                let cost = costPerCall(.chapterMissedBreakDetection)
+                lines.append(.init(
+                    label: "Missed chapter breaks (Sonnet, full text)",
+                    model: AnthropicModel.sonnet4_6.rawValue,
+                    calls: 1, costUSD: cost
+                ))
+                totalCalls += 1
+                totalCost += cost
+            }
 
             return clamp(
                 lines: lines,
@@ -323,6 +345,17 @@ public enum CostEstimator {
             let cost = costPerCall(.chapterStructurePass)
             lines.append(.init(
                 label: "Chapter structure (Sonnet)",
+                model: AnthropicModel.sonnet4_6.rawValue,
+                calls: 1, costUSD: cost
+            ))
+            totalCalls += 1
+            totalCost += cost
+        }
+        // Missed-break detection (Sonnet, full text). One call per book.
+        if cloudFeatures.chapterMissedBreakDetection {
+            let cost = costPerCall(.chapterMissedBreakDetection)
+            lines.append(.init(
+                label: "Missed chapter breaks (Sonnet, full text)",
                 model: AnthropicModel.sonnet4_6.rawValue,
                 calls: 1, costUSD: cost
             ))

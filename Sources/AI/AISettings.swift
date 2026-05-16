@@ -224,6 +224,19 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// book; off by default until validated on the corpus
         /// harness.
         public var chapterStructurePass: Bool
+        /// P-Sonnet-Structure (missed-break pass). Complementary
+        /// to `chapterStructurePass`: this pass reads the full
+        /// text of each existing chapter and proposes NEW chapter
+        /// breaks the local splitter missed entirely — front-matter
+        /// to body transitions, body to back-matter transitions,
+        /// chapter titles set in regular type that no heading
+        /// heuristic caught. ~$0.20–$0.30 per book (full text input
+        /// is the dominant cost; capped at ~80K input tokens via
+        /// mid-chapter truncation). Off by default; opt-in.
+        /// When both passes are on, the detector runs first so the
+        /// validator sees the augmented chapter list and can still
+        /// reject any false adds.
+        public var chapterMissedBreakDetection: Bool
         /// Tier 9 / E-Routing. When `useClaudePageOCR` is on and
         /// this flag is on, pages whose embedded text passes the
         /// quality scorer's `.trust` verdict skip the Sonnet call
@@ -262,6 +275,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             metadataExtraction: Bool = true,
             coherencePass: Bool = true,
             chapterStructurePass: Bool = false,
+            chapterMissedBreakDetection: Bool = false,
             adaptivePageRouting: Bool = true,
             useBatchAPI: Bool = false,
             parallelPageOCRConcurrency: Int = 1
@@ -276,6 +290,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.metadataExtraction = metadataExtraction
             self.coherencePass = coherencePass
             self.chapterStructurePass = chapterStructurePass
+            self.chapterMissedBreakDetection = chapterMissedBreakDetection
             self.adaptivePageRouting = adaptivePageRouting
             self.useBatchAPI = useBatchAPI
             self.parallelPageOCRConcurrency = max(1, parallelPageOCRConcurrency)
@@ -295,6 +310,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             case parallelPageOCRConcurrency
             case googleDocumentOCRInCascade
             case chapterStructurePass
+            case chapterMissedBreakDetection
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -328,6 +344,11 @@ public struct AISettings: Sendable, Codable, Equatable {
             // off until measured on the corpus harness.
             self.chapterStructurePass = try c.decodeIfPresent(
                 Bool.self, forKey: .chapterStructurePass
+            ) ?? false
+            // Same default-off posture; this one is the more
+            // expensive of the two structural passes.
+            self.chapterMissedBreakDetection = try c.decodeIfPresent(
+                Bool.self, forKey: .chapterMissedBreakDetection
             ) ?? false
             // Default-on: existing users with page-OCR enabled
             // get the cost saving without a re-save; opting out
