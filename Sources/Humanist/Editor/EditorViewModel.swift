@@ -119,6 +119,11 @@ final class EditorViewModel: ObservableObject {
     /// preview-IntersectionObserver back-sync — the source pane
     /// follows whichever pane the user is steering with.
     @Published private(set) var scrollCodeToAnchor: AnchorScrollRequest?
+    /// Same shape, but routed to the WYSIWYG WebView so the rendered
+    /// editor jumps to the anchor element. Driven by "Align Others
+    /// to Source / PDF / Preview" commands the same way `scrollCode`
+    /// and `scrollPreview` are. Nil until the first alignment.
+    @Published private(set) var scrollWYSIWYGToAnchor: AnchorScrollRequest?
 
     /// `hu-page-N` anchor the CodeMirror cursor currently sits inside
     /// (or `nil` until the file's first cursor activity). Used by
@@ -144,6 +149,18 @@ final class EditorViewModel: ObservableObject {
     /// granularity; reported by the JS IntersectionObserver
     /// alongside the page-level anchor.
     @Published private(set) var currentPreviewParagraphAnchor: String?
+    /// Topmost `hu-page-*` anchor visible in the WYSIWYG WebView.
+    /// Same passive-tracking posture as the source / preview anchors:
+    /// updated by an IntersectionObserver bridge as the user scrolls
+    /// or edits, but the WYSIWYG never auto-drives the other panes —
+    /// alignment happens only via the explicit "Align Others to
+    /// WYSIWYG Top" command. Nil until the first IO event.
+    @Published private(set) var currentWYSIWYGAnchor: String?
+    /// Topmost paragraph anchor visible in the WYSIWYG WebView. Same
+    /// shape as `currentPreviewParagraphAnchor`; drives the
+    /// paragraph-level snap when the user explicitly aligns from
+    /// WYSIWYG.
+    @Published private(set) var currentWYSIWYGParagraphAnchor: String?
     /// Last PDF page the embedded PDFView reported. Updated passively
     /// from `PDFViewPageChanged`; consumed by "Align Others to PDF
     /// Page". Nil before the user has navigated the PDF.
@@ -585,6 +602,18 @@ final class EditorViewModel: ObservableObject {
         currentPreviewParagraphAnchor = paragraphId
     }
 
+    /// WYSIWYG-side anchor reporter. Passive — same posture as the
+    /// preview and source reporters. The explicit cross-pane drive
+    /// is `alignOthersToWYSIWYGTop()`.
+    func didReportWYSIWYGAnchor(_ anchorId: String) {
+        currentWYSIWYGAnchor = anchorId
+    }
+
+    /// WYSIWYG paragraph-anchor reporter. Same posture.
+    func didReportWYSIWYGParagraph(_ paragraphId: String) {
+        currentWYSIWYGParagraphAnchor = paragraphId
+    }
+
     /// Scroll source + preview to the anchor that owns the cursor's
     /// current line in the source pane. PDF jumps to the
     /// corresponding page. The source pane itself is not touched —
@@ -609,6 +638,13 @@ final class EditorViewModel: ObservableObject {
     func alignOthersToPreviewTop() {
         guard let anchorId = currentPreviewAnchor else { return }
         alignOthers(to: anchorId, drivingPane: .preview)
+    }
+
+    /// Scroll source + preview + PDF to the WYSIWYG's topmost
+    /// anchor. The WYSIWYG itself stays put.
+    func alignOthersToWYSIWYGTop() {
+        guard let anchorId = currentWYSIWYGAnchor else { return }
+        alignOthers(to: anchorId, drivingPane: .wysiwyg)
     }
 
     /// Programmatically navigate to a specific paragraph anchor —
@@ -692,6 +728,8 @@ final class EditorViewModel: ObservableObject {
             preferredAnchorId = currentSourceParagraphAnchor ?? entry.anchorId
         case .preview:
             preferredAnchorId = currentPreviewParagraphAnchor ?? entry.anchorId
+        case .wysiwyg:
+            preferredAnchorId = currentWYSIWYGParagraphAnchor ?? entry.anchorId
         case .pdf, .none:
             preferredAnchorId = entry.anchorId
         }
@@ -705,6 +743,9 @@ final class EditorViewModel: ObservableObject {
         }
         if drivingPane != .source {
             scrollCodeToAnchor = req
+        }
+        if drivingPane != .wysiwyg {
+            scrollWYSIWYGToAnchor = req
         }
         if drivingPane != .pdf,
            let pdfView = pdfController?.pdfView,
@@ -723,7 +764,7 @@ final class EditorViewModel: ObservableObject {
     /// (which controls pane visibility): this one identifies the
     /// authoritative source of an alignment action.
     enum AlignmentDriver: Sendable, Equatable {
-        case source, pdf, preview, none
+        case source, pdf, preview, wysiwyg, none
     }
 
     // MARK: - re-OCR selection (menu enrichment)

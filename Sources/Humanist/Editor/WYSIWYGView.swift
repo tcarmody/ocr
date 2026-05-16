@@ -46,6 +46,18 @@ struct WYSIWYGView: NSViewRepresentable {
     /// these change, the coordinator reapplies them via a tiny JS
     /// hook without reloading the page (no cursor jump).
     var appearance: WYSIWYGAppearance
+    /// Inbound scroll request. When this changes, the coordinator
+    /// runs a small JS snippet that scrolls the WebView to the
+    /// matching `id`. nil → no pending request. Same shape and
+    /// nonce-tracking as the Source and Preview panes use.
+    let scrollRequest: EditorViewModel.AnchorScrollRequest?
+    /// Fires when the JS IntersectionObserver reports a new
+    /// topmost-visible `hu-page-*` anchor. Drives passive tracking
+    /// of `EditorViewModel.currentWYSIWYGAnchor` — the explicit
+    /// cross-pane drive is still menu-triggered.
+    let onAnchorVisible: (String) -> Void
+    /// Same shape, but for paragraph anchors (`hu-p-*`).
+    let onParagraphVisible: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -99,6 +111,14 @@ struct WYSIWYGView: NSViewRepresentable {
                 coord.loadInitial()
             }
         }
+
+        // Inbound scroll request from "Align Others to …" commands.
+        // Match by nonce so an identical anchorId fires again when a
+        // new request is posted (same shape Preview / Source use).
+        if let req = scrollRequest, req.nonce != coord.lastSeenScrollNonce {
+            coord.lastSeenScrollNonce = req.nonce
+            coord.scrollToAnchor(req.anchorId)
+        }
     }
 
     @MainActor
@@ -130,6 +150,10 @@ struct WYSIWYGView: NSViewRepresentable {
         /// Last `reloadAfterSaveToken` we acted on. Compared in
         /// `updateNSView` to detect a new save completion.
         var lastSeenSaveToken: Int = -1
+        /// Last AnchorScrollRequest nonce we applied. Compared in
+        /// `updateNSView` so identical anchorIds on consecutive
+        /// requests still re-scroll.
+        var lastSeenScrollNonce: Int = .min
 
         init(parent: WYSIWYGView) {
             self.parent = parent
@@ -200,8 +224,39 @@ struct WYSIWYGView: NSViewRepresentable {
                         parent.xhtml = updated
                     }
                 }
+            case "anchor":
+                if let id = dict["id"] as? String {
+                    parent.onAnchorVisible(id)
+                }
+            case "paragraph":
+                if let id = dict["id"] as? String {
+                    parent.onParagraphVisible(id)
+                }
             default:
                 break
+            }
+        }
+
+        /// Scroll the WebView so the element with `id == anchorId`
+        /// sits near the top of the viewport. Uses the same
+        /// rootMargin posture as the Preview pane (rooted at the
+        /// top 20% so the user lands above the fold) and a smooth
+        /// scroll behavior so the motion isn't jarring.
+        func scrollToAnchor(_ anchorId: String) {
+            let escaped = anchorId
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            let js = """
+            (function() {
+              var el = document.getElementById('\(escaped)');
+              if (!el) return;
+              el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            })();
+            """
+            if isReady {
+                webView?.evaluateJavaScript(js, completionHandler: nil)
+            } else {
+                pendingJS.append(js)
             }
         }
 
@@ -544,12 +599,76 @@ private func renderEnvelope(
           }
           postEdit();
         };
+        function setupAnchorObservers() {
+          if (!('IntersectionObserver' in window)) return;
+          if (!window.webkit
+              || !window.webkit.messageHandlers
+              || !window.webkit.messageHandlers.wysiwyg) return;
+
+          // Mirrors the PreviewView observer: report topmost-visible
+          // page-level (`hu-page-*`) and paragraph-level (`hu-p-*`)
+          // anchors as the user scrolls. Reporting is passive —
+          // updates the Swift side's currentWYSIWYG* state but
+          // doesn't cause the other panes to scroll. The explicit
+          // cross-pane drive is the "Align Others to WYSIWYG"
+          // menu command.
+          var pageAnchors = document.querySelectorAll('[id^="hu-page-"]');
+          var paraAnchors = document.querySelectorAll('[id^="hu-p-"]');
+          if (!pageAnchors.length && !paraAnchors.length) return;
+
+          var lastPageActive = null;
+          var lastParaActive = null;
+
+          function topmostVisible(entries) {
+            var visible = entries.filter(function (e) { return e.isIntersecting; });
+            if (!visible.length) return null;
+            visible.sort(function (a, b) {
+              return a.boundingClientRect.top - b.boundingClientRect.top;
+            });
+            return visible[0].target.id;
+          }
+
+          function post(typeKey, id) {
+            try {
+              window.webkit.messageHandlers.wysiwyg.postMessage({
+                type: typeKey, id: id
+              });
+            } catch (e) {}
+          }
+
+          if (pageAnchors.length) {
+            var pageIO = new IntersectionObserver(function (entries) {
+              var topId = topmostVisible(entries);
+              if (topId && topId !== lastPageActive) {
+                lastPageActive = topId;
+                post('anchor', topId);
+              }
+            }, { rootMargin: '0px 0px -80% 0px', threshold: 0 });
+            for (var i = 0; i < pageAnchors.length; i++) {
+              pageIO.observe(pageAnchors[i]);
+            }
+          }
+          if (paraAnchors.length) {
+            var paraIO = new IntersectionObserver(function (entries) {
+              var topId = topmostVisible(entries);
+              if (topId && topId !== lastParaActive) {
+                lastParaActive = topId;
+                post('paragraph', topId);
+              }
+            }, { rootMargin: '0px 0px -80% 0px', threshold: 0 });
+            for (var j = 0; j < paraAnchors.length; j++) {
+              paraIO.observe(paraAnchors[j]);
+            }
+          }
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
           // Make Enter produce `<p>` instead of the WebKit
           // default `<div>` — keeps the source consistent with
           // the rest of the codebase's paragraph convention.
           try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (e) {}
           document.body.addEventListener('input', scheduleEdit);
+          setupAnchorObservers();
         });
       })();
       </script>

@@ -328,6 +328,7 @@ private struct ViewMenuAlignmentCommands: View {
         EditorAlignFromSourceCommand()
         EditorAlignFromPDFCommand()
         EditorAlignFromPreviewCommand()
+        EditorAlignFromWYSIWYGCommand()
     }
 }
 
@@ -445,6 +446,22 @@ private struct EditorAlignFromPreviewCommand: View {
         }
         .keyboardShortcut("3", modifiers: [.command, .shift])
         .disabled(vm?.currentPreviewAnchor == nil)
+    }
+}
+
+/// Drive the source + PDF + preview to the WYSIWYG's topmost-visible
+/// anchor. The WYSIWYG itself stays put. Same passive-tracking
+/// posture as Source / Preview — the WYSIWYG never auto-syncs the
+/// other panes during normal editing or scrolling; this command is
+/// the explicit cross-pane drive.
+private struct EditorAlignFromWYSIWYGCommand: View {
+    @FocusedObject private var vm: EditorViewModel?
+    var body: some View {
+        Button("Align Others to WYSIWYG Top") {
+            vm?.alignOthersToWYSIWYGTop()
+        }
+        .keyboardShortcut("4", modifiers: [.command, .shift])
+        .disabled(vm?.currentWYSIWYGAnchor == nil)
     }
 }
 

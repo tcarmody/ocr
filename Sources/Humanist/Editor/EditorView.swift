@@ -566,7 +566,10 @@ struct EditorView: View {
                         fontFamily: EditorFontFamily(rawValue: wysiwygFontFamily) ?? .serif,
                         fontSize: wysiwygFontSize,
                         theme: EditorThemeMode(rawValue: wysiwygTheme) ?? .system
-                    )
+                    ),
+                    scrollRequest: vm.scrollWYSIWYGToAnchor,
+                    onAnchorVisible: { id in vm.didReportWYSIWYGAnchor(id) },
+                    onParagraphVisible: { id in vm.didReportWYSIWYGParagraph(id) }
                 )
             } else if vm.selectedFile != nil {
                 VStack {
