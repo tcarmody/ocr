@@ -107,7 +107,7 @@ struct WelcomeSheet: View {
                         .background(Color.green, in: Capsule())
                 }
             }
-            Text("Surya analyses page layout before OCR — classifying regions as headings, body text, footnotes, figures, and tables. This drives chapter structure, footnote linking, and table extraction.")
+            Text("Surya analyses page layout before OCR — classifying regions as headings, body text, footnotes, figures, and tables. **Strongly recommended for image, table, and layout detection** on scanned books. Without it, the pipeline still extracts text and falls back to PDFKit image-XObject detection on born-digital books + Apple Vision saliency for figures on scanned pages, but the fallback is markedly lower quality than Surya — fewer figures detected, no table structure, no figure↔caption pairing.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -115,7 +115,7 @@ struct WelcomeSheet: View {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                    Text("Surya is not installed. Conversions will use Apple Vision OCR only — functional, but with less structure detection.")
+                    Text("Surya is not installed. Born-digital books still get image extraction via PDFKit; scanned books get a lower-quality Vision saliency fallback. Tables won't be extracted as structured `<table>` elements.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

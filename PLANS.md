@@ -810,6 +810,37 @@ L-Foundation-Models Phase 4):
   Search, Show All Languages). Replaces the silently-blank
   table that previously looked like a data-load bug.
 
+**Done — P-Figure-Fallback: born-digital + scanned figure detection without Surya (2026-05-15)**:
+- **PDFImageXObjectDetector** in `PDFIngest`. Walks each page's
+  CGPDFContentStream looking for `Do` operators referencing Image
+  XObjects, tracks the CTM stack across `q`/`Q`/`cm`, and emits
+  pixel-perfect placement bboxes in Vision-normalized coords.
+  Coverage filters drop page-sized scan rasters (≥85%) and
+  decorative spot illustrations (<2%). Preferred over Surya for
+  born-digital `.picture` regions — XObjects give the original
+  PDF placement rather than rasterizer-dependent bboxes.
+- **VisionFigureDetector** in `Layout`. Runs
+  `VNGenerateObjectnessBasedSaliencyImageRequest` against the
+  rendered page image; filters detections by minimum page coverage
+  (2%) and maximum text-observation overlap (25%); emits
+  `LayoutRegion(kind: .picture)` entries. Last-resort fallback for
+  scanned books when Surya isn't installed. Quality bound: misses
+  small figures, no `.formula`/`.table` distinction.
+- **Pipeline merge** in `analyzeLayoutWithRetry` +
+  `augmentWithVisionSaliency`. Strategy: PDFKit XObjects always run
+  first; overlapping Surya `.picture` regions are dropped in favor
+  of the XObject bbox; non-picture Surya regions (text/heading/
+  table/footnote/caption) are kept intact; Vision saliency fires
+  only when both XObjects and Surya produced zero picture/formula
+  regions and a page image is available. Wired into all three
+  figure-extraction call sites (main cascade loop, sync page-OCR,
+  batch-prep page-OCR).
+- **Wizard copy updates** in `WelcomeSheet` + `SuryaSetupSheet`.
+  Surya now framed as "strongly recommended for image, table, and
+  layout detection," with the absence-mode behavior (PDFKit
+  XObjects for born-digital, Vision saliency for scanned)
+  documented inline so users understand what they lose by skipping.
+
 **Done — P-Bundled-Tesseract: self-contained Tesseract distribution (2026-05-15)**:
 - **Weak-linked dylibs + dlsym runtime gate** (Phase A). Removed
   `link "tesseract"` / `link "leptonica"` directives from the

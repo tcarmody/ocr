@@ -58,11 +58,11 @@ struct SuryaSetupSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Set Up Surya")
                 .font(.title2.bold())
-            Text("Surya is an open-source document layout model that analyses each page before OCR, classifying regions as headings, body text, footnotes, figures, and tables. That classification drives the structure of the output EPUB — chapter splits, footnote linking, figure extraction, and table recognition all depend on it.")
+            Text("Surya is an open-source document layout model that analyses each page before OCR, classifying regions as headings, body text, footnotes, figures, and tables. That classification drives the structure of the output EPUB — chapter splits, footnote linking, figure extraction, and table recognition all depend on it. **Strongly recommended for image, table, and layout detection.**")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Without Surya, Humanist falls back to Apple Vision OCR only: you still get readable text, but without region-level structure detection.")
+            Text("Without Surya, the pipeline still extracts text. Born-digital books get image extraction via PDFKit's content-stream walker (pixel-perfect bboxes). Scanned books get a lower-quality figure-detection fallback using Apple Vision's saliency model — better than nothing but markedly worse than Surya for illustrated material. Tables won't be extracted as structured `<table>` elements either way without Surya.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

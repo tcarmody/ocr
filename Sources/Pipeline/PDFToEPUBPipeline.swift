@@ -309,6 +309,18 @@ public actor PDFToEPUBPipeline {
     private let suryaEngine: (any OCREngine)?
     private let layoutAnalyzer: SuryaLayoutAnalyzer?
     private let tableExtractor: SuryaTableExtractor?
+    /// Born-digital figure detection — walks each PDF page's content
+    /// stream for image XObject placements. Preferred over Surya for
+    /// `.picture` regions when present because PDF XObjects give us
+    /// pixel-perfect bboxes from the source, not heuristic guesses
+    /// from a rasterized page. Returns empty for fully-scanned PDFs;
+    /// the pipeline falls through to Surya / Vision saliency.
+    private nonisolated let pdfImageXObjectDetector = PDFImageXObjectDetector()
+    /// Vision saliency-based figure fallback. Consulted only when
+    /// the PDF carries no image XObjects AND Surya isn't installed,
+    /// so scanned books without Surya at least get *some* figure
+    /// regions extracted (lower quality than Surya, but non-zero).
+    private nonisolated let visionFigureDetector = VisionFigureDetector()
     // `nonisolated` so `runPageOCRPage` / `preparePageForBatch` (also
     // nonisolated; called from sending TaskGroup closures) can read
     // them without an actor hop. Both types are Sendable value types
@@ -1265,6 +1277,19 @@ public actor PDFToEPUBPipeline {
     /// Returns (layout, errorDescription). Either both are
     /// meaningful (success: layout non-nil, error nil) or layout is
     /// nil and error describes both attempts.
+    /// Run the layout pipeline for one page. Three-source merge:
+    ///
+    ///   1. **PDFKit image XObject walk** — pixel-perfect picture
+    ///      bboxes for born-digital pages. Always runs (cheap, no
+    ///      external deps); preferred over Surya's `.picture`
+    ///      regions when both detect a figure at the same place.
+    ///   2. **Surya layout analyzer** — full region classification
+    ///      (text/heading/footnote/table/etc.) when installed. Skipped
+    ///      when `layoutAnalyzer == nil`.
+    ///   3. **Vision saliency** — last-resort `.picture` detection
+    ///      when neither XObject nor Surya found any figure regions.
+    ///      Lower quality than Surya but better than no figures on
+    ///      scanned books.
     private func analyzeLayoutWithRetry(
         pdf: LoadedPDF,
         pageIndex: Int,
@@ -1273,35 +1298,174 @@ public actor PDFToEPUBPipeline {
         initialPageBounds: CGSize,
         stagingDir: URL
     ) async -> (layout: [LayoutRegion]?, error: String?) {
-        guard let analyzer = layoutAnalyzer else { return (nil, nil) }
-        do {
-            let result = try await analyzer.analyze(
-                imageURL: initialPNGURL, pageBounds: initialPageBounds
-            )
-            return (result, nil)
-        } catch let primaryError {
-            let retryDPI = max(150, initialDPI * 0.75)
+        // Step 1: born-digital image XObjects (always runs).
+        let xobjectFigures = pdfImageXObjectDetector.detect(
+            in: pdf, pageIndex: pageIndex
+        )
+
+        // Step 2: Surya layout when available. The retry-at-lower-DPI
+        // path stays — Surya occasionally OOMs on very-high-DPI pages.
+        var suryaRegions: [LayoutRegion]? = nil
+        var suryaError: String? = nil
+        if let analyzer = layoutAnalyzer {
             do {
-                let retryRenderer = PDFRenderer(dpi: retryDPI)
-                let retryImage = try retryRenderer.renderPage(at: pageIndex, of: pdf)
-                let retryURL = stagingDir.appendingPathComponent(
-                    "page-\(pageIndex)-retry.png"
+                suryaRegions = try await analyzer.analyze(
+                    imageURL: initialPNGURL, pageBounds: initialPageBounds
                 )
-                Self.savePNG(retryImage, to: retryURL)
-                let retryBounds = CGSize(
-                    width: retryImage.width, height: retryImage.height
-                )
-                let result = try await analyzer.analyze(
-                    imageURL: retryURL, pageBounds: retryBounds
-                )
-                return (result, nil)
-            } catch let retryError {
-                let msg = "primary@\(Int(initialDPI))dpi: \(primaryError); "
-                    + "retry@\(Int(retryDPI))dpi: \(retryError)"
-                return (nil, msg)
+            } catch let primaryError {
+                let retryDPI = max(150, initialDPI * 0.75)
+                do {
+                    let retryRenderer = PDFRenderer(dpi: retryDPI)
+                    let retryImage = try retryRenderer.renderPage(at: pageIndex, of: pdf)
+                    let retryURL = stagingDir.appendingPathComponent(
+                        "page-\(pageIndex)-retry.png"
+                    )
+                    Self.savePNG(retryImage, to: retryURL)
+                    let retryBounds = CGSize(
+                        width: retryImage.width, height: retryImage.height
+                    )
+                    suryaRegions = try await analyzer.analyze(
+                        imageURL: retryURL, pageBounds: retryBounds
+                    )
+                } catch let retryError {
+                    suryaError = "primary@\(Int(initialDPI))dpi: \(primaryError); "
+                        + "retry@\(Int(retryDPI))dpi: \(retryError)"
+                }
             }
         }
+
+        // Step 3 (deferred to caller-trigger): Vision saliency. We
+        // can't run it here without the page CGImage; the existing
+        // call sites already have the image in scope so they invoke
+        // `visionFigureDetector` themselves when our return is empty.
+
+        let merged = Self.mergeLayoutSources(
+            xobjectFigures: xobjectFigures,
+            suryaRegions: suryaRegions
+        )
+        // `merged` is nil when Surya wasn't installed. Surya errors
+        // (when the analyzer ran and crashed) surface independently
+        // so the debug log captures them either way.
+        return (merged, suryaError)
     }
+
+    /// Figure-detection fallback for the no-Surya case. Returns
+    /// `ExtractedFigure`s that feed `figureExtractionsByPage`
+    /// directly, *bypassing* the layout-regions array — so the
+    /// reflow's non-region-aware path still processes body text.
+    /// Tries PDFKit image XObjects first (born-digital, pixel-
+    /// perfect), then Vision saliency (scanned, lower quality).
+    /// Returns empty when both come back empty or Surya is
+    /// installed (caller should be using the layout-regions path
+    /// in that case).
+    private func extractFallbackFigures(
+        pdf: LoadedPDF,
+        pageIndex: Int,
+        pageImage: CGImage,
+        textObservations: [TextObservation],
+        layoutAvailable: Bool
+    ) async -> [FigureExtractor.ExtractedFigure] {
+        // No fallback needed when Surya provided a layout — figure
+        // extraction already ran against those regions.
+        guard !layoutAvailable else { return [] }
+
+        // Step A: PDFKit image XObject placements (born-digital).
+        let xobjects = pdfImageXObjectDetector.detect(
+            in: pdf, pageIndex: pageIndex
+        )
+        if !xobjects.isEmpty {
+            let syntheticRegions = xobjects.enumerated().map { idx, x in
+                LayoutRegion(
+                    kind: .picture, box: x.box,
+                    readingOrder: idx, confidence: 1.0
+                )
+            }
+            return FigureExtractor().extract(
+                pageIndex: pageIndex,
+                regions: syntheticRegions,
+                pageImage: pageImage
+            )
+        }
+
+        // Step B: Vision saliency (scanned books). Conservative —
+        // only fires when the page has text observations to filter
+        // against, so a fully-blank page can't produce false
+        // positives. Page-OCR mode (textObservations empty) skips
+        // this on purpose; without text to anchor against, the
+        // false-positive rate on prose pages is too high.
+        guard !textObservations.isEmpty else { return [] }
+        let saliencyRegions = await visionFigureDetector.detect(
+            pageImage: pageImage,
+            textObservations: textObservations
+        )
+        guard !saliencyRegions.isEmpty else { return [] }
+        return FigureExtractor().extract(
+            pageIndex: pageIndex,
+            regions: saliencyRegions,
+            pageImage: pageImage
+        )
+    }
+
+    /// Combine PDFKit image-XObject detections with Surya layout
+    /// regions. Only applies when Surya is installed (suryaRegions
+    /// non-nil) — without Surya, the layout array would contain only
+    /// picture regions and the reflow's region-aware path would
+    /// emit just those figures, dropping all body text. The
+    /// no-Surya case is handled by a separate figure-only path
+    /// (`extractFallbackFigures`) that feeds `figureExtractionsByPage`
+    /// directly without polluting the layout.
+    ///
+    /// Strategy when Surya is present:
+    ///   * Override Surya's `.picture` regions with XObject bboxes
+    ///     (pixel-perfect from the PDF beats Surya's rasterized
+    ///     guesses). Drop any Surya `.picture` that overlaps an
+    ///     XObject by ≥50%.
+    ///   * Keep Surya's `.formula`, `.table`, `.text`, `.caption`,
+    ///     `.sectionHeader`, etc. intact (XObjects can't classify).
+    ///   * Append the XObject bboxes as additional `.picture`
+    ///     regions at the tail of the layout.
+    static func mergeLayoutSources(
+        xobjectFigures: [PDFImageXObjectDetector.DetectedImage],
+        suryaRegions: [LayoutRegion]?
+    ) -> [LayoutRegion]? {
+        guard let surya = suryaRegions else {
+            // No Surya — leave layout nil. The caller routes
+            // XObjects + saliency through `extractFallbackFigures`
+            // so the reflow's non-region-aware path still
+            // processes body text.
+            return nil
+        }
+        let xobjectBoxes = xobjectFigures.map(\.box)
+        var out: [LayoutRegion] = []
+        for region in surya {
+            if region.kind == .picture {
+                let overlapsXObject = xobjectBoxes.contains { xbox in
+                    Self.overlapFraction(of: region.box, with: xbox) >= 0.5
+                }
+                if overlapsXObject { continue }
+            }
+            out.append(region)
+        }
+        let baseOrder = out.map(\.readingOrder).max() ?? -1
+        for (idx, box) in xobjectBoxes.enumerated() {
+            out.append(LayoutRegion(
+                kind: .picture, box: box,
+                readingOrder: baseOrder + 1 + idx, confidence: 1.0
+            ))
+        }
+        return out
+    }
+
+    /// Fraction of `a`'s area covered by its intersection with `b`.
+    /// Symmetric replacement for `CGRect.intersects` when we care
+    /// "how much of the smaller region is inside the other."
+    static func overlapFraction(of a: CGRect, with b: CGRect) -> CGFloat {
+        let intersection = a.intersection(b)
+        guard !intersection.isNull, a.width > 0, a.height > 0 else { return 0 }
+        return (intersection.width * intersection.height)
+            / (a.width * a.height)
+    }
+
 
     public struct SinglePageResult: Sendable {
         public var blocks: [Block]
@@ -1774,6 +1938,24 @@ public actor PDFToEPUBPipeline {
                 layoutForPage = layoutOutcome.layout
                 if let err = layoutOutcome.error {
                     layoutErrors[i] = err
+                }
+
+                // No-Surya figure fallback. Routes around the
+                // layout array entirely — picks up born-digital
+                // XObjects first, then Vision saliency, and
+                // appends ExtractedFigures directly to the
+                // figure-asset pile so the reflow's non-region-
+                // aware path still processes body text. No-op
+                // when Surya provided a layout.
+                let fallbackFigures = await extractFallbackFigures(
+                    pdf: pdf, pageIndex: i,
+                    pageImage: image,
+                    textObservations: observations,
+                    layoutAvailable: layoutForPage != nil
+                )
+                if !fallbackFigures.isEmpty {
+                    figureExtractionsByPage[i, default: []]
+                        .append(contentsOf: fallbackFigures)
                 }
 
                 // Phase 4.5: per-region cascade. Vision → Surya
@@ -2994,6 +3176,21 @@ public actor PDFToEPUBPipeline {
                 pageIndex: i, regions: regions, pageImage: image
             )
         }
+        // Fallback figures when Surya didn't provide a layout.
+        // Page-OCR mode has no text observations from a Vision
+        // pass (we bypass the cascade), so we deliberately pass
+        // empty — the fallback then skips Vision saliency (its
+        // false-positive rate is too high without anchors) and
+        // returns just PDFKit-XObject figures for born-digital
+        // pages. Scanned books in page-OCR mode without Surya
+        // get no fallback figures, only the cover image.
+        let fallbackFigures = await extractFallbackFigures(
+            pdf: pdf, pageIndex: i,
+            pageImage: image,
+            textObservations: [],
+            layoutAvailable: layoutRegions != nil
+        )
+        figures.append(contentsOf: fallbackFigures)
 
         return PendingPageOCR(
             pageIndex: i,
@@ -3411,6 +3608,17 @@ public actor PDFToEPUBPipeline {
                 pageIndex: i, regions: regions, pageImage: image
             )
         }
+        // PDFKit XObject fallback when Surya isn't installed. Same
+        // posture as the sync page-OCR path: skip Vision saliency
+        // in page-OCR mode (no text-observation anchor) so only
+        // born-digital pages produce fallback figures here.
+        let fallbackFigures = await extractFallbackFigures(
+            pdf: pdf, pageIndex: i,
+            pageImage: image,
+            textObservations: [],
+            layoutAvailable: layoutOutcome.layout != nil
+        )
+        figures.append(contentsOf: fallbackFigures)
 
         let request = pageEngine.buildBatchRequest(
             pageImage: image, languages: options.languages
