@@ -703,7 +703,7 @@ struct HelpMenuCommands: Commands {
 /// e.g. the launcher's ModeStrip badge writes `.ai` so a Cloud-mode
 /// click lands on the AI pane rather than whatever tab was last viewed.
 enum SettingsTab: String {
-    case editor, conversion, ai, chat, appearance
+    case editor, conversion, ai, apiKeys, chat, appearance
 
     static let storageKey = "humanist.settings.selectedTab"
 }
@@ -726,6 +726,9 @@ private struct SettingsRoot: View {
             AISettingsView()
                 .tabItem { Label("AI", systemImage: "sparkles") }
                 .tag(SettingsTab.ai)
+            APIKeysSettingsView()
+                .tabItem { Label("API Keys", systemImage: "key.fill") }
+                .tag(SettingsTab.apiKeys)
             ChatSettingsView()
                 .tabItem {
                     Label("Chat", systemImage: "bubble.left.and.text.bubble.right")
