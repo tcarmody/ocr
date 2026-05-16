@@ -126,6 +126,9 @@ struct ContentView: View {
         .onAppear {
             if !welcomeShown { showingWelcome = true }
             refreshInputScannerLifecycle()
+            // Re-read keychain so a key just pasted in Settings →
+            // AI appears in the OCR Engine picker without a relaunch.
+            queue.refreshAPIKeyAvailability()
         }
         // Track the auto-scan toggle and the output-folder picker
         // both — flipping the toggle starts/stops the watcher, and
@@ -295,17 +298,37 @@ struct ContentView: View {
     @ViewBuilder
     private var ocrEngineMenu: some View {
         Menu {
+            // Flat list, ordered by typical "first to reach for"
+            // descending: cascade default → offline-only Surya →
+            // budget cloud page-OCR (Gemini) → premium cloud
+            // page-OCR (Claude) → specialized period / manuscript
+            // modes. Gemini sits ahead of Claude Typeset because
+            // the per-page cost is ~7-10× lower at comparable
+            // quality on typeset prose; users who specifically want
+            // Sonnet still reach it one row down.
+            // Cloud-backed entries hide when their required API key
+            // isn't configured. Pasting a key in Settings → AI flips
+            // the gate the next time the launcher reappears (via
+            // `refreshAPIKeyAvailability()` on `.onAppear`). The
+            // `Auto` and `Surya` rows are always present — they don't
+            // need cloud access.
             Picker("OCR Engine", selection: ocrEngineBinding) {
                 Text("Auto (Vision + Tesseract cascade)")
                     .tag(LauncherOCREngine.auto)
                 Text("Surya OCR (local, force)")
                     .tag(LauncherOCREngine.surya)
-                Text("Claude OCR — Typeset ($$$)")
-                    .tag(LauncherOCREngine.claudeTypeset)
-                Text("Claude OCR — Early Print ($$$)")
-                    .tag(LauncherOCREngine.earlyPrint)
-                Text("Claude OCR — Manuscript ($$$$)")
-                    .tag(LauncherOCREngine.manuscript)
+                if queue.hasGeminiKey {
+                    Text("Gemini OCR — Typeset ($)")
+                        .tag(LauncherOCREngine.geminiTypeset)
+                }
+                if queue.hasAnthropicKey {
+                    Text("Claude OCR — Typeset ($$$)")
+                        .tag(LauncherOCREngine.claudeTypeset)
+                    Text("Claude OCR — Early Print ($$$)")
+                        .tag(LauncherOCREngine.earlyPrint)
+                    Text("Claude OCR — Manuscript ($$$$)")
+                        .tag(LauncherOCREngine.manuscript)
+                }
             }
             .pickerStyle(.inline)
             if ocrEngineBinding.wrappedValue == .earlyPrint {
@@ -402,6 +425,13 @@ struct ContentView: View {
         case auto
         case surya
         case claudeTypeset
+        /// Same mode as `.claudeTypeset` (whole-page OCR) but routes
+        /// to Gemini 2.5 Flash via a per-conversion override on
+        /// `queue.pageOCRProvider`. Manuscript and Early Print stay
+        /// Claude-specific — Manuscript hard-pins Opus; Early Print
+        /// has a Claude-tuned normalizing prompt that hasn't been
+        /// validated against Gemini.
+        case geminiTypeset
         case earlyPrint
         case manuscript
     }
@@ -411,7 +441,11 @@ struct ContentView: View {
             get: {
                 if queue.useManuscriptMode { return .manuscript }
                 if queue.useEarlyPrintMode { return .earlyPrint }
-                if queue.useClaudePageOCR { return .claudeTypeset }
+                if queue.useClaudePageOCR {
+                    return queue.pageOCRProvider == .gemini25Flash
+                        ? .geminiTypeset
+                        : .claudeTypeset
+                }
                 if queue.useSuryaOCR { return .surya }
                 return .auto
             },
@@ -420,10 +454,14 @@ struct ContentView: View {
                 queue.useEarlyPrintMode = false
                 queue.useManuscriptMode = false
                 queue.useSuryaOCR = false
+                queue.pageOCRProvider = nil
                 switch newValue {
                 case .auto: break
                 case .surya: queue.useSuryaOCR = true
                 case .claudeTypeset: queue.useClaudePageOCR = true
+                case .geminiTypeset:
+                    queue.useClaudePageOCR = true
+                    queue.pageOCRProvider = .gemini25Flash
                 case .earlyPrint: queue.useEarlyPrintMode = true
                 case .manuscript: queue.useManuscriptMode = true
                 }
@@ -439,6 +477,7 @@ struct ContentView: View {
         case .auto: return "Auto OCR"
         case .surya: return "Surya OCR"
         case .claudeTypeset: return "Claude — Typeset"
+        case .geminiTypeset: return "Gemini — Typeset"
         case .earlyPrint:
             return "Claude — Early Print (\(queue.earlyPrintTypeface.displayName))"
         case .manuscript:
@@ -454,6 +493,8 @@ struct ContentView: View {
             return "Force Surya for every region. Local-only; works without an API key. Slower than the standard cascade — use when offline."
         case .claudeTypeset:
             return "Sonnet OCRs each page end-to-end. Best for modern printed material with hard scripts or dense academic prose. Requires Cloud mode + API key. ≈ $15–25 per book."
+        case .geminiTypeset:
+            return "Gemini 2.5 Flash OCRs each page end-to-end. Same XHTML output as Claude Typeset at ~7–10× lower cost (~$2 per book). Best on typeset prose; Sonnet still wins on dense academic layouts. Requires Cloud mode + a Google AI Studio key in Settings → AI."
         case .earlyPrint:
             return "Sonnet with a normalizing prompt tuned for 15th–18th c. printed material (long-s, u/v, i/j, ligatures). Pick a typeface inside the menu; \"Auto\" lets the model identify Roman vs Blackletter."
         case .manuscript:

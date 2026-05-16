@@ -319,7 +319,12 @@ final class JobRunner: ObservableObject {
             anthropicAPIKeyProvider: keyProvider,
             geminiAPIKeyProvider: geminiKeyProvider,
             googleCloudVisionAPIKeyProvider: googleCloudVisionKeyProvider,
-            pageOCRProvider: aiSettings.pageOCRProvider,
+            // Per-job override wins when the launcher picked a
+            // specific provider (e.g. "Gemini OCR — Typeset" from
+            // the OCR Engine picker); otherwise fall back to the
+            // user's Settings → AI default.
+            pageOCRProvider: job.options.pageOCRProvider
+                ?? aiSettings.pageOCRProvider,
             useClaudePageOCR: claudePageOCR,
             useManuscriptMode: !job.options.privateMode
                 && job.options.useManuscriptMode,

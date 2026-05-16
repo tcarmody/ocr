@@ -1,4 +1,5 @@
 import Foundation
+import AI
 import PDFIngest
 import Pipeline
 
@@ -236,6 +237,13 @@ struct ConversionOptions: Codable, Equatable {
     /// created). Default false; flipped only by
     /// `QueueViewModel.addPDFForRescan`.
     var bypassDedupe: Bool
+    /// Per-conversion override of the page-OCR provider. nil → use
+    /// the user's global `AISettings.pageOCRProvider`. Set by the
+    /// launcher's OCR Engine picker when the user picks a
+    /// Gemini-backed option, so that one conversion can run on
+    /// Gemini Flash without flipping the global default. Manuscript
+    /// mode always uses Claude Opus regardless of this field.
+    var pageOCRProvider: PageOCRProvider?
 
     init(
         languages: [String] = ["en"],
@@ -253,7 +261,8 @@ struct ConversionOptions: Codable, Equatable {
         forceOCRPageRangesString: String = "",
         outputSuffix: String = "",
         emitSearchablePDF: Bool = false,
-        bypassDedupe: Bool = false
+        bypassDedupe: Bool = false,
+        pageOCRProvider: PageOCRProvider? = nil
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
@@ -271,6 +280,7 @@ struct ConversionOptions: Codable, Equatable {
         self.outputSuffix = outputSuffix
         self.emitSearchablePDF = emitSearchablePDF
         self.bypassDedupe = bypassDedupe
+        self.pageOCRProvider = pageOCRProvider
     }
 
     /// Codable: decodes both the new `useSuryaOCR` / `useClaudePageOCR`
@@ -295,6 +305,7 @@ struct ConversionOptions: Codable, Equatable {
         case outputSuffix
         case emitSearchablePDF
         case bypassDedupe
+        case pageOCRProvider
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -364,6 +375,12 @@ struct ConversionOptions: Codable, Equatable {
         self.bypassDedupe = try c.decodeIfPresent(
             Bool.self, forKey: .bypassDedupe
         ) ?? false
+        // nil → use global AISettings.pageOCRProvider. Persisted
+        // jobs from before the per-job override existed decode
+        // cleanly (decodeIfPresent returns nil).
+        self.pageOCRProvider = try c.decodeIfPresent(
+            PageOCRProvider.self, forKey: .pageOCRProvider
+        )
     }
 
     /// Encode under the new keys only — the legacy aliases are for
@@ -386,6 +403,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(outputSuffix, forKey: .outputSuffix)
         try c.encode(emitSearchablePDF, forKey: .emitSearchablePDF)
         try c.encode(bypassDedupe, forKey: .bypassDedupe)
+        try c.encodeIfPresent(pageOCRProvider, forKey: .pageOCRProvider)
     }
 }
 

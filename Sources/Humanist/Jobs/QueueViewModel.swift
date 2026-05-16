@@ -127,17 +127,38 @@ final class QueueViewModel: ObservableObject {
     /// next to the EPUB. Off by default — most users only need the
     /// EPUB and the file is several MB per book.
     @Published var emitSearchablePDF: Bool = false
+    /// Per-conversion page-OCR provider override. nil → fall back
+    /// to `AISettings.pageOCRProvider` (the user's Settings default).
+    /// Set by the OCR Engine picker when the user picks a
+    /// Gemini-backed option so one conversion can run on Gemini
+    /// Flash without flipping the global default. Snapshotted into
+    /// `Job.options.pageOCRProvider` at enqueue time. Per-session;
+    /// not persisted to Settings.
+    @Published var pageOCRProvider: PageOCRProvider? = nil
 
     let store: JobStore
     let runner: JobRunner
     /// True when the Tesseract binary was found on init. Drives the
     /// "Tesseract not installed" badge in the picker row.
     let tesseractAvailable: Bool
+    /// Whether the user has an Anthropic key configured. Drives the
+    /// OCR Engine picker — hides the Claude options when missing so
+    /// the user doesn't pick an engine that will silently no-op.
+    /// Refresh via `refreshAPIKeyAvailability()` when the launcher
+    /// reappears so a key just pasted in Settings → AI takes effect
+    /// without a relaunch.
+    @Published var hasAnthropicKey: Bool = false
+    /// Same posture as `hasAnthropicKey`, for the Google AI Studio
+    /// (Gemini) key. Hides the "Gemini OCR — Typeset" entry when
+    /// missing.
+    @Published var hasGeminiKey: Bool = false
 
     init(store: JobStore, runner: JobRunner) {
         self.store = store
         self.runner = runner
         self.tesseractAvailable = (TesseractOCREngine.detect() != nil)
+        self.hasAnthropicKey = AnthropicAPIKeyStore().hasKey
+        self.hasGeminiKey = GeminiAPIKeyStore().hasKey
         // Seed the launcher's per-conversion toggles from Settings
         // → Conversion → Defaults. Per-session overrides made in
         // the launcher UI don't persist back; the next launch
@@ -168,6 +189,40 @@ final class QueueViewModel: ObservableObject {
             .filter { selectedLanguageIds.contains($0.id) }
             .map(\.language)
         return selected.isEmpty ? [.en] : selected
+    }
+
+    /// Re-read API key availability from the keychain. Hooks the
+    /// view layer's `.onAppear` so a user who pasted a key into
+    /// Settings → AI sees the matching OCR Engine entry appear
+    /// without a relaunch. Cheap — keychain reads are sub-ms.
+    /// Also nudges the current OCR engine selection back to
+    /// `.auto` when the selection's required key just disappeared,
+    /// so the launcher never ends up pointing at an inert engine.
+    func refreshAPIKeyAvailability() {
+        let anthropic = AnthropicAPIKeyStore().hasKey
+        let gemini = GeminiAPIKeyStore().hasKey
+        if anthropic != hasAnthropicKey { hasAnthropicKey = anthropic }
+        if gemini != hasGeminiKey { hasGeminiKey = gemini }
+        if useManuscriptMode && !anthropic {
+            useManuscriptMode = false
+        }
+        if useEarlyPrintMode && !anthropic {
+            useEarlyPrintMode = false
+        }
+        if useClaudePageOCR {
+            switch pageOCRProvider {
+            case .gemini25Flash, .gemini3FlashPreview:
+                if !gemini {
+                    useClaudePageOCR = false
+                    pageOCRProvider = nil
+                }
+            case .claude, nil:
+                if !anthropic {
+                    useClaudePageOCR = false
+                    pageOCRProvider = nil
+                }
+            }
+        }
     }
 
     func isLanguageSelected(_ language: BCP47) -> Bool {
@@ -266,7 +321,8 @@ final class QueueViewModel: ObservableObject {
                 forceOCRPageRangesString: forceOCRPageRangesString,
                 outputSuffix: outputSuffix,
                 emitSearchablePDF: emitSearchablePDF,
-                bypassDedupe: bypassDedupe
+                bypassDedupe: bypassDedupe,
+                pageOCRProvider: pageOCRProvider
             ),
             status: .profiling
         )
