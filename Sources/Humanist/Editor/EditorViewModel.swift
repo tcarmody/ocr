@@ -689,7 +689,23 @@ final class EditorViewModel: ObservableObject {
             .replacingOccurrences(of: prefix + "/", with: "")
         guard let entry = map.entries.first(where: { $0.xhtmlFile == fileRel })
         else { return }
-        alignOthers(to: entry.anchorId, drivingPane: .none)
+        // Drive the PDF only. Source / Preview / WYSIWYG all reload
+        // their content when `selectedFile` changes (CodeMirror's
+        // `setValue` resets scrollTop to 0, the two WebViews load a
+        // fresh document), so they naturally land at the document
+        // top — the chapter heading. Posting a scroll request to the
+        // first `hu-page-*` anchor here would shove all three past
+        // the heading, since the page-break span sits inside the
+        // first paragraph; the user reported this as "the doc
+        // opens scrolled down by about a paragraph." The PDF doesn't
+        // auto-track chapter switches, so it still needs the jump.
+        if let pdfView = pdfController?.pdfView,
+           let document = pdfView.document,
+           entry.pdfPage >= 0, entry.pdfPage < document.pageCount,
+           let page = document.page(at: entry.pdfPage),
+           pdfView.currentPage !== page {
+            pdfView.go(to: page)
+        }
     }
 
     /// Drives PDF + preview + source as appropriate for `to`,
