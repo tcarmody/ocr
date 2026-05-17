@@ -23,6 +23,7 @@ struct AISettingsView: View {
             if vm.isCloud {
                 pageOCRProviderSection
                 cloudFeaturesSection
+                throughputSection
                 costCapSection
             }
             restoreDefaultsSection
@@ -195,6 +196,26 @@ struct AISettingsView: View {
                 vm.settings.cloudFeatures.chapterMissedBreakDetection = newValue
             }
         )
+    }
+
+    // MARK: - Throughput
+
+    @ViewBuilder
+    private var throughputSection: some View {
+        Section("Throughput") {
+            Picker("Parallel page OCR",
+                   selection: $vm.settings.cloudFeatures.parallelPageOCRConcurrency) {
+                Text("1 page at a time").tag(1)
+                Text("2 in parallel").tag(2)
+                Text("4 in parallel").tag(4)
+                Text("8 in parallel").tag(8)
+            }
+            caption("How many pages can be in flight at the Sonnet/Gemini provider simultaneously. 4 cuts a 300-page book from ~40 min to ~12 min; 8 caps out around ~7 min before the rate-limit floor kicks in. Higher = more memory pressure (each in-flight page holds a rendered image, ~4 MB at 400 DPI) and less smooth per-page progress.")
+
+            Toggle("Use Batch API (50% cheaper, async)",
+                   isOn: $vm.settings.cloudFeatures.useBatchAPI)
+            caption("Submits all pages for one book as a single Anthropic batch — half the per-token cost in exchange for a 1–5 minute wait with no live per-page progress. Best for overnight bulk runs; pages don't fall back to Tesseract individually when the batch contains refusals — the whole batch returns at once.")
+        }
     }
 
     // MARK: - Cost Cap
