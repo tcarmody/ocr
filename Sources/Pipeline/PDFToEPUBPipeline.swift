@@ -1100,6 +1100,29 @@ public actor PDFToEPUBPipeline {
         return visionEngine
     }
 
+    /// Pick the local engine to use when a Cloud page-OCR call
+    /// (Sonnet / Gemini) refuses or errors and we need to backfill
+    /// the page so it isn't blank in the EPUB. Tesseract wins for
+    /// the languages where it outperforms Vision (polytonic Greek,
+    /// classical Latin, vocalized Hebrew, Arabic with diacritics,
+    /// Syriac / Coptic / Old Church Slavonic, CJK, Cyrillic — same
+    /// set `selectEngine` uses for the primary cascade route).
+    /// Vision is the default for everything else.
+    ///
+    /// Returns `nil` when neither engine is available — the caller
+    /// drops the page (rare; Vision is always present on macOS).
+    /// `nonisolated` so the page-OCR TaskGroup can call it without
+    /// hopping isolation.
+    nonisolated func selectLocalFallbackEngine(
+        for languages: [BCP47]
+    ) -> (engine: any OCREngine, id: String)? {
+        if let tesseractEngine,
+           Self.shouldPreferTesseract(for: languages) {
+            return (tesseractEngine, "tesseract")
+        }
+        return (visionEngine, "vision")
+    }
+
     /// Languages where Tesseract beats Vision in the cases the plan
     /// enumerates: ancient scripts (Greek, Latin) and non-Latin scripts
     /// (Hebrew, Syriac, Coptic, Arabic, CJK, Cyrillic).
@@ -2597,12 +2620,15 @@ public actor PDFToEPUBPipeline {
         let reocrd = verdictsByPage.values.filter { $0 == .reocr }.count
         // Q-Refused-Fallback-Surface (2026-05-12): count pages
         // where the Claude page-OCR path declined or errored and
-        // the pipeline fell back to local Vision OCR. Lets the
-        // user see "8 pages fell back to Vision" in the
-        // post-conversion summary instead of silently absorbing
-        // the quality degradation.
+        // the pipeline fell back to a local engine. Per-engine
+        // since 2026-05-17 — Greek/Latin/Arabic/Hebrew/CJK/Cyrillic
+        // books route their fallbacks through Tesseract instead
+        // of Vision, and the summary reflects which engine ran.
         let visionFallback = pageOCRPendingByIndex.values.filter {
-            $0.usedLocalFallback
+            $0.usedLocalFallback && $0.localFallbackEngineId == "vision"
+        }.count
+        let tesseractFallback = pageOCRPendingByIndex.values.filter {
+            $0.usedLocalFallback && $0.localFallbackEngineId == "tesseract"
         }.count
         // Q-Refusal-Rate (2026-05-14): split the fallback bucket by
         // cause so the user can see refusal rate (the headline) vs
@@ -2638,6 +2664,7 @@ public actor PDFToEPUBPipeline {
             pagesTrustedEmbeddedText: trusted,
             pagesReOCRd: reocrd,
             pagesUsingVisionFallback: visionFallback,
+            pagesUsingTesseractFallback: tesseractFallback,
             pagesRefused: refused,
             pagesEmpty: emptyResp,
             pagesAPIError: apiError,
@@ -3147,6 +3174,36 @@ public actor PDFToEPUBPipeline {
         let verdict: EmbeddedTextQualityScorer.Verdict
         let qualityScore: EmbeddedTextQualityScorer.Score?
         let extractorDiagnostics: EmbeddedTextExtractor.Diagnostics?
+
+        init(
+            pageIndex: Int,
+            anchorId: String,
+            pageBoundsCG: CGSize,
+            blocks: [Block],
+            footnotes: [Footnote],
+            figures: [FigureExtractor.ExtractedFigure],
+            verdict: EmbeddedTextQualityScorer.Verdict,
+            qualityScore: EmbeddedTextQualityScorer.Score?,
+            extractorDiagnostics: EmbeddedTextExtractor.Diagnostics?,
+            pageOCRStatus: ProviderStatus,
+            providerId: String,
+            usedLocalFallback: Bool,
+            localFallbackEngineId: String = ""
+        ) {
+            self.pageIndex = pageIndex
+            self.anchorId = anchorId
+            self.pageBoundsCG = pageBoundsCG
+            self.blocks = blocks
+            self.footnotes = footnotes
+            self.figures = figures
+            self.verdict = verdict
+            self.qualityScore = qualityScore
+            self.extractorDiagnostics = extractorDiagnostics
+            self.pageOCRStatus = pageOCRStatus
+            self.providerId = providerId
+            self.usedLocalFallback = usedLocalFallback
+            self.localFallbackEngineId = localFallbackEngineId
+        }
         /// What the page-OCR provider did. `.succeeded` means blocks
         /// came from the provider directly; `.refused` / `.empty` /
         /// `.apiError` mean the provider failed and (possibly)
@@ -3156,11 +3213,17 @@ public actor PDFToEPUBPipeline {
         /// (no provider call). "claude" / "gemini-2.5-flash" etc.
         let providerId: String
         /// True when the provider failed for this page and the local
-        /// Vision-OCR fallback produced blocks instead. Surfaced in
-        /// the debug log so the user can see which pages didn't get
-        /// the full provider treatment (typical causes: refusal,
+        /// OCR fallback produced blocks instead. Surfaced in the
+        /// debug log so the user can see which pages didn't get the
+        /// full provider treatment (typical causes: refusal,
         /// content-filter false positives, transient API overload).
         let usedLocalFallback: Bool
+        /// Which local engine handled the fallback. Empty when no
+        /// fallback fired; "vision" or "tesseract" otherwise — the
+        /// stats aggregation buckets per-engine so a Greek/Latin/
+        /// Arabic/Hebrew book's Tesseract fallbacks don't show up
+        /// labeled as Vision in the post-conversion summary.
+        let localFallbackEngineId: String
 
         /// Convenience: page-OCR call returned usable content.
         var sonnetSucceeded: Bool { pageOCRStatus == .succeeded }
@@ -3271,6 +3334,7 @@ public actor PDFToEPUBPipeline {
         var sonnetFootnotes: [Footnote] = []
         var pageOCRStatus: ProviderStatus = .empty
         var usedLocalFallback = false
+        var localFallbackEngineId = ""
         do {
             let result = try await pageEngine.recognize(
                 pageImage: image, pageIndex: i,
@@ -3287,31 +3351,40 @@ public actor PDFToEPUBPipeline {
             // Provider failed for this page — refusal, content-filter
             // false positive, transient network/overload error, etc.
             // Classify the error so the refusal-rate stat can bucket
-            // it, then fall back to local Vision OCR so the page
-            // contributes *something* to the EPUB instead of going
-            // blank. Quality is lower than provider output but beats
-            // an empty page; the user can always Re-OCR a single page
-            // from the editor if they want to retry the provider later.
+            // it, then fall back to local OCR so the page contributes
+            // *something* to the EPUB instead of going blank.
+            // Tesseract beats Vision for the language set in
+            // `shouldPreferTesseract` (polytonic Greek, classical
+            // Latin, vocalized Hebrew, Arabic with diacritics, CJK,
+            // Cyrillic, Syriac / Coptic / OCS) — route there when
+            // applicable instead of always going to Vision. The user
+            // can still Re-OCR a single page from the editor to
+            // retry the provider later.
             pageOCRStatus = pageEngine.classify(error: error)
             let hints = OCRHints(
                 languages: options.languages,
                 quality: options.ocrQuality
             )
-            do {
-                let visionResult = try await visionEngine.recognize(
-                    image: image, hints: hints
-                )
-                let blocks = ParagraphReflow().reflow(
-                    visionResult.observations
-                )
-                if !blocks.isEmpty {
-                    sonnetBlocks = blocks
-                    usedLocalFallback = true
+            if let (fallbackEngine, fallbackId) =
+                selectLocalFallbackEngine(for: options.languages) {
+                do {
+                    let result = try await fallbackEngine.recognize(
+                        image: image, hints: hints
+                    )
+                    let blocks = ParagraphReflow().reflow(
+                        result.observations
+                    )
+                    if !blocks.isEmpty {
+                        sonnetBlocks = blocks
+                        usedLocalFallback = true
+                        localFallbackEngineId = fallbackId
+                    }
+                } catch {
+                    // Local fallback also failed — leave the page
+                    // empty. The claude-pages.txt dump still records
+                    // the original provider error so the user can
+                    // diagnose.
                 }
-            } catch {
-                // Vision also failed — leave the page empty. The
-                // claude-pages.txt dump still records the original
-                // provider error so the user can diagnose.
             }
         }
 
@@ -3350,7 +3423,8 @@ public actor PDFToEPUBPipeline {
             extractorDiagnostics: routingDiagnostics,
             pageOCRStatus: pageOCRStatus,
             providerId: pageEngine.providerId,
-            usedLocalFallback: usedLocalFallback
+            usedLocalFallback: usedLocalFallback,
+            localFallbackEngineId: localFallbackEngineId
         )
     }
 
@@ -3622,6 +3696,9 @@ public actor PDFToEPUBPipeline {
             languages: options.languages,
             quality: options.ocrQuality
         )
+        guard let (fallbackEngine, fallbackId) =
+            selectLocalFallbackEngine(for: options.languages)
+        else { return }
         for i in needsFallback {
             try Task.checkCancellation()
             guard let prep = prepared[i] else { continue }
@@ -3629,16 +3706,14 @@ public actor PDFToEPUBPipeline {
                 let image = try visionRenderer.renderPage(
                     at: i, of: pdf
                 )
-                let visionResult = try await visionEngine.recognize(
+                let result = try await fallbackEngine.recognize(
                     image: image, hints: hints
                 )
-                let blocks = ParagraphReflow().reflow(
-                    visionResult.observations
-                )
+                let blocks = ParagraphReflow().reflow(result.observations)
                 guard !blocks.isEmpty else { continue }
                 // Preserve the original failure status so refusal-rate
-                // stats count this page correctly even though Vision
-                // filled in the body.
+                // stats count this page correctly even though local
+                // OCR filled in the body.
                 let priorStatus = pendingByIndex[i]?.pageOCRStatus
                     ?? .apiError
                 pendingByIndex[i] = PendingPageOCR(
@@ -3653,10 +3728,11 @@ public actor PDFToEPUBPipeline {
                     extractorDiagnostics: prep.partial.extractorDiagnostics,
                     pageOCRStatus: priorStatus,
                     providerId: pageEngine.providerId,
-                    usedLocalFallback: true
+                    usedLocalFallback: true,
+                    localFallbackEngineId: fallbackId
                 )
             } catch {
-                // Vision also failed — leave the page empty.
+                // Local OCR also failed — leave the page empty.
                 // Same posture as the sync path's nested catch.
             }
         }

@@ -37,6 +37,15 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     /// fallback. 0 when Claude wasn't invoked at all. Subdivided
     /// by cause via `pagesRefused` / `pagesEmpty` / `pagesAPIError`.
     public var pagesUsingVisionFallback: Int
+    /// Pages where the page-OCR provider failed and the **Tesseract**
+    /// fallback produced blocks instead. Distinct from
+    /// `pagesUsingVisionFallback` so a Greek / Latin / Arabic /
+    /// Hebrew / CJK / Cyrillic book's failures show up under the
+    /// engine that actually ran — Vision's numbers stay correct for
+    /// English-and-Romance books, and the routing change is visible
+    /// in the summary instead of being hidden behind a "Vision"
+    /// label.
+    public var pagesUsingTesseractFallback: Int
     /// Pages where the provider explicitly refused (Anthropic
     /// `stop_reason: refusal`, Gemini SAFETY / RECITATION). The
     /// headline measurement for content-policy mismatch.
@@ -77,6 +86,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         pagesTrustedEmbeddedText: Int = 0,
         pagesReOCRd: Int = 0,
         pagesUsingVisionFallback: Int = 0,
+        pagesUsingTesseractFallback: Int = 0,
         pagesRefused: Int = 0,
         pagesEmpty: Int = 0,
         pagesAPIError: Int = 0,
@@ -91,6 +101,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         self.pagesTrustedEmbeddedText = pagesTrustedEmbeddedText
         self.pagesReOCRd = pagesReOCRd
         self.pagesUsingVisionFallback = pagesUsingVisionFallback
+        self.pagesUsingTesseractFallback = pagesUsingTesseractFallback
         self.pagesRefused = pagesRefused
         self.pagesEmpty = pagesEmpty
         self.pagesAPIError = pagesAPIError
@@ -104,7 +115,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case elapsed, observationsBySource
         case pagesTrustedEmbeddedText, pagesReOCRd
-        case pagesUsingVisionFallback
+        case pagesUsingVisionFallback, pagesUsingTesseractFallback
         case pagesRefused, pagesEmpty, pagesAPIError
         case refusedPageIndices, pageOCRProviderId
         case claudeCallCount, claudeUsageByModel, estimatedCostUSD
@@ -122,6 +133,9 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         // older queue rows persisted before Q-Refused-Fallback-Surface
         // (2026-05-12) don't carry it.
         self.pagesUsingVisionFallback = try c.decodeIfPresent(Int.self, forKey: .pagesUsingVisionFallback) ?? 0
+        // Per-engine Tesseract fallback count lands 2026-05-17; older
+        // queue rows default to 0.
+        self.pagesUsingTesseractFallback = try c.decodeIfPresent(Int.self, forKey: .pagesUsingTesseractFallback) ?? 0
         // Refusal-rate fields land in 2026-05-14; default to zero so
         // older queue rows round-trip unchanged.
         self.pagesRefused = try c.decodeIfPresent(Int.self, forKey: .pagesRefused) ?? 0
@@ -172,9 +186,17 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         } else {
             refusalSuffix = ""
         }
-        let fallbackSuffix = pagesUsingVisionFallback > 0
-            ? " · \(pagesUsingVisionFallback) page\(pagesUsingVisionFallback == 1 ? "" : "s") fell back to Vision"
-            : ""
+        let fallbackSuffix: String
+        switch (pagesUsingVisionFallback, pagesUsingTesseractFallback) {
+        case (0, 0):
+            fallbackSuffix = ""
+        case let (v, 0):
+            fallbackSuffix = " · \(v) page\(v == 1 ? "" : "s") fell back to Vision"
+        case let (0, t):
+            fallbackSuffix = " · \(t) page\(t == 1 ? "" : "s") fell back to Tesseract"
+        case let (v, t):
+            fallbackSuffix = " · \(v) → Vision, \(t) → Tesseract fallback"
+        }
         if totalPages > 0, pagesReOCRd == 0 {
             return "Trusted embedded PDF text on all \(totalPages) pages — OCR did not run"
                 + fallbackSuffix
@@ -209,6 +231,7 @@ extension ConversionStats {
         pagesTrustedEmbeddedText: Int = 0,
         pagesReOCRd: Int = 0,
         pagesUsingVisionFallback: Int = 0,
+        pagesUsingTesseractFallback: Int = 0,
         pagesRefused: Int = 0,
         pagesEmpty: Int = 0,
         pagesAPIError: Int = 0,
@@ -236,6 +259,7 @@ extension ConversionStats {
             pagesTrustedEmbeddedText: pagesTrustedEmbeddedText,
             pagesReOCRd: pagesReOCRd,
             pagesUsingVisionFallback: pagesUsingVisionFallback,
+            pagesUsingTesseractFallback: pagesUsingTesseractFallback,
             pagesRefused: pagesRefused,
             pagesEmpty: pagesEmpty,
             pagesAPIError: pagesAPIError,
