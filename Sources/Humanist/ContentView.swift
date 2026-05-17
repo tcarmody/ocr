@@ -933,6 +933,7 @@ private struct JobRow: View {
                     Button("Undo") { mutate(false) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .tint(.blue)
                         .font(.caption2)
                         .help(helpText)
                 }
@@ -944,6 +945,7 @@ private struct JobRow: View {
                     Button(enableLabel) { mutate(true) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .tint(.blue)
                         .font(.caption2)
                         .help(helpText)
                 }
