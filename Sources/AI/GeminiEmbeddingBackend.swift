@@ -1,4 +1,15 @@
 import Foundation
+import os
+
+/// Logger for the embedding backend's rate-limit diagnostics. Every
+/// 429 gets a structured line including the response body so the
+/// specific Google quota that fired is captured in Console.app
+/// without needing a debugger attached. Subsystem matches the rest
+/// of the project so a single Console filter sees everything.
+private let geminiEmbedLog = Logger(
+    subsystem: "com.tcarmody.Humanist",
+    category: "GeminiEmbeddingBackend"
+)
 
 /// HTTP embedding backend backed by Google's Gemini Embedding API.
 /// Currently the highest-ranked multilingual embedder on the MTEB
@@ -22,28 +33,20 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
     private let keyStore: GeminiAPIKeyStore
     private let baseURL: URL
     private let requestTimeout: TimeInterval
-    /// Target requests-per-minute ceiling. Tier 1 paid Gemini caps
-    /// at 3000 RPM; defaulting to 2500 leaves ~17% headroom for
-    /// jitter, clock skew, and any sibling processes that share the
-    /// key. The actor's serialization makes this a global pace for
-    /// every call through this backend instance.
-    private let maxRequestsPerMinute: Int
-    /// Retry budget when the server still returns 429 despite our
-    /// throttling — usually means a concurrent process on the same
-    /// API key, or a brief tier-cap glitch. Three attempts with
-    /// `Retry-After` / exponential backoff covers nearly every
-    /// real-world case without spamming on a wedge.
+    /// Retry budget when the server still returns 429 despite the
+    /// shared rate limiter — usually means a transient quota
+    /// fluctuation or a sibling process sharing the API project.
+    /// Three attempts with `Retry-After` / exponential backoff
+    /// covers nearly every real-world case without spamming on a
+    /// wedge.
     private let maxRetriesOn429: Int
-    /// Monotonic timestamp of the most recent request fired. Used
-    /// to enforce `minimumInterval` between consecutive calls.
-    /// Nil before the first request lands.
-    private var lastRequestAt: ContinuousClock.Instant?
 
-    /// Minimum wall-time between consecutive requests, derived
-    /// from `maxRequestsPerMinute`. At 2500 RPM that's 24 ms.
-    private var minimumInterval: Duration {
-        .nanoseconds(Int64(60_000_000_000 / Int64(max(1, maxRequestsPerMinute))))
-    }
+    /// Rough English token-density estimate. The Gemini tokenizer
+    /// isn't exposed locally; we use 4 chars/token as a stand-in.
+    /// Over-estimates for code-heavy or whitespace-padded text,
+    /// under-estimates for some non-Latin scripts — fine for
+    /// budget gating (we'd rather under-pace than over-pace).
+    private static let charsPerTokenEstimate: Int = 4
 
     /// Build a backend by probing the API to learn the output
     /// dimension. Throws `EmbeddingError.missingAPIKey` when no key
@@ -62,6 +65,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         baseURL: URL = URL(string: "https://generativelanguage.googleapis.com")!,
         requestTimeout: TimeInterval = 60,
         maxRequestsPerMinute: Int = 2500,
+        maxTokensPerMinute: Int = 800_000,
         maxRetriesOn429: Int = 3
     ) async throws -> GeminiEmbeddingBackend {
         guard keyStore.hasKey else {
@@ -76,6 +80,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             baseURL: baseURL,
             requestTimeout: requestTimeout,
             maxRequestsPerMinute: maxRequestsPerMinute,
+            maxTokensPerMinute: maxTokensPerMinute,
             maxRetriesOn429: maxRetriesOn429
         )
         let probe = try await backend.embed(["x"])
@@ -93,6 +98,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             baseURL: baseURL,
             requestTimeout: requestTimeout,
             maxRequestsPerMinute: maxRequestsPerMinute,
+            maxTokensPerMinute: maxTokensPerMinute,
             maxRetriesOn429: maxRetriesOn429
         )
     }
@@ -106,6 +112,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         baseURL: URL,
         requestTimeout: TimeInterval,
         maxRequestsPerMinute: Int,
+        maxTokensPerMinute: Int,
         maxRetriesOn429: Int
     ) {
         self.identifier = identifier
@@ -115,8 +122,17 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         self.keyStore = keyStore
         self.baseURL = baseURL
         self.requestTimeout = requestTimeout
-        self.maxRequestsPerMinute = max(1, maxRequestsPerMinute)
         self.maxRetriesOn429 = max(0, maxRetriesOn429)
+        // Forward RPM/TPM caps to the process-wide rate limiter so
+        // every backend instance respects the same global budget.
+        // Last writer wins; in normal use all callers pass the
+        // same defaults so the call is idempotent.
+        Task {
+            await GeminiEmbeddingRateLimiter.shared.configure(
+                maxRequestsPerMinute: maxRequestsPerMinute,
+                maxTokensPerMinute: maxTokensPerMinute
+            )
+        }
     }
 
     public func embed(_ texts: [String]) async throws -> [[Float]] {
@@ -149,7 +165,15 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         request.addValue(key, forHTTPHeaderField: "x-goog-api-key")
         request.httpBody = try Self.encoder.encode(body)
 
-        let (data, http) = try await sendThrottled(request: request)
+        // Estimate input tokens for the TPM gate. Sum of all input
+        // text divided by `charsPerTokenEstimate`. Floors at 1 so a
+        // microscopic input still counts against the budget.
+        let estimatedTokens = max(1, texts.reduce(0) {
+            $0 + ($1.count / Self.charsPerTokenEstimate)
+        })
+        let (data, http) = try await sendThrottled(
+            request: request, estimatedTokens: estimatedTokens
+        )
         guard (200..<300).contains(http.statusCode) else {
             let message = String(data: data, encoding: .utf8)
             throw EmbeddingError.serverError(
@@ -176,19 +200,22 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
 
     // MARK: - Throttle + 429 retry
 
-    /// Send `request` while honoring our per-minute rate cap and
-    /// retrying on 429 with the server's `Retry-After` hint
+    /// Send `request` while honoring both rate caps (RPM + TPM)
+    /// and retrying on 429 with the server's `Retry-After` hint
     /// (falls back to exponential backoff: 1s, 2s, 4s). Retries
     /// also re-throttle between attempts so a quick burst can't
     /// blow the cap. Throws the final failure if every attempt
-    /// still returns 429.
+    /// still returns 429. `estimatedTokens` is the expected input
+    /// token count for this request (charged against the TPM
+    /// sliding window before firing and recorded after firing).
     private func sendThrottled(
-        request: URLRequest
+        request: URLRequest, estimatedTokens: Int
     ) async throws -> (Data, HTTPURLResponse) {
         var attempt = 0
         while true {
-            try await waitForSlot()
-            lastRequestAt = ContinuousClock.now
+            try await GeminiEmbeddingRateLimiter.shared.acquireSlot(
+                estimatedTokens: estimatedTokens
+            )
 
             let data: Data
             let response: URLResponse
@@ -201,39 +228,55 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
                 throw EmbeddingError.decode("non-HTTP response")
             }
 
-            // Non-429: hand back to the caller. Success or any
-            // other server error path that's not retryable here.
+            // Non-429: record this request in the token window so
+            // future calls (from any backend instance) account for
+            // the spend. Then hand back to the caller.
             if http.statusCode != 429 {
+                await GeminiEmbeddingRateLimiter.shared.recordSuccess(
+                    tokens: estimatedTokens
+                )
                 return (data, http)
             }
 
             // 429: honor `Retry-After` if present (Google returns
             // seconds as an integer or HTTP-date; we only parse
             // integer seconds — date form is rare for this API).
-            // Otherwise fall back to exponential backoff.
+            // Otherwise fall back to exponential backoff. Don't
+            // record this attempt in the token window — the server
+            // rejected it, so the tokens didn't count against the
+            // user's actual budget either.
+            let body = String(data: data, encoding: .utf8) ?? "(non-UTF8 body)"
+            let retryAfter = Self.retryAfterSeconds(from: http)
+            // Diagnostic: every 429 logs the full response body so
+            // the specific Google quota dimension that fired
+            // (`quotaMetric`, `quotaId`, `quotaDimensions`) is
+            // captured for triage. `privacy: .public` on each
+            // interpolation — without it macOS Logger redacts
+            // string values as `<private>` in Console.app and we
+            // lose exactly the information we wanted. The body is
+            // Google's error JSON, no secrets; the retry-after
+            // value is a duration string; both are safe to log.
+            let retryAfterDescription = retryAfter
+                .map { String(format: "%.1fs", $0) } ?? "absent"
+            geminiEmbedLog.warning(
+                """
+                429 from Gemini embedding API \
+                (attempt \(attempt + 1)/\(self.maxRetriesOn429 + 1), \
+                estimated tokens=\(estimatedTokens), \
+                retry-after=\(retryAfterDescription, privacy: .public)). \
+                Response body: \(body, privacy: .public)
+                """
+            )
             if attempt >= maxRetriesOn429 {
-                let message = String(data: data, encoding: .utf8)
                 throw EmbeddingError.serverError(
                     status: 429,
-                    message: message?.isEmpty == false ? message : nil
+                    message: body.isEmpty ? nil : body
                 )
             }
-            let backoff = Self.retryAfterSeconds(from: http)
+            let backoff = retryAfter
                 ?? Self.exponentialBackoffSeconds(attempt: attempt)
             try await Task.sleep(for: .seconds(backoff))
             attempt += 1
-        }
-    }
-
-    /// Sleep until at least `minimumInterval` has elapsed since
-    /// the most recent request. No-op on the first call. Uses
-    /// ContinuousClock so wall-clock changes can't skew the gap.
-    private func waitForSlot() async throws {
-        guard let last = lastRequestAt else { return }
-        let now = ContinuousClock.now
-        let elapsed = last.duration(to: now)
-        if elapsed < minimumInterval {
-            try await Task.sleep(for: minimumInterval - elapsed)
         }
     }
 

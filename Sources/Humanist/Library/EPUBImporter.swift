@@ -482,11 +482,21 @@ final class EPUBImporter: ObservableObject {
         // 7. Build the embedding sidecar so library chat sees the
         // book immediately. Skipped when no backend is available —
         // the catalog row stays, just without retrieval-time recall.
+        // When the requested backend is cloud-backed (Gemini /
+        // Voyage / Ollama), pass Apple NLEmbedding as a per-book
+        // fallback so an import doesn't fail entirely when the
+        // cloud quota is exhausted; the book lands with an
+        // Apple-built sidecar that library chat can still use.
         if let backend {
+            let fallback: (any EmbeddingBackend)? =
+                (backend.identifier.hasPrefix("apple") == false)
+                    ? NLSentenceEmbeddingBackend(language: .english)
+                    : nil
             _ = try await BookSidecarBuilder.buildIfNeeded(
                 epubURL: destination,
                 libraryID: libraryID,
                 backend: backend,
+                fallbackBackend: fallback,
                 store: sidecarStore,
                 forceRebuild: false
             )

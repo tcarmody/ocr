@@ -57,9 +57,14 @@ struct ChatSettingsView: View {
     /// `BookChatViewModel` per-send.
     @AppStorage("humanist.chat.retrievalStyle")
     private var retrievalStyleRaw: String = HybridRetriever.Style.hybrid.rawValue
-    /// Embedding backend choice. Today only `.appleNL` is fully
-    /// wired; the other choices fall back to `.appleNL` until the
-    /// corresponding implementations land.
+    /// Embedding backend choice. Default `.appleNL` — Apple's
+    /// on-device sentence model: no setup, no key, no rate limits.
+    /// Cloud backends (Gemini, Voyage, Ollama-via-daemon) are
+    /// opt-in for users who want stronger retrieval on multilingual
+    /// or technical content; each falls back to Apple per-book if
+    /// its cloud call fails on a whole book, so a quota-exhausted
+    /// bulk index still completes (the affected books just land
+    /// with Apple-quality vectors instead of cloud-quality).
     @AppStorage(EmbeddingBackendChoice.userDefaultsKey)
     private var embeddingBackendRaw: String = EmbeddingBackendChoice.appleNL.rawValue
     /// Toggles the hierarchy structural-query boost. Default on —

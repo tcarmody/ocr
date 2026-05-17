@@ -61,6 +61,14 @@ final class LibraryIndexBuilder: ObservableObject {
     /// paragraph. Surfaced so the user knows the bulk run wasn't
     /// a no-op for their library.
     @Published private(set) var skippedExistingCount: Int = 0
+    /// Books that fell back to Apple's on-device NLEmbedding after
+    /// the requested cloud backend (typically Gemini) errored on
+    /// the whole book. Lets the progress sheet show "indexed with
+    /// Apple fallback" so the user knows which books to re-index
+    /// later when their cloud quota frees up. The string carries
+    /// the primary backend's localized error so the user can
+    /// distinguish "rate-limited" from "API key expired" etc.
+    @Published private(set) var fallbacks: [(title: String, reason: String)] = []
 
     /// Per-book timeout strategy. Default scales with the EPUB's
     /// on-disk size so a 1MB novella gets a tight ceiling and a
@@ -115,9 +123,24 @@ final class LibraryIndexBuilder: ObservableObject {
         total = entries.count
         currentBookTitle = ""
         failures = []
+        fallbacks = []
         skippedExistingCount = 0
         let store = EmbeddingsSidecarStore()
         let snapshot = entries
+        // Per-book fallback: if the requested backend errors on a
+        // whole book (Gemini 429 / quota exhaustion is the
+        // motivating case), retry that book with Apple's on-device
+        // NLEmbedding so the user gets *some* embedding rather
+        // than a hole in the library. The fallback sidecar is
+        // marked with Apple's backendIdentifier so subsequent
+        // re-indexes preserve it instead of looping back into the
+        // failing primary. Skip when the primary IS Apple
+        // NLEmbedding (no useful fallback to add) or when Apple
+        // doesn't provide an English sentence model on this OS.
+        let fallback: (any EmbeddingBackend)? =
+            (backend.identifier.hasPrefix("apple") == false)
+                ? NLSentenceEmbeddingBackend(language: .english)
+                : nil
         // Register with the shared coordinator so any chat send
         // attempted during the bulk run is told to wait. Released
         // in the task's completion block (and via the token's
@@ -146,16 +169,27 @@ final class LibraryIndexBuilder: ObservableObject {
                 }
                 let bookTimeout = timeoutFor(entry)
                 do {
-                    let didBuild = try await Self.runWithTimeout(
+                    let outcome = try await Self.runWithTimeout(
                         seconds: bookTimeout
                     ) {
                         try await Self.buildOneBook(
                             entry: entry, backend: backend,
+                            fallbackBackend: fallback,
                             store: store, forceRebuild: forceRebuild
                         )
                     }
-                    if !didBuild {
+                    switch outcome {
+                    case .skipped:
                         await MainActor.run { self?.skippedExistingCount += 1 }
+                    case .built(let usedFallback, let primaryError):
+                        if usedFallback {
+                            await MainActor.run {
+                                self?.fallbacks.append((
+                                    title: entry.title,
+                                    reason: primaryError ?? "unknown"
+                                ))
+                            }
+                        }
                     }
                 } catch is CancellationError {
                     // User clicked Cancel — outer loop will break on
@@ -184,21 +218,24 @@ final class LibraryIndexBuilder: ObservableObject {
         task?.cancel()
     }
 
-    /// Build (or skip) a single book's sidecar. Returns true if a
-    /// fresh build ran; false if the cached sidecar already matched
-    /// the requested backend and was non-empty. Thin wrapper around
-    /// `BookSidecarBuilder.buildIfNeeded` — shared with
+    /// Build (or skip) a single book's sidecar. Returns the
+    /// `BookSidecarBuilder.Outcome` so the caller can distinguish
+    /// "skipped because cache hit," "built with primary backend,"
+    /// and "built with fallback after primary failed." Thin wrapper
+    /// around `BookSidecarBuilder.buildIfNeeded` — shared with
     /// `EPUBImporter`, which builds exactly one book per call.
     private static func buildOneBook(
         entry: LibraryEntry,
         backend: any EmbeddingBackend,
+        fallbackBackend: (any EmbeddingBackend)?,
         store: EmbeddingsSidecarStore,
         forceRebuild: Bool
-    ) async throws -> Bool {
+    ) async throws -> BookSidecarBuilder.Outcome {
         try await BookSidecarBuilder.buildIfNeeded(
             epubURL: entry.epubURL,
             libraryID: entry.id,
             backend: backend,
+            fallbackBackend: fallbackBackend,
             store: store,
             forceRebuild: forceRebuild
         )
@@ -280,22 +317,42 @@ final class LibraryIndexBuilder: ObservableObject {
 /// nil libraryID means an uncataloged book — the store falls
 /// back to legacy SHA-keyed storage in the same directory.
 enum BookSidecarBuilder {
+    /// Outcome from a single sidecar build. `skipped` means the
+    /// persisted sidecar already matched the requested backend
+    /// (or the fallback's, if a fallback build was previously
+    /// recorded). `built` means one or both backends were exercised
+    /// and a fresh sidecar landed.
+    enum Outcome: Sendable {
+        case skipped
+        /// `usedFallback` is true when the primary backend threw and
+        /// the fallback build succeeded. `primaryError` carries the
+        /// localized description of the primary failure so the
+        /// caller can surface "this book fell back because: X."
+        case built(usedFallback: Bool, primaryError: String?)
+    }
+
     static func buildIfNeeded(
         epubURL: URL,
         libraryID: UUID?,
         backend: any EmbeddingBackend,
+        fallbackBackend: (any EmbeddingBackend)? = nil,
         store: EmbeddingsSidecarStore,
         forceRebuild: Bool
-    ) async throws -> Bool {
+    ) async throws -> Outcome {
         // Cache check first — opening the EPUB is the heavy step;
-        // we skip it entirely when the persisted sidecar matches
-        // and is non-empty.
+        // we skip it when the persisted sidecar matches either the
+        // requested backend or a previous fallback build. The latter
+        // is the post-fallback-success case where the user re-runs
+        // bulk-index: we'd rather keep the Apple sidecar (which
+        // works) than retry Gemini and fail again. To force a
+        // primary-backend retry, the user passes `forceRebuild`.
         if !forceRebuild,
            let existing = store.read(for: epubURL, libraryID: libraryID),
-           existing.backendIdentifier == backend.identifier,
-           existing.dimension == backend.dimension,
+           sidecarMatches(
+               existing, primary: backend, fallback: fallbackBackend
+           ),
            !existing.paragraphs.isEmpty {
-            return false
+            return .skipped
         }
         // Open the book on disk. EPUBBook.open unzips into a temp
         // directory; the throwaway book is released at scope exit
@@ -314,12 +371,66 @@ enum BookSidecarBuilder {
                 dimension: backend.dimension
             )
         }
-        _ = try await BookEmbeddingIndex.build(
-            for: book, backend: backend, cache: &sidecar
-        )
-        sidecar.hierarchy = BookHierarchyIndex.build(from: book)
-        sidecar.entities = BookEntityIndex.build(from: book)
-        store.write(sidecar, for: epubURL, libraryID: libraryID)
-        return true
+
+        // Try the primary backend. On any non-cancellation error,
+        // retry the whole book with the fallback when one's
+        // configured. Cancellation propagates unchanged — the user
+        // hit Cancel, they don't want us silently switching backends
+        // and continuing.
+        do {
+            _ = try await BookEmbeddingIndex.build(
+                for: book, backend: backend, cache: &sidecar
+            )
+            sidecar.hierarchy = BookHierarchyIndex.build(from: book)
+            sidecar.entities = BookEntityIndex.build(from: book)
+            store.write(sidecar, for: epubURL, libraryID: libraryID)
+            return .built(usedFallback: false, primaryError: nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let primaryError {
+            guard let fallback = fallbackBackend else {
+                throw primaryError
+            }
+            // Reset the in-flight sidecar to the fallback's vector
+            // space and retry. The fallback (typically Apple's
+            // on-device NLEmbedding) has its own dimension, so
+            // any partial work the primary built is discarded.
+            sidecar = EmbeddingsSidecar.empty(
+                backend: fallback.identifier,
+                dimension: fallback.dimension
+            )
+            _ = try await BookEmbeddingIndex.build(
+                for: book, backend: fallback, cache: &sidecar
+            )
+            sidecar.hierarchy = BookHierarchyIndex.build(from: book)
+            sidecar.entities = BookEntityIndex.build(from: book)
+            store.write(sidecar, for: epubURL, libraryID: libraryID)
+            return .built(
+                usedFallback: true,
+                primaryError: primaryError.localizedDescription
+            )
+        }
+    }
+
+    /// True when `sidecar` was built with either the primary or
+    /// fallback backend. Used by the cache-check fast path so a
+    /// previously-fallback-built sidecar is preserved instead of
+    /// triggering a wasteful primary-then-fallback retry on every
+    /// bulk-index run.
+    private static func sidecarMatches(
+        _ sidecar: EmbeddingsSidecar,
+        primary: any EmbeddingBackend,
+        fallback: (any EmbeddingBackend)?
+    ) -> Bool {
+        if sidecar.backendIdentifier == primary.identifier,
+           sidecar.dimension == primary.dimension {
+            return true
+        }
+        if let fallback,
+           sidecar.backendIdentifier == fallback.identifier,
+           sidecar.dimension == fallback.dimension {
+            return true
+        }
+        return false
     }
 }
