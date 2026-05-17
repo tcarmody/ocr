@@ -1307,6 +1307,20 @@ Drivers for the current ordering:
     otherwise tighten Phase (a)'s gates and ship only Phase (a).
     ~1.5–2 days for Phase (b) once green-lit.
 
+18. **P-Cascade-Parallel — bounded parallel pages in cascade
+    mode**. Today only the Cloud page-OCR path parallelizes
+    across pages; the cascade (Private mode + Cloud-cascade
+    mode) processes pages serially. Wrapping the cascade
+    page-loop in a bounded TaskGroup driven by the existing
+    `parallelPageOCRConcurrency` knob would cut wall time
+    ~2–3× on born-digital books and ~1.2–1.5× on Surya-heavy
+    books in bulk Private-mode runs. 4–6 hours of careful
+    refactoring across two phases — see the
+    [P-Cascade-Parallel](#p-cascade-parallel--bounded-parallel-pages-in-cascade-mode)
+    section below for the per-phase plan + state-change
+    inventory + risk list. Earns priority when bulk
+    Private-mode conversions feel slow.
+
 ### Earn when you need it
 
 10. **P10 distribution polish** (Developer ID + DMG +
@@ -5638,6 +5652,152 @@ shaped tasks Cloud users have had since R-Conversion-Summary.
   and `MetadataExtractor` / `OCRPostProcessor` / `CoherenceAnalyzer`
   protocols (Phase 2) — all already abstract over the Cloud impls,
   so the AFM impls slot in alongside.
+
+---
+
+## P-Cascade-Parallel — Bounded parallel pages in cascade mode
+
+**Status**: not built. Today's cascade page-loop processes pages
+serially in a single `for i in 0..<totalPages` body. Within one
+page, Vision OCR and Surya layout already overlap via `async let`
+([PDFToEPUBPipeline.swift:1978](Sources/Pipeline/PDFToEPUBPipeline.swift#L1978))
+— that's [P-Vision-Concurrency](#p-vision-concurrency--overlap-vision-ocr-with-surya-layout)
+shipped. Across pages, no parallelism in cascade mode. Only the
+Cloud page-OCR path has the bounded `parallelPageOCRConcurrency`
+TaskGroup at
+[PDFToEPUBPipeline.swift:2301](Sources/Pipeline/PDFToEPUBPipeline.swift#L2301).
+
+### Goal
+
+Cut wall time on bulk Private-mode conversions by running 2–8
+cascade pages concurrently. Realistic gains on a 300-page book:
+- **No Surya** (born-digital, useHighAccuracyOCR off): ~2–3×
+  speedup. Render + Vision + embedded-extract + Tesseract all
+  parallelize cleanly across cores.
+- **With Surya** (default): ~1.2–1.5× speedup. The Surya sidecar
+  is a singleton Python process — parallel callers queue at it.
+  Other steps still benefit; Surya stays the long pole.
+
+Reuses the existing `cloudFeatures.parallelPageOCRConcurrency`
+knob (already in Settings → AI → Throughput) — semantically it's
+"pages in flight," same meaning across both cascade and
+page-OCR modes.
+
+### Approach
+
+Three-phase plan.
+
+**Phase A — Extract `processCascadePage(...)` helper**. Pull the
+existing for-loop body's cascade branch (lines ~1875–2210 today)
+into a `nonisolated` instance method on `PDFToEPUBPipeline` that
+takes:
+- `pageIndex: Int`
+- `pdfURL: URL` (each task loads its own `LoadedPDF`; the
+  periodic `pdf = try loader.load(pdfURL)` cache-drain pattern
+  goes away because per-task documents have short lifetimes)
+- The engines + config the body reads (most are `let` fields
+  on `PDFToEPUBPipeline`; the per-conversion engines like
+  `claudeOCREngine` / `claudePostProcessor` get passed
+  explicitly)
+
+Returns a packed `CascadePageOutcome` struct holding everything
+the for-loop currently writes back to outer accumulators:
+- `pageObservations: PageObservations`
+- `verdict: EmbeddedTextQualityScorer.Verdict`
+- `figures: [FigureExtractor.ExtractedFigure]`
+- `tables: [(regionIndex: Int, rows: [[TableCell]])]`
+- `qualityScore: EmbeddedTextQualityScorer.Score`
+- `extractorDiagnostics: EmbeddedTextExtractor.Diagnostics`
+- `correctionTrailEntries: [CorrectionTrail.Entry]`
+- `layoutError: String?`
+- `ocrError: String?`
+
+Keep the existing serial for-loop calling the new helper; verify
+tests still pass byte-for-byte. **Phase A is the bulk of the
+refactor — the bounded TaskGroup in Phase B is small once the
+helper exists.**
+
+**Phase B — Bounded TaskGroup**. When
+`options.cloudFeatures.parallelPageOCRConcurrency > 1` AND
+cascade path (no `activePageEngine`), wrap the cascade-bound
+page indices in a `withThrowingTaskGroup` with the existing
+bounded-fan-out pattern (same shape as the page-OCR dispatch
+at [PDFToEPUBPipeline.swift:2301](Sources/Pipeline/PDFToEPUBPipeline.swift#L2301)).
+Pages with resume checkpoints stay on the fast-skip path;
+page-OCR pages still defer to the existing post-loop dispatch.
+
+Convert `pageResults: [PageObservations]` from an order-sensitive
+array to a `pageResultsByIndex: [Int: PageObservations]` (same
+pattern `pageOCRPendingByIndex` already uses for the Cloud path).
+Sort at the post-loop assembly step.
+
+**Phase C — Surya pool (deferred)**. The Python sidecar
+singleton remains the bottleneck on Surya-heavy books. The
+existing [P-Surya-Pool](#p-surya-pool--multiple-surya-sidecars-for-parallelism)
+section covers the eventual fix — pool 2–4 Surya processes —
+but it's separately scoped (memory budget, IPC complexity) and
+not in P-Cascade-Parallel's critical path.
+
+### State changes
+
+- `pageResults` array → index-keyed dict, sorted at end
+- `figureExtractionsByPage` / `tableExtractionsByKey` /
+  `verdictsByPage` / `extractorDiagnostics` / `qualityScores` /
+  `layoutErrors` / `ocrErrors` — already index-keyed, just need
+  to populate from outcome bundle
+- `correctionTrailEntries` — append-only; entries carry
+  `pageIndex` so order isn't critical, but post-loop sort by
+  page index keeps debug logs readable
+- `pdf: LoadedPDF` outer-scope mutable var → goes away; each
+  task loads its own. The periodic-reload memory-management
+  pattern dissolves because per-task lifetimes are short.
+- `progress?(...)` callback — needs `completedPages` to read
+  monotonically; use an atomic counter incremented as
+  outcomes complete (the `pageIndex` in the outcome lets the
+  callback still surface "now processing page N" if desired)
+
+### Risks
+
+- **PDFKit per-task load cost**: re-parsing `LoadedPDF` per
+  parallel task. On a 300-page book at concurrency=4, that's
+  4 in-flight `PDFDocument` instances vs today's serial 1.
+  Per-load cost is ~50ms; the total reparses are bounded by
+  concurrency (4× peak), not page count.
+- **Surya queue starvation**: parallel callers all wait on
+  the same sidecar. Risk is acceptable today (sidecar's
+  internal queue is bounded and well-behaved), but watch for
+  timeouts on books that push concurrency × pages-pending
+  past the sidecar's capacity.
+- **Tesseract C-API thread-safety**: `TesseractOCREngine` uses
+  the C API which is single-threaded per `TessBaseAPI` instance.
+  Today's engine likely shares one instance; verify it's safe
+  to call from N concurrent tasks or pool instances.
+- **Memory pressure**: each in-flight task holds a rendered
+  page image (~4 MB at 400 DPI), Surya layout regions, OCR
+  observations, optionally cropped region images for Cloud
+  cleanup. At concurrency=8 that's ~32 MB just for page images
+  before Surya regions get accounted; manageable but worth a
+  budget check.
+
+### Effort
+
+Honest estimate: **4–6 hours** of careful refactoring + testing,
+likely across two sessions. Phase A alone is ~3 hours; Phase B
+is ~1–2 hours once Phase A lands clean.
+
+### Dependencies
+
+- `ClaudeRateLimiter.shared` (already shipped) — protects
+  Anthropic-side calls when N parallel pages hit cloud engines.
+- `GeminiEmbeddingRateLimiter.shared` (already shipped) — same
+  for Gemini.
+
+### Sequencing
+
+Behind near-term items but ahead of P-Surya-Pool (which only
+matters once Cascade-Parallel exposes Surya as the bottleneck).
+Earns priority when a real bulk-Private-mode workload makes
+serial cascade conversion feel slow.
 
 ---
 
