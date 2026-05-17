@@ -192,4 +192,156 @@ final class DictionaryCorrectorTests: XCTestCase {
             "Gibberish shouldn't validate in any other language"
         )
     }
+
+    // MARK: - Classical-vocabulary skip (Guard 6)
+
+    func test_classical_vocab_skips_latin_function_words() {
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "et"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "est"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "sed"))
+    }
+
+    func test_classical_vocab_skips_latin_inflected_forms() {
+        // High-frequency nouns / verbs in their classical
+        // citation forms — surface in academic English prose.
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "rei"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "hominis"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "summa"))
+    }
+
+    func test_classical_vocab_skips_greek_transliteration() {
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "aletheia"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "phronesis"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "katharsis"))
+    }
+
+    func test_classical_vocab_case_insensitive() {
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "Logos"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "POLIS"))
+    }
+
+    func test_classical_vocab_lets_normal_english_through() {
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "english"))
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "the"))
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "philosophy"))
+    }
+
+    // MARK: - OCR-confusion-pattern gate (Guard 7)
+
+    func test_diff_finds_substitution_position() {
+        // "Engiish" vs "English" differ at position 3 (i vs l).
+        guard let diff = DictionaryCorrector.diffAtDistanceOne(
+            a: "engiish", b: "english"
+        ) else {
+            return XCTFail("expected distance-1 diff")
+        }
+        XCTAssertEqual(diff.type, .substitution)
+        XCTAssertEqual(diff.position, 3)
+        XCTAssertEqual(diff.char, "l")
+    }
+
+    func test_diff_finds_insertion_position() {
+        // "wel" → "well" is an insertion at position 3.
+        guard let diff = DictionaryCorrector.diffAtDistanceOne(
+            a: "wel", b: "well"
+        ) else {
+            return XCTFail("expected distance-1 diff")
+        }
+        XCTAssertEqual(diff.type, .insertion)
+        XCTAssertEqual(diff.position, 3)
+        XCTAssertEqual(diff.char, "l")
+    }
+
+    func test_diff_finds_deletion_position() {
+        // "thaat" → "that" deletes the second 'a'. Common
+        // prefix is "tha" (3 chars), common suffix is "t"
+        // (1 char), so the diff lands at position 3 in the
+        // original.
+        guard let diff = DictionaryCorrector.diffAtDistanceOne(
+            a: "thaat", b: "that"
+        ) else {
+            return XCTFail("expected distance-1 diff")
+        }
+        XCTAssertEqual(diff.type, .deletion)
+        XCTAssertEqual(diff.position, 3)
+        XCTAssertEqual(diff.char, "a")
+    }
+
+    func test_diff_returns_nil_for_distance_two_or_more() {
+        // "kitten" → "kitten" is distance 0; "abcde" → "axxde"
+        // is distance 2.
+        XCTAssertNil(DictionaryCorrector.diffAtDistanceOne(
+            a: "abcde", b: "axxde"
+        ))
+    }
+
+    func test_confusion_gate_accepts_classic_scanner_errors() {
+        // `thc → the` (c→e substitution).
+        XCTAssertTrue(DictionaryCorrector.isOCRConfusionEdit(
+            original: "thc", candidate: "the"
+        ))
+        // `Engiish → English` (i→l substitution).
+        XCTAssertTrue(DictionaryCorrector.isOCRConfusionEdit(
+            original: "Engiish", candidate: "English"
+        ))
+        // `corn → conn` (r→n substitution) — questionable in
+        // isolation, but `r↔n` is in the confusable table.
+        XCTAssertTrue(DictionaryCorrector.isOCRConfusionEdit(
+            original: "corn", candidate: "conn"
+        ))
+    }
+
+    func test_confusion_gate_accepts_doubled_letter_edits() {
+        // `wel → well` (doubled-letter insertion).
+        XCTAssertTrue(DictionaryCorrector.isOCRConfusionEdit(
+            original: "wel", candidate: "well"
+        ))
+        // `acros → across` (doubled s insertion).
+        XCTAssertTrue(DictionaryCorrector.isOCRConfusionEdit(
+            original: "acros", candidate: "across"
+        ))
+        // `thaat → that` (doubled-letter deletion).
+        XCTAssertTrue(DictionaryCorrector.isOCRConfusionEdit(
+            original: "thaat", candidate: "that"
+        ))
+    }
+
+    func test_confusion_gate_rejects_foreign_cognate_edits() {
+        // French `salade` → English `salads` (e→s). Not a
+        // visual-confusion pair, so the gate refuses to apply
+        // — exactly the over-correction this gate exists to
+        // block.
+        XCTAssertFalse(DictionaryCorrector.isOCRConfusionEdit(
+            original: "salade", candidate: "salads"
+        ))
+        // German `Haus` → `haul` (s→l). Not in the table.
+        XCTAssertFalse(DictionaryCorrector.isOCRConfusionEdit(
+            original: "Haus", candidate: "haul"
+        ))
+        // French `idée` → English `idea` involves an accented
+        // character → not in confusableLetterPairs (which only
+        // lists ASCII letters), so rejected.
+        XCTAssertFalse(DictionaryCorrector.isOCRConfusionEdit(
+            original: "idée", candidate: "idea"
+        ))
+    }
+
+    func test_confusion_gate_rejects_non_adjacent_letter_insertion() {
+        // Insertion of an arbitrary letter that doesn't duplicate
+        // an adjacent char shouldn't pass — that's not what an
+        // OCR dropout looks like. Example: "carte" → "carter"
+        // (insert 'r' at end where adjacent char is 'e').
+        XCTAssertFalse(DictionaryCorrector.isOCRConfusionEdit(
+            original: "carte", candidate: "carter"
+        ))
+    }
+
+    func test_confusion_gate_rejects_arbitrary_final_letter_deletion() {
+        // French `carte` → English `cart` deletes a final 'e'
+        // with no neighboring 'e'. Not a doubled-letter
+        // collapse → rejected.
+        XCTAssertFalse(DictionaryCorrector.isOCRConfusionEdit(
+            original: "carte", candidate: "cart"
+        ))
+    }
 }

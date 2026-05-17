@@ -6,8 +6,17 @@ import NaturalLanguage
 /// text, finds words that aren't in the language's dictionary, and
 /// when there's an unambiguous Levenshtein-1 candidate that **is**
 /// in the dictionary, applies it. Catches the bulk of "obvious"
-/// scanner-noise garblings — `thc` → `the`, `Engiish` → `English`,
-/// `tlie` → `the` — for free, before Haiku post-OCR cleanup runs.
+/// scanner-noise garblings — `thc` → `the`, `Engiish` → `English` —
+/// for free.
+///
+/// **Conditional execution.** Today's pipeline runs this pass only
+/// when no language-model post-OCR cleanup is available (Private
+/// mode without AFM, or Cloud mode with the cleanup toggle off and
+/// no AFM fallback). When Haiku post-OCR cleanup or AFM cleanup
+/// will run, the pipeline skips this pass entirely — the LM-based
+/// passes handle the same garblings with much better context
+/// awareness and don't carry the false-positive risk on foreign
+/// cognates. The gating lives in `PDFToEPUBPipeline.assembleBook`.
 ///
 /// **Multi-language via NSSpellChecker.** macOS ships spelling
 /// dictionaries for English, French, Italian, Spanish, Portuguese,
@@ -17,8 +26,8 @@ import NaturalLanguage
 /// language for short / ambiguous regions, and to "skip this region"
 /// when neither resolves to a supported BCP-47 code.
 ///
-/// **Conservative correction policy.** Three guards keep the pass
-/// from damaging proper nouns and technical terms:
+/// **Conservative correction policy.** Eight guards keep the pass
+/// from damaging proper nouns, technical terms, and foreign words:
 /// 1. Only attempt on Latin-script tokens. Greek / Hebrew / Arabic /
 ///    Cyrillic / CJK words are skipped entirely (their
 ///    correction would need a different dictionary).
@@ -27,6 +36,18 @@ import NaturalLanguage
 ///    is usually genuine OCR garbage that needs Sonnet anyway.
 /// 3. Skip words shorter than 3 characters and words with
 ///    embedded digits or punctuation (URLs, model numbers).
+/// 4. Skip uppercase-initial non-sentence-start words (likely
+///    proper nouns).
+/// 5. Skip when the word is valid in any other installed European
+///    NSSpellChecker dictionary (French, Italian, German, etc.).
+/// 6. Skip when the word matches a bundled Latin or transliterated-
+///    Greek classical-vocabulary list (covers the gap left by
+///    macOS not shipping Latin / Greek-in-Latin dictionaries).
+/// 7. Apply only when the single edit matches a known scanner-
+///    confusion pattern (c↔e, i↔l, u↔n, o↔c, b↔h, r↔n, m↔n, or
+///    a doubled-letter insertion/deletion). Foreign-cognate near-
+///    matches don't typically match these patterns, so this gate
+///    blocks them surgically.
 ///
 /// Casing is preserved when applying — `Thc` → `The`, `THC` → `THE`.
 public struct DictionaryCorrector: Sendable {
@@ -157,7 +178,7 @@ public struct DictionaryCorrector: Sendable {
             return nil
         }
 
-        // Guard 6 (Q-Italic-Skip, 2026-05-12): cross-language
+        // Guard 5 (Q-Italic-Skip, 2026-05-12): cross-language
         // validity. Vision/Tesseract paths often emit italicized
         // foreign words inside an otherwise-English paragraph as
         // a single run with no italic flag, so the per-run
@@ -180,9 +201,149 @@ public struct DictionaryCorrector: Sendable {
             return nil
         }
 
+        // Guard 6: bundled classical wordlists. macOS doesn't
+        // ship a Latin dictionary, and Greek-in-Latin-letter
+        // transliteration (logos, polis, kairos, …) isn't in any
+        // European dictionary. Without these lists, common
+        // academic-English borrowings get "corrected" to a
+        // nearby English word — `kairos` → `karras` and similar
+        // gibberish. The lists are small starter sets; users can
+        // extend them by editing the static arrays below.
+        if Self.isClassicalVocabulary(word: word) {
+            return nil
+        }
+
+        // Guard 7: OCR-confusion-pattern gate. Real scanner
+        // errors fit a known fingerprint — c↔e (open vs closed),
+        // i↔l (thin verticals), u↔n (inverted), o↔c, b↔h, r↔n,
+        // m↔n, or a doubled-letter insertion/deletion (`wel` →
+        // `well`, `thaat` → `that`). Foreign-cognate near-matches
+        // almost never fit these patterns: French `salade` →
+        // English `salads` is an `e→s` substitution; German
+        // `Haus` → `haul` is `s→l`. Requiring the single edit to
+        // match a known confusion blocks those cases surgically
+        // without bundling per-language dictionaries.
+        if !Self.isOCRConfusionEdit(original: word, candidate: top) {
+            return nil
+        }
+
         // Apply case to the suggestion to match the original.
         return Self.matchCase(of: word, target: top)
     }
+
+    /// Return true when `word` (case-insensitive) is in the bundled
+    /// Latin or Greek-transliteration wordlist. Both are seeded with
+    /// classical-academic vocabulary that English NSSpellChecker
+    /// flags as misspelled but that scholars routinely embed in
+    /// English prose.
+    static func isClassicalVocabulary(word: String) -> Bool {
+        let lowered = word.lowercased()
+        return latinClassicalWords.contains(lowered)
+            || greekTransliterationWords.contains(lowered)
+    }
+
+    /// Type of single edit between two strings at Levenshtein
+    /// distance 1.
+    enum EditType {
+        case substitution
+        case insertion  // candidate has one more char than original
+        case deletion   // candidate has one fewer char
+    }
+
+    /// Identify the single edit between `a` and `b` when their
+    /// Levenshtein distance is exactly 1. Returns nil for any
+    /// other case (equal strings, distance ≥ 2). The position is
+    /// 0-indexed in the shorter string for substitution, in the
+    /// longer string for insertion / deletion.
+    static func diffAtDistanceOne(
+        a: String, b: String
+    ) -> (type: EditType, position: Int, char: Character)? {
+        let aChars = Array(a)
+        let bChars = Array(b)
+        // Common prefix.
+        var prefix = 0
+        while prefix < aChars.count, prefix < bChars.count,
+              aChars[prefix] == bChars[prefix] {
+            prefix += 1
+        }
+        // Common suffix.
+        var suffix = 0
+        while suffix < (aChars.count - prefix),
+              suffix < (bChars.count - prefix),
+              aChars[aChars.count - 1 - suffix]
+                == bChars[bChars.count - 1 - suffix] {
+            suffix += 1
+        }
+        let aRemain = aChars.count - prefix - suffix
+        let bRemain = bChars.count - prefix - suffix
+        switch (aRemain, bRemain) {
+        case (1, 1):
+            return (.substitution, prefix, bChars[prefix])
+        case (0, 1):
+            return (.insertion, prefix, bChars[prefix])
+        case (1, 0):
+            return (.deletion, prefix, aChars[prefix])
+        default:
+            return nil
+        }
+    }
+
+    /// Return true when the single edit between `original` and
+    /// `candidate` matches a known OCR scanner confusion. Called
+    /// only after Guard 4 has confirmed Levenshtein distance 1.
+    /// Three sub-cases — see the doc comment on the corrector for
+    /// the design rationale.
+    static func isOCRConfusionEdit(
+        original: String, candidate: String
+    ) -> Bool {
+        let oLower = original.lowercased()
+        let cLower = candidate.lowercased()
+        guard let diff = diffAtDistanceOne(a: oLower, b: cLower)
+        else { return false }
+        switch diff.type {
+        case .substitution:
+            let origChar = Array(oLower)[diff.position]
+            return confusableLetterPairs.contains(
+                [origChar, diff.char]
+            )
+        case .insertion:
+            // Insertion is only accepted when the inserted char
+            // would duplicate an adjacent char in `candidate` —
+            // i.e. the OCR'd word dropped one half of a doubled
+            // letter (`wel` → `well`, `acros` → `across`).
+            let cArr = Array(cLower)
+            let pos = diff.position
+            let left  = pos > 0              ? cArr[pos - 1] : nil
+            let right = pos + 1 < cArr.count ? cArr[pos + 1] : nil
+            return left == diff.char || right == diff.char
+        case .deletion:
+            // Symmetric: the deleted char must have been part of
+            // a doubled pair in `original` (`thaat` → `that`).
+            let oArr = Array(oLower)
+            let pos = diff.position
+            let left  = pos > 0              ? oArr[pos - 1] : nil
+            let right = pos + 1 < oArr.count ? oArr[pos + 1] : nil
+            return left == diff.char || right == diff.char
+        }
+    }
+
+    /// Known scanner-confusion letter pairs. Curated tight:
+    /// includes only pairs that are visually confusable in
+    /// modern print at typical OCR DPI and that don't carry a
+    /// high cognate-flip risk. Each pair is recorded in both
+    /// directions because the original may be either of the two.
+    /// Notably absent: (a, o) [Romance gender flips], (f, t)
+    /// [German "fest" vs English "test"], anything involving
+    /// digits [Guard 3 already excludes digit-bearing tokens].
+    static let confusableLetterPairs: Set<[Character]> = [
+        ["c", "e"], ["e", "c"],
+        ["i", "l"], ["l", "i"],
+        ["u", "n"], ["n", "u"],
+        ["o", "c"], ["c", "o"],
+        ["b", "h"], ["h", "b"],
+        ["r", "n"], ["n", "r"],
+        ["m", "n"], ["n", "m"],
+    ]
 
     /// Return true when `word` is correctly spelled in any of the
     /// supported languages other than `activeLanguage`. Used as

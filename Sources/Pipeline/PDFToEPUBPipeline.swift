@@ -1669,11 +1669,16 @@ public actor PDFToEPUBPipeline {
         let activePageEngine = claudeEngines.pageEngine
         let claudeBatchPageEngine = claudeEngines.claudeBatchPageEngine
 
-        // Dictionary-match cleanup runs unconditionally — it's
-        // free, fast, and gated on language-supported tokens
-        // internally. Constructed once per conversion with the
-        // document's primary language; per-region language hints
-        // from NLR override that when available.
+        // Dictionary-match cleanup. Built unconditionally so we
+        // can hand it to `assembleBook`, but the assembly step
+        // decides whether to actually apply it based on whether
+        // an LM-based post-OCR cleanup (Cloud Haiku or AFM) will
+        // run — when one will, that pass handles the same
+        // garblings with full-sentence context and the dictionary
+        // pass's foreign-cognate false-positive risk isn't worth
+        // running. The check happens in `assembleBook` so
+        // ConversionStats sees an accurate "ran / skipped"
+        // accounting if we add one later.
         let dictionaryCorrector = DictionaryCorrector(
             documentLanguage: options.documentProfile?.primaryLanguage
         )
@@ -2704,15 +2709,26 @@ public actor PDFToEPUBPipeline {
         sourceURL: URL? = nil,
         bilingualLayout: BilingualLayoutDetector.Layout? = nil
     ) async -> AssembledBook {
-        // 1 + 2: dictionary cleanup, then typography pass.
-        // Dictionary runs first so it sees pre-normalized forms
-        // (some dictionary entries match ligature characters as-is);
-        // both run **after** reflow so cross-line / cross-page word
-        // joins are already resolved before either touches a token.
-        let dehyphenated = applyDictionaryToBlocks(
-            reflowed.blocks, corrector: dictionaryCorrector
-        )
-        let cleanBlocks = TypographyNormalizer.normalize(dehyphenated)
+        // 1 + 2: dictionary cleanup (conditional), then
+        // typography pass. The dictionary corrector only runs
+        // when no LM-based post-OCR cleanup will follow — Cloud
+        // Haiku or AFM cover the same garblings with much better
+        // context awareness, and skipping the dictionary pass
+        // eliminates its foreign-cognate false-positive risk in
+        // those configurations. Probe the post-processor factory
+        // (same one the per-region cleanup uses) to decide.
+        let hasLMCleanup = makePostProcessor(
+            options: options, budget: budget
+        ) != nil
+        let blocksAfterDict: [Block]
+        if hasLMCleanup {
+            blocksAfterDict = reflowed.blocks
+        } else {
+            blocksAfterDict = applyDictionaryToBlocks(
+                reflowed.blocks, corrector: dictionaryCorrector
+            )
+        }
+        let cleanBlocks = TypographyNormalizer.normalize(blocksAfterDict)
 
         // 2.5: pattern-based chapter-marker promotion. Surya's
         // layout model misses chapter starts when they're set in

@@ -85,8 +85,15 @@ final class BilingualLayoutDetectorTests: XCTestCase {
             XCTFail("forced mode should pair French/English alternation")
             return
         }
-        XCTAssertEqual(forced.l1Language, "fr")
-        XCTAssertEqual(forced.l2Language, "en")
+        // With equal counts (6 each), the L1/L2 tiebreaker is
+        // dictionary-order-dependent — fr/en can land either
+        // way. The invariant that matters is that the two
+        // languages of the layout are {fr, en} and the spread
+        // pairing is in place.
+        XCTAssertEqual(
+            Set([forced.l1Language, forced.l2Language]),
+            Set(["fr", "en"])
+        )
         XCTAssertEqual(forced.pagePartners[2], 3)
     }
 
