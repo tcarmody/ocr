@@ -49,6 +49,9 @@ public enum DocumentProfiler {
         guard let doc = PDFDocument(url: pdfURL), doc.pageCount > 0 else {
             return DocumentProfile()
         }
+        // Wrap the PDFDocument in LoadedPDF so the XObject probe
+        // below can reuse its `pageRef` accessor.
+        let loaded = LoadedPDF(url: pdfURL, document: doc)
 
         let pageIndices = sampleIndices(
             pageCount: doc.pageCount, target: sampleCount
@@ -57,9 +60,24 @@ public enum DocumentProfiler {
         var languageWeights: [String: Double] = [:]
         var totalCharCount = 0
         var pagesWithText = 0
+        // XObject probe: count embedded image XObjects per sampled
+        // page. High counts on art books / journal articles flag
+        // them as complex-layout candidates for Cloud page OCR,
+        // which keeps figures + captions intact better than the
+        // per-region cascade. Filtered to *real figures* (not
+        // whole-page scans) by the detector's coverage thresholds.
+        let xObjectDetector = PDFImageXObjectDetector()
+        var totalImageXObjects = 0
 
         for i in pageIndices {
             guard let page = doc.page(at: i) else { continue }
+            // Image XObjects on this sampled page. Detector
+            // already filters whole-page scans (per-page raster
+            // image) and decorative drop-caps via its coverage
+            // thresholds, so the count is "real figures only."
+            totalImageXObjects += xObjectDetector.detect(
+                in: loaded, pageIndex: i
+            ).count
             // PDFKit's `page.string` returns the embedded text layer
             // directly. Empty / whitespace-only when the PDF is a
             // flatbed scan with no OCR layer.
@@ -99,6 +117,9 @@ public enum DocumentProfiler {
         // any other languages with weight ≥ secondaryWeightFloor of
         // the primary.
         let isLikelyScan = pagesWithText == 0
+        let imageXObjectsPerPage = samples.isEmpty
+            ? 0
+            : Double(totalImageXObjects) / Double(samples.count)
 
         guard let (primary, primaryWeight) = languageWeights
             .max(by: { $0.value < $1.value })
@@ -109,7 +130,8 @@ public enum DocumentProfiler {
                 confidence: 0,
                 isLikelyScan: isLikelyScan,
                 pageCount: doc.pageCount,
-                samplesAnalyzed: samples.count
+                samplesAnalyzed: samples.count,
+                imageXObjectsPerPage: imageXObjectsPerPage
             )
         }
         let secondary = languageWeights
@@ -141,7 +163,8 @@ public enum DocumentProfiler {
             confidence: confidence,
             isLikelyScan: isLikelyScan,
             pageCount: doc.pageCount,
-            samplesAnalyzed: samples.count
+            samplesAnalyzed: samples.count,
+            imageXObjectsPerPage: imageXObjectsPerPage
         )
     }
 

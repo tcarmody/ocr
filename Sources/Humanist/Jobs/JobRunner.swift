@@ -275,8 +275,15 @@ final class JobRunner: ObservableObject {
         // (factories also gate on a non-empty key). `useClaudePageOCR`
         // is coerced off since it only fires under Cloud mode + key.
         let privateOn = job.options.privateMode
-        let cloudFeatures: AISettings.CloudFeatures =
+        var cloudFeatures: AISettings.CloudFeatures =
             privateOn ? AISettings.CloudFeatures() : aiSettings.cloudFeatures
+        // Per-job Batch API override (Settings default unless the
+        // launcher's Per-job overrides flipped it for this drop).
+        // Skipped in private mode — no Cloud calls means nothing to
+        // batch.
+        if !privateOn, let override = job.options.batchAPIOverride {
+            cloudFeatures.useBatchAPI = override
+        }
         // The user-visible "Claude OCR ($$$)" toggle drives the
         // end-to-end page-OCR path (one Sonnet call per page,
         // structured XHTML in, [Block] out). The legacy cascade-

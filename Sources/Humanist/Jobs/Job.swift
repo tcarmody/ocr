@@ -252,6 +252,17 @@ struct ConversionOptions: Codable, Equatable {
     /// outside the classical L1 set, etc. Default false; auto
     /// detection still fires when the source qualifies.
     var forceBilingualFacingPage: Bool
+    /// Per-job override for the Batch API toggle. Three-state:
+    ///   * `nil` — use the user's Settings → AI → Throughput
+    ///     default for `useBatchAPI`.
+    ///   * `true` — force Batch API for this conversion (50%
+    ///     cheaper, async wait) regardless of Settings.
+    ///   * `false` — force the synchronous per-page path for
+    ///     this conversion regardless of Settings.
+    /// Lets the user batch a long book overnight without
+    /// changing the default, and conversely run a single quick
+    /// conversion synchronously when Batch is the default.
+    var batchAPIOverride: Bool?
 
     init(
         languages: [String] = ["en"],
@@ -271,7 +282,8 @@ struct ConversionOptions: Codable, Equatable {
         emitSearchablePDF: Bool = false,
         bypassDedupe: Bool = false,
         pageOCRProvider: PageOCRProvider? = nil,
-        forceBilingualFacingPage: Bool = false
+        forceBilingualFacingPage: Bool = false,
+        batchAPIOverride: Bool? = nil
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
@@ -291,6 +303,7 @@ struct ConversionOptions: Codable, Equatable {
         self.bypassDedupe = bypassDedupe
         self.pageOCRProvider = pageOCRProvider
         self.forceBilingualFacingPage = forceBilingualFacingPage
+        self.batchAPIOverride = batchAPIOverride
     }
 
     /// Codable: decodes both the new `useSuryaOCR` / `useClaudePageOCR`
@@ -317,6 +330,7 @@ struct ConversionOptions: Codable, Equatable {
         case bypassDedupe
         case pageOCRProvider
         case forceBilingualFacingPage
+        case batchAPIOverride
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -397,6 +411,11 @@ struct ConversionOptions: Codable, Equatable {
         self.forceBilingualFacingPage = try c.decodeIfPresent(
             Bool.self, forKey: .forceBilingualFacingPage
         ) ?? false
+        // nil → fall through to Settings → AI → Throughput default.
+        // Pre-feature jobs decode cleanly (decodeIfPresent → nil).
+        self.batchAPIOverride = try c.decodeIfPresent(
+            Bool.self, forKey: .batchAPIOverride
+        )
     }
 
     /// Encode under the new keys only — the legacy aliases are for
@@ -421,6 +440,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(bypassDedupe, forKey: .bypassDedupe)
         try c.encodeIfPresent(pageOCRProvider, forKey: .pageOCRProvider)
         try c.encode(forceBilingualFacingPage, forKey: .forceBilingualFacingPage)
+        try c.encodeIfPresent(batchAPIOverride, forKey: .batchAPIOverride)
     }
 }
 

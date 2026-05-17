@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import AI
 import Document
+import Layout
 import OCR
 import PDFIngest
 import Pipeline
@@ -141,6 +142,13 @@ final class QueueViewModel: ObservableObject {
     /// gates so books that auto-detection misses still get paired
     /// page-by-page. Per-session, not persisted to Settings.
     @Published var forceBilingualFacingPage: Bool = false
+    /// Per-job override for the Batch API setting. nil = use the
+    /// Settings → AI → Throughput default; true/false force on/off
+    /// for this conversion. Lets the user batch a long book
+    /// overnight without changing the default, and conversely
+    /// force-sync a single quick conversion when Batch is the
+    /// default. Per-session.
+    @Published var batchAPIOverride: Bool? = nil
 
     let store: JobStore
     let runner: JobRunner
@@ -329,7 +337,8 @@ final class QueueViewModel: ObservableObject {
                 emitSearchablePDF: emitSearchablePDF,
                 bypassDedupe: bypassDedupe,
                 pageOCRProvider: pageOCRProvider,
-                forceBilingualFacingPage: forceBilingualFacingPage
+                forceBilingualFacingPage: forceBilingualFacingPage,
+                batchAPIOverride: batchAPIOverride
             ),
             status: .profiling
         )
@@ -372,13 +381,18 @@ final class QueueViewModel: ObservableObject {
                 estimate = .empty
             }
             let hasAPIKey = (AnthropicAPIKeyStore().read() ?? "").isEmpty == false
+            let hasGeminiKey = (GeminiAPIKeyStore().read() ?? "").isEmpty == false
+            let suryaAvailable = SuryaConnection.detect() != nil
             let warnings = ProfileWarningEvaluator.evaluate(
                 ProfileWarningInputs(
                     profile: profile,
                     useHighAccuracyOCR: suryaOn,
+                    useClaudePageOCR: pageOCROn,
                     processingMode: aiSettings.processingMode,
                     cloudFeatures: aiSettings.cloudFeatures,
                     hasAPIKey: hasAPIKey,
+                    hasGeminiKey: hasGeminiKey,
+                    suryaAvailable: suryaAvailable,
                     pickerSupportedLanguages: Self.supportedLanguages.map(\.id)
                 )
             )

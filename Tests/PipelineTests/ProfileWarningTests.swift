@@ -14,55 +14,171 @@ final class ProfileWarningTests: XCTestCase {
         isLikelyScan: Bool = false,
         primaryLanguage: String? = nil,
         confidence: Double = 0,
+        imageXObjectsPerPage: Double = 0,
         useHighAccuracyOCR: Bool = false,
+        useClaudePageOCR: Bool = false,
         processingMode: ProcessingMode = .privateLocal,
         cloudFeatures: AISettings.CloudFeatures = AISettings.CloudFeatures(
             hardRegionOCR: false, tableExtraction: false,
             postOCRCleanup: false, semanticClassification: false, tocParsing: false
         ),
         hasAPIKey: Bool = false,
+        hasGeminiKey: Bool = false,
+        suryaAvailable: Bool = false,
         pickerSupportedLanguages: [String] = ["en", "fr", "grc"]
     ) -> ProfileWarningInputs {
         let profile = DocumentProfile(
             primaryLanguage: primaryLanguage,
             confidence: confidence,
             isLikelyScan: isLikelyScan,
-            pageCount: 100
+            pageCount: 100,
+            imageXObjectsPerPage: imageXObjectsPerPage
         )
         return ProfileWarningInputs(
             profile: profile,
             useHighAccuracyOCR: useHighAccuracyOCR,
+            useClaudePageOCR: useClaudePageOCR,
             processingMode: processingMode,
             cloudFeatures: cloudFeatures,
             hasAPIKey: hasAPIKey,
+            hasGeminiKey: hasGeminiKey,
+            suryaAvailable: suryaAvailable,
             pickerSupportedLanguages: pickerSupportedLanguages
         )
     }
 
-    // MARK: - likelyScanButHighAccuracyOff
+    // MARK: - Complex-layout warning matrix
 
-    func test_likely_scan_with_high_accuracy_off_emits_warning() {
-        let inputs = make(isLikelyScan: true, useHighAccuracyOCR: false)
-        XCTAssertTrue(
-            ProfileWarningEvaluator.evaluate(inputs)
-                .contains(.likelyScanButHighAccuracyOff)
+    /// `CloudFeatures` with at least one feature on — used in
+    /// complex-layout tests so the orthogonal
+    /// `cloudModeButNoFeaturesEnabled` doesn't fire and obscure
+    /// what we're checking.
+    private var cloudWithFeatureOn: AISettings.CloudFeatures {
+        AISettings.CloudFeatures(
+            hardRegionOCR: true, tableExtraction: false,
+            postOCRCleanup: false,
+            semanticClassification: false, tocParsing: false
         )
     }
 
-    func test_likely_scan_with_high_accuracy_on_does_not_emit_warning() {
-        let inputs = make(isLikelyScan: true, useHighAccuracyOCR: true)
-        XCTAssertFalse(
-            ProfileWarningEvaluator.evaluate(inputs)
-                .contains(.likelyScanButHighAccuracyOff)
+    func test_likely_scan_with_cloud_page_OCR_available_recommends_cloud() {
+        // Cloud mode + Anthropic key → recommend page OCR.
+        let inputs = make(
+            isLikelyScan: true,
+            processingMode: .cloud,
+            cloudFeatures: cloudWithFeatureOn,
+            hasAPIKey: true
+        )
+        XCTAssertEqual(
+            ProfileWarningEvaluator.evaluate(inputs),
+            [.complexLayoutRecommendCloudPageOCR]
         )
     }
 
-    func test_born_digital_does_not_emit_scan_warning() {
-        let inputs = make(isLikelyScan: false, useHighAccuracyOCR: false)
-        XCTAssertFalse(
-            ProfileWarningEvaluator.evaluate(inputs)
-                .contains(.likelyScanButHighAccuracyOff)
+    func test_likely_scan_with_gemini_key_recommends_cloud() {
+        // Gemini key alone (no Anthropic) is enough — both are
+        // valid page-OCR providers.
+        let inputs = make(
+            isLikelyScan: true,
+            processingMode: .cloud,
+            cloudFeatures: cloudWithFeatureOn,
+            hasAPIKey: false,
+            hasGeminiKey: true
         )
+        // Note: the cloud-without-Anthropic-key warning still
+        // fires because the existing `cloudModeButNoAPIKey`
+        // check looks for the Anthropic key specifically. The
+        // complex-layout path correctly recommends cloud page
+        // OCR; the noisy-second-warning is an existing concern
+        // orthogonal to this matrix change.
+        let warnings = ProfileWarningEvaluator.evaluate(inputs)
+        XCTAssertTrue(warnings.contains(.complexLayoutRecommendCloudPageOCR))
+    }
+
+    func test_likely_scan_in_private_mode_with_surya_recommends_surya() {
+        let inputs = make(
+            isLikelyScan: true,
+            processingMode: .privateLocal,
+            suryaAvailable: true
+        )
+        XCTAssertEqual(
+            ProfileWarningEvaluator.evaluate(inputs),
+            [.complexLayoutRecommendSurya]
+        )
+    }
+
+    func test_likely_scan_with_no_upgrade_path_surfaces_install_hint() {
+        let inputs = make(
+            isLikelyScan: true,
+            processingMode: .privateLocal,
+            suryaAvailable: false
+        )
+        XCTAssertEqual(
+            ProfileWarningEvaluator.evaluate(inputs),
+            [.complexLayoutNoUpgradePathAvailable]
+        )
+    }
+
+    func test_figure_dense_layout_triggers_same_warning_as_likely_scan() {
+        // Born-digital art book with ≥ 1 figure every 3 pages.
+        // No likely-scan flag, but the figure density alone
+        // earns the complex-layout warning.
+        let inputs = make(
+            isLikelyScan: false,
+            imageXObjectsPerPage: 0.5,
+            processingMode: .cloud,
+            cloudFeatures: cloudWithFeatureOn,
+            hasAPIKey: true
+        )
+        XCTAssertEqual(
+            ProfileWarningEvaluator.evaluate(inputs),
+            [.complexLayoutRecommendCloudPageOCR]
+        )
+    }
+
+    func test_figure_density_below_threshold_does_not_warn() {
+        // 1 figure every ~10 pages — below the 0.3 floor.
+        let inputs = make(
+            isLikelyScan: false,
+            imageXObjectsPerPage: 0.1,
+            processingMode: .cloud,
+            cloudFeatures: cloudWithFeatureOn,
+            hasAPIKey: true
+        )
+        XCTAssertEqual(ProfileWarningEvaluator.evaluate(inputs), [])
+    }
+
+    func test_high_accuracy_already_picked_suppresses_complex_layout_warning() {
+        let inputs = make(
+            isLikelyScan: true,
+            useHighAccuracyOCR: true,
+            processingMode: .privateLocal,
+            suryaAvailable: true
+        )
+        XCTAssertEqual(ProfileWarningEvaluator.evaluate(inputs), [])
+    }
+
+    func test_cloud_page_OCR_already_picked_suppresses_complex_layout_warning() {
+        let inputs = make(
+            isLikelyScan: true,
+            useClaudePageOCR: true,
+            processingMode: .cloud,
+            cloudFeatures: cloudWithFeatureOn,
+            hasAPIKey: true
+        )
+        XCTAssertEqual(ProfileWarningEvaluator.evaluate(inputs), [])
+    }
+
+    func test_born_digital_clean_layout_emits_no_complex_layout_warning() {
+        let inputs = make(
+            isLikelyScan: false,
+            imageXObjectsPerPage: 0,
+            processingMode: .privateLocal
+        )
+        let warnings = ProfileWarningEvaluator.evaluate(inputs)
+        XCTAssertFalse(warnings.contains(.complexLayoutRecommendCloudPageOCR))
+        XCTAssertFalse(warnings.contains(.complexLayoutRecommendSurya))
+        XCTAssertFalse(warnings.contains(.complexLayoutNoUpgradePathAvailable))
     }
 
     // MARK: - detectedLanguageUnsupported
@@ -169,7 +285,9 @@ final class ProfileWarningTests: XCTestCase {
     }
 
     func test_multiple_warnings_can_fire_together() {
-        // Scan + high-accuracy off + Cloud mode without key.
+        // Scan + Cloud mode without key → complex-layout (no
+        // upgrade path since cloud unavailable + surya off) +
+        // the no-API-key cloud-mode warning.
         let inputs = make(
             isLikelyScan: true,
             useHighAccuracyOCR: false,
@@ -177,7 +295,7 @@ final class ProfileWarningTests: XCTestCase {
             hasAPIKey: false
         )
         let warnings = ProfileWarningEvaluator.evaluate(inputs)
-        XCTAssertTrue(warnings.contains(.likelyScanButHighAccuracyOff))
+        XCTAssertTrue(warnings.contains(.complexLayoutNoUpgradePathAvailable))
         XCTAssertTrue(warnings.contains(.cloudModeButNoAPIKey))
     }
 }

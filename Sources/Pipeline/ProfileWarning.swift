@@ -13,11 +13,23 @@ import PDFIngest
 /// right SF Symbol + headline without parsing strings, and the set
 /// is deterministic per (profile, settings) input pair.
 public enum ProfileWarning: String, Sendable, Codable, CaseIterable, Equatable {
-    /// The PDF looks like a scan (no usable embedded text on any
-    /// sampled page) but the user has Surya / high-accuracy OCR
-    /// turned off. Vision will run on every page and miss lines that
-    /// Surya catches reliably.
-    case likelyScanButHighAccuracyOff
+    /// The PDF looks like a scan OR has dense embedded figures
+    /// (`imageXObjectsPerPage` ≥ `figureDensityThreshold`), AND the
+    /// user has a Cloud page-OCR provider available (Cloud mode +
+    /// API key for the configured provider). Recommend Cloud page
+    /// OCR — Sonnet / Gemini handle scans and figure-rich layouts
+    /// noticeably better than the per-region cascade.
+    case complexLayoutRecommendCloudPageOCR
+    /// Same trigger (likely-scan / figure-dense layout) but the
+    /// user is in Private mode or doesn't have a Cloud key.
+    /// Surya is installed locally so it's the best available
+    /// upgrade — fall back to recommending it instead.
+    case complexLayoutRecommendSurya
+    /// Same trigger, but neither Cloud page OCR nor Surya is
+    /// available. Vision will run on every page and miss lines
+    /// that either upgrade path catches reliably. Surface the
+    /// install paths.
+    case complexLayoutNoUpgradePathAvailable
     /// `NLLanguageRecognizer` produced a confident detection, but
     /// the detected language isn't one of the picker's supported
     /// codes — so auto-detect couldn't override the picker. The
@@ -36,8 +48,12 @@ public enum ProfileWarning: String, Sendable, Codable, CaseIterable, Equatable {
     /// it fits on one line at the row's font size.
     public var headline: String {
         switch self {
-        case .likelyScanButHighAccuracyOff:
-            return "Likely scan — Surya would likely improve quality"
+        case .complexLayoutRecommendCloudPageOCR:
+            return "Likely scan or figure-rich layout — enable Page OCR for best quality"
+        case .complexLayoutRecommendSurya:
+            return "Likely scan or figure-rich layout — enable Surya OCR for better text recovery"
+        case .complexLayoutNoUpgradePathAvailable:
+            return "Likely scan — install Surya or configure Cloud page OCR for better text"
         case .detectedLanguageUnsupported:
             return "Detected language isn't in the picker; using your selection"
         case .cloudModeButNoAPIKey:
@@ -52,12 +68,20 @@ public enum ProfileWarning: String, Sendable, Codable, CaseIterable, Equatable {
     /// for non-blocking informational notes.
     public var systemImage: String {
         switch self {
-        case .likelyScanButHighAccuracyOff:    return "exclamationmark.triangle"
-        case .detectedLanguageUnsupported:     return "info.circle"
-        case .cloudModeButNoAPIKey:            return "exclamationmark.triangle"
-        case .cloudModeButNoFeaturesEnabled:   return "info.circle"
+        case .complexLayoutRecommendCloudPageOCR:    return "sparkles"
+        case .complexLayoutRecommendSurya:           return "exclamationmark.triangle"
+        case .complexLayoutNoUpgradePathAvailable:   return "exclamationmark.triangle"
+        case .detectedLanguageUnsupported:           return "info.circle"
+        case .cloudModeButNoAPIKey:                  return "exclamationmark.triangle"
+        case .cloudModeButNoFeaturesEnabled:         return "info.circle"
         }
     }
+
+    /// Threshold for "figure-dense": at least one embedded image
+    /// XObject every ~3 pages. Below this, the warning doesn't
+    /// fire on the figure-density signal alone — likely-scan
+    /// remains the load-bearing trigger.
+    public static let figureDensityThreshold: Double = 0.3
 }
 
 /// Inputs for `ProfileWarningEvaluator.evaluate(...)`. Bundled into
@@ -68,6 +92,12 @@ public struct ProfileWarningInputs: Sendable {
     /// Whether the queue's high-accuracy / Surya toggle is on for
     /// this drop.
     public let useHighAccuracyOCR: Bool
+    /// Whether the queue's Cloud page-OCR toggle is on for this
+    /// drop. Independent of `useHighAccuracyOCR`; the two are
+    /// mutually exclusive at the launcher level (different OCR
+    /// engines), but inputs here are plain values so the
+    /// evaluator can reason about each independently.
+    public let useClaudePageOCR: Bool
     /// AI processing mode for this conversion.
     public let processingMode: ProcessingMode
     /// Cloud-feature toggles. Unused for non-cloud modes.
@@ -76,6 +106,16 @@ public struct ProfileWarningInputs: Sendable {
     /// Caller is responsible for the keychain read so this struct
     /// stays plain-data.
     public let hasAPIKey: Bool
+    /// True when the keychain has a non-empty Google AI Studio
+    /// (Gemini) API key. Lets the evaluator recommend Cloud page
+    /// OCR even when the configured provider is Gemini-flavored
+    /// without an Anthropic key.
+    public let hasGeminiKey: Bool
+    /// True when the Surya CLI is detected on this machine
+    /// (`uv tool` install). Drives the
+    /// `complexLayoutRecommendSurya` vs
+    /// `complexLayoutNoUpgradePathAvailable` split.
+    public let suryaAvailable: Bool
     /// BCP-47 primary subtags the queue's language picker offers.
     /// Used to detect "we detected `cy` but the picker doesn't
     /// have Welsh."
@@ -84,16 +124,22 @@ public struct ProfileWarningInputs: Sendable {
     public init(
         profile: DocumentProfile,
         useHighAccuracyOCR: Bool,
+        useClaudePageOCR: Bool = false,
         processingMode: ProcessingMode,
         cloudFeatures: AISettings.CloudFeatures,
         hasAPIKey: Bool,
+        hasGeminiKey: Bool = false,
+        suryaAvailable: Bool = false,
         pickerSupportedLanguages: [String]
     ) {
         self.profile = profile
         self.useHighAccuracyOCR = useHighAccuracyOCR
+        self.useClaudePageOCR = useClaudePageOCR
         self.processingMode = processingMode
         self.cloudFeatures = cloudFeatures
         self.hasAPIKey = hasAPIKey
+        self.hasGeminiKey = hasGeminiKey
+        self.suryaAvailable = suryaAvailable
         self.pickerSupportedLanguages = pickerSupportedLanguages
     }
 }
@@ -105,12 +151,29 @@ public enum ProfileWarningEvaluator {
     public static func evaluate(_ inputs: ProfileWarningInputs) -> [ProfileWarning] {
         var warnings: [ProfileWarning] = []
 
-        // Likely scan + high-accuracy OCR off. Skip when the toggle
-        // is on (Surya will run); skip when we can't tell from the
-        // profile (no scan flag yet). Order: surface this first
-        // because it directly affects local-mode output quality.
-        if inputs.profile.isLikelyScan && !inputs.useHighAccuracyOCR {
-            warnings.append(.likelyScanButHighAccuracyOff)
+        // Complex-layout trigger: pure-scan OR figure-dense. Both
+        // shapes benefit from an upgrade beyond the per-region
+        // Vision cascade. Skip when the user already picked an
+        // upgrade path for this conversion.
+        let complexLayout = inputs.profile.isLikelyScan
+            || inputs.profile.imageXObjectsPerPage
+                >= ProfileWarning.figureDensityThreshold
+        let upgradeAlreadyPicked = inputs.useHighAccuracyOCR
+            || inputs.useClaudePageOCR
+        if complexLayout && !upgradeAlreadyPicked {
+            // Pick the strongest available upgrade path. Cloud
+            // page OCR ranks above Surya because Sonnet / Gemini
+            // handle figures + captions + scanned text better
+            // than the per-region cascade with Surya layout.
+            let cloudPageOCRAvailable = inputs.processingMode == .cloud
+                && (inputs.hasAPIKey || inputs.hasGeminiKey)
+            if cloudPageOCRAvailable {
+                warnings.append(.complexLayoutRecommendCloudPageOCR)
+            } else if inputs.suryaAvailable {
+                warnings.append(.complexLayoutRecommendSurya)
+            } else {
+                warnings.append(.complexLayoutNoUpgradePathAvailable)
+            }
         }
 
         // Detected language confident but not supported by the picker.
