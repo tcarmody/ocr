@@ -838,6 +838,111 @@ private struct JobRow: View {
         }
     }
 
+    /// True when this job's options are still mutable from the
+    /// queue UI. Once a job has reached `.running` (or anything
+    /// past it), per-job toggles have been baked into the pipeline
+    /// dispatch and flipping them post-hoc would lie about what
+    /// will actually run.
+    private var optionsMutable: Bool {
+        job.status == .queued || job.status == .profiling
+    }
+
+    /// Render one warning row. Most warnings are read-only Labels
+    /// (the original posture); the two complex-layout cases that
+    /// have a clear local fix (enable Page OCR / enable Surya)
+    /// also surface an inline link button so the user can flip the
+    /// per-job toggle directly from the queue row, without going
+    /// back to Settings.
+    ///
+    /// MACUX: link-styled buttons are the unobtrusive convention
+    /// for "do this thing" affordances embedded in informational
+    /// rows; system colors only; `.help(…)` tooltip for
+    /// discoverability.
+    @ViewBuilder
+    private func warningRow(_ warning: ProfileWarning) -> some View {
+        switch warning {
+        case .complexLayoutRecommendCloudPageOCR:
+            actionableWarning(
+                warning: warning,
+                isOn: job.options.useClaudePageOCR,
+                enableLabel: "Enable Page OCR for this job",
+                disableLabel: "Page OCR enabled · Undo",
+                helpText: """
+                    Routes every page through Claude Sonnet or Gemini Flash \
+                    (whichever provider you've configured). Best quality on \
+                    scans and figure-rich layouts; costs ~$0.005–0.04/page. \
+                    Per-job override — doesn't change your launcher defaults.
+                    """,
+                mutate: { newValue in
+                    store.update(job.id) { mutable in
+                        mutable.options.useClaudePageOCR = newValue
+                    }
+                }
+            )
+        case .complexLayoutRecommendSurya:
+            actionableWarning(
+                warning: warning,
+                isOn: job.options.useSuryaOCR,
+                enableLabel: "Enable Surya OCR for this job",
+                disableLabel: "Surya OCR enabled · Undo",
+                helpText: """
+                    Routes every page through Surya's layout-aware OCR \
+                    (free, on-device). Better than Vision on scans and \
+                    figure-rich layouts. Per-job override — doesn't change \
+                    your launcher defaults.
+                    """,
+                mutate: { newValue in
+                    store.update(job.id) { mutable in
+                        mutable.options.useSuryaOCR = newValue
+                    }
+                }
+            )
+        default:
+            Label(warning.headline, systemImage: warning.systemImage)
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    /// Shared body for the two actionable warning cases. When the
+    /// per-job toggle is off, render the warning headline + the
+    /// "Enable" link. When already on, swap to a confirmation row
+    /// with "Undo" so the user can reverse course. The button
+    /// disappears once the job leaves the mutable states.
+    @ViewBuilder
+    private func actionableWarning(
+        warning: ProfileWarning,
+        isOn: Bool,
+        enableLabel: String,
+        disableLabel: String,
+        helpText: String,
+        mutate: @escaping (Bool) -> Void
+    ) -> some View {
+        HStack(spacing: 6) {
+            if isOn {
+                Label(disableLabel, systemImage: "checkmark.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if optionsMutable {
+                    Button("Undo") { mutate(false) }
+                        .buttonStyle(.link)
+                        .font(.caption2)
+                        .help(helpText)
+                }
+            } else {
+                Label(warning.headline, systemImage: warning.systemImage)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                if optionsMutable {
+                    Button(enableLabel) { mutate(true) }
+                        .buttonStyle(.link)
+                        .font(.caption2)
+                        .help(helpText)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var statusLine: some View {
         switch job.status {
@@ -856,9 +961,7 @@ private struct JobRow: View {
                         .help(costEstimateTooltip(job) ?? "")
                 }
                 ForEach(job.profileWarnings ?? [], id: \.rawValue) { warning in
-                    Label(warning.headline, systemImage: warning.systemImage)
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
+                    warningRow(warning)
                 }
             }
         case .running:
