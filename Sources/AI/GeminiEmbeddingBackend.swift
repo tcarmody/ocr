@@ -22,6 +22,28 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
     private let keyStore: GeminiAPIKeyStore
     private let baseURL: URL
     private let requestTimeout: TimeInterval
+    /// Target requests-per-minute ceiling. Tier 1 paid Gemini caps
+    /// at 3000 RPM; defaulting to 2500 leaves ~17% headroom for
+    /// jitter, clock skew, and any sibling processes that share the
+    /// key. The actor's serialization makes this a global pace for
+    /// every call through this backend instance.
+    private let maxRequestsPerMinute: Int
+    /// Retry budget when the server still returns 429 despite our
+    /// throttling — usually means a concurrent process on the same
+    /// API key, or a brief tier-cap glitch. Three attempts with
+    /// `Retry-After` / exponential backoff covers nearly every
+    /// real-world case without spamming on a wedge.
+    private let maxRetriesOn429: Int
+    /// Monotonic timestamp of the most recent request fired. Used
+    /// to enforce `minimumInterval` between consecutive calls.
+    /// Nil before the first request lands.
+    private var lastRequestAt: ContinuousClock.Instant?
+
+    /// Minimum wall-time between consecutive requests, derived
+    /// from `maxRequestsPerMinute`. At 2500 RPM that's 24 ms.
+    private var minimumInterval: Duration {
+        .nanoseconds(Int64(60_000_000_000 / Int64(max(1, maxRequestsPerMinute))))
+    }
 
     /// Build a backend by probing the API to learn the output
     /// dimension. Throws `EmbeddingError.missingAPIKey` when no key
@@ -38,7 +60,9 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         outputDimensionality: Int? = nil,
         keyStore: GeminiAPIKeyStore = GeminiAPIKeyStore(),
         baseURL: URL = URL(string: "https://generativelanguage.googleapis.com")!,
-        requestTimeout: TimeInterval = 60
+        requestTimeout: TimeInterval = 60,
+        maxRequestsPerMinute: Int = 2500,
+        maxRetriesOn429: Int = 3
     ) async throws -> GeminiEmbeddingBackend {
         guard keyStore.hasKey else {
             throw EmbeddingError.missingAPIKey(provider: "Google AI Studio (Gemini)")
@@ -50,7 +74,9 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             outputDimensionality: outputDimensionality,
             keyStore: keyStore,
             baseURL: baseURL,
-            requestTimeout: requestTimeout
+            requestTimeout: requestTimeout,
+            maxRequestsPerMinute: maxRequestsPerMinute,
+            maxRetriesOn429: maxRetriesOn429
         )
         let probe = try await backend.embed(["x"])
         guard let firstVector = probe.first, !firstVector.isEmpty else {
@@ -65,7 +91,9 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             outputDimensionality: outputDimensionality,
             keyStore: keyStore,
             baseURL: baseURL,
-            requestTimeout: requestTimeout
+            requestTimeout: requestTimeout,
+            maxRequestsPerMinute: maxRequestsPerMinute,
+            maxRetriesOn429: maxRetriesOn429
         )
     }
 
@@ -76,7 +104,9 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         outputDimensionality: Int?,
         keyStore: GeminiAPIKeyStore,
         baseURL: URL,
-        requestTimeout: TimeInterval
+        requestTimeout: TimeInterval,
+        maxRequestsPerMinute: Int,
+        maxRetriesOn429: Int
     ) {
         self.identifier = identifier
         self.dimension = dimension
@@ -85,6 +115,8 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         self.keyStore = keyStore
         self.baseURL = baseURL
         self.requestTimeout = requestTimeout
+        self.maxRequestsPerMinute = max(1, maxRequestsPerMinute)
+        self.maxRetriesOn429 = max(0, maxRetriesOn429)
     }
 
     public func embed(_ texts: [String]) async throws -> [[Float]] {
@@ -117,16 +149,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         request.addValue(key, forHTTPHeaderField: "x-goog-api-key")
         request.httpBody = try Self.encoder.encode(body)
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await URLSession.shared.data(for: request)
-        } catch {
-            throw EmbeddingError.network(error)
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw EmbeddingError.decode("non-HTTP response")
-        }
+        let (data, http) = try await sendThrottled(request: request)
         guard (200..<300).contains(http.statusCode) else {
             let message = String(data: data, encoding: .utf8)
             throw EmbeddingError.serverError(
@@ -149,6 +172,92 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         } catch {
             throw EmbeddingError.decode(String(describing: error))
         }
+    }
+
+    // MARK: - Throttle + 429 retry
+
+    /// Send `request` while honoring our per-minute rate cap and
+    /// retrying on 429 with the server's `Retry-After` hint
+    /// (falls back to exponential backoff: 1s, 2s, 4s). Retries
+    /// also re-throttle between attempts so a quick burst can't
+    /// blow the cap. Throws the final failure if every attempt
+    /// still returns 429.
+    private func sendThrottled(
+        request: URLRequest
+    ) async throws -> (Data, HTTPURLResponse) {
+        var attempt = 0
+        while true {
+            try await waitForSlot()
+            lastRequestAt = ContinuousClock.now
+
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch {
+                throw EmbeddingError.network(error)
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw EmbeddingError.decode("non-HTTP response")
+            }
+
+            // Non-429: hand back to the caller. Success or any
+            // other server error path that's not retryable here.
+            if http.statusCode != 429 {
+                return (data, http)
+            }
+
+            // 429: honor `Retry-After` if present (Google returns
+            // seconds as an integer or HTTP-date; we only parse
+            // integer seconds — date form is rare for this API).
+            // Otherwise fall back to exponential backoff.
+            if attempt >= maxRetriesOn429 {
+                let message = String(data: data, encoding: .utf8)
+                throw EmbeddingError.serverError(
+                    status: 429,
+                    message: message?.isEmpty == false ? message : nil
+                )
+            }
+            let backoff = Self.retryAfterSeconds(from: http)
+                ?? Self.exponentialBackoffSeconds(attempt: attempt)
+            try await Task.sleep(for: .seconds(backoff))
+            attempt += 1
+        }
+    }
+
+    /// Sleep until at least `minimumInterval` has elapsed since
+    /// the most recent request. No-op on the first call. Uses
+    /// ContinuousClock so wall-clock changes can't skew the gap.
+    private func waitForSlot() async throws {
+        guard let last = lastRequestAt else { return }
+        let now = ContinuousClock.now
+        let elapsed = last.duration(to: now)
+        if elapsed < minimumInterval {
+            try await Task.sleep(for: minimumInterval - elapsed)
+        }
+    }
+
+    /// Parse the `Retry-After` HTTP header as integer seconds.
+    /// Returns nil when the header is absent or non-numeric (we
+    /// don't bother with HTTP-date form — Google's API doesn't
+    /// use it here in practice).
+    private static func retryAfterSeconds(
+        from response: HTTPURLResponse
+    ) -> Double? {
+        guard let raw = response.value(forHTTPHeaderField: "Retry-After"),
+              let seconds = Double(raw.trimmingCharacters(in: .whitespaces)),
+              seconds >= 0 else {
+            return nil
+        }
+        return seconds
+    }
+
+    /// Exponential backoff: 1s, 2s, 4s, 8s, … capped at 30s. Used
+    /// only when the 429 response doesn't include a `Retry-After`
+    /// header, which is uncommon but worth handling defensively.
+    private static func exponentialBackoffSeconds(attempt: Int) -> Double {
+        let base = pow(2.0, Double(attempt))
+        return min(base, 30)
     }
 
     // MARK: - Wire types
