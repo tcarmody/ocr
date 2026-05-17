@@ -15,7 +15,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 ---
 
-## Status snapshot (as of 2026-05-15)
+## Status snapshot (as of 2026-05-17)
 
 **Done from the original 10-phase plan**:
 - Phase 0: notarized python-build-standalone spike
@@ -927,6 +927,47 @@ L-Foundation-Models Phase 4):
   Claude vs Gemini refusal numbers on the same book are
   directly comparable.
 
+**Done — Facing-page bilingual detection + tagging (2026-05-17)**:
+- **P-Bilingual-FacingPage Phase (a) — detection + cross-link**
+  (commits `4b03b6a`, `2319f2c`). New `BilingualLayoutDetector`
+  runs post-OCR and classifies each page via a layered cascade:
+  Unicode-script ratio for Greek + Hebrew (since
+  `NLLanguageRecognizer` has no separate `grc` and folds polytonic
+  into modern `el`), a Latin function-word fingerprint (NLR has
+  no Latin classifier — Caesar's Gallic Wars opens as Catalan at
+  ~50% confidence in the model), and NLR for English / modern
+  languages. Detection gates require classical L1 (`grc` / `la`
+  / `he` / `el`), ≥10 confidently-classified body pages, ≥25%
+  L1 share, and ≥80% adjacent-pair alternation rate. Conservative
+  by design — false positives corrupt the EPUB structurally, so
+  the gates aim to under-detect rather than over-detect.
+  Returned `Layout` carries a symmetric `pagePartners` map
+  (`pdfPage → partner pdfPage`) plus per-page language
+  assignments + alternation rate. Pipeline plumbs the layout
+  through `AssembledBook` → `writeOutputs` →
+  `EPUBBuilder.write(facingPageMap:)` as an `anchorId → partner
+  anchorId` map (the EPUB module stays free of Pipeline types so
+  the dependency direction holds). `XHTMLWriter` emits
+  `data-facing-page="hu-page-N"` on the `<span epub:type=
+  "pagebreak">` for any anchor with a partner. **Per-book
+  escape hatch**: a *Facing-page bilingual* toggle in the
+  launcher's "Per-job overrides" disclosure (and CLI
+  `--force-bilingual-facing-page`) relaxes the gates — any L1
+  language allowed, ≥50% alternation threshold, ≥4 body pages
+  — so books that auto-detect misses (modern-language bilinguals
+  outside the classical set, alternation broken by heavy
+  footnotes, very short bilinguals) still get paired. Forced
+  mode still bails on monolingual input so it can't fabricate
+  partners. 8 unit tests cover Latin/English + Greek/English
+  positive cases, monolingual / non-classical-L1 / too-few-pages
+  / broken-alternation negatives, and the forced-mode
+  French/English positive + monolingual safety. **Phase (b) —
+  parallel chapter-tree reorganization (two parallel chapter
+  sequences in one EPUB, dual-tree TOC, "Jump to Facing
+  Translation" command) is pending real-Loeb-book testing of
+  Phase (a)**; ship-or-revise decision after evaluating
+  detected-bilingual rate on the user's corpus.
+
 **Original-plan items still outstanding**:
 - Phase 10 — Distribution polish. Setup wizards (Surya / Tesseract /
   Ollama) ship in lieu of bundled runtimes, and the build script is
@@ -944,7 +985,7 @@ L-Foundation-Models Phase 4):
 
 ---
 
-## Sequencing (as of 2026-05-15)
+## Sequencing (as of 2026-05-17)
 
 What to work on next, in priority order. The first block is
 driven by concrete, currently-felt user needs; the second block
@@ -1251,6 +1292,20 @@ Drivers for the current ordering:
     deferred — v1 uses the launcher's current settings; user
     configures options in the launcher first. Bulk re-scan for
     collection selections also deferred per original spec.
+17. **P-Bilingual-FacingPage Phase (b) — parallel chapter-tree
+    reorganization**. Phase (a) (detection + `data-facing-page`
+    cross-link tagging) shipped 2026-05-17 with the per-book
+    *Facing-page bilingual* escape hatch. Phase (b) builds on
+    that to produce a Loeb-style EPUB with two parallel spines
+    in one file: "Original Text" (the L1 stream as a chapter
+    sequence) + "English Translation" (the L2 stream), with a
+    dual-tree `nav.xhtml` and a "Jump to Facing Translation"
+    editor command. Decision gate: evaluate Phase (a)'s
+    detected-bilingual rate on a real Loeb corpus first. If the
+    rate is sensible (low false positives, recall on facing-page
+    editions the user actually owns), proceed to Phase (b);
+    otherwise tighten Phase (a)'s gates and ship only Phase (a).
+    ~1.5–2 days for Phase (b) once green-lit.
 
 ### Earn when you need it
 
