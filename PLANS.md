@@ -1320,6 +1320,19 @@ Drivers for the current ordering:
     section below for the per-phase plan + state-change
     inventory + risk list. Earns priority when bulk
     Private-mode conversions feel slow.
+19. **C-Pipeline-File-Split — carve `PDFToEPUBPipeline.swift`
+    into per-concern files**. The pipeline file is 4500+ lines
+    and growing — navigable via grep but hostile to first-time
+    readers and to careful refactors. Split via Swift extensions
+    on `PDFToEPUBPipeline` into ~7 sibling files (cascade loop,
+    page-OCR dispatch, reflow, assemble, write-outputs, stats,
+    engine factories), with each commit a pure move so
+    correctness is diff-checkable. Pairs naturally with
+    P-Cascade-Parallel (its Phase A already extracts one of the
+    biggest chunks). ~1 day of mechanical work; the bulk is the
+    `private → internal` access-modifier sweep. See the
+    [C-Pipeline-File-Split](#c-pipeline-file-split--carve-pdftoepubpipelineswift-into-per-concern-files)
+    section for the proposed split + risk list.
 
 ### Earn when you need it
 
@@ -5798,6 +5811,101 @@ Behind near-term items but ahead of P-Surya-Pool (which only
 matters once Cascade-Parallel exposes Surya as the bottleneck).
 Earns priority when a real bulk-Private-mode workload makes
 serial cascade conversion feel slow.
+
+---
+
+## C-Pipeline-File-Split — Carve `PDFToEPUBPipeline.swift` into per-concern files
+
+**Status**: not done. `Sources/Pipeline/PDFToEPUBPipeline.swift`
+is 4500+ lines and growing — every new feature layered on
+(page-OCR provider choice, refusal-rate stats, bilingual layout
+detection, rate-limit gating, Tesseract fallback routing) has
+landed as additional methods on the same type rather than being
+split out. The file is still navigable via grep but it's hostile
+to first-time readers and AI-assisted edits (lots of context
+needed to make a safe change).
+
+### Goal
+
+Split the type across ~7 files using Swift extensions on
+`PDFToEPUBPipeline`, with each file owning a defensible concern.
+Same module (`Pipeline`), so `private` access stays intact across
+files. Zero behavior change; pure carve-up.
+
+### Proposed split
+
+- **`PDFToEPUBPipeline.swift`** (~500 lines) — kept lean: the
+  `Options` / `Progress` / `Stats` value types, stored
+  properties + `init`, and the top-level `convert(...)`
+  orchestrator.
+- **`PipelineCascadeLoop.swift`** (~1000 lines) — the per-page
+  cascade body and helpers. Naturally co-located with the
+  `processCascadePage` helper that `P-Cascade-Parallel`
+  Phase A will extract anyway.
+- **`PipelinePageOCRDispatch.swift`** (~800 lines) — the
+  Cloud page-OCR sync + batches paths, `PendingPageOCR`,
+  `runPageOCRPage`, `dispatchPageOCRViaBatch`,
+  `preparePageForBatch`, the local-fallback engine selector.
+- **`PipelineReflow.swift`** (~600 lines) — the `reflow` static
+  helper, `ReflowOutput`, paragraph reflow helpers, and the
+  debug-log writer that consumes them.
+- **`PipelineAssembleBook.swift`** (~400 lines) — `assembleBook`
+  + `AssembledBook` + the splitter dispatch chain (PDF outline
+  → TOC-driven → heuristic) + classification dispatch.
+- **`PipelineWriteOutputs.swift`** (~200 lines) — `writeOutputs`
+  + sibling-file emission (txt/md/html/docx/searchable-pdf).
+- **`PipelineStatsAggregation.swift`** (~200 lines) — the
+  per-page stats tally that produces `ConversionStats` at the
+  end of `convert`.
+- **`PipelineEngineFactories.swift`** (~300 lines) — the
+  `makeXxxClaudeEngine` factory family + `makePostProcessor`
+  + `makeCoherenceAnalyzer` + `makeMetadataExtractor` etc.
+  Highly mechanical — all share the gating-policy comment block.
+
+### Risks
+
+- **Compile-time access checks shift slightly** — `private` in
+  Swift is per-file by default; the extensions need to use
+  `internal` or keep their helpers as the same-file extension
+  inside the original file… or migrate `private` → `internal`
+  with a `// internal because of file split, not public` doc
+  note. Latter is the cleaner mass-rename. ~150 such methods
+  to inspect.
+- **Test breakage on `@testable`** — Pipeline tests use
+  `@testable import Pipeline` so internal access is already
+  granted. Should round-trip unchanged.
+- **Diff noise risk** — git history for the original file
+  gets harder to follow. Mitigation: do the split as a single
+  commit per file (move only, no edits), so `git log --follow`
+  threads cleanly.
+
+### Approach
+
+1. Land [P-Cascade-Parallel](#p-cascade-parallel--bounded-parallel-pages-in-cascade-mode)
+   Phase A first. The `processCascadePage` extraction will
+   already split out a chunk; doing the rest of the file-split
+   at the same time amortizes the risk-of-breakage cost.
+2. One commit per file: pure move + minimum access-modifier
+   adjustments. No semantic edits in the split commit so a
+   future reviewer can confirm correctness by diff alone.
+3. Run the full test suite (1325+ tests) between each commit.
+4. The `Sources/Pipeline/PDFToEPUBPipeline.swift` that remains
+   should fit in a single readable scroll — the top-level
+   API + the orchestrator function.
+
+### Effort
+
+~1 day. Mechanical move + access-modifier audit. The hard part
+is the access-modifier sweep (`private` → `internal` where the
+caller now lives in a sibling file); the file moves themselves
+are 30 minutes.
+
+### Sequencing
+
+Behind P-Cascade-Parallel Phase A so the natural `processCascadePage`
+extraction lands as part of the split. Worth doing the next time
+someone needs to make a non-trivial pipeline change — the
+multi-thousand-line file is the rate limiter on careful work.
 
 ---
 
