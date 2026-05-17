@@ -61,7 +61,8 @@ final class ClaudeCoherenceAnalyzerTests: XCTestCase {
             config: AnthropicAPIClient.Config(maxRetries: 0),
             transport: transport,
             apiKeyProvider: { "sk-test" },
-            sleeper: { _ in }
+            sleeper: { _ in },
+            rateLimiter: nil
         )
         return ClaudeCoherenceAnalyzer(client: client, budget: budget)
     }

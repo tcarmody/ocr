@@ -95,7 +95,10 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
         case .budgetExhausted: return .budgetExhausted
         case .refused:         return .refused
         case .empty:           return .empty
-        case .missingAPIKey, .pngEncodeFailed, .http, .decode, .underlying:
+        case .http(let status, _):
+            // 429 is throttling; everything else is API trouble.
+            return status == 429 ? .rateLimited : .apiError
+        case .missingAPIKey, .pngEncodeFailed, .decode, .underlying:
             return .apiError
         }
     }

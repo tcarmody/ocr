@@ -63,6 +63,15 @@ public enum ProviderStatus: String, Sendable, Equatable, Codable {
     /// HTTP / network / decode error. Includes Anthropic 5xx, Gemini
     /// non-2xx, decode failures, transport errors. Retryable.
     case apiError
+    /// Provider returned a 429 / rate-limit error and the retry
+    /// budget ran out before the call succeeded. Distinct from
+    /// `apiError` because it points to **us bursting too fast**
+    /// (or the tier being too small) rather than the provider
+    /// being broken — the fix is rate-limit configuration, not
+    /// retrying harder. `ClaudeRateLimiter.shared` is the
+    /// upstream prevention; this enum value is the signal when
+    /// the limiter didn't fully prevent it.
+    case rateLimited
     /// Per-book Claude call budget exhausted before this page got a
     /// turn. Tracked separately so the user can distinguish "policy
     /// refused" from "we capped you."

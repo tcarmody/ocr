@@ -102,7 +102,8 @@ final class ClaudeOCREngineTests: XCTestCase {
             config: AnthropicAPIClient.Config(maxRetries: 0),
             transport: transport,
             apiKeyProvider: { "sk-test" },
-            sleeper: { _ in }
+            sleeper: { _ in },
+            rateLimiter: nil
         )
         return ClaudeOCREngine(client: client, budget: budget)
     }

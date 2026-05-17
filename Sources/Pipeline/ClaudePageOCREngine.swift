@@ -119,12 +119,23 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
 
     public func classify(error: any Error) -> ProviderStatus {
         if error is CancellationError { return .canceled }
+        if let api = error as? AnthropicAPIError,
+           case .rateLimited = api {
+            return .rateLimited
+        }
         guard let e = error as? PageOCRError else { return .apiError }
         switch e {
         case .budgetExhausted: return .budgetExhausted
         case .refused:         return .refused
         case .empty:           return .empty
-        case .pngEncodeFailed, .underlying: return .apiError
+        case .underlying(let inner):
+            if let api = inner as? AnthropicAPIError,
+               case .rateLimited = api {
+                return .rateLimited
+            }
+            return .apiError
+        case .pngEncodeFailed:
+            return .apiError
         }
     }
 

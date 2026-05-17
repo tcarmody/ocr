@@ -57,6 +57,12 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     /// Pages where the provider call failed at the HTTP / network /
     /// decode layer. Transient by nature; would benefit from retry.
     public var pagesAPIError: Int
+    /// Pages where the provider returned 429 (or equivalent) and
+    /// the in-client retry budget ran out before the call
+    /// succeeded. Distinct from `pagesAPIError` because the fix
+    /// is rate-limit configuration (`ClaudeRateLimiter.shared`
+    /// caps, or an Anthropic tier upgrade), not retrying harder.
+    public var pagesRateLimited: Int
     /// First N page indices (0-based) that were refused. Capped to
     /// keep the persisted size bounded; the debug log carries the
     /// full set when the user wants to dig.
@@ -90,6 +96,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         pagesRefused: Int = 0,
         pagesEmpty: Int = 0,
         pagesAPIError: Int = 0,
+        pagesRateLimited: Int = 0,
         refusedPageIndices: [Int] = [],
         pageOCRProviderId: String = "",
         claudeCallCount: Int = 0,
@@ -105,6 +112,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         self.pagesRefused = pagesRefused
         self.pagesEmpty = pagesEmpty
         self.pagesAPIError = pagesAPIError
+        self.pagesRateLimited = pagesRateLimited
         self.refusedPageIndices = refusedPageIndices
         self.pageOCRProviderId = pageOCRProviderId
         self.claudeCallCount = claudeCallCount
@@ -116,7 +124,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         case elapsed, observationsBySource
         case pagesTrustedEmbeddedText, pagesReOCRd
         case pagesUsingVisionFallback, pagesUsingTesseractFallback
-        case pagesRefused, pagesEmpty, pagesAPIError
+        case pagesRefused, pagesEmpty, pagesAPIError, pagesRateLimited
         case refusedPageIndices, pageOCRProviderId
         case claudeCallCount, claudeUsageByModel, estimatedCostUSD
     }
@@ -141,6 +149,9 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         self.pagesRefused = try c.decodeIfPresent(Int.self, forKey: .pagesRefused) ?? 0
         self.pagesEmpty = try c.decodeIfPresent(Int.self, forKey: .pagesEmpty) ?? 0
         self.pagesAPIError = try c.decodeIfPresent(Int.self, forKey: .pagesAPIError) ?? 0
+        // Rate-limit bucket lands 2026-05-17 alongside
+        // ClaudeRateLimiter.shared; older queue rows default to 0.
+        self.pagesRateLimited = try c.decodeIfPresent(Int.self, forKey: .pagesRateLimited) ?? 0
         self.refusedPageIndices = try c.decodeIfPresent([Int].self, forKey: .refusedPageIndices) ?? []
         self.pageOCRProviderId = try c.decodeIfPresent(String.self, forKey: .pageOCRProviderId) ?? ""
         self.claudeCallCount = try c.decode(Int.self, forKey: .claudeCallCount)
@@ -186,6 +197,9 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         } else {
             refusalSuffix = ""
         }
+        let rateLimitSuffix = pagesRateLimited > 0
+            ? " · \(pagesRateLimited) rate-limited"
+            : ""
         let fallbackSuffix: String
         switch (pagesUsingVisionFallback, pagesUsingTesseractFallback) {
         case (0, 0):
@@ -199,17 +213,17 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         }
         if totalPages > 0, pagesReOCRd == 0 {
             return "Trusted embedded PDF text on all \(totalPages) pages — OCR did not run"
-                + fallbackSuffix
+                + fallbackSuffix + rateLimitSuffix
         }
         if claudeCallCount > 0 {
             return "Claude: \(claudeCallCount) calls (~\(formattedCost))"
-                + refusalSuffix + fallbackSuffix
+                + refusalSuffix + rateLimitSuffix + fallbackSuffix
         }
         if pagesTrustedEmbeddedText > 0 && pagesReOCRd > 0 {
             return "OCR'd \(pagesReOCRd) of \(totalPages) pages (rest trusted embedded text); Claude not invoked"
-                + refusalSuffix + fallbackSuffix
+                + refusalSuffix + rateLimitSuffix + fallbackSuffix
         }
-        return "Claude not invoked" + refusalSuffix + fallbackSuffix
+        return "Claude not invoked" + refusalSuffix + rateLimitSuffix + fallbackSuffix
     }
 
     /// Formatted cost string with sensible precision: "<$0.01" for
@@ -235,6 +249,7 @@ extension ConversionStats {
         pagesRefused: Int = 0,
         pagesEmpty: Int = 0,
         pagesAPIError: Int = 0,
+        pagesRateLimited: Int = 0,
         refusedPageIndices: [Int] = [],
         pageOCRProviderId: String = "",
         claudeCallCount: Int,
@@ -263,6 +278,7 @@ extension ConversionStats {
             pagesRefused: pagesRefused,
             pagesEmpty: pagesEmpty,
             pagesAPIError: pagesAPIError,
+            pagesRateLimited: pagesRateLimited,
             refusedPageIndices: refusedPageIndices,
             pageOCRProviderId: pageOCRProviderId,
             claudeCallCount: claudeCallCount,

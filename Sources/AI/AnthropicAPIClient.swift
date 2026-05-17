@@ -64,6 +64,13 @@ public actor AnthropicAPIClient {
     /// so retry-backoff tests don't actually wait. Production code
     /// uses `Task.sleep(nanoseconds:)`.
     private let sleeper: (@Sendable (TimeInterval) async throws -> Void)?
+    /// Process-wide rate limiter. Production code uses
+    /// `ClaudeRateLimiter.shared` so multiple concurrent callers
+    /// stay under tier RPM / TPM caps. Tests pass `nil` to skip
+    /// pacing entirely — otherwise the limiter's 1.5 s/request
+    /// minimum interval at the default cap would serialize the
+    /// suite into multi-minute runs.
+    private let rateLimiter: ClaudeRateLimiter?
 
     /// Build a client with an explicit API key provider. The provider
     /// closure is invoked for every request — passing a closure
@@ -73,12 +80,14 @@ public actor AnthropicAPIClient {
         config: Config = .default,
         transport: any AnthropicTransport = URLSessionTransport(),
         apiKeyProvider: @escaping @Sendable () -> String?,
-        sleeper: (@Sendable (TimeInterval) async throws -> Void)? = nil
+        sleeper: (@Sendable (TimeInterval) async throws -> Void)? = nil,
+        rateLimiter: ClaudeRateLimiter? = .shared
     ) {
         self.config = config
         self.transport = transport
         self.apiKeyProvider = apiKeyProvider
         self.sleeper = sleeper
+        self.rateLimiter = rateLimiter
     }
 
     // MARK: - Send
@@ -88,18 +97,38 @@ public actor AnthropicAPIClient {
     /// `config.maxRetries`. Throws the last error (typed
     /// `AnthropicAPIError`) when retries are exhausted or the error
     /// is non-retryable.
+    ///
+    /// Every request also passes through `ClaudeRateLimiter.shared`
+    /// before firing, so multiple concurrent callers (parallel page
+    /// OCR, multiple books in flight, the Haiku cleanup loop) stay
+    /// under Anthropic's tier RPM / TPM caps without coordinating
+    /// directly. Token estimation is pre-flight (`Self.estimate*`);
+    /// the actual usage is reported back to the limiter on success
+    /// so the sliding window self-corrects.
     public func send(_ request: AnthropicMessageRequest) async throws -> AnthropicMessageResponse {
         guard let key = apiKeyProvider(), !key.isEmpty else {
             throw AnthropicAPIError.missingAPIKey
         }
         let urlRequest = try buildURLRequest(for: request, apiKey: key)
+        let estimatedInputTokens = Self.estimateInputTokens(for: request)
 
         var attempt = 0
         var lastError: AnthropicAPIError?
         while attempt <= config.maxRetries {
             try Task.checkCancellation()
+            if let limiter = rateLimiter {
+                try await limiter.acquireSlot(
+                    estimatedInputTokens: estimatedInputTokens
+                )
+            }
             do {
-                return try await sendOnce(urlRequest)
+                let response = try await sendOnce(urlRequest)
+                if let limiter = rateLimiter {
+                    await limiter.recordSuccess(
+                        actualInputTokens: response.usage.inputTokens
+                    )
+                }
+                return response
             } catch let error as AnthropicAPIError {
                 lastError = error
                 guard error.isRetryable, attempt < config.maxRetries else {
@@ -113,6 +142,48 @@ public actor AnthropicAPIClient {
         // Loop exit only happens via throw above; this is a guard
         // for future refactors that change the loop structure.
         throw lastError ?? .serverError(status: -1, message: "retry loop exhausted")
+    }
+
+    /// Rough pre-flight estimate of input tokens for one request.
+    /// Used by `ClaudeRateLimiter` to pace pre-flight against the
+    /// TPM gate. The limiter corrects the estimate against the
+    /// server-reported usage in `recordSuccess`.
+    ///
+    /// Heuristics:
+    ///   * Text content: ~4 characters per token (standard
+    ///     approximation across English / European prose).
+    ///   * Image content: 1568 tokens per image (Sonnet's
+    ///     "medium"-tier fixed cost; conservative — actual cost
+    ///     varies with resolution but rarely exceeds this).
+    static func estimateInputTokens(for request: AnthropicMessageRequest) -> Int {
+        var chars = 0
+        var images = 0
+        switch request.system {
+        case .none:
+            break
+        case .plain(let s)?:
+            chars += s.count
+        case .blocks(let bs)?:
+            for b in bs { chars += b.text.count }
+        }
+        for message in request.messages {
+            switch message.content {
+            case .plain(let s):
+                chars += s.count
+            case .blocks(let bs):
+                for block in bs {
+                    switch block {
+                    case .text(let s, _):
+                        chars += s.count
+                    case .image:
+                        images += 1
+                    }
+                }
+            }
+        }
+        let textTokens = (chars + 3) / 4
+        let imageTokens = images * 1568
+        return textTokens + imageTokens
     }
 
     // MARK: - Single attempt

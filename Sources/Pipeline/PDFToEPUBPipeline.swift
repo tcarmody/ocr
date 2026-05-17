@@ -2637,6 +2637,7 @@ public actor PDFToEPUBPipeline {
         var refused = 0
         var emptyResp = 0
         var apiError = 0
+        var rateLimited = 0
         var refusedIndices: [Int] = []
         var providerId = ""
         for (_, pending) in pageOCRPendingByIndex {
@@ -2649,6 +2650,7 @@ public actor PDFToEPUBPipeline {
                 refusedIndices.append(pending.pageIndex)
             case .empty:           emptyResp += 1
             case .apiError:        apiError += 1
+            case .rateLimited:     rateLimited += 1
             case .succeeded, .skippedTrustRouted,
                  .budgetExhausted, .canceled:
                 break
@@ -2668,6 +2670,7 @@ public actor PDFToEPUBPipeline {
             pagesRefused: refused,
             pagesEmpty: emptyResp,
             pagesAPIError: apiError,
+            pagesRateLimited: rateLimited,
             refusedPageIndices: refusedIndicesCapped,
             pageOCRProviderId: providerId,
             claudeCallCount: claudeCallCount,

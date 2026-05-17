@@ -60,7 +60,8 @@ final class ClaudeMetadataExtractorTests: XCTestCase {
             config: AnthropicAPIClient.Config(maxRetries: 0),
             transport: transport,
             apiKeyProvider: { "sk-test" },
-            sleeper: { _ in }
+            sleeper: { _ in },
+            rateLimiter: nil
         )
         return ClaudeMetadataExtractor(client: client, budget: budget)
     }

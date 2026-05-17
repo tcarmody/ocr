@@ -74,7 +74,11 @@ final class AnthropicAPIClientTests: XCTestCase {
             apiKeyProvider: { apiKey },
             // Replace Task.sleep with an instant return so retry
             // tests don't actually wait.
-            sleeper: { _ in }
+            sleeper: { _ in },
+            // Bypass the shared rate limiter; otherwise tests
+            // would serialize at the singleton's 1.5 s/request
+            // minimum interval and the suite would take minutes.
+            rateLimiter: nil
         )
     }
 
