@@ -14,11 +14,23 @@ public struct EPUBBuilder {
         self.modificationDate = modificationDate
     }
 
+    /// Write `book` to `outputURL` as a valid EPUB 3 file.
+    ///
+    /// `facingPageMap` carries the bilingual cross-link from
+    /// `BilingualLayoutDetector`: `anchorId → partner anchorId`
+    /// for facing-page bilingual books (Loeb Classical Library
+    /// style). When non-empty, the XHTML writer emits a
+    /// `data-facing-page="<partnerId>"` attribute on each page
+    /// anchor so the editor (and future reader integrations)
+    /// can jump between the original-language page and its
+    /// facing translation. Empty for the common monolingual
+    /// case — the attribute is simply not emitted then.
     public func write(
         book: Book,
         correctionTrail: CorrectionTrail? = nil,
         parsedTOC: ParsedTOC? = nil,
         sourcePDFURL: URL? = nil,
+        facingPageMap: [String: String] = [:],
         to outputURL: URL
     ) throws {
         // Layout inside the ZIP:
@@ -90,7 +102,8 @@ public struct EPUBBuilder {
                 defaultLanguage: book.language,
                 fallbackTitle: chapter.title ?? "Chapter \(index + 1)",
                 subsectionAnchors: anchorMap,
-                chapterIndex: index
+                chapterIndex: index,
+                facingPageMap: facingPageMap
             )
             entries.append(EPUBPackager.Entry(
                 path: "OEBPS/\(href)",

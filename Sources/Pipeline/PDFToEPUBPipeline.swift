@@ -2369,6 +2369,16 @@ public actor PDFToEPUBPipeline {
             regionsByPage: regionsByPage
         )
 
+        // Bilingual facing-page detection (Loeb Classical Library
+        // style). Runs after OCR is complete so we score the actual
+        // page text — DocumentProfiler's pre-flight result only
+        // sees embedded text and would miss scanned bilinguals.
+        // Returns nil for the common monolingual case, in which
+        // case the EPUB builder falls through to its normal path.
+        let bilingualLayout = BilingualLayoutDetector.detect(
+            pageResults: pageResults
+        )
+
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).
         let reflowed: ReflowOutput
         if activePageEngine != nil {
@@ -2434,7 +2444,8 @@ public actor PDFToEPUBPipeline {
             budget: claudeBudget,
             title: title,
             language: language,
-            sourceURL: pdfURL
+            sourceURL: pdfURL,
+            bilingualLayout: bilingualLayout
         )
         var book = assembled.book
         let appliedTOC = assembled.appliedTOC
@@ -2533,7 +2544,8 @@ public actor PDFToEPUBPipeline {
             pageResults: pageResults,
             pdfURL: pdfURL,
             outputURL: outputURL,
-            options: options
+            options: options,
+            bilingualLayout: assembled.bilingualLayout
         )
 
         // Conversion succeeded — staging dir's purpose is served.
@@ -2640,6 +2652,13 @@ public actor PDFToEPUBPipeline {
         /// usable bookmarks; trumps both TOCDriven and the
         /// heuristic splitter's diagnostics in the debug log.
         let outlineSplitterDiagnostics: PDFOutlineSplitter.Diagnostics?
+        /// Facing-page bilingual layout detected post-OCR (Loeb
+        /// Classical Library style). Nil for the common
+        /// monolingual case; non-nil triggers cross-link
+        /// `data-facing-page` attributes on the emitted page
+        /// anchors. Phase (b) — parallel chapter-tree
+        /// reorganization — also keys off this value.
+        let bilingualLayout: BilingualLayoutDetector.Layout?
     }
 
     /// Take a reflowed block stream and produce a `Book` ready to
@@ -2665,7 +2684,8 @@ public actor PDFToEPUBPipeline {
         budget: ClaudeCallBudget,
         title: String,
         language: BCP47,
-        sourceURL: URL? = nil
+        sourceURL: URL? = nil,
+        bilingualLayout: BilingualLayoutDetector.Layout? = nil
     ) async -> AssembledBook {
         // 1 + 2: dictionary cleanup, then typography pass.
         // Dictionary runs first so it sees pre-normalized forms
@@ -2843,7 +2863,8 @@ public actor PDFToEPUBPipeline {
             chapterSplitterDiagnostics: splitDiagnostics,
             chapterPromoterDiagnostics: promotion.diagnostics,
             tocDrivenSplitterDiagnostics: tocDrivenDiagnostics,
-            outlineSplitterDiagnostics: outlineDiagnostics
+            outlineSplitterDiagnostics: outlineDiagnostics,
+            bilingualLayout: bilingualLayout
         )
     }
 
@@ -2860,13 +2881,31 @@ public actor PDFToEPUBPipeline {
         pageResults: [PageObservations],
         pdfURL: URL,
         outputURL: URL,
-        options: Options
+        options: Options,
+        bilingualLayout: BilingualLayoutDetector.Layout? = nil
     ) throws {
+        // Translate the layout's (pdfPage → partner pdfPage) map
+        // into the (anchorId → partner anchorId) form the EPUB
+        // writer needs. Keeps the EPUB module free of Pipeline
+        // types so the dependency direction stays one-way.
+        let facingPageMap: [String: String]
+        if let layout = bilingualLayout {
+            var m: [String: String] = [:]
+            for (page, partner) in layout.pagePartners {
+                let anchor = RegionAwareReflow.anchorId(forPageIndex: page)
+                let partnerAnchor = RegionAwareReflow.anchorId(forPageIndex: partner)
+                m[anchor] = partnerAnchor
+            }
+            facingPageMap = m
+        } else {
+            facingPageMap = [:]
+        }
         try EPUBBuilder().write(
             book: book,
             correctionTrail: correctionTrail,
             parsedTOC: appliedTOC,
             sourcePDFURL: pdfURL,
+            facingPageMap: facingPageMap,
             to: outputURL
         )
 

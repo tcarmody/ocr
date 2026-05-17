@@ -20,12 +20,19 @@ struct XHTMLWriter {
     /// `hu-page-*` anchors already drive). `paraIdx` counts only
     /// paragraph blocks within the chapter (zero-based, in document
     /// order); other block kinds don't increment it.
+    /// `facingPageMap` carries `anchorId → partner anchorId` for
+    /// facing-page bilingual books. When a `Block.anchor`'s id has
+    /// an entry, the emitted `<span epub:type="pagebreak">` gains
+    /// a `data-facing-page="<partnerId>"` attribute. Empty (the
+    /// default) means no bilingual layout was detected and no such
+    /// attribute is emitted.
     func render(
         _ chapter: Chapter,
         defaultLanguage: BCP47,
         fallbackTitle: String,
         subsectionAnchors: [Int: String] = [:],
-        chapterIndex: Int = 0
+        chapterIndex: Int = 0,
+        facingPageMap: [String: String] = [:]
     ) -> String {
         let title = (chapter.title ?? fallbackTitle)
         let langAttr = defaultLanguage.rawValue
@@ -58,7 +65,11 @@ struct XHTMLWriter {
                 // for "skip to page N" navigation.
                 let idAttr = XMLEscape.attribute(id)
                 let labelAttr = XMLEscape.attribute(label)
-                body += "<span id=\"\(idAttr)\" epub:type=\"pagebreak\" role=\"doc-pagebreak\" aria-label=\"\(labelAttr)\"></span>\n"
+                var extra = ""
+                if let partner = facingPageMap[id] {
+                    extra = " data-facing-page=\"\(XMLEscape.attribute(partner))\""
+                }
+                body += "<span id=\"\(idAttr)\" epub:type=\"pagebreak\" role=\"doc-pagebreak\" aria-label=\"\(labelAttr)\"\(extra)></span>\n"
             case .figure(let assetId, let alt, let caption):
                 // Skip silently when the asset is missing — chapter
                 // splitting filters assets to only those referenced,
