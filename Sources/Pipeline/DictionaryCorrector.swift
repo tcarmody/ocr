@@ -231,15 +231,22 @@ public struct DictionaryCorrector: Sendable {
         return Self.matchCase(of: word, target: top)
     }
 
-    /// Return true when `word` (case-insensitive) is in the bundled
-    /// Latin or Greek-transliteration wordlist. Both are seeded with
-    /// classical-academic vocabulary that English NSSpellChecker
-    /// flags as misspelled but that scholars routinely embed in
-    /// English prose.
+    /// Return true when `word` looks like classical-academic
+    /// vocabulary the corrector should leave alone. Two paths:
+    ///   * **Latin via stem-prefix match** against Whitaker's
+    ///     Words (~31K stems). Catches inflected forms like
+    ///     `amicitia` via stem `amici`. Length floors on both
+    ///     word and stem keep short English words from spuriously
+    ///     matching short Latin function-word stems.
+    ///   * **Greek-in-Latin transliteration via exact match**
+    ///     against a curated inline list. Greek borrowings that
+    ///     are already in English dictionaries (ethos / pathos
+    ///     / polis) pass through; the list covers the academic
+    ///     tail that NSSpellChecker English flags.
     static func isClassicalVocabulary(word: String) -> Bool {
+        if isLatinByStemPrefix(word: word) { return true }
         let lowered = word.lowercased()
-        return latinClassicalWords.contains(lowered)
-            || greekTransliterationWords.contains(lowered)
+        return greekTransliterationWords.contains(lowered)
     }
 
     /// Type of single edit between two strings at Levenshtein

@@ -85,7 +85,15 @@ let package = Package(
         .target(
             name: "Pipeline",
             dependencies: ["Document", "PDFIngest", "OCR", "EPUB", "Layout", "AI"],
-            path: "Sources/Pipeline"
+            path: "Sources/Pipeline",
+            resources: [
+                // Latin stem list (Whitaker's Words, public
+                // domain) bundled for the classical-vocabulary
+                // skip in `DictionaryCorrector`. See
+                // `DictionaryCorrectorClassicalWordlists.swift`
+                // for attribution + maintenance notes.
+                .process("Resources"),
+            ]
         ),
         // Anthropic API plumbing for optional Cloud-mode features.
         // Pure data types + a URLSession transport — depends on no

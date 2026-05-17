@@ -195,18 +195,26 @@ final class DictionaryCorrectorTests: XCTestCase {
 
     // MARK: - Classical-vocabulary skip (Guard 6)
 
-    func test_classical_vocab_skips_latin_function_words() {
-        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "et"))
-        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "est"))
-        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "sed"))
+    func test_classical_vocab_skips_latin_inflected_forms_via_stem_prefix() {
+        // High-frequency nouns / verbs in their classical
+        // surface forms — the Whitaker stem matches as a prefix
+        // (`amicitia` matches stem `amici`; `dominationem` matches
+        // `domin`; etc.).
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "amicitia"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "hominis"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "dominationem"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "respublica"))
     }
 
-    func test_classical_vocab_skips_latin_inflected_forms() {
-        // High-frequency nouns / verbs in their classical
-        // citation forms — surface in academic English prose.
-        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "rei"))
-        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "hominis"))
-        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "summa"))
+    func test_classical_vocab_skips_short_function_words_not_via_prefix_match() {
+        // Words under the 5-char floor never match via prefix —
+        // protects "the" / "and" / "this" from spuriously
+        // matching short Latin stems. The corrector itself has
+        // its own length floor (Guard 2: ≥3 chars), so these
+        // would still get through Guards 1-2 if the spell-checker
+        // flagged them, but Guard 6 won't claim them as Latin.
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "et"))
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "the"))
     }
 
     func test_classical_vocab_skips_greek_transliteration() {
@@ -216,14 +224,27 @@ final class DictionaryCorrectorTests: XCTestCase {
     }
 
     func test_classical_vocab_case_insensitive() {
-        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "Logos"))
-        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "POLIS"))
+        // Both the Latin stem-prefix path and the Greek
+        // exact-match path lowercase before comparing.
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "Aletheia"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "PHRONESIS"))
+        XCTAssertTrue(DictionaryCorrector.isClassicalVocabulary(word: "Amicitia"))
     }
 
     func test_classical_vocab_lets_normal_english_through() {
+        // Risk vector for stem-prefix matching: a common English
+        // word that happens to start with a short Latin stem.
+        // The 5-char word floor + 4-char stem floor should keep
+        // these out. Avoid English words that have classical-
+        // Latin cognates (`modern` is `modernus`, `computer`
+        // root is `computo`) — Guard 6 wouldn't fire on those
+        // anyway because NSSpellChecker English accepts them
+        // and they never reach `correctionFor`.
         XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "english"))
-        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "the"))
-        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "philosophy"))
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "weekend"))
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "happen"))
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "kitchen"))
+        XCTAssertFalse(DictionaryCorrector.isClassicalVocabulary(word: "bicycle"))
     }
 
     // MARK: - OCR-confusion-pattern gate (Guard 7)
