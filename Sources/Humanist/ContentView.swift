@@ -918,14 +918,21 @@ private struct JobRow: View {
         helpText: String,
         mutate: @escaping (Bool) -> Void
     ) -> some View {
-        HStack(spacing: 6) {
+        // `.firstTextBaseline` aligns the label's text baseline
+        // with the bordered button's text baseline so the row
+        // doesn't appear shifted vertically. Default HStack
+        // alignment is `.center`, which the icon's larger glyph
+        // height would otherwise push out of line with the
+        // button text.
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             if isOn {
                 Label(disableLabel, systemImage: "checkmark.circle")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if optionsMutable {
                     Button("Undo") { mutate(false) }
-                        .buttonStyle(.link)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                         .font(.caption2)
                         .help(helpText)
                 }
@@ -935,7 +942,8 @@ private struct JobRow: View {
                     .foregroundStyle(.orange)
                 if optionsMutable {
                     Button(enableLabel) { mutate(true) }
-                        .buttonStyle(.link)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                         .font(.caption2)
                         .help(helpText)
                 }
