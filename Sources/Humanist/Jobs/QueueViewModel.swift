@@ -135,6 +135,12 @@ final class QueueViewModel: ObservableObject {
     /// `Job.options.pageOCRProvider` at enqueue time. Per-session;
     /// not persisted to Settings.
     @Published var pageOCRProvider: PageOCRProvider? = nil
+    /// User-asserted "this is a facing-page bilingual book" override.
+    /// When on, the bilingual layout detector runs in forced mode —
+    /// relaxes its alternation-rate / classical-L1 / minimum-pages
+    /// gates so books that auto-detection misses still get paired
+    /// page-by-page. Per-session, not persisted to Settings.
+    @Published var forceBilingualFacingPage: Bool = false
 
     let store: JobStore
     let runner: JobRunner
@@ -322,7 +328,8 @@ final class QueueViewModel: ObservableObject {
                 outputSuffix: outputSuffix,
                 emitSearchablePDF: emitSearchablePDF,
                 bypassDedupe: bypassDedupe,
-                pageOCRProvider: pageOCRProvider
+                pageOCRProvider: pageOCRProvider,
+                forceBilingualFacingPage: forceBilingualFacingPage
             ),
             status: .profiling
         )

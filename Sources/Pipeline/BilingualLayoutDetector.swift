@@ -111,10 +111,26 @@ public enum BilingualLayoutDetector {
     /// Run detection across the OCR'd `pageResults`. Returns nil
     /// when the book doesn't meet the facing-page criteria; the
     /// caller should fall through to the normal monolingual path.
+    ///
+    /// `forced` (the per-book user toggle) relaxes the gates so a
+    /// book that auto-detection misses still gets paired:
+    ///   * any language can serve as L1 (no classical-only check),
+    ///   * the alternation-rate gate drops to ~50% (any majority
+    ///     pattern counts),
+    ///   * the minimum-confident-pages floor drops to 4 so very
+    ///     short bilinguals still detect,
+    ///   * the 25% L1 share floor drops to 10%.
+    /// We still bail when the data shows no two-language structure
+    /// at all — forcing a monolingual book through this path would
+    /// produce a broken EPUB with nonsense partners.
     static func detect(
-        pageResults: [PageObservations]
+        pageResults: [PageObservations],
+        forced: Bool = false
     ) -> Layout? {
-        guard pageResults.count >= minBodyPages else { return nil }
+        let minBody = forced ? 4 : minBodyPages
+        let minL1Share = forced ? 0.10 : 0.25
+        let minAlternation = forced ? 0.50 : alternationThreshold
+        guard pageResults.count >= minBody else { return nil }
 
         // 1. Classify each page's dominant language. Pages too
         //    short to score reliably remain absent from the map.
@@ -136,25 +152,32 @@ public enum BilingualLayoutDetector {
         for lang in pageLanguage.values {
             counts[lang, default: 0] += 1
         }
-        // Need a classical L1 with substantial presence.
-        let classicalCandidates = counts
-            .filter { eligibleL1.contains($0.key) }
-            .sorted { $0.value > $1.value }
-        guard let (l1, l1Count) = classicalCandidates.first else { return nil }
-        // The classical stream must be ≥ ~25% of confidently-
-        // classified body pages. Catches the case where a long
-        // English book has one Greek chapter — that's not a
-        // facing-page bilingual.
+        // Pick L1. Auto-mode requires it to be a classical
+        // language; forced mode accepts whatever's most common
+        // since the user has asserted this is bilingual.
+        let candidates: [(key: String, value: Int)]
+        if forced {
+            candidates = counts.sorted { $0.value > $1.value }
+        } else {
+            candidates = counts
+                .filter { eligibleL1.contains($0.key) }
+                .sorted { $0.value > $1.value }
+        }
+        guard let (l1, l1Count) = candidates.first else { return nil }
         let confidentTotal = pageLanguage.count
-        guard Double(l1Count) >= 0.25 * Double(confidentTotal) else {
+        guard Double(l1Count) >= minL1Share * Double(confidentTotal) else {
             return nil
         }
-        // L2 = most common non-L1 language, restricted to
-        // non-classical to avoid the (grc, la) case where both
-        // sides are classical (vanishingly rare for facing-page
-        // bilinguals; if encountered, we can revisit).
+        // L2 = most common language other than L1. Forced mode
+        // doesn't restrict to non-classical (a Greek-Latin
+        // bilingual is rare but legal under user assertion);
+        // auto mode does, since two classical languages in
+        // alternation is vanishingly improbable for the
+        // facing-page Loeb-style target.
         let l2Candidates = counts
-            .filter { $0.key != l1 && !eligibleL1.contains($0.key) }
+            .filter { key, _ in
+                key != l1 && (forced || !eligibleL1.contains(key))
+            }
             .sorted { $0.value > $1.value }
         guard let (l2, _) = l2Candidates.first else { return nil }
 
@@ -165,7 +188,7 @@ public enum BilingualLayoutDetector {
         //    the rate).
         let sortedPages = pageLanguage.keys.sorted()
             .filter { pageLanguage[$0] == l1 || pageLanguage[$0] == l2 }
-        guard sortedPages.count >= minBodyPages else { return nil }
+        guard sortedPages.count >= minBody else { return nil }
 
         // Tally alternation, and decide which orientation
         // (L1→L2 vs L2→L1) is dominant. The dominant orientation
@@ -194,9 +217,9 @@ public enum BilingualLayoutDetector {
                 if la == l1 { l1FirstPairs += 1 } else { l2FirstPairs += 1 }
             }
         }
-        guard totalPairs >= minBodyPages else { return nil }
+        guard totalPairs >= minBody else { return nil }
         let rate = Double(alternatingPairs) / Double(totalPairs)
-        guard rate >= alternationThreshold else { return nil }
+        guard rate >= minAlternation else { return nil }
         // l1OnVerso = true when the dominant spread starts with L1
         // (the Loeb convention). When inverted, the recto carries
         // the original and the verso the translation.
@@ -239,7 +262,7 @@ public enum BilingualLayoutDetector {
             alternationRate: rate
         )
         bilingualLog.info("""
-            facing-page bilingual detected: \
+            facing-page bilingual detected\(forced ? " (forced)" : "", privacy: .public): \
             L1=\(l1, privacy: .public) (\(l1Count) pages), \
             L2=\(l2, privacy: .public), \
             alternation=\(rate, format: .fixed(precision: 2), privacy: .public), \

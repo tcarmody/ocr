@@ -62,6 +62,45 @@ final class BilingualLayoutDetectorTests: XCTestCase {
         XCTAssertNil(BilingualLayoutDetector.detect(pageResults: pages))
     }
 
+    // MARK: - forced mode
+
+    func test_forced_mode_detects_french_english_bilingual() {
+        // Same French/English alternation that's *rejected* in
+        // auto mode below — under user assertion the classical-L1
+        // gate is relaxed and the pairing fires.
+        let french = """
+            La philosophie est une discipline universitaire qui étudie \
+            les questions fondamentales sur la connaissance, la réalité, \
+            l'existence, la valeur, la raison et l'esprit humain. \
+            Elle se distingue des autres sciences par sa méthode.
+            """
+        let pages = makePages(
+            alternating: [french, english], count: 12, startIndex: 2
+        )
+        let auto = BilingualLayoutDetector.detect(pageResults: pages)
+        XCTAssertNil(auto, "French/English shouldn't trip the auto detector")
+        guard let forced = BilingualLayoutDetector.detect(
+            pageResults: pages, forced: true
+        ) else {
+            XCTFail("forced mode should pair French/English alternation")
+            return
+        }
+        XCTAssertEqual(forced.l1Language, "fr")
+        XCTAssertEqual(forced.l2Language, "en")
+        XCTAssertEqual(forced.pagePartners[2], 3)
+    }
+
+    func test_forced_mode_still_returns_nil_for_monolingual() {
+        // Forced mode relaxes the gates but doesn't *fabricate*
+        // a bilingual layout when there's no two-language
+        // structure in the data. Pairing every-other page on a
+        // monolingual book would produce broken EPUB output.
+        let pages = (0..<14).map { i in page(index: i, text: english) }
+        XCTAssertNil(BilingualLayoutDetector.detect(
+            pageResults: pages, forced: true
+        ))
+    }
+
     func test_returns_nil_when_l1_is_not_classical() {
         // French/English alternation should NOT trip the detector —
         // the L1 gate restricts to grc/la/he to keep false-positive

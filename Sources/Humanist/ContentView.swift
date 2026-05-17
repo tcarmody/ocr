@@ -545,6 +545,16 @@ struct ContentView: View {
                     Toggle("Force OCR", isOn: $queue.forceOCR)
                         .toggleStyle(.checkbox)
                         .help("Skip the PDF's embedded text layer and run OCR on every page.")
+                    Toggle("Facing-page bilingual",
+                           isOn: $queue.forceBilingualFacingPage)
+                        .toggleStyle(.checkbox)
+                        .help("""
+                            Force the bilingual cross-link pass even when the \
+                            auto-detector would have given up. Use for Loeb-style \
+                            books whose alternation is broken by heavy footnotes, \
+                            or for facing-page editions outside the classical \
+                            language set (Greek / Latin / Hebrew).
+                            """)
                     Spacer()
                 }
                 HStack(spacing: 8) {

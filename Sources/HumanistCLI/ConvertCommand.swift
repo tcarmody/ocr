@@ -63,6 +63,9 @@ struct ConvertCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Route page OCR through Claude Sonnet (cloud). Best on hard scripts; ~$15-25/book.")
     var claudePageOCR: Bool = false
 
+    @Flag(name: .long, help: "Force facing-page bilingual handling: cross-link verso/recto spreads even when auto-detection would have given up.")
+    var forceBilingualFacingPage: Bool = false
+
     // MARK: - Cloud / privacy
 
     @Flag(name: .long, help: "Force Private mode: disable every Cloud feature even if API key is set.")
@@ -232,7 +235,8 @@ struct ConvertCommand: AsyncParsableCommand {
             siblingHTMLURLOverride: htmlURL,
             siblingDOCXURLOverride: docxURL,
             emitSearchablePDF: formats.contains(.searchablePdf),
-            searchablePDFURLOverride: pdfURL
+            searchablePDFURLOverride: pdfURL,
+            forceBilingualFacingPage: forceBilingualFacingPage
         )
 
         let pipeline = PDFToEPUBPipeline()

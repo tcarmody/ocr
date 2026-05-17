@@ -373,7 +373,8 @@ final class JobRunner: ObservableObject {
                 .debugStagingURL(
                     forSource: job.sourceURL,
                     suffix: job.options.outputSuffix
-                )
+                ),
+            forceBilingualFacingPage: job.options.forceBilingualFacingPage
         )
         let storeRef = store
         let jobID = job.id

@@ -213,6 +213,17 @@ public actor PDFToEPUBPipeline {
         /// debug logs under `<root>/Logs/`. Nil keeps default
         /// behavior.
         public var debugStagingURLOverride: URL?
+        /// User-asserted "this is a facing-page bilingual book"
+        /// override. When true, `BilingualLayoutDetector` runs in
+        /// forced mode: its alternation-rate, minimum-body-page,
+        /// and classical-L1 gates are relaxed, and pages are
+        /// paired by the dominant verso-recto orientation found
+        /// even when the auto-detector would have given up. Use
+        /// when auto-detection misses an edge case (heavy footnote
+        /// pages breaking the alternation pattern, modern-language
+        /// bilingual editions outside the classical L1 set, etc.).
+        /// Default false — auto-detection still fires.
+        public var forceBilingualFacingPage: Bool
 
         public init(
             dpi: CGFloat = 400,
@@ -247,7 +258,8 @@ public actor PDFToEPUBPipeline {
             siblingDOCXURLOverride: URL? = nil,
             emitSearchablePDF: Bool = false,
             searchablePDFURLOverride: URL? = nil,
-            debugStagingURLOverride: URL? = nil
+            debugStagingURLOverride: URL? = nil,
+            forceBilingualFacingPage: Bool = false
         ) {
             self.dpi = dpi
             self.dpiForScans = dpiForScans
@@ -282,6 +294,7 @@ public actor PDFToEPUBPipeline {
             self.emitSearchablePDF = emitSearchablePDF
             self.searchablePDFURLOverride = searchablePDFURLOverride
             self.debugStagingURLOverride = debugStagingURLOverride
+            self.forceBilingualFacingPage = forceBilingualFacingPage
         }
 
         /// True when `pageIndex` should bypass the embedded-text
@@ -2375,8 +2388,12 @@ public actor PDFToEPUBPipeline {
         // sees embedded text and would miss scanned bilinguals.
         // Returns nil for the common monolingual case, in which
         // case the EPUB builder falls through to its normal path.
+        // `forced` relaxes the alternation/L1 gates so user-asserted
+        // bilingual books still get paired when the auto detector
+        // would have given up.
         let bilingualLayout = BilingualLayoutDetector.detect(
-            pageResults: pageResults
+            pageResults: pageResults,
+            forced: options.forceBilingualFacingPage
         )
 
         // Pass 2 — reflow (and optionally a debug log of every observation's fate).

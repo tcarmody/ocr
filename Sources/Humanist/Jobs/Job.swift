@@ -244,6 +244,14 @@ struct ConversionOptions: Codable, Equatable {
     /// Gemini Flash without flipping the global default. Manuscript
     /// mode always uses Claude Opus regardless of this field.
     var pageOCRProvider: PageOCRProvider?
+    /// User-asserted "this is a facing-page bilingual book" override.
+    /// When true, `BilingualLayoutDetector` runs with relaxed gates
+    /// (any L1 language, ~50% alternation threshold). Use when
+    /// auto-detection misses an edge case — books with heavy
+    /// footnotes that break alternation, modern-language bilinguals
+    /// outside the classical L1 set, etc. Default false; auto
+    /// detection still fires when the source qualifies.
+    var forceBilingualFacingPage: Bool
 
     init(
         languages: [String] = ["en"],
@@ -262,7 +270,8 @@ struct ConversionOptions: Codable, Equatable {
         outputSuffix: String = "",
         emitSearchablePDF: Bool = false,
         bypassDedupe: Bool = false,
-        pageOCRProvider: PageOCRProvider? = nil
+        pageOCRProvider: PageOCRProvider? = nil,
+        forceBilingualFacingPage: Bool = false
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
@@ -281,6 +290,7 @@ struct ConversionOptions: Codable, Equatable {
         self.emitSearchablePDF = emitSearchablePDF
         self.bypassDedupe = bypassDedupe
         self.pageOCRProvider = pageOCRProvider
+        self.forceBilingualFacingPage = forceBilingualFacingPage
     }
 
     /// Codable: decodes both the new `useSuryaOCR` / `useClaudePageOCR`
@@ -306,6 +316,7 @@ struct ConversionOptions: Codable, Equatable {
         case emitSearchablePDF
         case bypassDedupe
         case pageOCRProvider
+        case forceBilingualFacingPage
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -381,6 +392,11 @@ struct ConversionOptions: Codable, Equatable {
         self.pageOCRProvider = try c.decodeIfPresent(
             PageOCRProvider.self, forKey: .pageOCRProvider
         )
+        // Default-off: matches auto-detect-only behavior. Pre-
+        // feature jobs decode cleanly.
+        self.forceBilingualFacingPage = try c.decodeIfPresent(
+            Bool.self, forKey: .forceBilingualFacingPage
+        ) ?? false
     }
 
     /// Encode under the new keys only — the legacy aliases are for
@@ -404,6 +420,7 @@ struct ConversionOptions: Codable, Equatable {
         try c.encode(emitSearchablePDF, forKey: .emitSearchablePDF)
         try c.encode(bypassDedupe, forKey: .bypassDedupe)
         try c.encodeIfPresent(pageOCRProvider, forKey: .pageOCRProvider)
+        try c.encode(forceBilingualFacingPage, forKey: .forceBilingualFacingPage)
     }
 }
 
