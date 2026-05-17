@@ -555,25 +555,18 @@ struct ContentView: View {
                             or for facing-page editions outside the classical \
                             language set (Greek / Latin / Hebrew).
                             """)
+                    Toggle("Batch API",
+                           isOn: $queue.useBatchAPI)
+                        .toggleStyle(.checkbox)
+                        .help("""
+                            Submit all pages as one Anthropic batch — half the \
+                            per-token cost in exchange for a 1–5 minute async \
+                            wait with no live per-page progress. Seeded from \
+                            Settings → AI → Throughput; per-session flip \
+                            doesn't write back. Good for overnight bulk runs.
+                            """)
                     Spacer()
                 }
-                Picker("Batch API",
-                       selection: $queue.batchAPIOverride) {
-                    Text("Use Settings default").tag(Bool?.none)
-                    Text("Force on (50% cheaper, async)").tag(Bool?.some(true))
-                    Text("Force off (live progress)").tag(Bool?.some(false))
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 360)
-                .help("""
-                    Per-job override for the Batch API toggle in \
-                    Settings → AI → Throughput. Forcing on submits all \
-                    pages as one Anthropic batch — half the per-token \
-                    cost in exchange for a 1–5 minute wait with no live \
-                    per-page progress. Forcing off gives live progress \
-                    even when batch is the Settings default. Most jobs \
-                    can leave this at the default.
-                    """)
                 HStack(spacing: 8) {
                     Text("Force OCR pages:")
                         .foregroundStyle(.secondary)

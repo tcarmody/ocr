@@ -277,12 +277,12 @@ final class JobRunner: ObservableObject {
         let privateOn = job.options.privateMode
         var cloudFeatures: AISettings.CloudFeatures =
             privateOn ? AISettings.CloudFeatures() : aiSettings.cloudFeatures
-        // Per-job Batch API override (Settings default unless the
-        // launcher's Per-job overrides flipped it for this drop).
-        // Skipped in private mode — no Cloud calls means nothing to
-        // batch.
-        if !privateOn, let override = job.options.batchAPIOverride {
-            cloudFeatures.useBatchAPI = override
+        // Per-job Batch API flag. Seeded in the launcher from the
+        // user's Settings default; the launcher toggle can flip it
+        // per-session. Skipped in private mode — no Cloud calls
+        // means nothing to batch.
+        if !privateOn {
+            cloudFeatures.useBatchAPI = job.options.useBatchAPI
         }
         // The user-visible "Claude OCR ($$$)" toggle drives the
         // end-to-end page-OCR path (one Sonnet call per page,

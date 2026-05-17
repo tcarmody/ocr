@@ -142,13 +142,12 @@ final class QueueViewModel: ObservableObject {
     /// gates so books that auto-detection misses still get paired
     /// page-by-page. Per-session, not persisted to Settings.
     @Published var forceBilingualFacingPage: Bool = false
-    /// Per-job override for the Batch API setting. nil = use the
-    /// Settings → AI → Throughput default; true/false force on/off
-    /// for this conversion. Lets the user batch a long book
-    /// overnight without changing the default, and conversely
-    /// force-sync a single quick conversion when Batch is the
-    /// default. Per-session.
-    @Published var batchAPIOverride: Bool? = nil
+    /// Whether jobs enqueued from this launcher session use the
+    /// Anthropic Batch API. Seeded from Settings → AI → Throughput
+    /// at init; flipping the launcher toggle overrides for the
+    /// session but doesn't write back to Settings. Same convention
+    /// as `useSuryaOCR` / `forceOCR` / `useClaudePageOCR`.
+    @Published var useBatchAPI: Bool = false
 
     let store: JobStore
     let runner: JobRunner
@@ -189,6 +188,11 @@ final class QueueViewModel: ObservableObject {
         self.emitSiblingTextOutputs = defaults.emitSiblingTextOutputs
         self.emitSiblingDocuments = defaults.emitSiblingDocuments
         self.emitSearchablePDF = defaults.emitSearchablePDF
+        // Seed Batch API toggle from the AI settings' throughput
+        // default. The launcher's per-session flip doesn't write
+        // back — Settings remains the durable preference.
+        self.useBatchAPI = AISettingsStore().load()
+            .cloudFeatures.useBatchAPI
         // If a previous session left work in the queue, pick it up
         // automatically on launch.
         if store.hasPendingWork {
@@ -338,7 +342,7 @@ final class QueueViewModel: ObservableObject {
                 bypassDedupe: bypassDedupe,
                 pageOCRProvider: pageOCRProvider,
                 forceBilingualFacingPage: forceBilingualFacingPage,
-                batchAPIOverride: batchAPIOverride
+                useBatchAPI: useBatchAPI
             ),
             status: .profiling
         )
