@@ -429,6 +429,42 @@ final class QueueViewModel: ObservableObject {
     /// than to confidently set a wrong one).
     static let applyConfidenceFloor: Double = 0.7
 
+    /// Recompute and persist a queued job's `costEstimate` against
+    /// its current `options` + the latest Settings → AI snapshot.
+    /// Used after the user flips a per-job toggle inline (e.g.
+    /// the "Enable Page OCR for this job" affordance) so the
+    /// displayed cost reflects the new dispatch shape — otherwise
+    /// the row keeps showing the stale estimate computed at
+    /// queue-add time.
+    ///
+    /// Bails out on jobs that have moved past the queued state —
+    /// once running, the estimate is descriptive rather than
+    /// predictive, so refreshing it would be misleading.
+    func recomputeCostEstimate(forJobID id: UUID) {
+        guard let job = store.jobs.first(where: { $0.id == id }),
+              job.status == .queued || job.status == .profiling,
+              let profile = job.profile
+        else { return }
+        let aiSettings = AISettingsStore().load()
+        let estimate: CostEstimator.Estimate
+        if job.options.privateMode
+            || aiSettings.processingMode != .cloud {
+            estimate = .empty
+        } else {
+            estimate = CostEstimator.estimate(
+                profile: profile,
+                cloudFeatures: aiSettings.cloudFeatures,
+                perBookCallCap: aiSettings.perBookCallCap,
+                useClaudePageOCR: job.options.useClaudePageOCR,
+                pageOCRProvider: job.options.pageOCRProvider
+                    ?? aiSettings.pageOCRProvider
+            )
+        }
+        store.update(id) { mutable in
+            mutable.costEstimate = estimate
+        }
+    }
+
     /// Enqueue a non-PDF text input (TXT / MD / RTF). No profiling,
     /// no cost estimate, no Claude warnings — straight to `.queued`.
     private func addTextDocument(_ url: URL, outputURL: URL) {

@@ -675,6 +675,7 @@ private struct JobRow: View {
     let job: Job
     @Environment(JobStore.self) private var store
     @EnvironmentObject private var runner: JobRunner
+    @EnvironmentObject private var queue: QueueViewModel
     @Environment(\.openWindow) private var openWindow
 
     /// One-line cost estimate for the queue row, shown only when
@@ -877,6 +878,9 @@ private struct JobRow: View {
                     store.update(job.id) { mutable in
                         mutable.options.useClaudePageOCR = newValue
                     }
+                    // Cost shape changes materially when Page OCR
+                    // flips — refresh the displayed estimate.
+                    queue.recomputeCostEstimate(forJobID: job.id)
                 }
             )
         case .complexLayoutRecommendSurya:
@@ -895,6 +899,11 @@ private struct JobRow: View {
                     store.update(job.id) { mutable in
                         mutable.options.useSuryaOCR = newValue
                     }
+                    // Surya is free, so cost doesn't change —
+                    // but recompute anyway for symmetry and so
+                    // any future Surya-related estimate logic
+                    // shows up here uniformly.
+                    queue.recomputeCostEstimate(forJobID: job.id)
                 }
             )
         default:
