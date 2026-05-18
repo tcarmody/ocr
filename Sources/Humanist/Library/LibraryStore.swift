@@ -704,6 +704,47 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// R-PDFs-Consolidation cache writer. Records the EPUB's
+    /// current sidecar `sourcePDFPath` on the entry so the
+    /// migrate command can skip unpacking. Idempotent: a write
+    /// that doesn't change the stored value is a no-op (no save
+    /// thrash on large libraries). `nil` clears the cache —
+    /// used when the editor's `detachSourcePDF` removes the
+    /// link entirely.
+    func recordLinkedSourcePDF(_ path: String?, on entryID: UUID) {
+        mutateEntries { entries in
+            guard let idx = entries.firstIndex(where: { $0.id == entryID })
+            else { return }
+            // Trim — empty-string path is treated the same as
+            // nil (no link). Avoids accidental store thrash when
+            // an upstream caller passes "" instead of nil.
+            let normalized: String?
+            if let p = path?.trimmingCharacters(
+                in: .whitespacesAndNewlines), !p.isEmpty {
+                normalized = p
+            } else {
+                normalized = nil
+            }
+            if entries[idx].linkedSourcePDFPath != normalized {
+                entries[idx].linkedSourcePDFPath = normalized
+            }
+        }
+    }
+
+    /// R-PDFs-Consolidation cache writer keyed by EPUB URL —
+    /// convenience for callers that don't carry the entry id
+    /// (the editor's attach flow has the EPUB URL; threading
+    /// the id through every code path would be ergonomic
+    /// noise). Resolves to entry id via canonical-URL match
+    /// and forwards to the id-keyed variant.
+    func recordLinkedSourcePDF(_ path: String?, forEPUB epubURL: URL) {
+        let canonical = epubURL.canonicalForFile
+        guard let entry = entries.first(where: {
+            $0.epubURL.canonicalForFile == canonical
+        }) else { return }
+        recordLinkedSourcePDF(path, on: entry.id)
+    }
+
     /// R-Library-Dedupe. Append `path` to `entryID`'s `priorPaths`
     /// (de-duped). Called when an import / scan hashes the same as
     /// an existing entry — the user gets to keep the breadcrumb to
@@ -1076,6 +1117,23 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
     /// duplicate copy on disk. De-duped within the entry so
     /// repeated re-runs don't blow the list up.
     var priorPaths: [String]
+    /// R-PDFs-Consolidation. Cached copy of the EPUB's sidecar
+    /// `sourcePDFPath` so the File → Consolidate PDFs… migrate
+    /// command can skip unpacking each EPUB just to read one
+    /// tiny JSON file. Format mirrors the sidecar: absolute path
+    /// when the PDF lives outside the EPUB's directory; basename
+    /// when adjacent. Nil for pre-feature entries — the migrate
+    /// worker treats nil as a cache miss, unpacks the EPUB once,
+    /// and writes the cache so subsequent runs are O(1).
+    ///
+    /// Stamped by JobRunner post-conversion, by the editor's
+    /// `attachSourcePDF`, and by the migrate worker on every
+    /// successful resolve. The cached value can become stale if
+    /// the user edits the sidecar with a third-party tool (Sigil,
+    /// calibre) — the consolidator gracefully handles stale
+    /// values because the plan() function re-checks file
+    /// existence and falls through to the unpack path on miss.
+    var linkedSourcePDFPath: String?
 
     init(
         id: UUID = UUID(),
@@ -1089,7 +1147,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         author: String? = nil,
         genre: BookGenre? = nil,
         sourceContentHashes: [String] = [],
-        priorPaths: [String] = []
+        priorPaths: [String] = [],
+        linkedSourcePDFPath: String? = nil
     ) {
         self.id = id
         self.epubURL = epubURL
@@ -1103,6 +1162,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.genre = genre
         self.sourceContentHashes = sourceContentHashes
         self.priorPaths = priorPaths
+        self.linkedSourcePDFPath = linkedSourcePDFPath
     }
 
     // MARK: - Codable (decodeIfPresent for relativePath)
@@ -1142,12 +1202,31 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.priorPaths = try c.decodeIfPresent(
             [String].self, forKey: .priorPaths
         ) ?? []
+        // R-PDFs-Consolidation cache. nil for pre-feature
+        // entries; first migrate-command run backfills.
+        self.linkedSourcePDFPath = try c.decodeIfPresent(
+            String.self, forKey: .linkedSourcePDFPath
+        )
     }
 
     enum CodingKeys: String, CodingKey {
         case id, epubURL, title, languages, addedAt, lastOpened, relativePath
         case conversionType, author, genre
         case sourceContentHashes, priorPaths
+        case linkedSourcePDFPath
+    }
+
+    /// Resolve the cached `linkedSourcePDFPath` to an on-disk URL,
+    /// using the same fallback chain as `HumanistSidecar
+    /// .resolveSourcePDF`. Returns nil when the cache is empty or
+    /// the file no longer exists at any candidate path — caller
+    /// treats nil as a miss and falls back to unpacking the EPUB.
+    func resolveCachedLinkedPDF() -> URL? {
+        guard let path = linkedSourcePDFPath, !path.isEmpty else {
+            return nil
+        }
+        let stub = HumanistSidecar(sourcePDFPath: path)
+        return stub.resolveSourcePDF(epubURL: epubURL)
     }
 }
 

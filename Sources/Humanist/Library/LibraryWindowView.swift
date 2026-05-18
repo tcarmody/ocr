@@ -1358,11 +1358,21 @@ struct LibraryWindowView: View {
         consolidateProgressTotal = entries.count
         consolidateCurrentTitle = ""
         consolidateRunning = true
+        let libRef = library
         Task.detached(priority: .userInitiated) {
             var consolidated = 0
             var alreadyInPlace = 0
             var unlinked = 0
             var failures: [(String, String)] = []
+            // R-PDFs-Consolidation large-library optimization.
+            // Each entry pays at most one EPUB unpack — only when
+            // the cached `linkedSourcePDFPath` is empty or stale
+            // (file no longer at the cached location). On a
+            // 5000-book library, a fully-cached run completes in
+            // seconds instead of ~tens of minutes of zip I/O.
+            // The unpack path *writes back* into the cache so the
+            // first run pays the one-time backfill cost; later
+            // runs are O(1) per book.
             for (idx, entry) in entries.enumerated() {
                 let stillRunning = await MainActor.run {
                     consolidateRunning
@@ -1372,30 +1382,65 @@ struct LibraryWindowView: View {
                     consolidateProgressIdx = idx + 1
                     consolidateCurrentTitle = entry.title
                 }
-                // Resolve the linked PDF: unpack just enough to
-                // read the sidecar, then use its resolve chain.
-                // Skip when there's no linked PDF — common for
-                // ad-hoc EPUB imports.
-                guard let resolved = Self.resolveLinkedPDF(for: entry) else {
+
+                // Cache-first resolve: returns nil only when the
+                // cache is empty (pre-feature catalogs) or when
+                // the cached path doesn't resolve to a file
+                // (file moved out of band). Fall back to the
+                // unpack path for both cases.
+                var resolved: URL? = entry.resolveCachedLinkedPDF()
+                var resolvedViaCache = resolved != nil
+                if resolved == nil {
+                    resolved = Self.resolveLinkedPDF(for: entry)
+                }
+                guard let pdfURL = resolved else {
                     unlinked += 1
+                    // Stamp explicit-nil to memoize the "no
+                    // linked PDF" verdict so subsequent runs
+                    // skip the unpack too.
+                    let entryID = entry.id
+                    await MainActor.run {
+                        libRef.recordLinkedSourcePDF(nil, on: entryID)
+                    }
                     continue
                 }
-                if ConversionOutputResolver.isInsidePDFsFolder(resolved) {
+                // Back-fill the cache on the slow path so the
+                // next migrate run is O(1) for this entry.
+                if !resolvedViaCache {
+                    let cachedPath = pdfURL.canonicalForFile.path
+                    let entryID = entry.id
+                    await MainActor.run {
+                        libRef.recordLinkedSourcePDF(
+                            cachedPath, on: entryID
+                        )
+                    }
+                    resolvedViaCache = true  // silence unused-mutation
+                }
+
+                if ConversionOutputResolver.isInsidePDFsFolder(pdfURL) {
                     alreadyInPlace += 1
                     continue
                 }
-                let plan = PDFConsolidator.plan(sourcePDF: resolved)
+                let plan = PDFConsolidator.plan(sourcePDF: pdfURL)
                 do {
                     try PDFConsolidator.execute(plan)
                     if let target = plan.targetPDFURL,
                        plan.willMutate
                           || plan.targetPDFURL?.canonicalForFile
-                             != resolved.canonicalForFile {
+                             != pdfURL.canonicalForFile {
                         try PDFConsolidator.writeSidecar(
                             intoEPUB: entry.epubURL,
                             pointingAt: target
                         )
                         consolidated += 1
+                        // Refresh the cache to the new location.
+                        let cachedPath = target.canonicalForFile.path
+                        let entryID = entry.id
+                        await MainActor.run {
+                            libRef.recordLinkedSourcePDF(
+                                cachedPath, on: entryID
+                            )
+                        }
                     } else {
                         alreadyInPlace += 1
                     }

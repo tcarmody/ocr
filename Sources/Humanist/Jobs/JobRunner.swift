@@ -489,6 +489,7 @@ final class JobRunner: ObservableObject {
             let consolidationSource = job.sourceURL
             let consolidationOutput = job.outputURL
             let consolidationHash = stampedSourceHash
+            let consolidationLib = library
             do {
                 let plan = PDFConsolidator.plan(
                     sourcePDF: consolidationSource,
@@ -521,6 +522,21 @@ final class JobRunner: ObservableObject {
                         try? PDFConsolidator.writeSidecar(
                             intoEPUB: consolidationOutput,
                             pointingAt: target
+                        )
+                    }
+                }
+                // R-PDFs-Consolidation cache: stamp the resolved
+                // path onto the library entry so the migrate
+                // command skips unpacking on subsequent runs.
+                // Hop to the main actor for the store mutation —
+                // LibraryStore.recordLinkedSourcePDF is
+                // @MainActor like the rest of the store API.
+                if let target = plan.targetPDFURL {
+                    let cachedPath = target.canonicalForFile.path
+                    let outputURL = consolidationOutput
+                    await MainActor.run {
+                        consolidationLib?.recordLinkedSourcePDF(
+                            cachedPath, forEPUB: outputURL
                         )
                     }
                 }

@@ -1786,6 +1786,16 @@ final class EditorViewModel: ObservableObject {
         }
         sidecar.sourcePDFPath = stored
         try? sidecar.write(workingDirectory: book.workingDirectory)
+        // R-PDFs-Consolidation cache: keep the library entry in
+        // sync with the in-EPUB sidecar so the migrate command
+        // doesn't have to unpack this EPUB to re-discover the
+        // link. No-op when this EPUB isn't in the catalog yet
+        // (ad-hoc Open of an external .epub) — the recordOpen
+        // path will catalog it later, at which point the next
+        // attach refreshes the cache.
+        OpenRouter.library?.recordLinkedSourcePDF(
+            stored, forEPUB: book.sourceURL
+        )
         isDirty = true
     }
 
@@ -1794,6 +1804,12 @@ final class EditorViewModel: ObservableObject {
         setSourcePDF(nil)
         sidecar.sourcePDFPath = nil
         try? sidecar.write(workingDirectory: book.workingDirectory)
+        // R-PDFs-Consolidation cache: clear the catalog mirror
+        // so the migrate command doesn't try to re-link a PDF
+        // the user just detached.
+        OpenRouter.library?.recordLinkedSourcePDF(
+            nil, forEPUB: book.sourceURL
+        )
         isDirty = true
     }
 
