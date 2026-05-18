@@ -2934,6 +2934,146 @@ round-trip, no-match repack skipping (mtime-preserved),
 per-book error isolation when one URL is bogus, empty-query
 no-op, case-sensitivity flag, and per-book progress callback.
 
+## R-Reader — EPUB viewer mode with chat sidebar
+
+**Status**: planned 2026-05-18. Adds a distraction-light reading
+surface alongside the existing Editor so Humanist works as a reader,
+not just a library + converter. Reader becomes the default action
+for an `.epub`; editing becomes an explicit jump.
+
+### Decisions locked
+
+- **Layout**: ship scrolling first, paginated columns as a follow-up
+  phase. User-selectable in Settings.
+- **Default open**: opening an `.epub` (Library double-click, File →
+  Open, drag-drop) routes to Reader. Explicit "Edit Source…" action
+  opens the existing Editor scene on the same URL.
+- **Chat scope**: current-book only — no library scope picker, no
+  exclusion list, no federated-index status. Library-scope chat
+  stays in the Library window where it already lives.
+- **Resume position**: in scope for v1. Persisted per content hash so
+  non-library opens resume too.
+
+### Architecture
+
+One new scene, ~five new SwiftUI files, one new sidecar store.
+Everything else is reuse.
+
+- `WindowGroup("Reader", id: "reader", for: URL.self)` in
+  `HumanistApp` — sibling of the Editor scene, same per-URL
+  window-reuse semantics.
+- `ReaderView` (root) → 3-column `NavigationSplitView`: **TOC
+  sidebar** | **Reading pane** | **Chat sidebar** (chat collapsible,
+  on by default).
+- `ReaderViewModel` (`@MainActor ObservableObject`) — owns the
+  `EPUBBook`, current spine index, layout mode, theme/font prefs,
+  and the lifecycle of the embedded `BookChatViewModel`.
+- `ReadingPositionStore` — Application-Support sidecar keyed by
+  EPUB content hash; survives Library purges and lets non-library
+  opens resume too.
+
+### Reuse vs new
+
+| Concern | Reuse | New |
+|---|---|---|
+| EPUB load + spine + nav | `EPUBBook.open(epubURL:)`, `Resource.text`, `book.spine` | — |
+| Chapter rendering (scroll mode) | `WebPreviewPane` from `Editor/PreviewView.swift` — extract the WKWebView wrapper so reader and editor both consume it | thin wrapper that loads spine items one at a time |
+| Chapter rendering (paginated) | Same WKWebView host | `ReaderPaginator.swift` JS-bridge: applies `column-width: 100vw; height: 100vh`, measures `scrollWidth`, exposes `goToPage(n)` / `pageCount` / `currentPage` |
+| TOC sidebar | `ChapterHierarchy` / `ParsedTOC` parsing already used by the editor | `ReaderTOCSidebar` — pure presentation; click jumps spine + scroll |
+| Chat | `BookChatViewModel` + `ChatPaneView` retrieval + citation chips + Anthropic plumbing unchanged | locked-scope `ReaderChatPaneView` wrapper (~80 LOC) — hides scope strip, exclusion row, federated-index status |
+| Window infra | `humanistChrome`, `WindowSwitcher` | extend `OpenRouter.open` to route epub → reader; add `Window > Show Reader` (⌘5) |
+
+### Chat sidebar — current-book only
+
+`BookChatViewModel.chatScope` is constructed locked to
+`.currentBook`. `ReaderChatPaneView` renders transcript + indexing
+banner + fallback strip + input row only. Citation chips snap the
+reading pane to the cited chapter (spine index + scroll-to-anchor)
+— mirrors the editor's "click chip → jump to chapter" behavior.
+
+### Reading position model
+
+```swift
+struct ReadingPosition: Codable {
+    let contentHash: String      // ContentHash.compute(epubURL)
+    var spineIndex: Int          // 0-based
+    var scrollFraction: Double   // 0.0–1.0, scroll mode
+    var pageIndex: Int?          // paginated mode override
+    var layoutKind: ReaderLayoutKind  // .scroll | .paginated
+    var updatedAt: Date
+}
+```
+
+Stored at `Application Support/Humanist/ReadingPositions/
+<contentHash>.json`. Writes debounced to ~500ms after the user
+stops scrolling/paging. Library window picks these up in a later
+phase and shows a "Continue reading" affordance.
+
+### Commits / phasing
+
+Each commit shippable on its own.
+
+**Phase 1 — Reader scene with scroll layout (no chat yet)**
+
+1. **R-Reader-Scene-Skeleton** — Add `ReaderView` + `ReaderViewModel`.
+   Three-column `NavigationSplitView`: stub TOC, single-column
+   scrolling chapter view via WKWebView (extracted from
+   `PreviewView`), no chat. New `WindowGroup("Reader", id: "reader",
+   for: URL.self)` in `HumanistApp.swift`. Toolbar: prev/next chapter,
+   font-size stepper.
+2. **R-Reader-Default-Open** — `OpenRouter.open(_:openWindow:)`
+   routes `.epub` → reader instead of editor. Add `File > Edit
+   Source…` (⌥⌘O) and a Reader toolbar button that opens the existing
+   Editor scene on the same URL. Add `Window > Show Reader` (⌘5 —
+   verify unreserved).
+3. **R-Reader-TOC-Sidebar** — Parse `nav.xhtml` via
+   `ChapterHierarchy`; clickable rows navigate the spine. Persist
+   sidebar collapsed/expanded state via `@AppStorage`.
+4. **R-Reader-Position-Persistence** — `ReadingPositionStore` +
+   debounced writes + restore-on-open. Library row hover affordance
+   deferred to a follow-up.
+
+**Phase 2 — Chat sidebar**
+
+5. **R-Reader-Chat-Pane** — `ReaderChatPaneView` (stripped-down
+   `ChatPaneView`), `ReaderViewModel.ensureChatViewModel()`
+   mirroring `EditorViewModel.ensureChatViewModel`. View menu toggle
+   + ⌥⌘C shortcut consistent with the editor. Citation chips snap
+   the reading pane to the cited chapter.
+
+**Phase 3 — Paginated layout**
+
+6. **R-Reader-Pagination** — `ReaderPaginator.swift` JS-bridge.
+   Settings → Reader pane: layout toggle (Scroll / Paginated), theme
+   (System / Sepia / Dark), font family + size. ←/→/space page
+   navigation; trackpad swipe via `NSEvent.swipeWithEvent` if cheap.
+
+**Phase 4 — Polish**
+
+7. **R-Reader-Reading-Prefs** — Font face picker (system reading
+   fonts), line-spacing, margin width. Reuse editor preview's theme
+   injection pattern (`<style>` overrides at chapter load).
+8. **R-Reader-Library-Continue** — Library window "Continue reading"
+   hover badge + double-click respects last position.
+
+### Edit-Reader interaction
+
+Reader and Editor both load the same `.epub` from disk independently
+into their own `EPUBBook`. If the user saves in the Editor while the
+Reader is open, the Reader's in-memory book is stale. Plan: post a
+notification on `EditorViewModel.save()` completion; Reader observes
+and shows an inline "Book changed on disk — Reload" banner. Never
+auto-reload (would lose the user's place mid-paragraph).
+
+### Open sub-questions to confirm before Phase 1
+
+- ⌘5 is the natural next slot after Queue (⌘4). Unreserved per
+  MACUX checklist, but verify against any Show-* shortcuts added
+  since.
+- Recents: Reader opens still call `RecentsStore.add(url)` —
+  handled by extending `OpenRouter.open` rather than per-scene
+  bookkeeping.
+
 ---
 
 # Tier 6: Performance + observability
