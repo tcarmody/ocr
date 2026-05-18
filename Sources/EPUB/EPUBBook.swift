@@ -368,6 +368,47 @@ public final class EPUBBook: @unchecked Sendable {
         )
     }
 
+    /// Slug-based variant of `nextAvailableHref(near:)` for the
+    /// R-Content-Aware-Rename auto-name-on-split path. Mints
+    /// `<dir>/<slug>.<ext>`, falling back to `<slug>-2.<ext>`,
+    /// `<slug>-3.<ext>`, … on collision. Returns nil when the
+    /// candidate href would exceed the byte cap or all collision
+    /// counters are exhausted — caller falls back to the existing
+    /// `_split_NNN` counter scheme.
+    ///
+    /// Directory + extension are inherited from `nearHref` so the
+    /// new file lands beside the source (e.g.
+    /// `text/on-the-program-of-the-coming-philosophy.xhtml`
+    /// next to `text/chapter-005.xhtml`). Collision check covers
+    /// both the manifest hrefs and any pre-existing on-disk file —
+    /// same posture as `nextAvailableHref(near:)`.
+    public func nextAvailableHref(
+        slug: String, near nearHref: String
+    ) -> String? {
+        guard !slug.isEmpty else { return nil }
+        let (dir, _, ext) = Self.parseHrefParts(nearHref)
+        let usedHrefs = Set(resourcesByID.values.map(\.hrefRelativeToOPF))
+        let maxHrefBytes = 200
+        let maxCounter = 999
+
+        for i in 0...maxCounter {
+            let basename = i == 0
+                ? "\(slug).\(ext)"
+                : "\(slug)-\(i + 1).\(ext)"
+            let href: String = dir.isEmpty ? basename : "\(dir)/\(basename)"
+            if href.utf8.count > maxHrefBytes { return nil }
+            let absoluteOnDisk = Self.appendingHref(
+                href, to: opfDirectory
+            )
+            let collidesOnDisk = FileManager.default
+                .fileExists(atPath: absoluteOnDisk.path)
+            if !usedHrefs.contains(href), !collidesOnDisk {
+                return href
+            }
+        }
+        return nil
+    }
+
     /// Strip all trailing `_split_NNN` suffixes from `stem`.
     /// Iterative so a pathological pre-existing stem like
     /// `chapter-001_split_001_split_001_split_001` recovers the

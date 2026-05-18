@@ -171,6 +171,69 @@ final class BookPackageEditorTests: XCTestCase {
         XCTAssertEqual(ch03Idx, newIdx + 1)
     }
 
+    /// R-Content-Aware-Rename auto-name-on-split: when the second
+    /// half starts with a usable heading, the new chapter's href
+    /// derives from the slugified heading text instead of the
+    /// counter scheme.
+    func test_split_new_chapter_href_derives_from_second_half_heading() throws {
+        try buildMinimalEPUBWithHeadingMidChapter()
+        let book = try EPUBBookLoader().load(
+            sourceURL: tempDir.appendingPathComponent("source.epub"),
+            workingDirectory: tempDir
+        )
+        let editor = BookPackageEditor(book: book)
+        let ch01Text = try XCTUnwrap(book.resourcesByID["ch01"]?.text)
+
+        // Find the `<h2>` boundary and split at the newline
+        // immediately before it — `snapToSafeBoundary` then snaps
+        // forward to the `<` on the next line, putting the
+        // `<h2>` at the start of the new chapter's body.
+        let h2Range = try XCTUnwrap(
+            ch01Text.range(of: "<h2", options: .caseInsensitive)
+        )
+        let beforeH2 = ch01Text.index(before: h2Range.lowerBound)
+        XCTAssertEqual(
+            ch01Text[beforeH2], "\n",
+            "fixture invariant: <h2 should follow a newline"
+        )
+        let splitOffset = ch01Text.distance(
+            from: ch01Text.startIndex, to: beforeH2
+        )
+        let new = try editor.splitChapter(
+            resourceID: "ch01", splitOffset: splitOffset
+        )
+
+        // Slug preserves the heading's case (the slugifier is
+        // intentionally case-preserving so titles stay readable).
+        XCTAssertEqual(
+            new.hrefRelativeToOPF, "On-the-Program.xhtml",
+            "expected slug from <h2>On the Program</h2>"
+        )
+    }
+
+    /// When the second half has no usable heading (no <h1>/<h2>/<h3>),
+    /// the slug minter returns nil and the splitter falls back to
+    /// the existing `_split_NNN` counter scheme. Confirms the
+    /// fallback path is intact.
+    func test_split_falls_back_to_counter_scheme_when_no_heading_in_tail() throws {
+        let book = try loadBook(chapterCount: 1)
+        let editor = BookPackageEditor(book: book)
+        let ch01Text = try XCTUnwrap(book.resourcesByID["ch01"]?.text)
+        let bodyStart = try ch01Text.distance(
+            from: ch01Text.startIndex,
+            to: XCTUnwrap(PackageEditor.bodyRange(in: ch01Text)).lowerBound
+        )
+        // Split mid-body, past the only <h1> — the second half
+        // contains only paragraphs.
+        let new = try editor.splitChapter(
+            resourceID: "ch01", splitOffset: bodyStart + 50
+        )
+        XCTAssertTrue(
+            new.hrefRelativeToOPF.contains("_split_"),
+            "expected counter scheme href; got \(new.hrefRelativeToOPF)"
+        )
+    }
+
     /// Manifest order also follows the smart default — new chapter
     /// is inserted right after the source in `resourceOrder`, not at
     /// the end. UIs that walk manifest order see it adjacent.
@@ -371,6 +434,81 @@ final class BookPackageEditorTests: XCTestCase {
         </manifest>
         <spine>
         \(spineItems.joined(separator: "\n"))
+        </spine>
+        </package>
+        """
+        try opfXML.write(
+            to: oebps.appendingPathComponent("content.opf"),
+            atomically: true, encoding: .utf8
+        )
+    }
+
+    /// Fixture variant for the auto-name-on-split test. One chapter
+    /// whose body contains an embedded `<h2>On the Program</h2>`
+    /// section break — splitting just before the <h2> puts the
+    /// heading at the top of the new chapter's body so the slug
+    /// minter has something to derive from.
+    private func buildMinimalEPUBWithHeadingMidChapter() throws {
+        let metaInf = tempDir.appendingPathComponent("META-INF")
+        try FileManager.default.createDirectory(
+            at: metaInf, withIntermediateDirectories: true
+        )
+        try """
+        <?xml version="1.0"?>
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+          <rootfiles>
+            <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """.write(
+            to: metaInf.appendingPathComponent("container.xml"),
+            atomically: true, encoding: .utf8
+        )
+        let oebps = tempDir.appendingPathComponent("OEBPS")
+        try FileManager.default.createDirectory(
+            at: oebps, withIntermediateDirectories: true
+        )
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head><title>Chapter 1</title></head>
+        <body>
+        <h1>Theological Fragments</h1>
+        <p>first paragraph of the chapter introduction</p>
+        <p>more body content building up to the section break</p>
+        <h2>On the Program</h2>
+        <p>second-half opening paragraph after the heading</p>
+        <p>further body content in the second half</p>
+        </body>
+        </html>
+        """.write(
+            to: oebps.appendingPathComponent("ch01.xhtml"),
+            atomically: true, encoding: .utf8
+        )
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+        <head><title>Contents</title></head>
+        <body><nav epub:type="toc"><ol></ol></nav></body>
+        </html>
+        """.write(
+            to: oebps.appendingPathComponent("nav.xhtml"),
+            atomically: true, encoding: .utf8
+        )
+        let opfXML = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+        <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+        <dc:identifier id="bookid">test-id</dc:identifier>
+        <dc:title>Test Book</dc:title>
+        <dc:language>en</dc:language>
+        </metadata>
+        <manifest>
+        <item id="ch01" href="ch01.xhtml" media-type="application/xhtml+xml"/>
+        <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+        </manifest>
+        <spine>
+        <itemref idref="ch01"/>
         </spine>
         </package>
         """

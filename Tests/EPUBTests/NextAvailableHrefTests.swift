@@ -179,6 +179,70 @@ final class NextAvailableHrefTests: XCTestCase {
     /// loader's existence check used `appendingPathComponent` which
     /// treats `%20` as literal path characters; the file lookup
     /// then failed and `EPUBBookLoader` threw `missingFile`.
+    // MARK: - slug-based variant (R-Content-Aware-Rename auto-split)
+
+    func test_nextAvailableHref_slug_uses_slug_as_stem() throws {
+        let book = try makeMinimalBook(
+            initialChapterHref: "text/chapter-001.xhtml"
+        )
+        let href = book.nextAvailableHref(
+            slug: "on-the-program-of-the-coming-philosophy",
+            near: "text/chapter-001.xhtml"
+        )
+        XCTAssertEqual(
+            href,
+            "text/on-the-program-of-the-coming-philosophy.xhtml"
+        )
+    }
+
+    func test_nextAvailableHref_slug_inherits_directory_and_extension() throws {
+        let book = try makeMinimalBook(
+            initialChapterHref: "OEBPS/chapter-005.xhtml"
+        )
+        let href = book.nextAvailableHref(
+            slug: "the-task-of-the-translator",
+            near: "OEBPS/chapter-005.xhtml"
+        )
+        XCTAssertEqual(
+            href, "OEBPS/the-task-of-the-translator.xhtml"
+        )
+    }
+
+    func test_nextAvailableHref_slug_increments_on_collision() throws {
+        // First slug-href is already in the manifest; the slug
+        // variant should suffix `-2`, not collide.
+        let book = try makeMinimalBook(
+            initialChapterHref: "text/chapter-001.xhtml",
+            extraHrefs: ["text/preface.xhtml"]
+        )
+        let href = book.nextAvailableHref(
+            slug: "preface", near: "text/chapter-001.xhtml"
+        )
+        XCTAssertEqual(href, "text/preface-2.xhtml")
+    }
+
+    func test_nextAvailableHref_slug_returns_nil_for_empty_slug() throws {
+        let book = try makeMinimalBook(
+            initialChapterHref: "text/chapter-001.xhtml"
+        )
+        XCTAssertNil(book.nextAvailableHref(
+            slug: "", near: "text/chapter-001.xhtml"
+        ))
+    }
+
+    func test_nextAvailableHref_slug_returns_nil_when_byte_cap_exceeded() throws {
+        // Pathological slug: 230 chars + ".xhtml" + "text/" prefix
+        // pushes past the 200-byte cap. Caller should fall back to
+        // the counter-style nextAvailableHref(near:).
+        let book = try makeMinimalBook(
+            initialChapterHref: "text/chapter-001.xhtml"
+        )
+        let longSlug = String(repeating: "a", count: 230)
+        XCTAssertNil(book.nextAvailableHref(
+            slug: longSlug, near: "text/chapter-001.xhtml"
+        ))
+    }
+
     func test_appendingHref_decodes_percent_escapes_for_disk_lookup() {
         let base = URL(fileURLWithPath: "/tmp/example/OEBPS")
         let url = EPUBBook.appendingHref(

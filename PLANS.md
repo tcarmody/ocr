@@ -2782,20 +2782,26 @@ existing growth can't trip the breakage either.
 
 ## R-Content-Aware-Rename — Rename chapters from their content
 
-**Status**: manual rename **shipped** 2026-05-13 (commit
-`3d8d88b`). Auto-name-on-split still pending.
+**Status**: complete. Manual rename shipped 2026-05-13
+(commit `3d8d88b`); auto-name-on-split shipped 2026-05-18.
 
-1. **Auto-name on split.** *Pending.* When a chapter is split,
-   the new piece's filename should derive from its first `<h1>` /
-   `<h2>` / `<h3>` heading (slugified), not from the source
-   chapter's filename. So splitting an essay collection
-   right before "On the Program of the Coming Philosophy"
-   produces `on-the-program-of-the-coming-philosophy.xhtml`
-   automatically, not `chapter-001_split_001.xhtml`. The slug
-   helper now exists (`EPUB.Slug.fromHeading`) so this is
-   ~½ day: wire it into `BookPackageEditor.splitChapter`
-   (or wherever the split-target href gets minted) and feed
-   the slug into `nextAvailableHref(near:)`'s collision check.
+1. ~~**Auto-name on split.**~~ Shipped 2026-05-18. New
+   `EPUBBook.nextAvailableHref(slug:near:)` mints
+   `<dir>/<slug>.<ext>` (with `-2`, `-3`, … collision suffixes)
+   inheriting the source's dir + ext, with the same byte cap +
+   counter ceiling defenses as the `_split_NNN` counter path.
+   Returns nil on empty slug or byte-cap overrun, signaling the
+   caller to fall back. `BookPackageEditor.splitChapter` now
+   tries the slug path first — extracts the second half's first
+   `<h1>` / `<h2>` / `<h3>` via `PackageEditor.firstHeadingTitle`,
+   slugifies via the existing `Slug.fromHeading`, mints the
+   slug-derived href when available, falls back to the counter
+   scheme otherwise. 6 new tests across `NextAvailableHrefTests`
+   (slug pattern, dir/ext inheritance, collision-suffix,
+   empty-slug nil, byte-cap nil) and `BookPackageEditorTests`
+   (end-to-end split with embedded `<h2>` yields slug href;
+   bodies without headings still fall through to counter
+   scheme).
 2. ~~**Manual rename to match content.**~~ Shipped 2026-05-13
    (commit `3d8d88b`). New `EPUB.Slug.fromHeading` helper +
    `EditorViewModel.beginRenameChapterFromFirstHeading(at:)` +

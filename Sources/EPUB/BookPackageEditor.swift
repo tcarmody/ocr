@@ -106,7 +106,21 @@ public struct BookPackageEditor {
         let secondFile = head + secondBody + foot
 
         let newID = book.nextAvailableResourceID(prefix: "chapter")
-        let newHref = book.nextAvailableHref(near: original.hrefRelativeToOPF)
+        // R-Content-Aware-Rename auto-name-on-split: try minting
+        // the new chapter's href from its first heading slug.
+        // Falls back to the counter scheme when the second half
+        // has no usable heading (empty slug) or the slug-based
+        // href would exceed the byte cap.
+        let slugHref: String? = PackageEditor
+            .firstHeadingTitle(in: secondFile)
+            .flatMap(Slug.fromHeading)
+            .flatMap {
+                book.nextAvailableHref(
+                    slug: $0, near: original.hrefRelativeToOPF
+                )
+            }
+        let newHref = slugHref
+            ?? book.nextAvailableHref(near: original.hrefRelativeToOPF)
         let newResource = Resource(
             id: newID,
             hrefRelativeToOPF: newHref,
