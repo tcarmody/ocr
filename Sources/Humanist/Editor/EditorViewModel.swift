@@ -1730,20 +1730,59 @@ final class EditorViewModel: ObservableObject {
 
     /// Explicit user attach (toolbar action). Persists into the
     /// sidecar and marks the package dirty so Save flushes it.
+    ///
+    /// R-PDFs-Consolidation: when an output root is configured,
+    /// the picked PDF is copied into `<outputRoot>/PDFs/` (or
+    /// linked in place if already there) and the sidecar records
+    /// the consolidated path. Falls back to the legacy
+    /// relative-or-absolute-path behavior when no root is
+    /// configured. Always copy (never move) for manual attach —
+    /// the user picked a file outside our subfolders and we
+    /// shouldn't disturb their files.
     func attachSourcePDF(_ url: URL) {
         guard let book = book else { return }
         RecentsStore.add(url)
-        setSourcePDF(url)
+        // Consolidate first when possible. The plan's
+        // targetPDFURL — when set — is the URL the editor
+        // should attach to and the sidecar should reference.
+        // Failures fall through to the legacy path so the
+        // attach action never produces a broken link.
+        var resolvedURL = url
+        do {
+            var plan = PDFConsolidator.plan(sourcePDF: url)
+            // Manual attach never moves a file out of `Input/` —
+            // the user picked it explicitly, and copying is the
+            // safe default for any non-PDFs/ source. Convert any
+            // .moveFrom action the planner produced into a
+            // .copyFrom so we don't surprise the user by
+            // emptying Input/ behind a manual attach.
+            if case .moveFrom(let source) = plan.action {
+                plan = PDFConsolidator.Plan(
+                    targetPDFURL: plan.targetPDFURL,
+                    action: .copyFrom(source)
+                )
+            }
+            try PDFConsolidator.execute(plan)
+            if let target = plan.targetPDFURL {
+                resolvedURL = target
+            }
+        } catch {
+            NSLog(
+                "Humanist: attach consolidation failed for %@: %@",
+                url.lastPathComponent, error.localizedDescription
+            )
+        }
+        setSourcePDF(resolvedURL)
         // Prefer a relative path when the PDF lives next to the EPUB.
         // Compare canonically — `/var/...` vs `/private/var/...` and
         // similar symlink quirks would otherwise misclassify an
         // adjacent file as remote and store an absolute path.
         let epubDir = book.sourceURL.deletingLastPathComponent().canonicalForFile
         let stored: String
-        if url.deletingLastPathComponent().canonicalForFile == epubDir {
-            stored = url.lastPathComponent
+        if resolvedURL.deletingLastPathComponent().canonicalForFile == epubDir {
+            stored = resolvedURL.lastPathComponent
         } else {
-            stored = url.path
+            stored = resolvedURL.path
         }
         sidecar.sourcePDFPath = stored
         try? sidecar.write(workingDirectory: book.workingDirectory)
