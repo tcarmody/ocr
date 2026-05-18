@@ -246,7 +246,14 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             // rejected it, so the tokens didn't count against the
             // user's actual budget either.
             let body = String(data: data, encoding: .utf8) ?? "(non-UTF8 body)"
-            let retryAfter = Self.retryAfterSeconds(from: http)
+            // Prefer the structured retryDelay from the response
+            // body (Google returns it under
+            // `error.details[?@type=="…RetryInfo"].retryDelay` as
+            // a duration string like "16s" or "16.12s"). Falls back
+            // to the regex match of "Please retry in Xs" in the
+            // message field, and finally to the HTTP header.
+            let retryAfter = Self.retryAfterSecondsFromBody(data: data)
+                ?? Self.retryAfterSeconds(from: http)
             // Diagnostic: every 429 logs the full response body so
             // the specific Google quota dimension that fired
             // (`quotaMetric`, `quotaId`, `quotaDimensions`) is
@@ -292,6 +299,64 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
               seconds >= 0 else {
             return nil
         }
+        return seconds
+    }
+
+    /// Parse Google's structured retry hint from the 429 response
+    /// body. Two paths:
+    ///   1. `error.details[?@type=="…RetryInfo"].retryDelay`
+    ///      (the canonical `google.rpc.RetryInfo` shape; duration
+    ///      string like `"16s"` or `"16.120805818s"`).
+    ///   2. Regex-match `"Please retry in 16.12s"` from
+    ///      `error.message` as a fallback for cases where the
+    ///      RetryInfo detail is missing.
+    /// Returns nil when neither path yields a parseable duration.
+    static func retryAfterSecondsFromBody(data: Data) -> Double? {
+        guard let json = try? JSONSerialization.jsonObject(with: data)
+            as? [String: Any],
+              let error = json["error"] as? [String: Any]
+        else { return nil }
+        // Structured RetryInfo detail.
+        if let details = error["details"] as? [[String: Any]] {
+            for detail in details {
+                let type = detail["@type"] as? String ?? ""
+                guard type.contains("RetryInfo"),
+                      let delay = detail["retryDelay"] as? String
+                else { continue }
+                if let seconds = parseDurationString(delay) {
+                    return seconds
+                }
+            }
+        }
+        // Message-string fallback. Google's message phrasing is
+        // stable enough across the embedding endpoints to make a
+        // regex match safe; if they change the wording, the
+        // structured detail above is still the primary path.
+        if let message = error["message"] as? String,
+           let range = message.range(
+               of: #"retry in (\d+(?:\.\d+)?)s"#,
+               options: .regularExpression
+           ) {
+            let match = String(message[range])
+            let numericPart = match
+                .replacingOccurrences(of: "retry in ", with: "")
+                .replacingOccurrences(of: "s", with: "")
+            if let seconds = Double(numericPart), seconds >= 0 {
+                return seconds
+            }
+        }
+        return nil
+    }
+
+    /// Parse a protobuf-style duration string (`"16s"`,
+    /// `"16.120805818s"`) into a seconds Double. Returns nil for
+    /// any other shape — e.g. `"1m"` or `"500ms"` — since the
+    /// embedding API only returns plain-seconds durations.
+    static func parseDurationString(_ s: String) -> Double? {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasSuffix("s") else { return nil }
+        let body = String(trimmed.dropLast())
+        guard let seconds = Double(body), seconds >= 0 else { return nil }
         return seconds
     }
 

@@ -24,9 +24,11 @@ public actor GeminiEmbeddingRateLimiter {
     public static let shared = GeminiEmbeddingRateLimiter()
 
     /// Target RPM ceiling. Tier 1 paid Gemini documents 3000 RPM
-    /// on `gemini-embedding-2`; defaulting to 2500 leaves ~17%
-    /// headroom for jitter and sub-window enforcement.
-    private var maxRequestsPerMinute: Int = 2500
+    /// on `gemini-embedding-2`; defaulting to 2000 leaves ~33%
+    /// headroom. Lowered from 2500 (2026-05-17) after observing
+    /// retry storms during bursts pushed effective rate past 3000
+    /// even with the spacing gate.
+    private var maxRequestsPerMinute: Int = 2000
     /// Target TPM ceiling. Tier 1 cap is 1M on the embedding model;
     /// 800K leaves 20% headroom. The first throttle iteration set
     /// this to 100K, which over-paced bulk-indexing relative to the
@@ -34,8 +36,18 @@ public actor GeminiEmbeddingRateLimiter {
     private var maxTokensPerMinute: Int = 800_000
 
     /// Monotonic timestamp of the most recent request fired across
-    /// any backend instance. Nil before the first request.
+    /// any backend instance. Nil before the first request. Used by
+    /// the spacing gate that smooths bursts; the rolling-window
+    /// gate below is what actually caps total throughput.
     private var lastRequestAt: ContinuousClock.Instant?
+    /// Sliding 60s window of request timestamps for RPM-cap
+    /// enforcement. Spacing alone (`waitForSlot`) was inadequate
+    /// because retries-on-429 don't go through the spacer the same
+    /// way (different call site), so a burst could push us past the
+    /// per-minute count even when intervals looked correct. This
+    /// window tracks actual fired requests and blocks when count
+    /// reaches cap.
+    private var requestWindow: [ContinuousClock.Instant] = []
     /// Sliding window of (timestamp, estimated tokens) for the
     /// last 60 seconds of requests across all backend instances.
     private var tokenWindow: [TokenWindowEntry] = []
@@ -70,16 +82,20 @@ public actor GeminiEmbeddingRateLimiter {
     }
 
     /// Acquire a slot for one outbound request that will consume
-    /// `estimatedTokens` of input. Waits on whichever gate (RPM or
-    /// TPM) is currently binding; returns when the caller can fire.
-    /// Caller is expected to call `recordSuccess(tokens:)` *after*
-    /// the request completes with a non-429 status. Failed (429)
-    /// requests don't get recorded — Google's quota doesn't count
-    /// them against the user's budget either.
+    /// `estimatedTokens` of input. Waits on whichever gate (RPM
+    /// spacing, RPM window, or TPM window) is currently binding;
+    /// returns when the caller can fire. Caller is expected to
+    /// call `recordSuccess(tokens:)` *after* the request completes
+    /// with a non-429 status. Failed (429) requests don't get
+    /// recorded — Google's quota doesn't count them against the
+    /// user's budget either.
     public func acquireSlot(estimatedTokens: Int) async throws {
         try await waitForSlot()
+        try await waitForRequestBudget()
         try await waitForTokenBudget(needed: estimatedTokens)
-        lastRequestAt = ContinuousClock.now
+        let now = ContinuousClock.now
+        lastRequestAt = now
+        requestWindow.append(now)
     }
 
     /// Record a successfully-fired request's input-token cost.
@@ -100,6 +116,29 @@ public actor GeminiEmbeddingRateLimiter {
         if elapsed < minimumInterval {
             try await Task.sleep(for: minimumInterval - elapsed)
         }
+    }
+
+    /// Sleep until the rolling 60s request window has room for
+    /// one more request. Trims aged entries first. This is the
+    /// load-bearing RPM gate — the spacing gate above only
+    /// smooths the rate, it doesn't enforce the total.
+    private func waitForRequestBudget() async throws {
+        let cap = maxRequestsPerMinute
+        let now = ContinuousClock.now
+        let windowStart = now.advanced(by: .seconds(-60))
+        requestWindow.removeAll { $0 < windowStart }
+        if requestWindow.count < cap { return }
+        // At cap. Sleep until the oldest entry ages out of the
+        // window, then re-trim and let the caller through.
+        let oldest = requestWindow.first ?? now
+        let wakeAt = oldest.advanced(by: .seconds(60))
+        let waitFor = now.duration(to: wakeAt)
+        if waitFor > .zero {
+            try await Task.sleep(for: waitFor)
+        }
+        let after = ContinuousClock.now
+        let newStart = after.advanced(by: .seconds(-60))
+        requestWindow.removeAll { $0 < newStart }
     }
 
     /// Sleep until the rolling 60s token window has room for
