@@ -532,6 +532,25 @@ private struct LibraryMaintenanceCommands: View {
         DetectDuplicatesCommand()
         ExportSelectedBooksCommand()
         RestoreLibraryCatalogCommand()
+        ConsolidatePDFsCommand()
+    }
+}
+
+/// R-PDFs-Consolidation migrate command. Walks the library
+/// catalog, finds linked PDFs that aren't yet inside
+/// `<outputRoot>/PDFs/`, moves Input-rooted ones / copies
+/// external ones, and rewrites each EPUB's sidecar. Surfaced
+/// in the File menu so users with a backlog of pre-feature
+/// conversions can consolidate in one pass.
+private struct ConsolidatePDFsCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Consolidate PDFs into Library Folder…") {
+            openWindow(id: "library")
+            NotificationCenter.default.post(
+                name: .humanistConsolidatePDFsRequested, object: nil
+            )
+        }
     }
 }
 
@@ -829,5 +848,16 @@ extension Notification.Name {
     /// library-maintenance commands.
     static let humanistExportLibraryRequested = Notification.Name(
         "humanistExportLibraryRequested"
+    )
+
+    /// Posted by File → Consolidate PDFs into Library Folder…;
+    /// the Library window's listener walks the catalog and runs
+    /// `PDFConsolidator` over each entry whose linked source PDF
+    /// isn't yet inside `<outputRoot>/PDFs/`. Backfills the
+    /// PDFs/ folder for users with a pre-feature library and
+    /// recovers from JobRunner's rare partial-failure cases
+    /// (file moved but sidecar update didn't).
+    static let humanistConsolidatePDFsRequested = Notification.Name(
+        "humanistConsolidatePDFsRequested"
     )
 }

@@ -203,6 +203,25 @@ struct LibraryWindowView: View {
     /// the copy). Library state remains pointed at the live catalog.
     @State private var restoreError: String?
 
+    /// R-PDFs-Consolidation. True while the File →
+    /// Consolidate PDFs Into Library Folder… run is in progress.
+    /// The progress sheet binds to this; the run itself happens
+    /// off the main actor via a detached Task.
+    @State private var consolidateRunning: Bool = false
+    /// Per-run progress for the consolidate command. Updated from
+    /// the worker task via `MainActor.run`.
+    @State private var consolidateProgressIdx: Int = 0
+    @State private var consolidateProgressTotal: Int = 0
+    @State private var consolidateCurrentTitle: String = ""
+    /// Summary shown after the consolidate command completes.
+    /// Non-nil triggers the result alert; "OK" clears it.
+    @State private var consolidateSummary: String?
+    /// Surfaced when consolidate cannot even start (no output
+    /// root configured, library empty). Distinct from
+    /// `consolidateSummary` so the message is informational
+    /// rather than success-tinted.
+    @State private var consolidatePrecheckError: String?
+
     /// Error surfaced when the metadata dual-write to the EPUB
     /// fails (corrupt EPUB, read-only filesystem, iCloud file not
     /// yet downloaded, etc.). The catalog edit still went through
@@ -303,6 +322,11 @@ struct LibraryWindowView: View {
             )) { _ in
                 startExport(targets: selectedEntries)
             }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .humanistConsolidatePDFsRequested
+            )) { _ in
+                startConsolidatePDFs()
+            }
             .alert("Select books to export",
                    isPresented: $exportEmptySelectionAlert) {
                 Button("OK", role: .cancel) {
@@ -320,6 +344,73 @@ struct LibraryWindowView: View {
             } message: {
                 Text(exportError ?? "")
             }
+            .alert("Consolidate PDFs",
+                   isPresented: Binding(
+                       get: { consolidateSummary != nil },
+                       set: { if !$0 { consolidateSummary = nil } }
+                   )) {
+                Button("OK", role: .cancel) { consolidateSummary = nil }
+            } message: {
+                Text(consolidateSummary ?? "")
+            }
+            .alert("Can't consolidate PDFs",
+                   isPresented: Binding(
+                       get: { consolidatePrecheckError != nil },
+                       set: { if !$0 { consolidatePrecheckError = nil } }
+                   )) {
+                Button("OK", role: .cancel) {
+                    consolidatePrecheckError = nil
+                }
+            } message: {
+                Text(consolidatePrecheckError ?? "")
+            }
+            .sheet(isPresented: $consolidateRunning) {
+                consolidateProgressSheet
+            }
+    }
+
+    /// Modal progress view shown while the consolidate command
+    /// runs. Stays up until the worker task completes (or the
+    /// user clicks Cancel — we don't support mid-run cancel for
+    /// v1; the worker checks `consolidateRunning` between books
+    /// and bails out if the user cleared it).
+    @ViewBuilder
+    private var consolidateProgressSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                Text("Consolidating PDFs into Library Folder…")
+                    .font(.headline)
+            }
+            if consolidateProgressTotal > 0 {
+                ProgressView(
+                    value: Double(consolidateProgressIdx),
+                    total: Double(consolidateProgressTotal)
+                )
+                Text(
+                    "Book \(consolidateProgressIdx) of "
+                    + "\(consolidateProgressTotal)"
+                    + (consolidateCurrentTitle.isEmpty
+                       ? ""
+                       : " — \(consolidateCurrentTitle)")
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    // Soft cancel — the worker checks the flag
+                    // between books. The in-flight book finishes.
+                    consolidateRunning = false
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 360)
     }
 
     /// Scan the configured conversion output folder for `.epub`
@@ -1239,6 +1330,152 @@ struct LibraryWindowView: View {
                 .joined(separator: "; ")
             let tail = fl.count > 3 ? "; and \(fl.count - 3) more" : ""
             lines.append("Failed \(fl.count): \(head)\(tail).")
+        }
+        return lines.joined(separator: "\n\n")
+    }
+
+    /// R-PDFs-Consolidation migrate command. Walks the library
+    /// catalog, finds each entry's linked source PDF (via
+    /// HumanistSidecar inside the EPUB), runs PDFConsolidator on
+    /// any that aren't yet inside `<outputRoot>/PDFs/`, and
+    /// surfaces a summary.
+    ///
+    /// Worker runs on a detached Task so the unpack/repack cycle
+    /// (PDFConsolidator.writeSidecar) doesn't block the main
+    /// actor on a large library. Progress + summary are posted
+    /// back via `MainActor.run`.
+    private func startConsolidatePDFs() {
+        guard ConversionOutputResolver.currentRoot() != nil else {
+            consolidatePrecheckError = "Set a conversion output folder in Settings → Conversion first. Consolidation moves linked PDFs into <root>/PDFs/."
+            return
+        }
+        let entries = library.entries
+        guard !entries.isEmpty else {
+            consolidatePrecheckError = "Library is empty — nothing to consolidate."
+            return
+        }
+        consolidateProgressIdx = 0
+        consolidateProgressTotal = entries.count
+        consolidateCurrentTitle = ""
+        consolidateRunning = true
+        Task.detached(priority: .userInitiated) {
+            var consolidated = 0
+            var alreadyInPlace = 0
+            var unlinked = 0
+            var failures: [(String, String)] = []
+            for (idx, entry) in entries.enumerated() {
+                let stillRunning = await MainActor.run {
+                    consolidateRunning
+                }
+                guard stillRunning else { break }
+                await MainActor.run {
+                    consolidateProgressIdx = idx + 1
+                    consolidateCurrentTitle = entry.title
+                }
+                // Resolve the linked PDF: unpack just enough to
+                // read the sidecar, then use its resolve chain.
+                // Skip when there's no linked PDF — common for
+                // ad-hoc EPUB imports.
+                guard let resolved = Self.resolveLinkedPDF(for: entry) else {
+                    unlinked += 1
+                    continue
+                }
+                if ConversionOutputResolver.isInsidePDFsFolder(resolved) {
+                    alreadyInPlace += 1
+                    continue
+                }
+                let plan = PDFConsolidator.plan(sourcePDF: resolved)
+                do {
+                    try PDFConsolidator.execute(plan)
+                    if let target = plan.targetPDFURL,
+                       plan.willMutate
+                          || plan.targetPDFURL?.canonicalForFile
+                             != resolved.canonicalForFile {
+                        try PDFConsolidator.writeSidecar(
+                            intoEPUB: entry.epubURL,
+                            pointingAt: target
+                        )
+                        consolidated += 1
+                    } else {
+                        alreadyInPlace += 1
+                    }
+                } catch {
+                    failures.append((
+                        entry.title, error.localizedDescription
+                    ))
+                }
+            }
+            let summary = Self.consolidateSummary(
+                consolidated: consolidated,
+                alreadyInPlace: alreadyInPlace,
+                unlinked: unlinked,
+                failures: failures
+            )
+            await MainActor.run {
+                consolidateRunning = false
+                consolidateSummary = summary
+            }
+        }
+    }
+
+    /// Open the EPUB at `entry.epubURL`, read its
+    /// HumanistSidecar, and resolve to the on-disk source PDF.
+    /// Returns nil when no sidecar / no link / resolution failed.
+    /// Cheap-ish: opens the EPUB just to read one tiny JSON file
+    /// (~50 ms per book on modern hardware). `nonisolated` so the
+    /// consolidate worker's detached Task can call it without
+    /// hopping back to the main actor per book.
+    nonisolated private static func resolveLinkedPDF(for entry: LibraryEntry) -> URL? {
+        guard let book = try? EPUBBook.open(epubURL: entry.epubURL) else {
+            return nil
+        }
+        let sidecar = HumanistSidecar.read(
+            workingDirectory: book.workingDirectory
+        )
+        return sidecar.resolveSourcePDF(epubURL: entry.epubURL)
+    }
+
+    nonisolated private static func consolidateSummary(
+        consolidated: Int,
+        alreadyInPlace: Int,
+        unlinked: Int,
+        failures: [(String, String)]
+    ) -> String {
+        var lines: [String] = []
+        if consolidated > 0 {
+            lines.append(
+                "Consolidated \(consolidated) PDF"
+                + (consolidated == 1 ? "" : "s")
+                + " into the Library Folder’s PDFs/ subfolder."
+            )
+        }
+        if alreadyInPlace > 0 {
+            lines.append(
+                "\(alreadyInPlace) PDF"
+                + (alreadyInPlace == 1 ? " was" : "s were")
+                + " already in PDFs/ — no change."
+            )
+        }
+        if unlinked > 0 {
+            lines.append(
+                "\(unlinked) book"
+                + (unlinked == 1 ? "" : "s")
+                + " had no linked source PDF."
+            )
+        }
+        if !failures.isEmpty {
+            let head = failures.prefix(3)
+                .map { "\($0.0) — \($0.1)" }
+                .joined(separator: "; ")
+            let tail = failures.count > 3
+                ? "; and \(failures.count - 3) more"
+                : ""
+            lines.append(
+                "Failed \(failures.count): \(head)\(tail)."
+            )
+        }
+        if lines.isEmpty {
+            lines.append("Nothing to consolidate.")
         }
         return lines.joined(separator: "\n\n")
     }
