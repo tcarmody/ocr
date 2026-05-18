@@ -1812,9 +1812,24 @@ struct LibraryWindowView: View {
         } rows: {
             ForEach(displayedEntries) { entry in
                 TableRow(entry)
-                    .contextMenu {
-                        rowContextMenu(for: entry)
-                    }
+            }
+        }
+        // Table-level context menu + primary action. Right-click
+        // on a row pre-selects it so the menu closure's `ids` set
+        // contains at least the right-clicked row's ID. The
+        // `primaryAction:` closure fires on double-click or
+        // Return — opens each selected entry in an editor window,
+        // matching Finder's convention for multi-selection.
+        .contextMenu(forSelectionType: LibraryEntry.ID.self) { ids in
+            if let firstID = ids.first,
+               let entry = library.entries.first(where: { $0.id == firstID }) {
+                rowContextMenu(for: entry)
+            }
+        } primaryAction: { ids in
+            for id in ids {
+                if let entry = library.entries.first(where: { $0.id == id }) {
+                    openEntry(entry)
+                }
             }
         }
         // ⌫ on the table triggers the confirmation flow for the
