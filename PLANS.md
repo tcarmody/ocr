@@ -5822,14 +5822,49 @@ serial cascade conversion feel slow.
 
 ## C-Pipeline-File-Split — Carve `PDFToEPUBPipeline.swift` into per-concern files
 
-**Status**: not done. `Sources/Pipeline/PDFToEPUBPipeline.swift`
-is 4500+ lines and growing — every new feature layered on
-(page-OCR provider choice, refusal-rate stats, bilingual layout
-detection, rate-limit gating, Tesseract fallback routing) has
-landed as additional methods on the same type rather than being
-split out. The file is still navigable via grep but it's hostile
-to first-time readers and AI-assisted edits (lots of context
-needed to make a safe change).
+**Status**: shipped 2026-05-18 across 7 commits. The 4582-line
+monolith carved into seven sibling files via
+`extension PDFToEPUBPipeline { … }`:
+
+  - `PDFToEPUBPipeline.swift` (2367 lines) — Options + Progress
+    + properties + init + the `convert(...)` orchestrator +
+    shared helpers (regions, gap-fill, layout retry, etc.).
+  - `PipelineCascadeLoop.swift` (380 lines) — `CascadePageOutcome`
+    + `processCascadePage` (the per-page cascade body).
+  - `PipelinePageOCRDispatch.swift` (962 lines) — Cloud page-OCR
+    path: `PendingPageOCR`, sync TaskGroup dispatch
+    (`runPageOCRPage`), Batches API dispatch
+    (`dispatchPageOCRViaBatch` + `preparePageForBatch`),
+    debug dump (`writeClaudePageResponses`), chapter decision
+    log writer.
+  - `PipelineAssembleBook.swift` (271 lines) — `AssembledBook` +
+    `assembleBook` (reflow → Book via splitter dispatch +
+    classification + coherence + metadata).
+  - `PipelineEngineFactories.swift` (411 lines) — `makeXxx`
+    Cloud + AFM-fallback engine factory family,
+    `CapturedResponseStore`, `ClaudeEngines` bundle.
+  - `PipelineWriteOutputs.swift` (175 lines) — `writeOutputs` +
+    sibling `.txt`/`.md`/`.html`/`.docx`/`.searchable.pdf`
+    emission + cover-from-page-0 rasterizer.
+  - `PipelineReflow.swift` (131 lines) — `ReflowOutput` + the
+    `reflow` static helper.
+  - `PipelineStatsAggregation.swift` (102 lines) —
+    `aggregateConversionStats` (per-page accumulators →
+    `ConversionStats`).
+
+Total ~50% reduction in the main file. Behavior-equivalent —
+1353 tests pass byte-equivalent across every commit. Necessary
+access-modifier widenings (`private` → default-internal on
+engine fields + cascade helpers + page-OCR helpers + debug
+writers + cover helpers) are local to the module since
+sibling files can't see `private` declarations.
+
+**Original status note (preserved for diff context)**: The
+file was 4500+ lines and growing — every new feature layered
+on (page-OCR provider choice, refusal-rate stats, bilingual
+layout detection, rate-limit gating, Tesseract fallback
+routing) had landed as additional methods on the same type
+rather than being split out.
 
 ### Goal
 
