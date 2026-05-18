@@ -451,13 +451,17 @@ final class JobRunner: ObservableObject {
             // drop hits the pre-flight short-circuit. Hashing
             // happens off the main actor; failures are silent
             // (worst case: the next drop re-runs OCR, which is
-            // wasteful but not incorrect).
+            // wasteful but not incorrect). Hash is also reused
+            // by the consolidation step below — pass it through
+            // to avoid hashing the same file twice.
+            var stampedSourceHash: String?
             if let lib = library {
                 let sourceURL = job.sourceURL
                 let hashTask = Task.detached(priority: .background) {
                     try ContentHash.sha256(of: sourceURL)
                 }
                 if let hash = try? await hashTask.value {
+                    stampedSourceHash = hash
                     let outputURL = job.outputURL
                     await MainActor.run {
                         let canonical = outputURL.canonicalForFile
@@ -468,6 +472,64 @@ final class JobRunner: ObservableObject {
                         }
                     }
                 }
+            }
+
+            // R-PDFs-Consolidation. Move the source PDF out of
+            // `Input/` (or copy from anywhere else) into
+            // `<outputRoot>/PDFs/` and update the EPUB sidecar to
+            // reference the new location. No-op when no output
+            // root is configured. Failures are non-fatal — the
+            // EPUB is already written and the catalog is already
+            // stamped; a consolidation failure just leaves the
+            // sidecar pointing at the source's original location
+            // (or, in the file-op-succeeded-but-sidecar-failed
+            // edge case, at a path the editor's resolveSourcePDF
+            // fallback won't find — File → Consolidate PDFs Into
+            // Library Folder… is the recovery path).
+            let consolidationSource = job.sourceURL
+            let consolidationOutput = job.outputURL
+            let consolidationHash = stampedSourceHash
+            do {
+                let plan = PDFConsolidator.plan(
+                    sourcePDF: consolidationSource,
+                    sourceHash: consolidationHash
+                )
+                try PDFConsolidator.execute(plan)
+                if let target = plan.targetPDFURL, plan.willMutate {
+                    try PDFConsolidator.writeSidecar(
+                        intoEPUB: consolidationOutput,
+                        pointingAt: target
+                    )
+                }
+                // Input-rooted duplicate-content case: execute()
+                // doesn't carry the source URL through the
+                // .linkToExistingDuplicate action, so clean up
+                // here. The user's intent ("clear Input") still
+                // applies even though the consolidated copy was
+                // already present at the target.
+                if case .linkToExistingDuplicate = plan.action,
+                   ConversionOutputResolver.isInsideInputFolder(
+                       consolidationSource
+                   ) {
+                    try? FileManager.default.removeItem(
+                        at: consolidationSource
+                    )
+                    // Update sidecar to point at the existing
+                    // duplicate so future opens find it via the
+                    // sidecar's `as-is` resolution step.
+                    if let target = plan.targetPDFURL {
+                        try? PDFConsolidator.writeSidecar(
+                            intoEPUB: consolidationOutput,
+                            pointingAt: target
+                        )
+                    }
+                }
+            } catch {
+                NSLog(
+                    "Humanist: PDF consolidation failed for %@: %@",
+                    consolidationSource.lastPathComponent,
+                    error.localizedDescription
+                )
             }
         } catch is CancellationError {
             store.update(jobID) { mutable in
