@@ -391,6 +391,27 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         - Hyphenated word at a line break: join into one word, drop the hyphen.
         - If text is unclear, transcribe what you can read; do NOT insert \
         markers like [unclear] or [illegible].
+
+        COMPLEX-LAYOUT RULES (apply ONLY when a page has clearly parallel \
+        text streams running side by side — books like Derrida's *Glas*, \
+        bilingual editions with verso/recto streams, Talmud-style commentaries \
+        with marginal glosses, or art books with a narrow sidebar of \
+        dictionary / etymological entries):
+        - Emit each parallel stream as its own <section data-stream="ID"> wrapping \
+        that stream's paragraphs.
+        - Stream IDs are: "main" (the dominant body column), "main-2" (a second \
+        equal-weight body column running parallel to "main"), "sidebar" (a \
+        narrower secondary stream like a glossary, dictionary citations, or \
+        running marginalia), "inset" (a smaller block embedded within another \
+        column's flow, like a German citation set apart from the surrounding \
+        English commentary).
+        - Within each <section>, preserve reading order top-to-bottom.
+        - Do NOT split into streams on these (they are intra-stream structure, \
+        not parallel streams): a horizontal rule separating body text from \
+        footnotes, the footnote section itself at the bottom of a page, \
+        block quotations, indented passages, or a single-column page where \
+        text simply wraps. Single-column pages produce no <section data-stream> \
+        wrappers — emit paragraphs at the top level as usual.
         """
 
     /// User-turn prompt carrying the per-request language hint. Kept
@@ -496,9 +517,25 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
 public struct ClaudePageResult: Sendable {
     public let blocks: [Block]
     public let footnotes: [Footnote]
+    /// Distinct `data-stream` IDs the parser observed on this
+    /// page (e.g. `["main", "sidebar"]`). Empty for single-column
+    /// pages. Today this is a diagnostic signal — surfaced in the
+    /// per-page debug log so we can measure how often Sonnet /
+    /// Gemini detect parallel layouts on the corpus. The block IR
+    /// doesn't yet carry per-block stream IDs (would need a Block
+    /// enum expansion across ~120 pattern-match sites), so the
+    /// EPUB output is linearized regardless. The multi-stream
+    /// EPUB shape is documented future work in
+    /// `C-Multi-Stream-EPUB` in PLANS.md.
+    public let detectedStreams: [String]
 
-    public init(blocks: [Block], footnotes: [Footnote]) {
+    public init(
+        blocks: [Block],
+        footnotes: [Footnote],
+        detectedStreams: [String] = []
+    ) {
         self.blocks = blocks
         self.footnotes = footnotes
+        self.detectedStreams = detectedStreams
     }
 }

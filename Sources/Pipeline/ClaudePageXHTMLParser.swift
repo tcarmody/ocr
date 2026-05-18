@@ -64,7 +64,8 @@ public struct ClaudePageXHTMLParser: Sendable {
         delegate.flushPending()
         return ClaudePageResult(
             blocks: delegate.blocks,
-            footnotes: delegate.footnotes
+            footnotes: delegate.footnotes,
+            detectedStreams: Array(delegate.detectedStreams).sorted()
         )
     }
 
@@ -132,6 +133,10 @@ public struct ClaudePageXHTMLParser: Sendable {
         let pageIndex: Int
         var blocks: [Block] = []
         var footnotes: [Footnote] = []
+        /// Stream IDs observed via `<section data-stream="…">`.
+        /// Surfaces to ClaudePageResult.detectedStreams as a
+        /// diagnostic until the multi-stream EPUB shape ships.
+        var detectedStreams: Set<String> = []
 
         enum BlockKind {
             case paragraph
@@ -206,6 +211,21 @@ public struct ClaudePageXHTMLParser: Sendable {
                 flushTextBuffer()
                 textBuffer = "\n"
                 flushTextBuffer()
+            case "section":
+                // <section data-stream="…"> wraps a parallel text
+                // stream (multi-column body, sidebar, inset).
+                // Capture the stream ID into the diagnostic and
+                // treat the element as a block-level no-op:
+                // contained <p> / <h2> / etc. still parse into
+                // their own blocks, but the section itself doesn't
+                // push an inline frame (which would corrupt the
+                // block boundaries). The block IR is linearized
+                // for now — see PLANS C-Multi-Stream-EPUB for the
+                // future EPUB output story.
+                if let streamID = attributeDict["data-stream"],
+                   !streamID.isEmpty {
+                    detectedStreams.insert(streamID)
+                }
             default:
                 // Unknown tag — push a frame so the closing balances;
                 // text inside is treated as if the tag wasn't there.
@@ -238,6 +258,12 @@ public struct ClaudePageXHTMLParser: Sendable {
                 flushTextBuffer()
                 if !inlineStack.isEmpty { inlineStack.removeLast() }
             case "br":
+                return
+            case "section":
+                // No-op: open didn't push an inline frame, so close
+                // doesn't pop one. Contained <p> / <h2> blocks have
+                // already self-closed via their own end-element
+                // handlers.
                 return
             default:
                 flushTextBuffer()

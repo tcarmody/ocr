@@ -5909,6 +5909,105 @@ multi-thousand-line file is the rate limiter on careful work.
 
 ---
 
+## C-Multi-Stream-EPUB — Parallel-stream output for complex layouts (Glas, Loeb, Talmud)
+
+**Status**: prompt + parser scaffolding shipped 2026-05-18; IR
+expansion + EPUB round-trip pending. The Cloud page-OCR prompt
+(both `ClaudePageOCREngine.baseSystemPrompt` and the Gemini
+engine that shares it) teaches the model to emit
+`<section data-stream="…">` wrappers for clearly parallel
+streams (Glas-style multi-column body + sidebar + insets, Loeb
+verso/recto, Talmud commentary). The parser
+(`ClaudePageXHTMLParser`) recognizes these as block-level
+no-ops — content paragraphs land in the flat block stream in
+document order — and captures the distinct stream IDs into
+`ClaudePageResult.detectedStreams` as a diagnostic. EPUB output
+is still linearized.
+
+### Goal
+
+Emit a multi-stream EPUB for books whose layout genuinely demands
+it (Derrida's *Glas*, Loeb Classical Library, Talmud editions,
+art books with running marginalia). Each stream gets its own
+spine sequence; cross-link metadata pairs facing passages so an
+enhanced reader (or our own editor) can reconstruct parallel
+display.
+
+### Approach
+
+Three-phase plan.
+
+**Phase A — IR expansion**. Two viable shapes:
+
+  1. **Block enum expansion**: add
+     `.sectionBoundary(streamId: String?, isStart: Bool)`. Lowest
+     friction at the IR level but requires touching ~120
+     pattern-match sites across the pipeline (many will have
+     `default:` clauses and absorb the new case silently;
+     exhaustive switches need explicit clauses).
+  2. **Per-block sidecar map**: a parallel
+     `[BlockUUID: String]` carried alongside the `[Block]` array
+     from page-OCR through to chapter assembly. No Block enum
+     change, but the sidecar's index/UUID keying must survive
+     `ChapterSplitter` and other transformations that reorder
+     blocks. Brittle without UUIDs on Block (currently absent).
+
+  Recommendation: (1). The pattern-match audit is mechanical and
+  catches every site that needs to know about the new case; the
+  sidecar approach is invisible and easier to drop on the floor.
+
+**Phase B — EPUB writer round-trip**. `XHTMLWriter` recognizes
+`.sectionBoundary` and emits `<section data-stream="…">` wrappers
+around the contained block range. Cross-spine `data-facing` /
+`data-stream-position` attributes link facing passages, building
+on the bilingual-facing-page sidecar shape already shipped in
+`P-Bilingual-FacingPage`.
+
+**Phase C — Editor multi-stream view**. Editor pane that shows
+each stream side-by-side, with synchronized scroll between
+facing passages. Loads from the `data-stream` / `data-facing`
+attributes in the saved EPUB. Most invasive piece; only worth
+building once Phases A + B prove the data shape.
+
+### State the parser captures today
+
+`ClaudePageResult.detectedStreams: [String]` — distinct stream
+IDs (sorted) observed via `<section data-stream="…">` on the
+page. Empty for single-column pages. Surfaces today only via
+the field on the result; Phase A wires it into the block-IR
+so it flows downstream.
+
+### Risks
+
+- **False-positive multi-column detection**. The prompt
+  addition tries to scope tightly ("clearly parallel text
+  streams") but a model can still over-detect. Mitigation:
+  measure detection rate on the corpus harness across single-
+  and multi-column books before declaring done. Today's
+  "linearized output regardless" posture is the safety net —
+  even if the parser captures bogus stream IDs, the user-visible
+  EPUB matches today's behavior.
+- **Reading order ambiguity**. Multi-stream layouts like Glas
+  have no canonical reading order. Phase B has to pick one for
+  linear consumption; Phase C is the real fix. Until Phase C
+  ships, users get one of the streams (the first emitted by
+  the model) as the primary spine.
+
+### Effort
+
+- Phase A: ~1 day (the pattern-match audit is the bulk).
+- Phase B: ~0.5 day (XHTMLWriter is straightforward).
+- Phase C: 2-3 days (new editor pane, scroll sync).
+
+### Sequencing
+
+Behind P-Bilingual-FacingPage Phase (b) — that work has
+overlapping shape (multi-spine EPUB with cross-link metadata)
+and will inform the IR shape for this one. Earns priority when
+a real Glas-style or Talmud-style book becomes a target.
+
+---
+
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
 **Status**: one shared Surya sidecar serves all pipelines. Sequential

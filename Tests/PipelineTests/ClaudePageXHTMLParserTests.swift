@@ -183,4 +183,49 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
             XCTAssertEqual(runs.map(\.text).joined(), "Real content.")
         }
     }
+
+    // MARK: - <section data-stream> (complex layout)
+
+    func test_section_data_stream_captured_in_diagnostic() {
+        let xhtml = """
+        <section data-stream="main"><p>Main column.</p></section>\
+        <section data-stream="sidebar"><p>Glossary entry.</p></section>
+        """
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertEqual(result.detectedStreams, ["main", "sidebar"])
+    }
+
+    func test_section_content_parses_into_block_stream() {
+        // Section is a structural no-op: blocks inside it should
+        // still land in the flat block stream in document order.
+        let xhtml = """
+        <section data-stream="main"><p>First.</p><p>Second.</p></section>\
+        <section data-stream="sidebar"><p>Third.</p></section>
+        """
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertEqual(result.blocks.count, 3)
+        let texts: [String] = result.blocks.compactMap { block in
+            if case let .paragraph(runs) = block {
+                return runs.map(\.text).joined()
+            }
+            return nil
+        }
+        XCTAssertEqual(texts, ["First.", "Second.", "Third."])
+    }
+
+    func test_single_column_page_has_no_detected_streams() {
+        let xhtml = "<p>Just a normal paragraph.</p><p>And another.</p>"
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertTrue(result.detectedStreams.isEmpty)
+    }
+
+    func test_section_without_data_stream_attr_is_ignored() {
+        // Defensive: a bare <section> without the attribute
+        // shouldn't pollute the diagnostic. Blocks inside still
+        // parse normally.
+        let xhtml = "<section><p>Body.</p></section>"
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertTrue(result.detectedStreams.isEmpty)
+        XCTAssertEqual(result.blocks.count, 1)
+    }
 }
