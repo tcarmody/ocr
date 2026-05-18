@@ -1272,14 +1272,28 @@ struct LibraryWindowView: View {
     /// action affordances all live in the window toolbar now
     /// (`.toolbar` + `.searchable` on `coreBody`); the browser
     /// column just renders content.
+    ///
+    /// **Filtered-empty-state shape**: the Table stays mounted
+    /// regardless of whether the current filter / search matched
+    /// anything; the empty-state UI shows as an `.overlay`. Swapping
+    /// the Table view out for the empty state would discard
+    /// SwiftUI Table's internal column-width state, so when the
+    /// user cleared a no-match search the columns would snap back
+    /// to the `.width(min:ideal:)` defaults from the column
+    /// declarations rather than the widths they'd previously
+    /// dragged to. Keeping the Table mounted preserves those
+    /// widths across the empty ↔ non-empty transition.
     @ViewBuilder
     private var browserColumn: some View {
         if library.entries.isEmpty {
             emptyState
-        } else if displayedEntries.isEmpty {
-            filteredEmptyState
         } else {
-            table
+            table.overlay {
+                if displayedEntries.isEmpty {
+                    filteredEmptyState
+                        .background(Color(nsColor: .controlBackgroundColor))
+                }
+            }
         }
     }
 
