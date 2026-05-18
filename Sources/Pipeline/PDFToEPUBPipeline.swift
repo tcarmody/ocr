@@ -1363,6 +1363,18 @@ public actor PDFToEPUBPipeline {
         var pageOCRPageIndices: [Int] = []
         var pageOCRPendingByIndex: [Int: PendingPageOCR] = [:]
 
+        // Get the queue UI off "Starting…" as soon as we know the
+        // page count. Without this, the page-OCR batch path (which
+        // only emits progress in Phase C after results return) and
+        // the page-OCR sync path on a fresh book with slow first-
+        // page Surya warmup can both leave the row showing
+        // "Starting…" for minutes — indistinguishable from a hang.
+        progress?(Progress(
+            totalPages: totalPages,
+            completedPages: 0,
+            currentPageMeanConfidence: 0
+        ))
+
         for i in 0..<totalPages {
             try Task.checkCancellation()
 

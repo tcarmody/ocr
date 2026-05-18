@@ -337,7 +337,13 @@ extension PDFToEPUBPipeline {
         let concurrency = max(
             1, options.cloudFeatures.parallelPageOCRConcurrency
         )
+        // Progress baseline: any pages already in `pendingByIndex`
+        // were restored from checkpoints by the for-loop in
+        // `convert(...)` (resume path) — count them so this dispatch's
+        // emits don't backtrack the queue UI.
+        let baselineCount = pendingByIndex.count
         var prepared: [Int: BatchPrepared] = [:]
+        var preppedCount = 0
         try await withThrowingTaskGroup(of: BatchPrepared.self) { group in
             var nextSubmit = 0
             var inflight = 0
@@ -367,6 +373,19 @@ extension PDFToEPUBPipeline {
                 if let p = try await group.next() {
                     inflight -= 1
                     prepared[p.pageIndex] = p
+                    // Per-page heartbeat so the queue UI shows
+                    // forward motion during prep (render + Surya
+                    // layout). Without this, the row sits at the
+                    // for-loop's initial "0/N" emit until Phase C
+                    // results come back minutes later — when the
+                    // batch submit + poll is in flight, that gap
+                    // is long enough to look like a hang.
+                    preppedCount += 1
+                    progress?(Progress(
+                        totalPages: totalPages,
+                        completedPages: baselineCount + preppedCount,
+                        currentPageMeanConfidence: 1.0
+                    ))
                 }
             }
         }
@@ -518,9 +537,17 @@ extension PDFToEPUBPipeline {
                 usedLocalFallback: false
             )
             pendingByIndex[pageIndex] = final
+            // Clamp upward against the Phase A high-water mark so
+            // the queue UI never appears to regress between phases.
+            // pendingByIndex.count starts at `baselineCount +
+            // trustCount` (after the trust settlement above) and
+            // climbs to totalPages as Sonnet results land; max'ing
+            // with `prepHighWater` keeps the bar at the prep mark
+            // until results actually overtake it.
+            let prepHighWater = baselineCount + preppedCount
             progress?(Progress(
                 totalPages: totalPages,
-                completedPages: pendingByIndex.count,
+                completedPages: max(prepHighWater, pendingByIndex.count),
                 currentPageMeanConfidence: 1.0
             ))
         }
