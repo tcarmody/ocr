@@ -1872,348 +1872,50 @@ public actor PDFToEPUBPipeline {
                 continue
             }
 
-            // Sync prep: embedded extraction + quality scoring. Wrap
-            // in autoreleasepool so PDFKit/CoreGraphics NSObject
-            // temporaries (PDFPage instances, NSStrings from text
-            // extraction) drain at the closure boundary instead of
-            // piling up on the convert task's outer pool until the
-            // entire conversion ends.
-            //
-            // The scorer takes the user's expected languages so it
-            // can downgrade `.trust` → `.reocr` on language mismatch
-            // — catches PDFs whose embedded text is coherent but
-            // in the wrong language (usually the artifact of a
-            // previous bad OCR pass).
-            let expectedLanguages = options.languages.map(\.rawValue)
-            let (extracted, quality) = autoreleasepool { () -> ((lines: [EmbeddedTextExtractor.Line], diagnostics: EmbeddedTextExtractor.Diagnostics), EmbeddedTextQualityScorer.Score) in
-                let e = embeddedExtractor.extract(from: pdf, pageIndex: i)
-                let combined = e.lines.map(\.text).joined(separator: " ")
-                let q = qualityScorer.score(
-                    text: combined, expectedLanguages: expectedLanguages
-                )
-                return (e, q)
-            }
-            extractorDiagnostics[i] = extracted.diagnostics
-            qualityScores[i] = quality
-
-            var observations: [TextObservation]
-            let pageBounds: CGSize
-            let confidenceForProgress: Double
-            var layoutForPage: [LayoutRegion]? = nil
-
-            // `forceOCR` (and per-page `forceOCRPageRanges`)
-            // override the scorer's `.trust` verdict. The scorer's
-            // score/diagnostics are still recorded (`qualityScores`
-            // already populated above) so the debug log shows what
-            // *would* have happened — but the dispatch always takes
-            // the `.reocr` branch.
-            let effectiveVerdict: EmbeddedTextQualityScorer.Verdict =
-                options.shouldForceOCR(forPageIndex: i) ? .reocr : quality.verdict
-            verdictsByPage[i] = effectiveVerdict
-
-            switch effectiveVerdict {
-            case .trust:
-                // Embedded text is good — skip Vision OCR entirely.
-                // Bbox lookup hits PDFKit page accessor (autoreleased).
-                let trustResult = autoreleasepool { () -> (obs: [TextObservation], bounds: CGSize) in
-                    let obs = extracted.lines.map { line in
-                        TextObservation(
-                            text: line.text,
-                            confidence: 0.95,
-                            box: line.box,
-                            source: .embedded
-                        )
-                    }
-                    let bounds: CGSize
-                    if let pdfPage = pdf.document.page(at: i) {
-                        let r = pdfPage.bounds(for: .mediaBox)
-                        bounds = CGSize(width: r.width, height: r.height)
-                    } else {
-                        bounds = .zero
-                    }
-                    return (obs, bounds)
-                }
-                observations = trustResult.obs
-                pageBounds = trustResult.bounds
-                confidenceForProgress = 1.0
-
-            case .reocr:
-                // Render + (preprocess if scan) + savePNG. Largest sync
-                // allocation in the loop; CGContext + CFData buffers
-                // are CFType so ARC handles release, but the dispatch
-                // infra around CGImageDestination autoreleases
-                // NSURL/NSData bridging objects.
-                let pngURL = stagingDir.appendingPathComponent("page-\(i).png")
-                let image: CGImage = try autoreleasepool {
-                    let raw = try renderer.renderPage(at: i, of: pdf)
-                    // Preprocessor is non-nil only on scan-likely docs;
-                    // for everything else the render passes through.
-                    let cleaned = pagePreprocessor?.process(raw) ?? raw
-                    Self.savePNG(cleaned, to: pngURL)
-                    return cleaned
-                }
-                let pageEngine = selectEngine(
-                    for: hints.languages,
-                    preferSurya: options.useHighAccuracyOCR
-                )
-                // pageBounds is pure image geometry — hoist it before
-                // the concurrent block so analyzeLayoutWithRetry can
-                // use it without depending on the OCR result.
-                let initialPageBounds = CGSize(
-                    width: image.width, height: image.height
-                )
-
-                // P-Vision-Concurrency: run Vision OCR and Surya layout
-                // concurrently. Both read from the already-rendered
-                // CGImage / saved PNG and produce independent outputs.
-                // analyzeLayoutWithRetry is a no-op when layoutAnalyzer
-                // is nil, so the guard is handled inside that method.
-                //
-                // Snapshot `pdf` to an immutable local: it's a `var`
-                // outside the loop because of the periodic-reload
-                // pattern, and `async let` can't capture mutable
-                // bindings. `LoadedPDF` is a class, so the snapshot
-                // and the original reference the same instance.
-                let pdfRef = pdf
-                async let ocrTask = ocrPageWithFallback(
-                    image: image, pdf: pdfRef, pageIndex: i,
-                    initialDPI: options.dpi,
-                    primaryEngine: pageEngine, hints: hints
-                )
-                async let layoutTask = analyzeLayoutWithRetry(
-                    pdf: pdfRef,
-                    pageIndex: i,
-                    initialDPI: options.dpi,
-                    initialPNGURL: pngURL,
-                    initialPageBounds: initialPageBounds,
-                    stagingDir: stagingDir
-                )
-
-                let (result, ocrErrorTrail) = try await ocrTask
-                let layoutOutcome = await layoutTask
-
-                if let trail = ocrErrorTrail {
-                    ocrErrors[i] = trail
-                }
-                observations = gapFiller.fill(
-                    visionObservations: result.observations,
-                    embeddedLines: extracted.lines
-                )
-                pageBounds = initialPageBounds
-                confidenceForProgress = result.meanConfidence
-
-                layoutForPage = layoutOutcome.layout
-                if let err = layoutOutcome.error {
-                    layoutErrors[i] = err
-                }
-
-                // No-Surya figure fallback. Routes around the
-                // layout array entirely — picks up born-digital
-                // XObjects first, then Vision saliency, and
-                // appends ExtractedFigures directly to the
-                // figure-asset pile so the reflow's non-region-
-                // aware path still processes body text. No-op
-                // when Surya provided a layout.
-                let fallbackFigures = await extractFallbackFigures(
-                    pdf: pdf, pageIndex: i,
-                    pageImage: image,
-                    textObservations: observations,
-                    layoutAvailable: layoutForPage != nil
-                )
-                if !fallbackFigures.isEmpty {
-                    figureExtractionsByPage[i, default: []]
-                        .append(contentsOf: fallbackFigures)
-                }
-
-                // Phase 4.5: per-region cascade. Vision → Surya
-                // (whole-page re-OCR, region-by-region replacement) →
-                // Tesseract (per-region crop). Skipped when the user
-                // already forced Surya for the whole page (no point
-                // re-OCRing what's already Surya output) or when
-                // there's no layout to localize problems.
-                //
-                // Phase 2 dispatch on `processingMode`: `.privateLocal`
-                // takes the existing local-only path; `.cloud` will
-                // route the high-quality tier to Claude in Phase 3.
-                // For now the two arms are identical so behavior is
-                // unchanged regardless of mode.
-                if !options.useHighAccuracyOCR,
-                   let regions = layoutForPage, !regions.isEmpty {
-                    switch options.processingMode {
-                    case .privateLocal:
-                        observations = await RegionCascade.run(
-                            observations: observations,
-                            regions: regions,
-                            pageImage: image,
-                            hints: hints,
-                            suryaEngine: suryaEngine,
-                            tesseractEngine: tesseractEngine
-                        )
-                    case .cloud:
-                        // Phase 3: Claude wired in as the cascade's
-                        // final tier (after Vision → Surya →
-                        // Tesseract). Engine is non-nil only when the
-                        // user has Cloud mode on, the hard-region-OCR
-                        // toggle on, and an API key configured —
-                        // otherwise the cascade behaves identically
-                        // to `.privateLocal`.
-                        //
-                        // Two ways to alter the cascade shape from
-                        // its default Vision → Surya → Tesseract →
-                        // Claude:
-                        //
-                        //   * `useCloudEnhancedOCR` (user-facing
-                        //     "Cloud-enhanced OCR (Sonnet)" toggle)
-                        //     pulls Surya OCR and Tesseract out of
-                        //     the OCR escalation chain so problematic
-                        //     regions go straight from Vision to
-                        //     Sonnet. Surya **layout** still runs at
-                        //     the page-prep stage so the structural
-                        //     extractors keep working. Quality wins
-                        //     for hard scripts (Phase 4 spike: 11.3%
-                        //     CER vs 15.1% for the local cascade).
-                        //
-                        //   * `disableLocalCascadeEscalation` (spike
-                        //     only): same engine removal *plus* feeds
-                        //     every text-bearing region to Claude
-                        //     unconditionally — used by SpikeRunner
-                        //     for head-to-head CER measurements.
-                        //     Production never sets this.
-                        let suppressLocalEngines =
-                            options.useCloudEnhancedOCR
-                            || options.disableLocalCascadeEscalation
-                        let cascadeSurya = suppressLocalEngines
-                            ? nil : suryaEngine
-                        let cascadeTess = suppressLocalEngines
-                            ? nil : tesseractEngine
-                        observations = await RegionCascade.run(
-                            observations: observations,
-                            regions: regions,
-                            pageImage: image,
-                            hints: hints,
-                            suryaEngine: cascadeSurya,
-                            tesseractEngine: cascadeTess,
-                            documentAIEngine: googleDocumentOCREngine,
-                            claudeEngine: claudeOCREngine,
-                            forceClaudeOnAllRegions: options.disableLocalCascadeEscalation
-                        )
-                    }
-                }
-
-                // Cloud Phase 6: post-OCR Haiku cleanup. After the
-                // (Dictionary-match cleanup moved out of the
-                //  per-page loop and into the post-reflow stage —
-                //  see `applyDictionaryToBlocks` after reflow runs.
-                //  Running per-region missed the cross-region and
-                //  cross-page word joins, leading to truncated
-                //  fragments getting "corrected" before the reflow
-                //  pass had a chance to see them as halves of a
-                //  hyphenated word.)
-
-                // cascade has settled the per-region OCR text, walk
-                // the text-bearing regions and ask Haiku to fix
-                // character-level errors on the ones whose
-                // `OCRTextQualityScorer` score falls below the
-                // post-processor's trigger threshold. The processor
-                // gates internally on quality + length + budget;
-                // accepted corrections replace the region's
-                // observations, rejected ones are no-ops. When
-                // vision mode is enabled the page image is passed in
-                // so each region can be cropped and sent alongside
-                // the OCR text — costlier but higher quality.
-                if let postProcessor = claudePostProcessor,
-                   let regions = layoutForPage, !regions.isEmpty {
-                    let mode: ClaudePostProcessor.Mode =
-                        options.cloudFeatures.postOCRCleanupVisionMode
-                            ? .vision : .passages
-                    let outcome = await Self.applyPostOCRCleanup(
-                        observations: observations,
-                        regions: regions,
-                        pageImage: image,
-                        pageIndex: i,
-                        hints: hints,
-                        mode: mode,
-                        postProcessor: postProcessor
-                    )
-                    observations = outcome.observations
-                    correctionTrailEntries.append(contentsOf: outcome.trailEntries)
-                }
-
-                // Phase 6: extract figures (.picture, .formula) from
-                // the rendered page so the reflow can emit
-                // `Block.figure` and the EPUB writer can embed the
-                // bytes. Done here because the page CGImage is only
-                // alive during this loop iteration.
-                if let regions = layoutForPage, !regions.isEmpty {
-                    let figures = figureExtractor.extract(
-                        pageIndex: i, regions: regions, pageImage: image
-                    )
-                    if !figures.isEmpty {
-                        figureExtractionsByPage[i] = figures
-                    }
-                }
-
-                // Phase 6 (Path A): for each `.table` region, run
-                // Surya's table-structure model on a cropped image
-                // and map this page's OCR observations onto cells.
-                // Skipped when the sidecar isn't available; reflow
-                // falls back to `TableHeuristic` for those regions.
-                //
-                // Phase 2 dispatch: `.privateLocal` uses the Surya
-                // table-rec model. Cloud Phase 5 (`.cloud`) tries
-                // `ClaudeTableExtractor` first and falls back to the
-                // Surya path on nil — same call signature, same
-                // 2×2-floor gate, just a different backend. The
-                // heuristic in `RegionAwareReflow` is the final
-                // fallback when both extractors return nil.
-                if let regions = layoutForPage {
-                    let extractors: [any TableExtractor] = {
-                        switch options.processingMode {
-                        case .privateLocal:
-                            return [tableExtractor].compactMap { $0 }
-                        case .cloud:
-                            // Cloud first, Surya as offline fallback
-                            // for declines / refusals / parse failures.
-                            return [
-                                claudeTableExtractor as (any TableExtractor)?,
-                                tableExtractor as (any TableExtractor)?,
-                            ].compactMap { $0 }
-                        }
-                    }()
-                    if !extractors.isEmpty {
-                        for (regionIdx, region) in regions.enumerated()
-                        where region.kind == .table {
-                            for ext in extractors {
-                                if let rows = await ext.extract(
-                                    pageImage: image,
-                                    regionBox: region.box,
-                                    observations: observations,
-                                    stagingDir: stagingDir,
-                                    pageIndex: i,
-                                    regionIndex: regionIdx
-                                ) {
-                                    let key = CaptionAssociator.PageRegionKey(
-                                        pageIndex: i, regionIndex: regionIdx
-                                    )
-                                    tableExtractionsByKey[key] = rows
-                                    break
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // No per-page PNG cleanup — the staging dir's lifecycle
-                // (temp removed in `defer`, debug folder kept) handles
-                // it as a single batch.
-            }
-
-            pageResults.append(PageObservations(
+            // P-Cascade-Parallel Phase A: cascade body extracted
+            // into `processCascadePage`. The serial for-loop keeps
+            // calling it inline; Phase B will wrap a bounded
+            // TaskGroup around the call when
+            // `parallelPageOCRConcurrency > 1`. Unpacking re-writes
+            // the outcome bundle into the same outer accumulators
+            // the inline body used to mutate directly.
+            let outcome = try await processCascadePage(
                 pageIndex: i,
-                pageBounds: pageBounds,
-                observations: observations,
-                layoutRegions: layoutForPage
-            ))
+                pdf: pdf,
+                options: options,
+                stagingDir: stagingDir,
+                renderer: renderer,
+                pagePreprocessor: pagePreprocessor,
+                hints: hints,
+                figureExtractor: figureExtractor,
+                googleDocumentOCREngine: googleDocumentOCREngine,
+                claudeOCREngine: claudeOCREngine,
+                claudePostProcessor: claudePostProcessor,
+                claudeTableExtractor: claudeTableExtractor
+            )
+            extractorDiagnostics[i] = outcome.extractorDiagnostics
+            qualityScores[i] = outcome.qualityScore
+            verdictsByPage[i] = outcome.verdict
+            if !outcome.figures.isEmpty {
+                figureExtractionsByPage[i] = outcome.figures
+            }
+            for entry in outcome.tableEntries {
+                let key = CaptionAssociator.PageRegionKey(
+                    pageIndex: i, regionIndex: entry.regionIndex
+                )
+                tableExtractionsByKey[key] = entry.rows
+            }
+            correctionTrailEntries.append(
+                contentsOf: outcome.correctionTrailEntries
+            )
+            if let err = outcome.layoutError {
+                layoutErrors[i] = err
+            }
+            if let err = outcome.ocrError {
+                ocrErrors[i] = err
+            }
+
+            pageResults.append(outcome.pageObservations)
 
             // Persist a per-page checkpoint so a crash / cancel /
             // hang past this point lets the next conversion of the
@@ -2229,10 +1931,10 @@ public actor PDFToEPUBPipeline {
                 .reduce(into: [:]) { $0[$1.key.regionIndex] = $1.value }
             let checkpoint = PageCheckpoint(
                 pageIndex: i,
-                pageBoundsWidth: pageBounds.width,
-                pageBoundsHeight: pageBounds.height,
-                observations: observations,
-                layoutRegions: layoutForPage,
+                pageBoundsWidth: outcome.pageObservations.pageBounds.width,
+                pageBoundsHeight: outcome.pageObservations.pageBounds.height,
+                observations: outcome.pageObservations.observations,
+                layoutRegions: outcome.pageObservations.layoutRegions,
                 figures: pageFigures,
                 tableExtractionsByRegionIndex: pageTables,
                 verdict: verdictsByPage[i]?.rawValue,
@@ -2243,7 +1945,7 @@ public actor PDFToEPUBPipeline {
             progress?(Progress(
                 totalPages: totalPages,
                 completedPages: i + 1,
-                currentPageMeanConfidence: confidenceForProgress
+                currentPageMeanConfidence: outcome.confidenceForProgress
             ))
 
             // Yield gives the runtime a chance to drain any pool
@@ -4578,5 +4280,364 @@ public actor PDFToEPUBPipeline {
         }
         guard let last = t.last else { return false }
         return ".?!;:\u{2026}".contains(last)
+    }
+
+    // MARK: - Cascade per-page extraction (P-Cascade-Parallel Phase A)
+
+    /// Outcome bundle returned by `processCascadePage(...)`. Carries
+    /// everything the convert-loop's cascade branch used to write
+    /// directly into its outer accumulators (extractorDiagnostics,
+    /// qualityScores, verdictsByPage, figureExtractionsByPage,
+    /// tableExtractionsByKey, correctionTrailEntries, layoutErrors,
+    /// ocrErrors, pageResults). The caller reassembles these into
+    /// the loop's accumulators after each page.
+    ///
+    /// Pulled out as the first step of `P-Cascade-Parallel` —
+    /// extracting this lets Phase B add a bounded TaskGroup over
+    /// the cascade-bound pages without further refactoring the
+    /// per-page work.
+    struct CascadePageOutcome: Sendable {
+        let pageObservations: PageObservations
+        let verdict: EmbeddedTextQualityScorer.Verdict
+        /// Page-local figure list. Caller assigns this into
+        /// `figureExtractionsByPage[i]` only when non-empty.
+        /// Preserves the prior code's two-stage shape: fallback
+        /// figures append, then a successful per-region extract
+        /// REPLACES the appended fallback.
+        let figures: [FigureExtractor.ExtractedFigure]
+        /// Per-region table extractions. Caller maps these to
+        /// `tableExtractionsByKey[PageRegionKey(pageIndex:i, regionIndex:...)]`.
+        let tableEntries: [(regionIndex: Int, rows: [[TableCell]])]
+        let qualityScore: EmbeddedTextQualityScorer.Score
+        let extractorDiagnostics: EmbeddedTextExtractor.Diagnostics
+        let correctionTrailEntries: [CorrectionTrail.Entry]
+        let layoutError: String?
+        let ocrError: String?
+        let confidenceForProgress: Double
+    }
+
+    /// Per-page cascade body. Runs embedded-text extraction +
+    /// quality scoring, dispatches on the resulting verdict
+    /// (`.trust` skips OCR; `.reocr` runs render → Vision/Surya
+    /// concurrently → fallback figures → region cascade → optional
+    /// Haiku post-OCR cleanup → figure + table extraction), and
+    /// returns the page's outcome bundle. Behavior is bit-for-bit
+    /// equivalent to the inline body that lived in the for-loop
+    /// prior to this extraction; all accumulator writes have moved
+    /// from outer dict-mutations into struct fields the caller
+    /// unpacks.
+    func processCascadePage(
+        pageIndex i: Int,
+        pdf: LoadedPDF,
+        options: Options,
+        stagingDir: URL,
+        renderer: PDFRenderer,
+        pagePreprocessor: PageImagePreprocessor?,
+        hints: OCRHints,
+        figureExtractor: FigureExtractor,
+        googleDocumentOCREngine: GoogleDocumentOCREngine?,
+        claudeOCREngine: ClaudeOCREngine?,
+        claudePostProcessor: (any PostOCRProcessor)?,
+        claudeTableExtractor: ClaudeTableExtractor?
+    ) async throws -> CascadePageOutcome {
+        // Sync prep: embedded extraction + quality scoring. Wrap
+        // in autoreleasepool so PDFKit/CoreGraphics NSObject
+        // temporaries (PDFPage instances, NSStrings from text
+        // extraction) drain at the closure boundary instead of
+        // piling up on the convert task's outer pool until the
+        // entire conversion ends.
+        //
+        // The scorer takes the user's expected languages so it
+        // can downgrade `.trust` → `.reocr` on language mismatch
+        // — catches PDFs whose embedded text is coherent but
+        // in the wrong language (usually the artifact of a
+        // previous bad OCR pass).
+        let expectedLanguages = options.languages.map(\.rawValue)
+        let (extracted, quality) = autoreleasepool { () -> ((lines: [EmbeddedTextExtractor.Line], diagnostics: EmbeddedTextExtractor.Diagnostics), EmbeddedTextQualityScorer.Score) in
+            let e = embeddedExtractor.extract(from: pdf, pageIndex: i)
+            let combined = e.lines.map(\.text).joined(separator: " ")
+            let q = qualityScorer.score(
+                text: combined, expectedLanguages: expectedLanguages
+            )
+            return (e, q)
+        }
+
+        var observations: [TextObservation]
+        let pageBounds: CGSize
+        let confidenceForProgress: Double
+        var layoutForPage: [LayoutRegion]? = nil
+
+        // Per-page accumulators that used to write directly to
+        // outer dicts. Caller unpacks these from the outcome.
+        var figures: [FigureExtractor.ExtractedFigure] = []
+        var tableEntries: [(regionIndex: Int, rows: [[TableCell]])] = []
+        var correctionTrail: [CorrectionTrail.Entry] = []
+        var layoutError: String? = nil
+        var ocrError: String? = nil
+
+        // `forceOCR` (and per-page `forceOCRPageRanges`)
+        // override the scorer's `.trust` verdict. The scorer's
+        // score/diagnostics are still surfaced in the outcome so
+        // the debug log shows what *would* have happened — but
+        // the dispatch always takes the `.reocr` branch.
+        let effectiveVerdict: EmbeddedTextQualityScorer.Verdict =
+            options.shouldForceOCR(forPageIndex: i) ? .reocr : quality.verdict
+
+        switch effectiveVerdict {
+        case .trust:
+            // Embedded text is good — skip Vision OCR entirely.
+            // Bbox lookup hits PDFKit page accessor (autoreleased).
+            let trustResult = autoreleasepool { () -> (obs: [TextObservation], bounds: CGSize) in
+                let obs = extracted.lines.map { line in
+                    TextObservation(
+                        text: line.text,
+                        confidence: 0.95,
+                        box: line.box,
+                        source: .embedded
+                    )
+                }
+                let bounds: CGSize
+                if let pdfPage = pdf.document.page(at: i) {
+                    let r = pdfPage.bounds(for: .mediaBox)
+                    bounds = CGSize(width: r.width, height: r.height)
+                } else {
+                    bounds = .zero
+                }
+                return (obs, bounds)
+            }
+            observations = trustResult.obs
+            pageBounds = trustResult.bounds
+            confidenceForProgress = 1.0
+
+        case .reocr:
+            // Render + (preprocess if scan) + savePNG. Largest sync
+            // allocation in the loop; CGContext + CFData buffers
+            // are CFType so ARC handles release, but the dispatch
+            // infra around CGImageDestination autoreleases
+            // NSURL/NSData bridging objects.
+            let pngURL = stagingDir.appendingPathComponent("page-\(i).png")
+            let image: CGImage = try autoreleasepool {
+                let raw = try renderer.renderPage(at: i, of: pdf)
+                // Preprocessor is non-nil only on scan-likely docs;
+                // for everything else the render passes through.
+                let cleaned = pagePreprocessor?.process(raw) ?? raw
+                Self.savePNG(cleaned, to: pngURL)
+                return cleaned
+            }
+            let pageEngine = selectEngine(
+                for: hints.languages,
+                preferSurya: options.useHighAccuracyOCR
+            )
+            // pageBounds is pure image geometry — hoist it before
+            // the concurrent block so analyzeLayoutWithRetry can
+            // use it without depending on the OCR result.
+            let initialPageBounds = CGSize(
+                width: image.width, height: image.height
+            )
+
+            // P-Vision-Concurrency: run Vision OCR and Surya layout
+            // concurrently. Both read from the already-rendered
+            // CGImage / saved PNG and produce independent outputs.
+            // analyzeLayoutWithRetry is a no-op when layoutAnalyzer
+            // is nil, so the guard is handled inside that method.
+            let pdfRef = pdf
+            async let ocrTask = ocrPageWithFallback(
+                image: image, pdf: pdfRef, pageIndex: i,
+                initialDPI: options.dpi,
+                primaryEngine: pageEngine, hints: hints
+            )
+            async let layoutTask = analyzeLayoutWithRetry(
+                pdf: pdfRef,
+                pageIndex: i,
+                initialDPI: options.dpi,
+                initialPNGURL: pngURL,
+                initialPageBounds: initialPageBounds,
+                stagingDir: stagingDir
+            )
+
+            let (result, ocrErrorTrail) = try await ocrTask
+            let layoutOutcome = await layoutTask
+
+            if let trail = ocrErrorTrail {
+                ocrError = trail
+            }
+            observations = gapFiller.fill(
+                visionObservations: result.observations,
+                embeddedLines: extracted.lines
+            )
+            pageBounds = initialPageBounds
+            confidenceForProgress = result.meanConfidence
+
+            layoutForPage = layoutOutcome.layout
+            if let err = layoutOutcome.error {
+                layoutError = err
+            }
+
+            // No-Surya figure fallback. Routes around the
+            // layout array entirely — picks up born-digital
+            // XObjects first, then Vision saliency, and
+            // appends ExtractedFigures directly to the
+            // figure-asset pile so the reflow's non-region-
+            // aware path still processes body text. No-op
+            // when Surya provided a layout.
+            let fallbackFigures = await extractFallbackFigures(
+                pdf: pdf, pageIndex: i,
+                pageImage: image,
+                textObservations: observations,
+                layoutAvailable: layoutForPage != nil
+            )
+            if !fallbackFigures.isEmpty {
+                figures.append(contentsOf: fallbackFigures)
+            }
+
+            // Phase 4.5: per-region cascade. Vision → Surya
+            // (whole-page re-OCR, region-by-region replacement) →
+            // Tesseract (per-region crop). Skipped when the user
+            // already forced Surya for the whole page (no point
+            // re-OCRing what's already Surya output) or when
+            // there's no layout to localize problems.
+            if !options.useHighAccuracyOCR,
+               let regions = layoutForPage, !regions.isEmpty {
+                switch options.processingMode {
+                case .privateLocal:
+                    observations = await RegionCascade.run(
+                        observations: observations,
+                        regions: regions,
+                        pageImage: image,
+                        hints: hints,
+                        suryaEngine: suryaEngine,
+                        tesseractEngine: tesseractEngine
+                    )
+                case .cloud:
+                    let suppressLocalEngines =
+                        options.useCloudEnhancedOCR
+                        || options.disableLocalCascadeEscalation
+                    let cascadeSurya = suppressLocalEngines
+                        ? nil : suryaEngine
+                    let cascadeTess = suppressLocalEngines
+                        ? nil : tesseractEngine
+                    observations = await RegionCascade.run(
+                        observations: observations,
+                        regions: regions,
+                        pageImage: image,
+                        hints: hints,
+                        suryaEngine: cascadeSurya,
+                        tesseractEngine: cascadeTess,
+                        documentAIEngine: googleDocumentOCREngine,
+                        claudeEngine: claudeOCREngine,
+                        forceClaudeOnAllRegions: options.disableLocalCascadeEscalation
+                    )
+                }
+            }
+
+            // Cloud Phase 6: post-OCR Haiku cleanup. After the
+            // cascade has settled the per-region OCR text, walk
+            // the text-bearing regions and ask Haiku to fix
+            // character-level errors on the ones whose
+            // `OCRTextQualityScorer` score falls below the
+            // post-processor's trigger threshold. The processor
+            // gates internally on quality + length + budget;
+            // accepted corrections replace the region's
+            // observations, rejected ones are no-ops. When
+            // vision mode is enabled the page image is passed in
+            // so each region can be cropped and sent alongside
+            // the OCR text — costlier but higher quality.
+            if let postProcessor = claudePostProcessor,
+               let regions = layoutForPage, !regions.isEmpty {
+                let mode: ClaudePostProcessor.Mode =
+                    options.cloudFeatures.postOCRCleanupVisionMode
+                        ? .vision : .passages
+                let outcome = await Self.applyPostOCRCleanup(
+                    observations: observations,
+                    regions: regions,
+                    pageImage: image,
+                    pageIndex: i,
+                    hints: hints,
+                    mode: mode,
+                    postProcessor: postProcessor
+                )
+                observations = outcome.observations
+                correctionTrail.append(contentsOf: outcome.trailEntries)
+            }
+
+            // Phase 6: extract figures (.picture, .formula) from
+            // the rendered page so the reflow can emit
+            // `Block.figure` and the EPUB writer can embed the
+            // bytes. Done here because the page CGImage is only
+            // alive during this loop iteration.
+            if let regions = layoutForPage, !regions.isEmpty {
+                let extracted = figureExtractor.extract(
+                    pageIndex: i, regions: regions, pageImage: image
+                )
+                if !extracted.isEmpty {
+                    // Mirror the prior assignment-semantics: a
+                    // successful per-region extract REPLACES the
+                    // fallback figures appended above. (Behavior
+                    // preserved from the pre-extraction inline
+                    // code at the loop site.)
+                    figures = extracted
+                }
+            }
+
+            // Phase 6 (Path A): for each `.table` region, run
+            // Surya's table-structure model on a cropped image
+            // and map this page's OCR observations onto cells.
+            // Skipped when the sidecar isn't available; reflow
+            // falls back to `TableHeuristic` for those regions.
+            if let regions = layoutForPage {
+                let extractors: [any TableExtractor] = {
+                    switch options.processingMode {
+                    case .privateLocal:
+                        return [tableExtractor].compactMap { $0 }
+                    case .cloud:
+                        // Cloud first, Surya as offline fallback
+                        // for declines / refusals / parse failures.
+                        return [
+                            claudeTableExtractor as (any TableExtractor)?,
+                            tableExtractor as (any TableExtractor)?,
+                        ].compactMap { $0 }
+                    }
+                }()
+                if !extractors.isEmpty {
+                    for (regionIdx, region) in regions.enumerated()
+                    where region.kind == .table {
+                        for ext in extractors {
+                            if let rows = await ext.extract(
+                                pageImage: image,
+                                regionBox: region.box,
+                                observations: observations,
+                                stagingDir: stagingDir,
+                                pageIndex: i,
+                                regionIndex: regionIdx
+                            ) {
+                                tableEntries.append((regionIdx, rows))
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            // No per-page PNG cleanup — the staging dir's lifecycle
+            // (temp removed in `defer`, debug folder kept) handles
+            // it as a single batch.
+        }
+
+        return CascadePageOutcome(
+            pageObservations: PageObservations(
+                pageIndex: i,
+                pageBounds: pageBounds,
+                observations: observations,
+                layoutRegions: layoutForPage
+            ),
+            verdict: effectiveVerdict,
+            figures: figures,
+            tableEntries: tableEntries,
+            qualityScore: quality,
+            extractorDiagnostics: extracted.diagnostics,
+            correctionTrailEntries: correctionTrail,
+            layoutError: layoutError,
+            ocrError: ocrError,
+            confidenceForProgress: confidenceForProgress
+        )
     }
 }
