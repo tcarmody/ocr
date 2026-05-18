@@ -1,4 +1,5 @@
 import Foundation
+import EPUB  // canonicalForFile
 
 /// File-system layout settings for converter outputs. Persisted via
 /// `@AppStorage` because the launcher's `QueueViewModel` and the
@@ -125,6 +126,16 @@ public enum ConversionOutputSubfolder {
     /// `autoScanInputFolder` toggle is on; otherwise the folder is
     /// just a convenient staging area the user can use manually.
     public static let input = "Input"
+    /// Consolidated home for source PDFs linked to converted EPUBs.
+    /// Post-conversion, the source PDF is moved (when it lived in
+    /// `Input/`) or copied (when it lived elsewhere) here, and the
+    /// EPUB's `META-INF/com.humanist.json` sidecar is updated to
+    /// reference the new location. Manual editor-side attaches also
+    /// land here. The File → Consolidate PDFs into Library Folder…
+    /// command back-fills already-linked PDFs from prior conversions.
+    /// Goal: keep `Input/` clear for new drops and give every linked
+    /// PDF a stable, predictable home that survives folder cleanup.
+    public static let pdfs = "PDFs"
     /// EPUBs land here.
     public static let books = "Books"
     /// Searchable-PDF siblings (source PDF + invisible OCR text
@@ -187,6 +198,48 @@ public enum ConversionOutputResolver {
             at: url, withIntermediateDirectories: true
         )
         return url
+    }
+
+    /// Resolve the consolidated `PDFs/` folder URL when an output
+    /// root is configured. Returns nil when no root is set — the
+    /// consolidation feature is a no-op for users who haven't picked
+    /// a root (everything stays side-by-side, as before). Creates
+    /// the directory lazily on first read.
+    public static func pdfsFolderURL() -> URL? {
+        guard let root = currentRoot() else { return nil }
+        let url = root.appendingPathComponent(
+            ConversionOutputSubfolder.pdfs, isDirectory: true
+        )
+        try? FileManager.default.createDirectory(
+            at: url, withIntermediateDirectories: true
+        )
+        return url
+    }
+
+    /// True when `pdfURL` lives inside `<outputRoot>/Input/`. Used
+    /// by `PDFConsolidator` to decide whether to move (Input-rooted)
+    /// or copy (anywhere else, including Downloads, Desktop, or an
+    /// arbitrary user path). Canonical-path comparison so the
+    /// `/var/...` ↔ `/private/var/...` symlink quirk doesn't
+    /// misclassify an Input file as external.
+    public static func isInsideInputFolder(_ pdfURL: URL) -> Bool {
+        guard let input = inputFolderURL() else { return false }
+        let target = pdfURL.canonicalForFile.path
+        let prefix = input.canonicalForFile.path
+        let withSeparator = prefix.hasSuffix("/") ? prefix : prefix + "/"
+        return target.hasPrefix(withSeparator)
+    }
+
+    /// True when `pdfURL` lives inside `<outputRoot>/PDFs/`. Used by
+    /// the editor's attach flow and the migrate command to skip a
+    /// redundant copy when the PDF the user picked is already in
+    /// the consolidated home.
+    public static func isInsidePDFsFolder(_ pdfURL: URL) -> Bool {
+        guard let pdfs = pdfsFolderURL() else { return false }
+        let target = pdfURL.canonicalForFile.path
+        let prefix = pdfs.canonicalForFile.path
+        let withSeparator = prefix.hasSuffix("/") ? prefix : prefix + "/"
+        return target.hasPrefix(withSeparator)
     }
 
     /// Build the EPUB output URL for a source PDF, honoring the
