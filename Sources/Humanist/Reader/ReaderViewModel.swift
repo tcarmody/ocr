@@ -23,6 +23,11 @@ final class ReaderViewModel: ObservableObject {
     /// directory's lifecycle (cleaned up on deinit unless ownership
     /// is reassigned — none of the reader's paths do that).
     @Published private(set) var book: EPUBBook?
+    /// Parsed table of contents for the sidebar. Built once on
+    /// load. Always populated when the book has at least one
+    /// readable spine item (the parser falls back to spine
+    /// filenames so the sidebar never goes blank).
+    @Published private(set) var toc: ReaderTOC = ReaderTOC(entries: [])
     /// Zero-based position in the spine. Drives the chapter URL,
     /// prev/next button enablement, and (in a follow-up) the
     /// reading-position sidecar.
@@ -49,6 +54,7 @@ final class ReaderViewModel: ObservableObject {
                 try EPUBBook.open(epubURL: url)
             }.value
             self.book = opened
+            self.toc = ReaderTOC.build(from: opened)
             self.spineIndex = 0
             self.state = .ready
         } catch {
@@ -70,11 +76,12 @@ final class ReaderViewModel: ObservableObject {
     }
 
     /// Human-readable title of the current chapter for the toolbar.
-    /// Falls back to the spine entry's filename when no chapter
-    /// title is available — v1 doesn't parse heading text out of
-    /// the XHTML yet (commit 3 wires the TOC sidebar with real
-    /// titles).
+    /// Prefers the TOC's title when the current spine index has
+    /// one; falls back to the filename stem otherwise.
     var currentChapterLabel: String {
+        if let entry = toc.entries.first(where: { $0.spineIndex == spineIndex }) {
+            return entry.title
+        }
         guard let book, !book.spine.isEmpty,
               spineIndex >= 0, spineIndex < book.spine.count
         else { return "" }

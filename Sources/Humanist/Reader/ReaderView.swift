@@ -65,28 +65,22 @@ struct ReaderView: View {
         .toolbar { toolbarContent }
     }
 
-    /// Stub TOC sidebar — lists spine entries by filename for
-    /// commit 1. Commit 3 (R-Reader-TOC-Sidebar) replaces the
-    /// filename labels with parsed `nav.xhtml` titles.
+    /// TOC sidebar. Titles come from `ReaderTOC.build` — preferring
+    /// the EPUB's `nav.xhtml` when present, falling back to per-
+    /// spine-item `<title>` / first heading / filename otherwise.
+    /// Always-flat list for v1; sub-section hierarchy lands in v2
+    /// of the reader.
     @ViewBuilder
     private func tocSidebar(book: EPUBBook) -> some View {
+        let entries = vm.toc.entries
         List(selection: Binding(
             get: { vm.spineIndex },
             set: { if let new = $0 { vm.jump(toSpineIndex: new) } }
         )) {
-            ForEach(Array(book.spine.enumerated()), id: \.offset) { offset, resourceID in
-                let label: String = {
-                    if let resource = book.resourcesByID[resourceID] {
-                        return (resource.hrefRelativeToOPF as NSString)
-                            .lastPathComponent
-                            .replacingOccurrences(of: ".xhtml", with: "")
-                            .replacingOccurrences(of: ".html", with: "")
-                    }
-                    return "Chapter \(offset + 1)"
-                }()
-                Text(label)
+            ForEach(entries) { entry in
+                Text(entry.title)
                     .lineLimit(2)
-                    .tag(Optional(offset))
+                    .tag(Optional(entry.spineIndex))
             }
         }
         .listStyle(.sidebar)
