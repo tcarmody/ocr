@@ -2169,6 +2169,11 @@ struct LibraryWindowView: View {
                 openEntry(entry)
             }
             .controlSize(.small)
+            Button("Edit") {
+                editEntry(entry)
+            }
+            .controlSize(.small)
+            .help("Edit the EPUB source in the Editor")
             Button("Reveal") {
                 NSWorkspace.shared.activateFileViewerSelecting([entry.epubURL])
             }
