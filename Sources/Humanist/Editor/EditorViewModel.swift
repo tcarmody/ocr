@@ -210,6 +210,23 @@ final class EditorViewModel: ObservableObject {
     /// bumps the nonce so identical actions in a row still fire.
     @Published private(set) var formatRequest: FormatRequest?
 
+    /// WYSIWYG pane formatting command request. Mirrors the
+    /// source pane's `formatRequest` — the WYSIWYG toolbar and
+    /// (via `EditorCommandRouter`) the Format / Insert menus
+    /// both bump this. Lives on the VM so the menu commands can
+    /// reach it through the router; previously was a local
+    /// `@State` on `EditorView`. The `WYSIWYGCommandRequest`
+    /// carries its own UUID nonce so identical actions in a row
+    /// still fire (same posture as `formatRequest`).
+    @Published var wysiwygCommand: WYSIWYGCommandRequest?
+
+    /// True when the WYSIWYG editing surface currently has
+    /// keyboard focus. Updated from the WYSIWYG JS bridge's
+    /// `focusin` / `focusout` events. Menu-bar format commands
+    /// consult this to decide whether to dispatch to the
+    /// WYSIWYG pane (focused) or the source pane (default).
+    @Published var wysiwygHasFocus: Bool = false
+
     struct FormatRequest: Equatable {
         let action: Action
         let nonce: Int

@@ -46,7 +46,9 @@ struct EditorView: View {
     private var showWYSIWYG: Bool { vm.showWYSIWYGPane }
     private var showPreview: Bool { vm.showPreviewPane }
     private var showChat:    Bool { vm.showChatPane }
-    @State private var wysiwygCommand: WYSIWYGCommandRequest?
+    // wysiwygCommand moved onto EditorViewModel so the menu-bar
+    // Format commands (routed via EditorCommandRouter) can reach
+    // it. EditorView and the toolbar bind through `$vm.wysiwygCommand`.
 
     var body: some View {
         Group {
@@ -555,12 +557,12 @@ struct EditorView: View {
                file.id.pathExtension.lowercased().hasPrefix("xhtml")
                 || file.id.pathExtension.lowercased() == "html"
                 || file.id.pathExtension.lowercased() == "htm" {
-                WYSIWYGFormattingToolbar(commandRequest: $wysiwygCommand)
+                WYSIWYGFormattingToolbar(commandRequest: $vm.wysiwygCommand)
                 WYSIWYGView(
                     xhtml: $vm.sourceText,
                     resetID: AnyHashable(file.id),
                     cssURL: vm.bookCSSURL,
-                    commandRequest: $wysiwygCommand,
+                    commandRequest: $vm.wysiwygCommand,
                     reloadAfterSaveToken: vm.wysiwygReloadToken,
                     appearance: WYSIWYGAppearance(
                         fontFamily: EditorFontFamily(rawValue: wysiwygFontFamily) ?? .serif,
@@ -569,7 +571,8 @@ struct EditorView: View {
                     ),
                     scrollRequest: vm.scrollWYSIWYGToAnchor,
                     onAnchorVisible: { id in vm.didReportWYSIWYGAnchor(id) },
-                    onParagraphVisible: { id in vm.didReportWYSIWYGParagraph(id) }
+                    onParagraphVisible: { id in vm.didReportWYSIWYGParagraph(id) },
+                    onFocusChange: { focused in vm.wysiwygHasFocus = focused }
                 )
             } else if vm.selectedFile != nil {
                 VStack {

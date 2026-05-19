@@ -58,6 +58,12 @@ struct WYSIWYGView: NSViewRepresentable {
     let onAnchorVisible: (String) -> Void
     /// Same shape, but for paragraph anchors (`hu-p-*`).
     let onParagraphVisible: (String) -> Void
+    /// Fires when the editing surface gains or loses focus.
+    /// Drives `EditorViewModel.wysiwygHasFocus` so menu-bar
+    /// format commands can route to whichever pane the user is
+    /// actually editing in (source pane gets dispatch by default
+    /// when WYSIWYG isn't focused).
+    var onFocusChange: ((Bool) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -231,6 +237,14 @@ struct WYSIWYGView: NSViewRepresentable {
             case "paragraph":
                 if let id = dict["id"] as? String {
                     parent.onParagraphVisible(id)
+                }
+            case "focus":
+                // body posts {type: "focus", focused: true|false}
+                // on focusin / focusout. Drives the VM's
+                // wysiwygHasFocus so menu-bar format commands
+                // dispatch to whichever pane the user is editing.
+                if let focused = dict["focused"] as? Bool {
+                    parent.onFocusChange?(focused)
                 }
             default:
                 break
@@ -687,6 +701,21 @@ private func renderEnvelope(
           // the rest of the codebase's paragraph convention.
           try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (e) {}
           document.body.addEventListener('input', scheduleEdit);
+          // Focus tracking — drives EditorViewModel.wysiwygHasFocus
+          // so the format menu routes commands to whichever pane
+          // the user is actually editing in.
+          function postFocus(focused) {
+            try {
+              if (window.webkit && window.webkit.messageHandlers
+                  && window.webkit.messageHandlers.wysiwyg) {
+                window.webkit.messageHandlers.wysiwyg.postMessage({
+                  type: 'focus', focused: !!focused,
+                });
+              }
+            } catch (e) {}
+          }
+          document.body.addEventListener('focusin', () => postFocus(true));
+          document.body.addEventListener('focusout', () => postFocus(false));
           setupAnchorObservers();
         });
       })();
