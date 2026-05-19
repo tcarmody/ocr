@@ -452,7 +452,11 @@ enum OpenRouter {
         switch ext {
         case "epub":
             library?.recordOpen(url)
-            openWindow(id: "editor", value: url)
+            // R-Reader: .epub default-opens in the reader scene
+            // now; the Editor is reached explicitly via the
+            // reader's "Edit Source…" toolbar action (⌥⌘O) or
+            // the Window menu's "Show Editor" item (⌘3).
+            openWindow(id: "reader", value: url)
         default:
             // PDF + every other format the SourceViewer can render
             // (HTML / DOCX / RTF / MD / TXT / ODT / DOC) goes through
@@ -627,14 +631,14 @@ private struct RestoreLibraryCatalogCommand: View {
 }
 
 /// Window menu — Show Converter (⌘1), Show Library (⌘2),
-/// Show Editor (⌘3), Show Queue (⌘4). Each chord must work even
-/// when the target window was previously closed with the red-X:
-/// closed windows leave `NSApp.windows`, so a pure
-/// `WindowSwitcher` (which scans `NSApp.windows`) silently fails.
-/// We first try `WindowSwitcher` to reuse an existing instance
-/// without flicker; if that returns false, we fall through to
-/// SwiftUI's `openWindow(id:)` which reopens the scene from
-/// scratch.
+/// Show Editor (⌘3), Show Queue (⌘4), Show Reader (⌘5). Each
+/// chord must work even when the target window was previously
+/// closed with the red-X: closed windows leave `NSApp.windows`,
+/// so a pure `WindowSwitcher` (which scans `NSApp.windows`)
+/// silently fails. We first try `WindowSwitcher` to reuse an
+/// existing instance without flicker; if that returns false, we
+/// fall through to SwiftUI's `openWindow(id:)` which reopens the
+/// scene from scratch.
 struct ShowWindowCommands: Commands {
     var body: some Commands {
         CommandGroup(before: .windowList) {
@@ -642,6 +646,7 @@ struct ShowWindowCommands: Commands {
             ShowLibraryButton()
             ShowEditorButton()
             ShowQueueButton()
+            ShowReaderButton()
             Divider()
         }
     }
@@ -717,6 +722,29 @@ private struct ShowQueueButton: View {
             NSApp.activate(ignoringOtherApps: true)
         }
         .keyboardShortcut("4", modifiers: .command)
+    }
+}
+
+/// R-Reader. Show Reader (⌘5). Same shape as Show Editor: try to
+/// surface an open reader window; if none, reopen the most recent
+/// EPUB so a user who closed every reader still has a path back.
+/// Silent no-op when no recents exist (nothing meaningful to show).
+private struct ShowReaderButton: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Show Reader") {
+            if WindowSwitcher.showWindow(matchingIdentifier: "reader") {
+                NSApp.activate(ignoringOtherApps: true)
+                return
+            }
+            if let url = RecentsStore.urls.first(where: {
+                $0.pathExtension.lowercased() == "epub"
+            }) {
+                openWindow(id: "reader", value: url)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+        .keyboardShortcut("5", modifiers: .command)
     }
 }
 
