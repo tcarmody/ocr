@@ -2222,13 +2222,18 @@ final class BookChatViewModel: ObservableObject {
 
         \(sourceUsageGuidance)
 
-        Cite the source of every book-grounded claim inline. When \
-        the claim comes from a specific paragraph, use the full \
-        `[chapter:N para:M]` marker — the user's interface scrolls \
-        the editor to that exact paragraph on click. When the claim \
-        is broader (a whole chapter's argument), you may use the \
-        shorter `[chapter:N]` form, which selects the chapter \
-        without scrolling to a specific paragraph.
+        Cite the source of every book-grounded claim inline. \
+        **Prefer paragraph-precision citations** — when a claim \
+        rests on a specific paragraph you can see in the supplied \
+        context, use the full `[chapter:N para:M]` marker so the \
+        user's interface scrolls directly to that paragraph on \
+        click. Only fall back to the chapter-level `[chapter:N]` \
+        form when the claim is genuinely about the whole chapter's \
+        argument (a structural overview, a summary across many \
+        paragraphs) — not as a default. The supplied paragraphs \
+        already carry `[chapter:N para:M]` labels; reuse those \
+        same labels verbatim in your citation so paragraph indices \
+        line up exactly with the rendering target.
 
         Quote brief passages when they directly support the answer; \
         cite their location with the marker form above.

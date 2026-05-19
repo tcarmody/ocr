@@ -38,6 +38,27 @@ final class ReaderViewModel: ObservableObject {
     /// without changing the URL.
     @Published private(set) var reloadTrigger: Int = 0
 
+    /// Pending paragraph-anchor scroll request. Set by
+    /// `jumpToParagraph` when a chat citation chip is tapped
+    /// with a paragraph index; consumed by `WebReaderPane`'s
+    /// coordinator after the chapter's WKWebView finishes
+    /// loading, then cleared. Anchor IDs follow the
+    /// `hu-p-{chapterIdx}-{paragraphIdx}` convention written by
+    /// `XHTMLWriter` on Humanist-converted EPUBs; third-party
+    /// EPUBs that lack the anchors silently land at the chapter
+    /// top.
+    @Published var pendingScrollAnchor: ScrollAnchor?
+
+    /// Anchor scroll request keyed by spine index + element id.
+    /// Nonce-tagged so two requests to the same anchor still
+    /// fire `onChange` in `WebReaderPane` — repeat-clicks on the
+    /// same citation chip should re-scroll, not be coalesced.
+    struct ScrollAnchor: Equatable {
+        let spineIndex: Int
+        let elementID: String
+        let nonce: UUID
+    }
+
     let epubURL: URL
     /// SHA-256 of the EPUB file. Populated asynchronously after
     /// `load()` finishes so the reader open isn't gated on
@@ -229,6 +250,39 @@ final class ReaderViewModel: ObservableObject {
         userHasNavigated = true
         spineIndex = clamped
         reloadTrigger += 1
+        // Clear any pending paragraph anchor — the user is doing
+        // a chapter-top jump (TOC click, prev/next), not a
+        // citation tap.
+        pendingScrollAnchor = nil
+        persistCurrentPosition()
+    }
+
+    /// Jump to a specific paragraph in a chapter — used by chat
+    /// citation chips that carry a `paragraphIndex`. Loads the
+    /// chapter if it isn't already current, then queues a
+    /// scroll-to-anchor request that `WebReaderPane`'s coordinator
+    /// flushes once the page finishes loading. Anchor format
+    /// matches `XHTMLWriter`'s `hu-p-{chapterIdx}-{paragraphIdx}`
+    /// convention. Third-party EPUBs without the anchor land
+    /// silently at the chapter top.
+    func jumpToParagraph(chapterIdx: Int, paragraphIdx: Int) {
+        guard let book, !book.spine.isEmpty else { return }
+        let clamped = max(0, min(chapterIdx, book.spine.count - 1))
+        userHasNavigated = true
+        let anchorID = "hu-p-\(clamped)-\(paragraphIdx)"
+        if spineIndex != clamped {
+            spineIndex = clamped
+            reloadTrigger += 1
+        }
+        // Set the pending anchor either way — for same-chapter
+        // taps the WKWebView is already loaded and the
+        // coordinator flushes immediately; for cross-chapter
+        // taps the load-finish handler picks it up.
+        pendingScrollAnchor = ScrollAnchor(
+            spineIndex: clamped,
+            elementID: anchorID,
+            nonce: UUID()
+        )
         persistCurrentPosition()
     }
 

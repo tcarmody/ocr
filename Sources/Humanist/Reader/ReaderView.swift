@@ -86,7 +86,14 @@ struct ReaderView: View {
                         // VM, but defend anyway: only navigate
                         // when the citation targets this book.
                         guard citation.bookEpubURL == nil else { return }
-                        vm.jump(toSpineIndex: citation.chapterIndex)
+                        if let paraIdx = citation.paragraphIndex {
+                            vm.jumpToParagraph(
+                                chapterIdx: citation.chapterIndex,
+                                paragraphIdx: paraIdx
+                            )
+                        } else {
+                            vm.jump(toSpineIndex: citation.chapterIndex)
+                        }
                     }
                 )
                 .frame(minWidth: 320, idealWidth: 380)
@@ -120,11 +127,23 @@ struct ReaderView: View {
     @ViewBuilder
     private func readingPane(book: EPUBBook) -> some View {
         if let chapterURL = vm.currentChapterURL {
+            // Only pass the anchor through when it targets the
+            // currently-loaded spine index — otherwise the WKWebView
+            // would try to scroll the wrong chapter's DOM. The VM's
+            // jumpToParagraph updates spineIndex first, so by the
+            // time updateNSView runs the anchor's spineIndex matches.
+            let anchor: ReaderViewModel.ScrollAnchor? = {
+                guard let a = vm.pendingScrollAnchor,
+                      a.spineIndex == vm.spineIndex
+                else { return nil }
+                return a
+            }()
             WebReaderPane(
                 url: chapterURL,
                 accessRoot: book.workingDirectory,
                 reloadTrigger: vm.reloadTrigger,
-                fontSize: fontSize
+                fontSize: fontSize,
+                scrollAnchor: anchor
             )
             .background(Color(nsColor: .textBackgroundColor))
         } else {
@@ -239,6 +258,11 @@ private struct WebReaderPane: NSViewRepresentable {
     let accessRoot: URL
     let reloadTrigger: Int
     let fontSize: Double
+    /// Optional scroll target — when the spine index matches this
+    /// pane's chapter and the nonce hasn't been flushed yet, scroll
+    /// the WKWebView to the matching element id after load (or
+    /// immediately if already loaded).
+    var scrollAnchor: ReaderViewModel.ScrollAnchor? = nil
 
     func makeNSView(context: Context) -> WKWebView {
         let view = WKWebView(frame: .zero)
@@ -253,6 +277,15 @@ private struct WebReaderPane: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         load(into: nsView, coordinator: context.coordinator)
         context.coordinator.applyFontSizeIfReady(view: nsView)
+        // Stash the most recent pending anchor; the coordinator
+        // flushes it either right now (page already loaded) or on
+        // the next didFinish (load in flight).
+        if let anchor = scrollAnchor,
+           context.coordinator.lastFlushedAnchorNonce != anchor.nonce {
+            context.coordinator.pendingAnchorID = anchor.elementID
+            context.coordinator.pendingAnchorNonce = anchor.nonce
+            context.coordinator.flushPendingAnchorIfReady(view: nsView)
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -266,6 +299,11 @@ private struct WebReaderPane: NSViewRepresentable {
         guard urlChanged || triggerChanged else { return }
         coord?.loadedURL = resolvedURL
         coord?.loadedTrigger = reloadTrigger
+        // Reset isLoaded so a queued anchor doesn't try to flush
+        // against the previous chapter's DOM while the new one
+        // is loading. `didFinish` re-sets it after the next
+        // navigation completes.
+        coord?.isLoaded = false
         view.stopLoading()
         view.loadFileURL(resolvedURL, allowingReadAccessTo: resolvedAccess)
     }
@@ -275,6 +313,25 @@ private struct WebReaderPane: NSViewRepresentable {
         var loadedTrigger: Int = -1
         var fontSize: Double = EditorSettingsDefaults.previewFontSize
         weak var lastFinishedView: WKWebView?
+        /// Pending anchor id to scroll to. Set by `updateNSView`
+        /// from the binding; flushed by `didFinish` once the
+        /// page is loaded, or immediately by
+        /// `flushPendingAnchorIfReady` when the load already
+        /// completed (same-chapter citation taps).
+        var pendingAnchorID: String?
+        /// Nonce of the in-flight anchor request. Stored
+        /// post-flush as `lastFlushedAnchorNonce` so identical
+        /// repeat-tap requests skip re-flushing.
+        var pendingAnchorNonce: UUID?
+        /// Nonce of the most recently flushed anchor request.
+        /// `updateNSView` compares against the binding's nonce
+        /// to decide whether a new scroll should fire.
+        var lastFlushedAnchorNonce: UUID?
+        /// True once the WKWebView's didFinish has fired for the
+        /// current `loadedURL`. Until then, anchor flushes get
+        /// deferred — `getElementById` would otherwise return
+        /// null before the document is parsed.
+        var isLoaded: Bool = false
 
         nonisolated func webView(
             _ webView: WKWebView,
@@ -283,7 +340,9 @@ private struct WebReaderPane: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.lastFinishedView = webView
+                self.isLoaded = true
                 self.applyFontSizeIfReady(view: webView)
+                self.flushPendingAnchorIfReady(view: webView)
             }
         }
 
@@ -305,6 +364,37 @@ private struct WebReaderPane: NSViewRepresentable {
             })();
             """
             view.evaluateJavaScript(js, completionHandler: nil)
+        }
+
+        /// Scroll the WKWebView to the element with id
+        /// `pendingAnchorID` if the page has finished loading.
+        /// Otherwise no-op — `didFinish` calls back into this
+        /// method once the document parses. `getElementById`
+        /// returning null (the EPUB lacks our `hu-p-*` anchors)
+        /// is treated as a silent miss; same posture as the
+        /// editor's preview pane.
+        func flushPendingAnchorIfReady(view: WKWebView) {
+            guard isLoaded,
+                  let anchorID = pendingAnchorID,
+                  let nonce = pendingAnchorNonce,
+                  lastFlushedAnchorNonce != nonce
+            else { return }
+            let escaped = stringLiteral(anchorID)
+            // Smooth scroll into view, biased toward the top so
+            // the user lands above the fold even when the
+            // surrounding paragraphs occupy the viewport.
+            let js = """
+            (function() {
+              var el = document.getElementById(\(escaped));
+              if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }
+            })();
+            """
+            view.evaluateJavaScript(js, completionHandler: nil)
+            lastFlushedAnchorNonce = nonce
+            pendingAnchorID = nil
+            pendingAnchorNonce = nil
         }
 
         /// Turn a Swift String into a safely-escaped JS string
