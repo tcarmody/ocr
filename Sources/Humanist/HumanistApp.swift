@@ -215,6 +215,23 @@ struct HumanistApp: App {
         }
         .commandsRemoved()
 
+        // R-Reader. Reader window: one per opened EPUB, keyed by
+        // URL so reopening the same book reuses the existing window.
+        // Built as a sibling of the editor scene rather than a pane
+        // inside it — the reader's posture is distraction-light
+        // (TOC + chapter pane, eventually a chat sidebar), while
+        // the editor is the 5-pane workshop. Default-open routing
+        // (file menu / drag-drop / library row) flips to this
+        // scene in commit 2 of R-Reader Phase 1.
+        WindowGroup("Reader", id: "reader", for: URL.self) { $url in
+            if let url {
+                ReaderView(epubURL: url)
+                    .frame(minWidth: 720, minHeight: 560)
+            } else {
+                _StaleWindowDismisser()
+            }
+        }
+
         // Editor window: one per opened EPUB. macOS reuses an existing
         // window when the same URL value is reopened, so dragging the
         // same .epub twice doesn't duplicate.
