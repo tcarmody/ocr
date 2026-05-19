@@ -163,6 +163,28 @@ done
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$BINARY" 2>/dev/null || true
 log "Rewrote main binary deps to @rpath; added LC_RPATH"
 
+# Bundle humanist-cli alongside the main binary. It ships in
+# Contents/MacOS/ so power users can invoke `Humanist.app/Contents/MacOS/humanist-cli`
+# directly, and Scripts/install-cli.sh installs from the same swift
+# build cache (.build/arm64-apple-macosx/release/) for $PATH.
+# Same @rpath rewriting as the main binary so the bundled copy is
+# self-contained against the .app's Frameworks/.
+CLI_SRC="$REPO_ROOT/.build/arm64-apple-macosx/release/humanist-cli"
+if [[ -x "$CLI_SRC" ]]; then
+    cp "$CLI_SRC" "$APP_MACOS/humanist-cli"
+    chmod +w "$APP_MACOS/humanist-cli"
+    for src in "${DYLIB_SOURCES[@]}"; do
+        base="$(basename "$src")"
+        if otool -L "$APP_MACOS/humanist-cli" | grep -q "$src"; then
+            install_name_tool -change "$src" "@rpath/$base" "$APP_MACOS/humanist-cli"
+        fi
+    done
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_MACOS/humanist-cli" 2>/dev/null || true
+    log "Bundled humanist-cli into MacOS/ with @rpath deps"
+else
+    warn "humanist-cli not found at $CLI_SRC — skipping CLI bundling"
+fi
+
 # Bundle Tesseract traineddata (Phase C). Default is the four
 # languages this project targets: English + ancient Greek + Latin +
 # Hebrew. The bundled-tessdata path is picked up automatically by
@@ -218,6 +240,9 @@ for dylib in "$APP_FRAMEWORKS"/*.dylib; do
 done
 log "Signed $(ls "$APP_FRAMEWORKS"/*.dylib 2>/dev/null | wc -l | tr -d ' ') bundled dylibs"
 
+if [[ -x "$APP_MACOS/humanist-cli" ]]; then
+    codesign "${SIGN_OPTS[@]}" --entitlements "$ENTITLEMENTS" "$APP_MACOS/humanist-cli"
+fi
 codesign "${SIGN_OPTS[@]}" --entitlements "$ENTITLEMENTS" "$APP_MACOS/$APP_NAME"
 codesign "${SIGN_OPTS[@]}" --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 

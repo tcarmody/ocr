@@ -19,10 +19,14 @@ source "$(dirname "$0")/_lib.sh"
 INSTALL_DIR="${1:-${HUMANIST_CLI_INSTALL_DIR:-$HOME/.local/bin}}"
 mkdir -p "$INSTALL_DIR"
 
-log "Building humanist-cli (release)"
-swift build --product humanist-cli -c release
+log "Building humanist-cli (release, arm64)"
+# Match Scripts/build-app.sh's arch so we hit the same SwiftPM build
+# cache — running build-app.sh then install-cli.sh (or vice-versa) does
+# one compile, not two. The output dir is .build/arm64-apple-macosx/release/
+# rather than the default .build/release/.
+swift build --product humanist-cli -c release --arch arm64
 
-BIN_PATH="$(swift build --product humanist-cli --show-bin-path -c release)/humanist-cli"
+BIN_PATH="$(swift build --product humanist-cli --show-bin-path -c release --arch arm64)/humanist-cli"
 if [[ ! -x "$BIN_PATH" ]]; then
     die "Expected build artifact missing at $BIN_PATH"
 fi
