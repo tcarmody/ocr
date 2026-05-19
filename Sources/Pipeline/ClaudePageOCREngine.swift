@@ -412,6 +412,32 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         block quotations, indented passages, or a single-column page where \
         text simply wraps. Single-column pages produce no <section data-stream> \
         wrappers — emit paragraphs at the top level as usual.
+
+        VERSE / POETRY RULES (apply ONLY when a region is free verse or other \
+        irregularly-formatted poetry — Pound's Cantos, Olson, late Stevens, \
+        free-verse collections, concrete poetry. NOT prose paragraphs, NOT \
+        block quotations, NOT indented prose passages. Verse is identified \
+        by: ragged right margin on most lines, irregular leading indentation \
+        that varies line-to-line, line breaks that carry semantic meaning):
+        - Wrap the verse region in <div class="verse">…</div>.
+        - Emit each visual line as its own <p class="line">…</p> element. Do \
+        NOT collapse lines into paragraphs — line breaks are semantic.
+        - For lines that start with a visible leading indent, add an \
+        `indent-N` class token where N is the indent bucket on a 0–8 scale: \
+        bucket 0 = flush left, bucket 4 ≈ center, bucket 8 ≈ far right. \
+        Quantize the observed indent into the closest bucket. So a line \
+        starting roughly one-third of the way across the column = \
+        `<p class="line indent-3">`.
+        - Preserve italic emphasis on foreign-language fragments with \
+        <i lang="XX">…</i>, using the same BCP-47 codes listed above. This \
+        replaces the prose-side <em>+<span lang> pattern for verse \
+        specifically — verse lines pack denser language mixing and the \
+        combined element keeps the markup readable.
+        - Do NOT try to "balance" quotation marks in verse. Pound and Olson \
+        leave quotes open across multiple lines on purpose to trace a \
+        speaker through a stanza; keep marks exactly as printed.
+        - Prose paragraphs surrounding a verse region stay as ordinary <p> \
+        outside the <div class="verse"> wrapper.
         """
 
     /// User-turn prompt carrying the per-request language hint. Kept
