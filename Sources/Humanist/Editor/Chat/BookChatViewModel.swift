@@ -299,12 +299,15 @@ final class BookChatViewModel: ObservableObject {
     private static let maxChapterChars = 60_000
     /// Top-K paragraphs returned by hybrid / embeddings retrieval.
     /// Higher than the chapter count because each paragraph is much
-    /// smaller — 12 paragraphs ≈ 12 KB, well under the cloud cost
-    /// budget and enough to cover the answer most of the time.
-    /// User-tunable via Settings → AI → Advanced.
+    /// smaller. Default 24 — enough headroom for cross-chapter
+    /// questions ("Notebooks 1, 10, 11, 13, 23") to land a few hits
+    /// per named chapter while still well under typical context
+    /// budgets. Was 12 originally; bumped 2026-05-19 when narrow-
+    /// retrieval was the dominant chat complaint. User-tunable via
+    /// Settings → Chat → Advanced.
     private var maxRetrievedParagraphs: Int {
         let raw = UserDefaults.standard.integer(forKey: "humanist.chat.topK")
-        return raw > 0 ? raw : 12
+        return raw > 0 ? raw : 24
     }
     /// Per-paragraph character cap. Trims abnormally long paragraphs
     /// (one of the OCR pipeline's known failure modes — a missed
@@ -322,10 +325,14 @@ final class BookChatViewModel: ObservableObject {
         return raw > 0 ? Double(raw) : HybridRetriever.defaultRRFK
     }
     /// Hit count above which the renderer switches a chapter from
-    /// per-paragraph bullets to whole-chapter expansion. 4 hits in
-    /// one chapter is a strong "this is what the user wants" signal
-    /// — fewer is still better-served by paragraph-level rendering.
-    private static let chapterClusterThreshold = 4
+    /// per-paragraph bullets to whole-chapter expansion. 2 hits is
+    /// the new bar — was 4 originally. Lowering the threshold means
+    /// chapters get expanded to full text more readily when the
+    /// question clusters there, which is what the user usually
+    /// wants ("explain this chapter" / "what does Notebook 13
+    /// cover?"). Cap on the expansion (`maxExpansionChars`) still
+    /// bounds the per-chapter size.
+    private static let chapterClusterThreshold = 2
     /// Cap on the text emitted by a single chapter expansion. Long
     /// enough to cover a normal chapter (~30 pages of prose); short
     /// enough that a fully-expanded chapter doesn't blow the cloud
@@ -491,8 +498,22 @@ final class BookChatViewModel: ObservableObject {
                 ? await MainActor.run { self.maxRetrievedParagraphs }
                 : Self.maxRetrievedChapters
             let hits = retriever.search(query: query, topK: topK)
+            // Smart chapter-mention expansion. When the query
+            // explicitly names a chapter ("what's in Notebook
+            // 13?", "explain the Preface"), force-include that
+            // chapter's full text alongside whatever retrieval
+            // scored. Catches cases where the query text
+            // doesn't embed near the named chapter's contents.
+            let mentioned = await MainActor.run {
+                self.expandQueryMentionedChapters(query: query)
+            }
+            let mentionedTexts = self.collectMentionedChapterTexts(
+                indices: mentioned, excludingClusteredIn: hits
+            )
             let context = self.renderContext(
-                hits: hits, paragraphMode: usedParagraphs
+                hits: hits,
+                paragraphMode: usedParagraphs,
+                mentionedChapters: mentionedTexts
             )
             let userPrompt = context + "\n\nQuestion: " + query
 
@@ -1553,13 +1574,62 @@ final class BookChatViewModel: ObservableObject {
         return BookKeywordIndex(chapters: chapters)
     }
 
+    /// Per-chapter text bundle assembled by `collectMentionedChapter
+    /// Texts(indices:excludingClusteredIn:)` and consumed by
+    /// `renderContext`. Carries the chapter index plus its
+    /// already-stripped, length-capped text.
+    struct MentionedChapter: Equatable, Sendable {
+        let chapterIdx: Int
+        let title: String
+        let text: String
+    }
+
+    /// Collect full-text bundles for mention-expansion chapters
+    /// that retrieval didn't already cover via paragraph clusters
+    /// (a chapter with ≥ `chapterClusterThreshold` retrieval hits
+    /// is going to get expanded anyway in `renderParagraphContext`).
+    /// Filtering out the overlap keeps the rendered context from
+    /// double-listing a chapter.
+    private func collectMentionedChapterTexts(
+        indices: Set<Int>, excludingClusteredIn hits: [HybridRetriever.Hit]
+    ) -> [MentionedChapter] {
+        guard !indices.isEmpty else { return [] }
+        var hitsByChapter: [Int: Int] = [:]
+        for hit in hits {
+            hitsByChapter[hit.chapterIdx, default: 0] += 1
+        }
+        var out: [MentionedChapter] = []
+        let sortedIndices = indices.sorted()
+        for idx in sortedIndices {
+            let clusterCount = hitsByChapter[idx] ?? 0
+            // Retrieval already expanding this chapter? Skip the
+            // mention-expansion to avoid double-emit.
+            if clusterCount >= Self.chapterClusterThreshold { continue }
+            guard let text = chapterTextForExpansion(idx) else { continue }
+            let title = chapterTitle(forChapterIndex: idx)
+                ?? "Chapter \(idx + 1)"
+            out.append(MentionedChapter(
+                chapterIdx: idx, title: title, text: text
+            ))
+        }
+        return out
+    }
+
     /// Paragraph-level rendering when hybrid / embeddings retrieval
     /// returned hits with paragraph granularity. Chapter-level
     /// rendering when BM25-only style was used.
+    ///
+    /// `mentionedChapters` are forced-include full-text bundles
+    /// for chapters the user explicitly named in the query (via
+    /// `expandQueryMentionedChapters`). They render in their own
+    /// section above the retrieval hits so the model sees them
+    /// regardless of retrieval scoring.
     private func renderContext(
-        hits: [HybridRetriever.Hit], paragraphMode: Bool
+        hits: [HybridRetriever.Hit],
+        paragraphMode: Bool,
+        mentionedChapters: [MentionedChapter] = []
     ) -> String {
-        guard !hits.isEmpty else {
+        guard !hits.isEmpty || !mentionedChapters.isEmpty else {
             return """
             Retrieval scope: 0 paragraphs (no match found).
 
@@ -1568,10 +1638,24 @@ final class BookChatViewModel: ObservableObject {
             you can't find a match.)
             """
         }
-        let scope = retrievalScopeSummary(hits: hits, paragraphMode: paragraphMode)
-        let body = paragraphMode
-            ? renderParagraphContext(hits: hits)
-            : renderChapterContext(hits: hits)
+        let scope = retrievalScopeSummary(
+            hits: hits,
+            paragraphMode: paragraphMode,
+            mentionedChapters: mentionedChapters
+        )
+        var body = ""
+        if !mentionedChapters.isEmpty {
+            body += "Explicitly mentioned chapters (full text, included because the user named them):\n\n"
+            for chapter in mentionedChapters {
+                body += "[chapter:\(chapter.chapterIdx)] \(chapter.title)\n"
+                body += chapter.text + "\n\n"
+            }
+        }
+        if !hits.isEmpty {
+            body += paragraphMode
+                ? renderParagraphContext(hits: hits)
+                : renderChapterContext(hits: hits)
+        }
         return scope + "\n\n" + body
     }
 
@@ -1580,11 +1664,17 @@ final class BookChatViewModel: ObservableObject {
     /// based on the whole book or just one chapter?"). Surfaces
     /// the hit count, the distinct chapter list, and — when the
     /// book has chapters not in the retrieval — a hint that the
-    /// answer doesn't draw on those.
+    /// answer doesn't draw on those. Mention-expansion chapters
+    /// count toward represented coverage even though they came
+    /// from the query rather than retrieval.
     private func retrievalScopeSummary(
-        hits: [HybridRetriever.Hit], paragraphMode: Bool
+        hits: [HybridRetriever.Hit],
+        paragraphMode: Bool,
+        mentionedChapters: [MentionedChapter] = []
     ) -> String {
-        let chapters = Array(Set(hits.map(\.chapterIdx))).sorted()
+        var represented = Set(hits.map(\.chapterIdx))
+        for m in mentionedChapters { represented.insert(m.chapterIdx) }
+        let chapters = represented.sorted()
         let chapterTitles = chapters.map { idx -> String in
             let title = chapterTitle(forChapterIndex: idx)
                 ?? "Chapter \(idx + 1)"
@@ -1600,10 +1690,15 @@ final class BookChatViewModel: ObservableObject {
             return " (\(missing) other chapter\(missing == 1 ? "" : "s") not in this retrieval)"
         }()
         let grain = paragraphMode ? "paragraphs" : "chapters"
-        return """
-        Retrieval scope: \(hits.count) \(grain) across \(chapters.count) chapter\(chapters.count == 1 ? "" : "s")\(coverageNote). \
-        Chapters represented: \(chapterTitles.joined(separator: "; ")).
-        """
+        var summary = "Retrieval scope: \(hits.count) \(grain) across \(chapters.count) chapter\(chapters.count == 1 ? "" : "s")\(coverageNote)."
+        if !mentionedChapters.isEmpty {
+            let names = mentionedChapters
+                .map { "[chapter:\($0.chapterIdx)] \($0.title)" }
+                .joined(separator: "; ")
+            summary += " Plus \(mentionedChapters.count) chapter\(mentionedChapters.count == 1 ? "" : "s") included in full because you named them: \(names)."
+        }
+        summary += " Chapters represented: \(chapterTitles.joined(separator: "; "))."
+        return summary
     }
 
     /// Render paragraph-level hits grouped by chapter so the model
@@ -1690,6 +1785,162 @@ final class BookChatViewModel: ObservableObject {
     }
 
     // MARK: - chapter parsing
+
+    /// Parse the user's query for explicit chapter / notebook /
+    /// section references and resolve them to spine indices. The
+    /// caller force-includes those chapters' full text in the
+    /// rendered context regardless of retrieval scoring — when a
+    /// user asks "what's in Notebook 13?" or "explain the
+    /// Preface", retrieval alone won't necessarily pull those
+    /// chapters' content (the question text might not embed near
+    /// that chapter's contents), so the expansion makes sure the
+    /// model has the chapter to work with.
+    ///
+    /// Two recognition paths:
+    ///   1. **Numeric**: `chapter N`, `notebook N`, `book N`,
+    ///      `part N`, `volume N`, `section N`, `essay N`, `note N`.
+    ///      Each match looks up the spine entry whose title
+    ///      contains the same `{kind} N` phrase (case-insensitive)
+    ///      OR whose title is just `N`.
+    ///   2. **Named**: `preface`, `introduction`, `conclusion`,
+    ///      `epilogue`, `foreword`, `afterword`, `appendix`,
+    ///      `prologue`. Matches against any spine entry whose
+    ///      title equals the keyword (case-insensitive).
+    ///
+    /// Returns the unique set of resolved spine indices, capped
+    /// at `maxMentionExpansionChapters` so a query that lists
+    /// twenty notebooks doesn't blow the context budget.
+    func expandQueryMentionedChapters(query: String) -> Set<Int> {
+        var matched = Set<Int>()
+        let lower = query.lowercased()
+
+        // Numeric kinds. Pattern matches the kind word (singular
+        // or plural) followed by one or more Arabic numerals
+        // separated by commas / "and". Roman numerals deliberately
+        // skipped for v1 — false positives on common words ("I",
+        // "V") are too costly.
+        //
+        // Group 1: kind word. Group 2: the full numeric list
+        // (e.g. "1, 10, 11, 13, 23" or "10 and 13"). The list
+        // gets split on non-digit characters to recover the
+        // individual numbers.
+        let kindPattern = "(chapter|notebook|book|part|volume|section|essay|note|chap|ch\\.?)s?\\s+(\\d+(?:\\s*(?:,|and)\\s*\\d+)*)"
+        guard let regex = try? NSRegularExpression(
+            pattern: kindPattern, options: [.caseInsensitive]
+        ) else { return matched }
+        let nsLower = lower as NSString
+        let matches = regex.matches(
+            in: lower, range: NSRange(location: 0, length: nsLower.length)
+        )
+        for match in matches {
+            guard match.numberOfRanges == 3 else { continue }
+            let kind = nsLower.substring(with: match.range(at: 1))
+            let numList = nsLower.substring(with: match.range(at: 2))
+            // Split on any non-digit run to recover each integer.
+            let numbers = numList
+                .components(
+                    separatedBy: CharacterSet.decimalDigits.inverted
+                )
+                .compactMap(Int.init)
+            for num in numbers {
+                for idx in spineIndices(matchingKind: kind, number: num) {
+                    matched.insert(idx)
+                    if matched.count >= Self.maxMentionExpansionChapters {
+                        return matched
+                    }
+                }
+            }
+        }
+
+        // Named entries. Match against spine titles directly.
+        let namedKeywords: [String] = [
+            "preface", "introduction", "conclusion", "epilogue",
+            "foreword", "afterword", "appendix", "prologue",
+        ]
+        for keyword in namedKeywords where lower.contains(keyword) {
+            for idx in spineIndices(matchingTitleKeyword: keyword) {
+                matched.insert(idx)
+                if matched.count >= Self.maxMentionExpansionChapters {
+                    return matched
+                }
+            }
+        }
+        return matched
+    }
+
+    /// Cap on mention-expansion chapters. Twenty notebooks named
+    /// in one query would blow the model's context if we tried
+    /// to include all of them in full; bound to 6 to keep budget
+    /// predictable. Retrieval still fills in additional context
+    /// on top.
+    private static let maxMentionExpansionChapters = 6
+
+    /// Find spine indices whose chapter title contains the
+    /// `{kind} {number}` form. Tolerates the chapter title using
+    /// a different equivalent kind ("Notebook 13" → matches even
+    /// when user wrote "Note 13"). Falls back to a title-equals-
+    /// number match (some books title chapters literally "1",
+    /// "2", "3").
+    private func spineIndices(matchingKind kind: String, number: Int) -> [Int] {
+        // Map kind synonyms to a small canonical set so "ch" and
+        // "chapter" both match a title like "Chapter 5".
+        let canonical: [String]
+        switch kind {
+        case "ch", "ch.", "chap": canonical = ["chapter"]
+        default: canonical = [kind]
+        }
+        var out: [Int] = []
+        for idx in 0..<book.spine.count {
+            guard let title = chapterTitle(forChapterIndex: idx)?
+                .lowercased() else { continue }
+            // "Chapter 5" / "Notebook 13" / etc.
+            let kindMatched = canonical.contains { c in
+                title.contains("\(c) \(number)")
+                    || title.contains("\(c) \(number).")
+                    || title.contains("\(c) \(number):")
+                    // Also handle the kind without an explicit
+                    // separator ("notebook13" — rare but real).
+                    || title.contains("\(c)\(number)")
+            }
+            if kindMatched {
+                out.append(idx)
+                continue
+            }
+            // Title-equals-number ("1", "2"): match when the
+            // title is exactly the numeral, optionally with
+            // trailing punctuation.
+            let trimmed = title.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            if trimmed == String(number)
+                || trimmed == "\(number)."
+                || trimmed == "\(number):" {
+                out.append(idx)
+            }
+        }
+        return out
+    }
+
+    /// Find spine indices whose title equals the named keyword
+    /// (case-insensitive). Allows trailing punctuation /
+    /// whitespace so "Preface." / "Preface" both match.
+    private func spineIndices(matchingTitleKeyword keyword: String) -> [Int] {
+        var out: [Int] = []
+        let target = keyword.lowercased()
+        for idx in 0..<book.spine.count {
+            guard let raw = chapterTitle(forChapterIndex: idx) else {
+                continue
+            }
+            let normalized = raw
+                .lowercased()
+                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".,:;"))
+            if normalized == target {
+                out.append(idx)
+            }
+        }
+        return out
+    }
 
     /// Title for the chapter at the given spine index. Looks up the
     /// resource and pulls the first `<h1>` / `<h2>` / `<title>`
