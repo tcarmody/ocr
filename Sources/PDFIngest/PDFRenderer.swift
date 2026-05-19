@@ -8,7 +8,7 @@ import PDFKit
 /// with images, 150 for pure born-digital text), driven by an
 /// embedded-text-quality score. That arrives in Phase 2; Phase 1 uses a
 /// fixed DPI good enough for Vision OCR on typical book scans.
-public struct PDFRenderer {
+public struct PDFRenderer: Sendable {
     public var dpi: CGFloat
     /// Standard PDF unit is 1/72".
     private let pdfUnitsPerInch: CGFloat = 72

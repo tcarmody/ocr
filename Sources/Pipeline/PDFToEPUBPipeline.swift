@@ -1371,6 +1371,18 @@ public actor PDFToEPUBPipeline {
         var pageOCRPageIndices: [Int] = []
         var pageOCRPendingByIndex: [Int: PendingPageOCR] = [:]
 
+        // P-Cascade-Parallel Phase B. When concurrency > 1 AND we're
+        // on the cascade path (no `activePageEngine`), defer per-
+        // page cascade work to a post-loop bounded TaskGroup so 2–8
+        // cascade pages can render+OCR concurrently. Concurrency=1
+        // preserves the original serial inline path bit-for-bit.
+        let cascadeConcurrency = max(
+            1, options.cloudFeatures.parallelPageOCRConcurrency
+        )
+        let useParallelCascade =
+            activePageEngine == nil && cascadeConcurrency > 1
+        var cascadeFreshIndices: [Int] = []
+
         // Get the queue UI off "Starting…" as soon as we know the
         // page count. Without this, the page-OCR batch path (which
         // only emits progress in Phase C after results return) and
@@ -1501,13 +1513,22 @@ public actor PDFToEPUBPipeline {
                 continue
             }
 
+            // P-Cascade-Parallel Phase B: at concurrency > 1, defer
+            // cascade-bound fresh pages to the post-loop bounded
+            // TaskGroup below. The serial concurrency=1 path keeps
+            // calling `processCascadePage` inline, preserving the
+            // original rhythm + PDFKit-cache-drain reload pattern
+            // for the default case.
+            if useParallelCascade {
+                cascadeFreshIndices.append(i)
+                continue
+            }
+
             // P-Cascade-Parallel Phase A: cascade body extracted
-            // into `processCascadePage`. The serial for-loop keeps
-            // calling it inline; Phase B will wrap a bounded
-            // TaskGroup around the call when
-            // `parallelPageOCRConcurrency > 1`. Unpacking re-writes
-            // the outcome bundle into the same outer accumulators
-            // the inline body used to mutate directly.
+            // into `processCascadePage`. Serial for-loop path.
+            // Unpacking re-writes the outcome bundle into the same
+            // outer accumulators the inline body used to mutate
+            // directly.
             let outcome = try await processCascadePage(
                 pageIndex: i,
                 pdf: pdf,
@@ -1584,6 +1605,133 @@ public actor PDFToEPUBPipeline {
             // (Vision NSObject results, dispatch-bridged NSData) for
             // the entire conversion.
             await Task.yield()
+        }
+
+        // P-Cascade-Parallel Phase B: bounded TaskGroup dispatch of
+        // cascade-bound fresh pages. Active only when concurrency
+        // > 1 and we're on the cascade path. Tasks share the
+        // existing `pdf` reference (same posture as the page-OCR
+        // dispatch); unpack + checkpoint + progress emit happen on
+        // the convert task as each `group.next()` returns so the
+        // write side stays serialized.
+        if useParallelCascade && !cascadeFreshIndices.isEmpty {
+            // Progress baseline = pages already settled by the
+            // for-loop's resume path (those emitted their own
+            // progress with `completedPages: i + 1`). Without
+            // capturing this, parallel completions would reset
+            // the bar back to 0.
+            let cascadeBaseline = alreadyDonePages.count
+            var cascadeCompleted = 0
+            try await withThrowingTaskGroup(
+                of: (Int, CascadePageOutcome).self
+            ) { group in
+                var nextSubmit = 0
+                var inflight = 0
+                while nextSubmit < cascadeFreshIndices.count
+                    || inflight > 0 {
+                    while inflight < cascadeConcurrency
+                        && nextSubmit < cascadeFreshIndices.count {
+                        let pageIndex = cascadeFreshIndices[nextSubmit]
+                        nextSubmit += 1
+                        // Bind everything the closure needs into
+                        // locals. `processCascadePage` is
+                        // nonisolated; the bound method reference
+                        // is safe to send across the boundary.
+                        let perform = self.processCascadePage
+                        let pdfRef = pdf
+                        group.addTask { @Sendable in
+                            try Task.checkCancellation()
+                            let outcome = try await perform(
+                                pageIndex,
+                                pdfRef,
+                                options,
+                                stagingDir,
+                                renderer,
+                                pagePreprocessor,
+                                hints,
+                                figureExtractor,
+                                googleDocumentOCREngine,
+                                claudeOCREngine,
+                                claudePostProcessor,
+                                claudeTableExtractor
+                            )
+                            return (pageIndex, outcome)
+                        }
+                        inflight += 1
+                    }
+                    if let (i, outcome) = try await group.next() {
+                        inflight -= 1
+                        // Unpack — same writes the serial for-loop
+                        // performed inline. All targets are dicts
+                        // keyed by page index (or arrays whose
+                        // consumers don't depend on order), so
+                        // out-of-order completion is safe.
+                        extractorDiagnostics[i] =
+                            outcome.extractorDiagnostics
+                        qualityScores[i] = outcome.qualityScore
+                        verdictsByPage[i] = outcome.verdict
+                        if !outcome.figures.isEmpty {
+                            figureExtractionsByPage[i] = outcome.figures
+                        }
+                        for entry in outcome.tableEntries {
+                            let key = CaptionAssociator.PageRegionKey(
+                                pageIndex: i,
+                                regionIndex: entry.regionIndex
+                            )
+                            tableExtractionsByKey[key] = entry.rows
+                        }
+                        correctionTrailEntries.append(
+                            contentsOf: outcome.correctionTrailEntries
+                        )
+                        if let err = outcome.layoutError {
+                            layoutErrors[i] = err
+                        }
+                        if let err = outcome.ocrError {
+                            ocrErrors[i] = err
+                        }
+                        pageResults.append(outcome.pageObservations)
+
+                        // Checkpoint right after unpack — matches
+                        // the serial path so a crash mid-batch
+                        // doesn't lose work.
+                        let pageTrail = correctionTrailEntries
+                            .filter { $0.pageIndex == i }
+                        let pageFigures = figureExtractionsByPage[i]
+                            ?? []
+                        let pageTables: [Int: [[TableCell]]] =
+                            tableExtractionsByKey
+                                .filter { $0.key.pageIndex == i }
+                                .reduce(into: [:]) {
+                                    $0[$1.key.regionIndex] = $1.value
+                                }
+                        let checkpoint = PageCheckpoint(
+                            pageIndex: i,
+                            pageBoundsWidth:
+                                outcome.pageObservations.pageBounds.width,
+                            pageBoundsHeight:
+                                outcome.pageObservations.pageBounds.height,
+                            observations:
+                                outcome.pageObservations.observations,
+                            layoutRegions:
+                                outcome.pageObservations.layoutRegions,
+                            figures: pageFigures,
+                            tableExtractionsByRegionIndex: pageTables,
+                            verdict: verdictsByPage[i]?.rawValue,
+                            correctionTrailEntries: pageTrail
+                        )
+                        try? resumeManager.writeCheckpoint(checkpoint)
+
+                        cascadeCompleted += 1
+                        progress?(Progress(
+                            totalPages: totalPages,
+                            completedPages:
+                                cascadeBaseline + cascadeCompleted,
+                            currentPageMeanConfidence:
+                                outcome.confidenceForProgress
+                        ))
+                    }
+                }
+            }
         }
 
         // Tier 9 / E-Parallel: dispatch page-OCR pages collected

@@ -6027,15 +6027,25 @@ shaped tasks Cloud users have had since R-Conversion-Summary.
 
 ## P-Cascade-Parallel — Bounded parallel pages in cascade mode
 
-**Status**: not built. Today's cascade page-loop processes pages
-serially in a single `for i in 0..<totalPages` body. Within one
-page, Vision OCR and Surya layout already overlap via `async let`
-([PDFToEPUBPipeline.swift:1978](Sources/Pipeline/PDFToEPUBPipeline.swift#L1978))
-— that's [P-Vision-Concurrency](#p-vision-concurrency--overlap-vision-ocr-with-surya-layout)
-shipped. Across pages, no parallelism in cascade mode. Only the
-Cloud page-OCR path has the bounded `parallelPageOCRConcurrency`
-TaskGroup at
-[PDFToEPUBPipeline.swift:2301](Sources/Pipeline/PDFToEPUBPipeline.swift#L2301).
+**Status**: shipped. Phase A landed 2026-05-18 (commit `19b9fbc`)
+— extracted the for-loop's cascade branch into
+`processCascadePage(...)` returning a `CascadePageOutcome`
+struct. Phase B landed 2026-05-19 — the convert loop's cascade
+branch now defers to a post-loop bounded `withThrowingTaskGroup`
+when `cloudFeatures.parallelPageOCRConcurrency > 1` and we're on
+the cascade path. Concurrency=1 (default) preserves the original
+inline serial path bit-for-bit so the default case takes the
+familiar code route with no behavior change. Bumping concurrency
+to 4–8 cuts wall time roughly proportionally on bulk Private-mode
+runs (~2-3× speedup; Surya remains the long pole at default).
+
+Task closures capture the engines through the same locals-binding
+pattern as the page-OCR dispatch; `PDFRenderer` and
+`PageImagePreprocessor` gained explicit `Sendable` conformance
+(value types, only `CGFloat` + `Bool` properties — trivially
+safe). Each `group.next()` unpacks the outcome + writes the
+checkpoint + emits progress on the convert task so disk I/O and
+progress reporting stay serialized.
 
 ### Goal
 

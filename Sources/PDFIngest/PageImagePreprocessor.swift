@@ -21,7 +21,7 @@ import CoreImage
 /// / low-contrast scans benefit much more from levels + denoise +
 /// sharpen than from a 1° deskew, so v1 leaves rotation alone.
 /// Add later if specific scan corpora prove it pays off.
-public struct PageImagePreprocessor {
+public struct PageImagePreprocessor: Sendable {
     /// Stretch the histogram so dark text is darker and the page
     /// background is whiter. Driven by `CIColorControls.contrast`
     /// + `CIToneCurve` for the levels stretch. Most useful on
