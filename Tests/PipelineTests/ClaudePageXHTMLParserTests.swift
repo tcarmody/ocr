@@ -228,4 +228,113 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         XCTAssertTrue(result.detectedStreams.isEmpty)
         XCTAssertEqual(result.blocks.count, 1)
     }
+
+    // MARK: - P-Verse-Layout
+
+    func test_verse_div_collects_lines_into_block_verse() {
+        let xhtml = """
+        <div class="verse">
+        <p class="line">Click of the hooves, through garbage,</p>
+        <p class="line">Clutching the greasy stone</p>
+        <p class="line indent-3">But Varchi of Florence,</p>
+        </div>
+        """
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertEqual(result.blocks.count, 1)
+        guard case let .verse(lines) = result.blocks[0] else {
+            XCTFail("Expected Block.verse")
+            return
+        }
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines[0].indent, 0)
+        XCTAssertEqual(lines[1].indent, 0)
+        XCTAssertEqual(lines[2].indent, 3)
+        XCTAssertEqual(
+            lines[0].runs.map(\.text).joined(),
+            "Click of the hooves, through garbage,"
+        )
+        XCTAssertEqual(
+            lines[2].runs.map(\.text).joined(),
+            "But Varchi of Florence,"
+        )
+    }
+
+    func test_verse_div_carries_inline_language_and_emphasis() {
+        // Sonnet-shaped output with an italic Greek fragment in a
+        // verse line. Parser must preserve both the language tag
+        // and the italic flag on the inner run.
+        let xhtml = """
+        <div class="verse">
+        <p class="line">Then "<i lang="grc">Σίγα μαλ' αὖθις δευτέραν</i>!</p>
+        </div>
+        """
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertEqual(result.blocks.count, 1)
+        guard case let .verse(lines) = result.blocks[0] else {
+            XCTFail("Expected Block.verse")
+            return
+        }
+        XCTAssertEqual(lines.count, 1)
+        let runs = lines[0].runs
+        // At least one italic, lang-grc-tagged run is present.
+        let italicGreek = runs.first {
+            $0.isItalic && $0.language == BCP47("grc")
+        }
+        XCTAssertNotNil(italicGreek, "Greek italic run missing language tag")
+    }
+
+    func test_verse_div_emits_nothing_when_empty() {
+        let xhtml = "<div class=\"verse\"></div>"
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertTrue(result.blocks.isEmpty)
+    }
+
+    func test_prose_paragraph_outside_verse_div_unaffected() {
+        // Regression guard: verse-collection mode must not bleed
+        // into surrounding prose paragraphs.
+        let xhtml = """
+        <p>Before the poem.</p>
+        <div class="verse">
+        <p class="line">A line.</p>
+        </div>
+        <p>After the poem.</p>
+        """
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertEqual(result.blocks.count, 3)
+        guard case .paragraph = result.blocks[0] else {
+            XCTFail("Expected leading paragraph")
+            return
+        }
+        guard case .verse(let lines) = result.blocks[1] else {
+            XCTFail("Expected middle verse")
+            return
+        }
+        XCTAssertEqual(lines.count, 1)
+        guard case .paragraph = result.blocks[2] else {
+            XCTFail("Expected trailing paragraph")
+            return
+        }
+    }
+
+    func test_indent_bucket_parser_extracts_n_from_class() {
+        // Internal helper, but worth pinning the regex behavior:
+        // accepts indent-N tokens in any position; ignores other
+        // classes; defaults to 0 when absent.
+        XCTAssertEqual(
+            ClaudePageXHTMLParser.parseIndentBucket(from: "line indent-5"),
+            5
+        )
+        XCTAssertEqual(
+            ClaudePageXHTMLParser.parseIndentBucket(from: "indent-2 line"),
+            2
+        )
+        XCTAssertEqual(
+            ClaudePageXHTMLParser.parseIndentBucket(from: "line"),
+            0
+        )
+        XCTAssertEqual(
+            ClaudePageXHTMLParser.parseIndentBucket(from: ""),
+            0
+        )
+    }
 }

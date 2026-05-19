@@ -32,6 +32,23 @@ import Document
 public struct ClaudePageXHTMLParser: Sendable {
     public init() {}
 
+    /// P-Verse-Layout. Parse a `class="line indent-3"` style
+    /// attribute, return the integer N from the first `indent-N`
+    /// token. Returns 0 when no such token is present (which is
+    /// what `<p class="line">` alone means — flush-left). Exposed
+    /// `static` so unit tests can pin the parsing behavior
+    /// without piping every case through the full XML parser.
+    public static func parseIndentBucket(from cls: String) -> Int {
+        let tokens = cls.split(separator: " ")
+        for token in tokens {
+            if token.hasPrefix("indent-"),
+               let n = Int(token.dropFirst("indent-".count)) {
+                return n
+            }
+        }
+        return 0
+    }
+
     public func parse(_ xhtml: String, pageIndex: Int) -> ClaudePageResult {
         let cleaned = Self.preprocess(xhtml)
         let wrapped = "<doc>\(cleaned)</doc>"
@@ -142,6 +159,13 @@ public struct ClaudePageXHTMLParser: Sendable {
             case paragraph
             case heading(level: Int)
             case footnote(id: String)
+            /// P-Verse-Layout. One line inside a `<div class="verse">`
+            /// container. The `<p class="line indent-N">` element is
+            /// treated as a self-contained line that finalizes into a
+            /// `VerseLine` and gets appended to the surrounding
+            /// verse-div's pending-lines buffer instead of becoming
+            /// its own `Block` immediately.
+            case verseLine(indent: Int)
         }
 
         struct InlineFrame {
@@ -155,6 +179,15 @@ public struct ClaudePageXHTMLParser: Sendable {
         var currentRuns: [InlineRun] = []
         var inlineStack: [InlineFrame] = []
         var textBuffer = ""
+
+        /// P-Verse-Layout. Set when we enter a `<div class="verse">`
+        /// element. While set, `<p>` opens are routed to
+        /// `BlockKind.verseLine` and their closings accumulate into
+        /// `pendingVerseLines` instead of emitting per-line `Block`s.
+        /// The closing `</div>` flushes the buffer into a single
+        /// `Block.verse(lines:)`.
+        var inVerseDiv: Bool = false
+        var pendingVerseLines: [VerseLine] = []
 
         init(pageIndex: Int) {
             self.pageIndex = pageIndex
@@ -173,8 +206,33 @@ public struct ClaudePageXHTMLParser: Sendable {
             switch tag {
             case "doc":
                 return
+            case "div":
+                // P-Verse-Layout. <div class="verse"> opens a poetry
+                // region. Nested <div>s aren't supported in our
+                // emission so the flag-based state is sufficient.
+                let cls = attributeDict["class"] ?? ""
+                if cls.contains("verse") {
+                    inVerseDiv = true
+                    pendingVerseLines = []
+                }
+                // Non-verse <div>: ignore the wrapper but let
+                // contained block-level elements parse normally.
+                // No inline frame because <div> wraps block content,
+                // not inline.
             case "p":
-                startBlock(.paragraph)
+                if inVerseDiv {
+                    // P-Verse-Layout. <p class="line indent-N"> within
+                    // a verse div. Extract the indent bucket from the
+                    // class string; default to 0 when absent. Other
+                    // class tokens (right-align in v2) are ignored
+                    // for v1-narrow — that part lands later.
+                    let cls = attributeDict["class"] ?? ""
+                    let indent = ClaudePageXHTMLParser
+                        .parseIndentBucket(from: cls)
+                    startBlock(.verseLine(indent: indent))
+                } else {
+                    startBlock(.paragraph)
+                }
             case "h1", "h2", "h3", "h4", "h5", "h6":
                 let level = Int(String(tag.dropFirst())) ?? 2
                 startBlock(.heading(level: level))
@@ -189,9 +247,24 @@ public struct ClaudePageXHTMLParser: Sendable {
                     pushInlineFrame()
                 }
             case "em", "i":
-                pushInlineFrame(italic: true)
+                // P-Verse-Layout: `<i lang="grc">…</i>` is the
+                // canonical shape for italic foreign-language
+                // fragments inside verse (Sonnet/Gemini prompt
+                // addendum asks for it). Pick up the language
+                // attribute on italic tags too — not just <span>.
+                let lang = attributeDict["lang"]
+                    ?? attributeDict["xml:lang"]
+                pushInlineFrame(
+                    language: lang.map { BCP47($0) },
+                    italic: true
+                )
             case "strong", "b":
-                pushInlineFrame(bold: true)
+                let lang = attributeDict["lang"]
+                    ?? attributeDict["xml:lang"]
+                pushInlineFrame(
+                    language: lang.map { BCP47($0) },
+                    bold: true
+                )
             case "span":
                 let lang = attributeDict["lang"] ?? attributeDict["xml:lang"]
                 pushInlineFrame(language: lang.map { BCP47($0) })
@@ -243,6 +316,17 @@ public struct ClaudePageXHTMLParser: Sendable {
             switch tag {
             case "doc":
                 return
+            case "div":
+                // P-Verse-Layout. Closing the verse div flushes any
+                // pending lines as a single Block.verse. Empty
+                // verse divs (no lines accumulated) emit nothing.
+                if inVerseDiv {
+                    if !pendingVerseLines.isEmpty {
+                        blocks.append(.verse(lines: pendingVerseLines))
+                    }
+                    pendingVerseLines = []
+                    inVerseDiv = false
+                }
             case "p", "h1", "h2", "h3", "h4", "h5", "h6":
                 flushTextBuffer()
                 finalizeBlock()
@@ -356,6 +440,13 @@ public struct ClaudePageXHTMLParser: Sendable {
                     id: id,
                     marker: marker,
                     runs: body
+                ))
+            case .verseLine(let indent):
+                // P-Verse-Layout. Accumulate into the pending
+                // buffer; the enclosing </div> flushes them as a
+                // single Block.verse.
+                pendingVerseLines.append(VerseLine(
+                    runs: runs, indent: indent
                 ))
             }
         }
