@@ -83,6 +83,14 @@ struct WYSIWYGFormattingToolbar: View {
             Spacer()
 
             iconButton(
+                "Remove formatting",
+                systemImage: "eraser"
+            ) {
+                send(.removeFormatting)
+            }
+            .keyboardShortcut("\\", modifiers: [.command, .shift])
+
+            iconButton(
                 "Convert quotes to smart quotes",
                 systemImage: "text.quote"
             ) {

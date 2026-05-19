@@ -109,6 +109,18 @@ struct SourceFormattingToolbar: View {
 
             Spacer()
 
+            // Strip inline tags (strong, em, code, sup/sub, span,
+            // a) from the selection. Mirrors the WYSIWYG toolbar's
+            // equivalent button so the same gesture works in both
+            // editing modes.
+            iconButton(
+                "Remove formatting",
+                systemImage: "eraser"
+            ) {
+                vm.formatRemoveFormatting()
+            }
+            .keyboardShortcut("\\", modifiers: [.command, .shift])
+
             // Document-wide transform — lives off on the right so
             // it visually separates from the per-selection wrap
             // buttons. Walks the loaded source and curlies straight

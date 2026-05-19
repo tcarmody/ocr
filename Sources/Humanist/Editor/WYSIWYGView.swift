@@ -345,6 +345,13 @@ enum WYSIWYGCommand: Equatable {
     case link(String)
     case languageTag(String)
     case smartQuotes
+    /// Strip inline formatting from the selection. Maps to
+    /// `document.execCommand('removeFormat')` + `unlink` so
+    /// `<strong>`, `<em>`, links, font styling, etc. all clear
+    /// in one click. Block elements (`<p>`, `<h2>`, list items)
+    /// keep their wrapper — execCommand can't unwrap those
+    /// without a full block-level normalization pass.
+    case removeFormatting
 
     var javaScript: String {
         switch self {
@@ -382,6 +389,8 @@ enum WYSIWYGCommand: Equatable {
             return "humanistWrapLang('\(escaped)')"
         case .smartQuotes:
             return "humanistSmartQuotes()"
+        case .removeFormatting:
+            return "humanistRemoveFormatting()"
         }
     }
 }
@@ -579,6 +588,16 @@ private func renderEnvelope(
           wrapper.setAttribute('xml:lang', code);
           wrapper.appendChild(range.extractContents());
           range.insertNode(wrapper);
+          postEdit();
+        };
+        window.humanistRemoveFormatting = function() {
+          // `removeFormat` strips inline style (bold, italic,
+          // span styling). `unlink` removes anchor wrappers.
+          // Combined, they bring the selection back to plain
+          // text inside whatever block container it lives in.
+          document.execCommand('removeFormat', false, null);
+          document.execCommand('unlink', false, null);
+          document.body.focus();
           postEdit();
         };
         window.humanistSmartQuotes = function() {
