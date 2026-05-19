@@ -586,6 +586,24 @@ enum RegionAwareReflow {
                     if abs(a.box.midY - b.box.midY) > 0.005 { return a.box.midY > b.box.midY }
                     return a.box.minX < b.box.minX
                 }
+
+                // P-Verse-Layout: before reflowing into a prose
+                // paragraph, run the high-precision verse
+                // classifier on the group. When it fires, emit
+                // Block.verse with the line-by-line geometry
+                // preserved. Only `.text` regions are eligible —
+                // headings, captions, list items, page headers /
+                // footers / footnotes have their own emission
+                // semantics that shouldn't get caught up here.
+                if region.kind == .text,
+                   let verdict = VerseDetector.detect(
+                       observations: sorted,
+                       regionBox: region.box
+                   ) {
+                    blocks.append(.verse(lines: verdict.lines))
+                    continue
+                }
+
                 // Join with soft-hyphen-aware concatenation.
                 let text = joinWithDehyphenation(sorted.map(\.text))
                 guard !text.isEmpty else { continue }
