@@ -86,6 +86,8 @@ struct ChatSettingsView: View {
     private var maxParaChars: Int = 0  // 0 → defaults to 4_000
     @AppStorage("humanist.chat.wholeBookMode")
     private var wholeBookMode: Bool = false
+    @AppStorage("humanist.chat.allowModelMemory")
+    private var allowModelMemory: Bool = false
     /// Buffer for the alias-dictionary text editor. Loaded on
     /// appear; persisted on commit (focus loss / blur).
     @State private var aliasEditorText: String = ""
@@ -246,6 +248,12 @@ struct ChatSettingsView: View {
 
             Toggle("Whole-book mode (small books only)", isOn: $wholeBookMode)
             Text("When on, skip retrieval entirely and send the full text of every chapter to the model — the model effectively sees the whole book. Auto-falls-back to retrieval when the book is larger than ~150 KB of text (a typical 300-page book fits comfortably; an encyclopedia or anthology won't). Useful for books where you want the model to reason across the whole text, not just retrieved snippets. Local Ollama: free. Cloud: cost scales with book size per question.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle("Include model's general knowledge", isOn: $allowModelMemory)
+            Text("When on, the model can optionally augment book-grounded answers with information from its own training data — useful for context the book itself doesn't provide (historical background, related works, biographical detail, definitions of terms). Responses split into two clearly-labeled sections: **From this book** with citations, then **From general knowledge** without citations. When off (default), answers are strictly book-grounded.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -348,6 +348,15 @@ final class BookChatViewModel: ObservableObject {
     private var wholeBookMode: Bool {
         UserDefaults.standard.bool(forKey: "humanist.chat.wholeBookMode")
     }
+    /// Model-memory mode toggle. When on, the system prompt
+    /// instructs the model to optionally augment book-grounded
+    /// answers with information from its own training data,
+    /// split into clearly-labeled sections so the user can
+    /// distinguish citation-backed claims from general
+    /// knowledge. Default off — strict RAG posture.
+    private var allowModelMemory: Bool {
+        UserDefaults.standard.bool(forKey: "humanist.chat.allowModelMemory")
+    }
     /// Char ceiling for whole-book mode. 150 KB ≈ 30K tokens, well
     /// inside both Gemma 4 26B (128K) and Claude Sonnet (200K)
     /// context windows when combined with the system prompt and
@@ -2209,21 +2218,20 @@ final class BookChatViewModel: ObservableObject {
         For each question, you'll receive a small set of paragraphs \
         retrieved from the book. Each paragraph is labeled \
         `[chapter:N para:M]` where N is the chapter index and M is \
-        the paragraph index within that chapter. Answer the \
-        question using only the supplied text.
+        the paragraph index within that chapter.
 
-        Cite the source of every claim inline. When the claim comes \
-        from a specific paragraph, use the full `[chapter:N para:M]` \
-        marker — the user's interface scrolls the editor to that \
-        exact paragraph on click. When the claim is broader (a \
-        whole chapter's argument), you may use the shorter \
-        `[chapter:N]` form, which selects the chapter without \
-        scrolling to a specific paragraph.
+        \(sourceUsageGuidance)
 
-        If the supplied paragraphs don't contain enough information \
-        to answer, say so plainly — don't guess. Quote brief \
-        passages when they directly support the answer; cite their \
-        location with the marker form above.
+        Cite the source of every book-grounded claim inline. When \
+        the claim comes from a specific paragraph, use the full \
+        `[chapter:N para:M]` marker — the user's interface scrolls \
+        the editor to that exact paragraph on click. When the claim \
+        is broader (a whole chapter's argument), you may use the \
+        shorter `[chapter:N]` form, which selects the chapter \
+        without scrolling to a specific paragraph.
+
+        Quote brief passages when they directly support the answer; \
+        cite their location with the marker form above.
 
         META-QUESTIONS — questions about your own context, retrieval \
         scope, or what you can see. Examples: "is this answer based on \
@@ -2252,6 +2260,59 @@ final class BookChatViewModel: ObservableObject {
         """
         guard let preamble = tocPreamble() else { return base }
         return base + "\n\n" + preamble
+    }
+
+    /// Source-usage paragraph that swaps between "strict RAG"
+    /// and "RAG + model memory" modes based on the
+    /// `humanist.chat.allowModelMemory` toggle. Kept as its own
+    /// slot in the system prompt so the rest of the prompt stays
+    /// byte-stable for prefix caching — only the middle block
+    /// flips when the user changes the setting.
+    private var sourceUsageGuidance: String {
+        if allowModelMemory {
+            return """
+            ANSWER STRUCTURE — strict two-section format when both \
+            sources contribute. The user has opted in to letting you \
+            supplement the book's content with general knowledge from \
+            your training, but the two must be clearly distinguished:
+
+            **From this book:**
+
+            (Your book-grounded answer here. Use only the supplied \
+            paragraphs. Cite every claim with `[chapter:N para:M]` or \
+            `[chapter:N]` markers. If the supplied paragraphs don't \
+            answer the question, say so plainly — don't fabricate \
+            book content.)
+
+            **From general knowledge:**
+
+            (Optional. Information from your training data that adds \
+            useful context the book doesn't provide — biographical \
+            detail, historical background, definitions of terms, \
+            related works. No citations in this section; the user \
+            knows this isn't from the book. Skip this section \
+            entirely when the book-grounded answer is complete on \
+            its own; redundant general-knowledge restatements waste \
+            space.)
+
+            If a question is entirely about the book (e.g. "summarize \
+            chapter 3"), only the "From this book" section is needed. \
+            If a question is entirely outside the book's scope (e.g. \
+            "who was Foucault's doctoral advisor?") and the supplied \
+            paragraphs are silent, lead with a brief "From this book: \
+            this book doesn't discuss that" and then provide the \
+            general-knowledge answer in its own section.
+            """
+        }
+        return """
+        Answer the question using ONLY the supplied paragraphs. \
+        Don't draw on outside knowledge, training data, or what you \
+        recall about the author or topic — if the supplied paragraphs \
+        don't contain the answer, say so plainly. The user has chosen \
+        a strict book-grounded posture for this session; including \
+        outside information here is exactly wrong even when you know \
+        the right answer.
+        """
     }
 
     /// Length guidance is a one-paragraph addendum that swaps when
