@@ -132,26 +132,92 @@ final class EditorCommandRouter: ObservableObject {
 
     // MARK: - Format / Insert / Edit menu dispatch (Phase 5a)
 
-    /// Wrap the source pane's selection with `opening` / `closing`.
-    /// Used by Format menu items (Bold, Italic, Headings 1-6, etc.).
-    func formatWrap(opening: String, closing: String) {
-        activeEditor()?.formatWrap(opening: opening, closing: closing)
+    /// Should the next format command target the WYSIWYG surface
+    /// instead of the source pane? True when the WYSIWYG pane is
+    /// visible AND currently has keyboard focus. Source wins by
+    /// default — when both panes are visible but the user
+    /// hasn't clicked into WYSIWYG, format commands stay where
+    /// they were.
+    private func shouldDispatchToWYSIWYG(_ vm: EditorViewModel) -> Bool {
+        vm.showWYSIWYGPane && vm.wysiwygHasFocus
     }
 
-    /// Apply a casing transform to the source pane's selection.
+    /// Translate a "wrap with opening/closing tag pair" request
+    /// into the equivalent semantic `WYSIWYGCommand`, when one
+    /// exists. Format menu items use raw HTML wraps (`<strong>`
+    /// / `</strong>`); the WYSIWYG bridge takes higher-level
+    /// commands. Returns nil for wraps without a WYSIWYG
+    /// equivalent — caller falls back to the source path.
+    private func wysiwygEquivalent(forWrapOpening opening: String) -> WYSIWYGCommand? {
+        switch opening {
+        case "<strong>":           return .bold
+        case "<em>":               return .italic
+        case "<code>":             return .inlineCode
+        case "<sup>":              return .superscript
+        case "<sub>":              return .`subscript`
+        case let s where s.hasPrefix("<h"):
+            guard let levelChar = s.dropFirst(2).first,
+                  let n = Int(String(levelChar)),
+                  (1...6).contains(n)
+            else { return nil }
+            return .heading(n)
+        case let s where s.hasPrefix("<blockquote>"):
+            return .blockquote
+        default:
+            return nil
+        }
+    }
+
+    /// Wrap the active pane's selection with `opening` / `closing`.
+    /// Used by Format menu items (Bold, Italic, Headings 1-6, etc.).
+    /// Routes to WYSIWYG when that pane is focused and the wrap
+    /// has a known semantic equivalent; falls back to source for
+    /// wraps the WYSIWYG bridge can't express (custom tags, link,
+    /// language span — those use Insert menu items with their
+    /// own routes).
+    func formatWrap(opening: String, closing: String) {
+        guard let vm = activeEditor() else { return }
+        if shouldDispatchToWYSIWYG(vm),
+           let cmd = wysiwygEquivalent(forWrapOpening: opening) {
+            vm.wysiwygCommand = WYSIWYGCommandRequest(cmd)
+            return
+        }
+        vm.formatWrap(opening: opening, closing: closing)
+    }
+
+    /// Apply a casing transform to the active pane's selection.
+    /// Casing transforms are source-pane-only today — the WYSIWYG
+    /// JS bridge doesn't have a transformSelection helper.
+    /// Documented limitation; future expansion can add it.
     func formatTransform(_ kind: EditorViewModel.FormatRequest.TransformKind) {
         activeEditor()?.formatTransform(kind)
     }
 
-    /// Strip every tag from the source pane's selection.
+    /// Strip inline formatting from the active pane's selection.
+    /// Routes to WYSIWYG when that pane is focused — the bridge's
+    /// `removeFormatting` command runs execCommand('removeFormat')
+    /// + execCommand('unlink'). Falls back to source's tag-strip
+    /// otherwise.
     func formatRemoveFormatting() {
-        activeEditor()?.formatRemoveFormatting()
+        guard let vm = activeEditor() else { return }
+        if shouldDispatchToWYSIWYG(vm) {
+            vm.wysiwygCommand = WYSIWYGCommandRequest(.removeFormatting)
+            return
+        }
+        vm.formatRemoveFormatting()
     }
 
     /// Convert straight quotes to typographic curly quotes
-    /// document-wide.
+    /// document-wide. Routes to WYSIWYG when that pane is focused
+    /// — the bridge walks every text node in the body. Source
+    /// path does the same on the raw XHTML buffer.
     func formatSmartQuotes() {
-        activeEditor()?.smartQuoteSourceText()
+        guard let vm = activeEditor() else { return }
+        if shouldDispatchToWYSIWYG(vm) {
+            vm.wysiwygCommand = WYSIWYGCommandRequest(.smartQuotes)
+            return
+        }
+        vm.smartQuoteSourceText()
     }
 
     /// Insert a closing tag at the source pane's cursor for the most
