@@ -496,6 +496,14 @@ final class EditorViewModel: ObservableObject {
             // R-Custom-Styles: pick up the user's previously applied
             // styling (if any) from the book.css sentinel.
             self.loadBookStyle()
+            // Pre-warm the chat VM regardless of `showChatPane`
+            // so its background embedding-index build runs in
+            // parallel with the user editing. By the time they
+            // toggle the chat pane open, the first send won't
+            // pay the 10–60s cold-start delay. The VM init
+            // itself is cheap (BM25 lazy; embedding build is
+            // background-task on init).
+            self.ensureChatViewModel()
         } catch {
             self.state = .failed(error.localizedDescription)
         }

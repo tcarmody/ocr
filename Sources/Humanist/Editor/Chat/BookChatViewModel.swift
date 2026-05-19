@@ -647,33 +647,42 @@ final class BookChatViewModel: ObservableObject {
             ],
             thinking: .disabled
         )
+        // Append an empty draft assistant message so the user sees
+        // text land as soon as the first SSE delta arrives instead
+        // of waiting ~15-25s on Sonnet for the full response.
+        let draftId = appendDraftAssistant()
+        var sawFirstDelta = false
         do {
-            let response = try await client.send(request)
-            try Task.checkCancellation()
-            let raw = response.firstText() ?? ""
-            let cited = parseCitations(
-                in: raw, allowedHits: allowedHits
-            )
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: cited.cleaned,
-                citations: cited.citations,
-                retrievalDetail: Self.makeRetrievalDetail(
-                    hits: allowedHits
-                ),
-            ))
+            let stream = client.sendStream(request)
+            for try await event in stream {
+                try Task.checkCancellation()
+                switch event {
+                case .textDelta(let chunk):
+                    if !sawFirstDelta {
+                        sawFirstDelta = true
+                        // Flip isThinking off as soon as text starts
+                        // landing — the draft message's growing text
+                        // takes over the "something is happening"
+                        // signal and we don't want two spinners.
+                        isThinking = false
+                    }
+                    appendToDraft(id: draftId, text: chunk)
+                case .messageStop:
+                    break
+                }
+            }
+            finalizeDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
+            removeDraft(id: draftId)
             return
         } catch let error as AnthropicAPIError {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         } catch {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         }
     }
 
@@ -686,37 +695,94 @@ final class BookChatViewModel: ObservableObject {
             streamTask = nil
         }
         let model = ollamaModel
+        let draftId = appendDraftAssistant()
+        var sawFirstDelta = false
         do {
-            let raw = try await ollama.chat(
+            let stream = ollama.chatStream(
                 model: model,
                 system: systemPrompt,
                 userMessage: userPrompt
             )
-            try Task.checkCancellation()
-            let cited = parseCitations(
-                in: raw, allowedHits: allowedHits
-            )
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: cited.cleaned,
-                citations: cited.citations,
-                retrievalDetail: Self.makeRetrievalDetail(
-                    hits: allowedHits
-                ),
-            ))
+            for try await delta in stream {
+                try Task.checkCancellation()
+                if !sawFirstDelta {
+                    sawFirstDelta = true
+                    isThinking = false
+                }
+                appendToDraft(id: draftId, text: delta)
+            }
+            finalizeDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
+            removeDraft(id: draftId)
             return
         } catch let error as OllamaError {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         } catch {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         }
+    }
+
+    // MARK: - Streaming draft helpers
+
+    /// Append an empty assistant message and return its id. The
+    /// streaming send paths grow this message's `text` as deltas
+    /// arrive, then finalize it (parse citations + persist) at
+    /// stream end. Same id remains stable throughout so SwiftUI
+    /// LazyVStack can keep its view identity.
+    private func appendDraftAssistant() -> UUID {
+        let draft = BookChatMessage(role: .assistant, text: "")
+        messages.append(draft)
+        return draft.id
+    }
+
+    /// Append `text` to the in-flight draft message. Does
+    /// nothing if the draft was somehow removed mid-stream
+    /// (cancel race) — that's the safe behavior.
+    private func appendToDraft(id: UUID, text: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        messages[idx].text += text
+    }
+
+    /// Stream completed cleanly. Run citation parse over the
+    /// accumulated text, swap in the cleaned version + parsed
+    /// citations + retrieval detail, then persist the transcript.
+    private func finalizeDraft(
+        id: UUID, allowedHits: [HybridRetriever.Hit]
+    ) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let raw = messages[idx].text
+        let cited = parseCitations(in: raw, allowedHits: allowedHits)
+        messages[idx].text = cited.cleaned
+        messages[idx].citations = cited.citations
+        messages[idx].retrievalDetail = Self.makeRetrievalDetail(
+            hits: allowedHits
+        )
+        persist()
+    }
+
+    /// Replace the in-flight draft with an error message.
+    /// Preserves the message id so the row doesn't flicker.
+    private func replaceDraftWithError(id: UUID, message: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        messages[idx].text = "Couldn't answer that — \(message)."
+        messages[idx].citations = []
+        persist()
+    }
+
+    /// Drop the draft entirely. Used on cancellation so a
+    /// half-typed answer doesn't linger in the transcript.
+    private func removeDraft(id: UUID) {
+        messages.removeAll { $0.id == id }
     }
 
     private func appendAndPersist(_ message: BookChatMessage) {

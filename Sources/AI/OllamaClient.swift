@@ -61,6 +61,121 @@ public actor OllamaClient {
         }
     }
 
+    /// Streaming chat. Yields incremental `content` deltas as
+    /// Ollama emits them. Stream terminates after the daemon
+    /// signals `done: true`. Cancellation propagates: cancelling
+    /// the consuming Task terminates the URLSession bytes pull.
+    ///
+    /// Wire format is NDJSON — one JSON object per line; each
+    /// carries `{message: {content: "…"}, done: false}` for
+    /// deltas and `{done: true, …}` for the terminal frame.
+    /// Lines arrive incrementally so we can't decode the body
+    /// in one shot.
+    public nonisolated func chatStream(
+        model: String,
+        system: String,
+        userMessage: String
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                await self.runChatStream(
+                    model: model,
+                    system: system,
+                    userMessage: userMessage,
+                    continuation: continuation
+                )
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func runChatStream(
+        model: String,
+        system: String,
+        userMessage: String,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async {
+        let body = ChatRequestBody(
+            model: model,
+            messages: [
+                Message(role: "system", content: system),
+                Message(role: "user", content: userMessage),
+            ],
+            stream: true
+        )
+        let request: URLRequest
+        do {
+            request = try buildRequest(path: "/api/chat", body: body)
+        } catch {
+            continuation.finish(throwing: error)
+            return
+        }
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch let urlError as URLError where urlError.code == .cannotConnectToHost
+                                             || urlError.code == .networkConnectionLost {
+            continuation.finish(throwing: OllamaError.daemonNotReachable)
+            return
+        } catch {
+            continuation.finish(throwing: OllamaError.network(error))
+            return
+        }
+        guard let http = response as? HTTPURLResponse else {
+            continuation.finish(throwing: OllamaError.decode("non-HTTP response"))
+            return
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            // Drain the body to surface the error message — same
+            // posture as sendOnce for the non-streaming path.
+            var collected = Data()
+            do {
+                for try await byte in bytes { collected.append(byte) }
+            } catch { /* ignore — main error is the status code */ }
+            let bodyString = String(data: collected, encoding: .utf8) ?? ""
+            if http.statusCode == 404, bodyString.contains("not found") {
+                continuation.finish(throwing: OllamaError.modelNotPulled(name: model))
+            } else {
+                continuation.finish(throwing: OllamaError.serverError(
+                    status: http.statusCode,
+                    message: bodyString.isEmpty ? nil : bodyString
+                ))
+            }
+            return
+        }
+        // NDJSON pull. URLSession.AsyncBytes.lines gives us
+        // one NDJSON object per line; decode each and yield the
+        // content delta. Empty content (a heartbeat frame from
+        // the daemon, or the terminal `done: true` envelope
+        // with no message content) is skipped.
+        do {
+            for try await line in bytes.lines {
+                if Task.isCancelled {
+                    continuation.finish()
+                    return
+                }
+                guard !line.isEmpty,
+                      let lineData = line.data(using: .utf8) else {
+                    continue
+                }
+                let frame = try Self.decoder.decode(
+                    StreamFrame.self, from: lineData
+                )
+                if let content = frame.message?.content, !content.isEmpty {
+                    continuation.yield(content)
+                }
+                if frame.done == true {
+                    continuation.finish()
+                    return
+                }
+            }
+            continuation.finish()
+        } catch {
+            continuation.finish(throwing: OllamaError.network(error))
+        }
+    }
+
     /// True when the daemon is reachable. Cheap probe — used by the
     /// setup wizard and the chat pane's "is Ollama up?" banner.
     public func ping() async -> Bool {
@@ -197,6 +312,18 @@ public actor OllamaClient {
         let model: String
         let message: Message
         let done: Bool
+    }
+
+    /// One NDJSON frame from `/api/chat` with `stream: true`. The
+    /// daemon emits both delta frames (`message.content` carries
+    /// the incremental text, `done: false`) and a terminal
+    /// envelope (`done: true`, often with no message content).
+    /// `message` is optional so the terminal frame parses
+    /// cleanly. `done` is optional so heartbeat frames (rare but
+    /// possible) don't break decode.
+    private struct StreamFrame: Codable {
+        let message: Message?
+        let done: Bool?
     }
 
     private struct EmbedRequestBody: Codable {

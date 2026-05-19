@@ -91,10 +91,15 @@ final class ReaderViewModel: ObservableObject {
             self.toc = ReaderTOC.build(from: opened)
             self.spineIndex = 0
             self.state = .ready
-            // Persisted `showChatPane = true` from a prior session
-            // tried to build the chat VM during init, but `book`
-            // was nil then. Build it now that the book is loaded.
-            if showChatPane { ensureChatViewModel() }
+            // Pre-warm the chat VM regardless of `showChatPane`
+            // so its background embedding-index build runs in
+            // parallel with the user reading. By the time they
+            // ⌥⌘C to ask a question, the index is ready and
+            // the first send doesn't pay the 10–60s cold-start
+            // delay. The transcript / BM25 / entity-index init
+            // is cheap; the embedding build is what we're
+            // pre-warming.
+            ensureChatViewModel()
             // Hash + restore in the background. Don't gate the
             // reader window on this; the user can start reading
             // immediately and we'll jump them to the saved
