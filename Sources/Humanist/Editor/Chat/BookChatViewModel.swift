@@ -1561,15 +1561,49 @@ final class BookChatViewModel: ObservableObject {
     ) -> String {
         guard !hits.isEmpty else {
             return """
+            Retrieval scope: 0 paragraphs (no match found).
+
             (No paragraphs in this book matched the question. Answer \
             from the chapter list alone if possible; otherwise say \
             you can't find a match.)
             """
         }
-        if paragraphMode {
-            return renderParagraphContext(hits: hits)
+        let scope = retrievalScopeSummary(hits: hits, paragraphMode: paragraphMode)
+        let body = paragraphMode
+            ? renderParagraphContext(hits: hits)
+            : renderChapterContext(hits: hits)
+        return scope + "\n\n" + body
+    }
+
+    /// One-line summary the model leans on when answering
+    /// meta-questions about its retrieval scope ("is this answer
+    /// based on the whole book or just one chapter?"). Surfaces
+    /// the hit count, the distinct chapter list, and — when the
+    /// book has chapters not in the retrieval — a hint that the
+    /// answer doesn't draw on those.
+    private func retrievalScopeSummary(
+        hits: [HybridRetriever.Hit], paragraphMode: Bool
+    ) -> String {
+        let chapters = Array(Set(hits.map(\.chapterIdx))).sorted()
+        let chapterTitles = chapters.map { idx -> String in
+            let title = chapterTitle(forChapterIndex: idx)
+                ?? "Chapter \(idx + 1)"
+            return "[chapter:\(idx)] \(title)"
         }
-        return renderChapterContext(hits: hits)
+        let coverageNote: String = {
+            let total = book.spine.count
+            guard total > 0 else { return "" }
+            if chapters.count >= total {
+                return " (every chapter of this book)"
+            }
+            let missing = total - chapters.count
+            return " (\(missing) other chapter\(missing == 1 ? "" : "s") not in this retrieval)"
+        }()
+        let grain = paragraphMode ? "paragraphs" : "chapters"
+        return """
+        Retrieval scope: \(hits.count) \(grain) across \(chapters.count) chapter\(chapters.count == 1 ? "" : "s")\(coverageNote). \
+        Chapters represented: \(chapterTitles.joined(separator: "; ")).
+        """
     }
 
     /// Render paragraph-level hits grouped by chapter so the model
@@ -1841,6 +1875,29 @@ final class BookChatViewModel: ObservableObject {
         to answer, say so plainly — don't guess. Quote brief \
         passages when they directly support the answer; cite their \
         location with the marker form above.
+
+        META-QUESTIONS — questions about your own context, retrieval \
+        scope, or what you can see. Examples: "is this answer based on \
+        just this chapter or the whole book?", "which chapters did you \
+        look at?", "do you have access to the full text?", "how was \
+        this retrieved?". Answer these honestly and concretely using \
+        the retrieval-scope line and chapter list at the top of each \
+        message's context block:
+
+        - You always receive a RETRIEVAL SCOPE summary in the user \
+          message ("Retrieval scope: N paragraphs across M chapters …"). \
+          Use that to describe what your most recent answer was based on.
+        - You receive a table of contents covering the WHOLE book; \
+          retrieved paragraphs are a SUBSET selected by the user's \
+          interface as the most relevant to the question. You don't \
+          have access to the full text of un-retrieved chapters.
+        - When the answer drew on paragraphs from one chapter, say so \
+          ("Based on chapter N only"). When it spanned multiple \
+          chapters, name them. When relevant context might exist in \
+          chapters that weren't retrieved, say so explicitly so the \
+          user can ask a more targeted follow-up.
+        - Meta-questions don't need `[chapter:N]` citations — they're \
+          about the conversation, not the book.
 
         \(lengthGuidance)
         """
