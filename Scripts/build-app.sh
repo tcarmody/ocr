@@ -181,18 +181,6 @@ for lang in eng grc lat heb; do
 done
 log "Bundled traineddata: $(ls "$TESSDATA_DEST" 2>/dev/null | tr '\n' ' ')"
 
-# Pin to the developer's Developer ID Application certificate by
-# SHA-1 hash. Hash is unambiguous — name-based selection breaks when
-# the keychain has multiple certs of the same name (e.g. one valid +
-# one revoked). resolve_signing_identity short-circuits when
-# CODESIGN_IDENTITY_RESOLVED is already set, so this becomes the active
-# identity for signed builds. HUMANIST_ADHOC_SIGN=1 still wins —
-# leaving RESOLVED empty lets the resolver's ad-hoc branch fire.
-if [[ "${HUMANIST_ADHOC_SIGN:-0}" != "1" ]]; then
-    CODESIGN_IDENTITY_RESOLVED="21F5CB1F4F74DFC9D58BD2D3C454E9B2F0C716A2"
-    log "Pinned signing identity: $CODESIGN_IDENTITY_RESOLVED (Developer ID Application)"
-fi
-
 log "Signing"
 resolve_signing_identity
 ENTITLEMENTS="$REPO_ROOT/BundleAssets/$APP_NAME.entitlements"
