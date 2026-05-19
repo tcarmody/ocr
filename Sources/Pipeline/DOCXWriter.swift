@@ -125,6 +125,28 @@ public enum DOCXWriter {
 
         case .anchor:
             break // page-break anchors have no visible content in DOCX
+
+        case .verse(let lines):
+            // DOCX has no first-class verse element; emit each line
+            // as its own paragraph with a left indent proportional
+            // to the verse line's indent bucket. 18 pt per bucket
+            // gives a visible step on default Word/Pages spacing.
+            for line in lines {
+                let str = NSMutableAttributedString(
+                    attributedString: inlineAttr(line.runs, base: bodyFont)
+                )
+                applyParagraphStyle(
+                    str,
+                    spacingAfter: 0,
+                    firstLineIndent: 0,
+                    headIndent: CGFloat(line.indent) * 18
+                )
+                str.append(newline)
+                out.append(str)
+            }
+            // Blank line to separate the verse block from following
+            // prose, matching the prose-paragraph spacing rhythm.
+            paragraph(out, "", font: bodyFont, spacingAfter: 4)
         }
     }
 
@@ -210,12 +232,16 @@ public enum DOCXWriter {
         _ str: NSMutableAttributedString,
         alignment: NSTextAlignment = .natural,
         spacingBefore: CGFloat = 0,
-        spacingAfter: CGFloat = 0
+        spacingAfter: CGFloat = 0,
+        firstLineIndent: CGFloat = 0,
+        headIndent: CGFloat = 0
     ) {
         let ps = NSMutableParagraphStyle()
         ps.alignment = alignment
         ps.paragraphSpacingBefore = spacingBefore
         ps.paragraphSpacing = spacingAfter
+        ps.firstLineHeadIndent = firstLineIndent
+        ps.headIndent = headIndent
         str.addAttribute(.paragraphStyle, value: ps,
                          range: NSRange(location: 0, length: str.length))
     }

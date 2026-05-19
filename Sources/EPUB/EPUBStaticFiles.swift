@@ -33,5 +33,15 @@ enum EPUBStaticFiles {
         th, td { border: 1px solid #ccc; padding: 0.3em 0.5em; text-align: left; vertical-align: top; }
         th { background: #f5f5f5; font-weight: bold; }
         caption { font-size: 0.85em; font-style: italic; margin-bottom: 0.4em; }
+        .verse { margin: 1em 0; }
+        .verse .line { margin: 0; text-indent: 0; padding-left: 0; }
+        .verse .line.indent-1 { padding-left: 1em; }
+        .verse .line.indent-2 { padding-left: 2em; }
+        .verse .line.indent-3 { padding-left: 3em; }
+        .verse .line.indent-4 { padding-left: 4em; }
+        .verse .line.indent-5 { padding-left: 5em; }
+        .verse .line.indent-6 { padding-left: 6em; }
+        .verse .line.indent-7 { padding-left: 7em; }
+        .verse .line.indent-8 { padding-left: 8em; }
         """
 }

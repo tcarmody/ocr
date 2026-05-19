@@ -949,6 +949,14 @@ final class EditorViewModel: ObservableObject {
                 if !rowLines.isEmpty {
                     lines.append(rowLines.joined(separator: "\n"))
                 }
+            case .verse(let vlines):
+                // Preserve indent in plain text — two spaces per
+                // indent bucket — so the Re-OCR sheet preview
+                // still reads as poetry.
+                for line in vlines {
+                    let pad = String(repeating: " ", count: line.indent * 2)
+                    lines.append(pad + line.runs.map(\.text).joined())
+                }
             case .anchor:
                 continue
             }

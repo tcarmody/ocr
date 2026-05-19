@@ -598,6 +598,14 @@ public actor PDFToEPUBPipeline {
             guard let corrected = correctedRun(runs, corrector: corrector)
             else { return block }
             return .heading(level: level, runs: [corrected])
+        case .verse:
+            // P-Verse-Layout: dictionary corrector skips verse
+            // outright. Poetry routinely uses archaic spellings,
+            // dialect, coined words, and foreign-language
+            // fragments that the English wordlist would treat as
+            // garblings. Same posture as the italic-skip guard
+            // for prose: don't "correct" what isn't broken.
+            return block
         case .anchor, .figure, .table:
             return block
         }
@@ -2240,6 +2248,12 @@ public actor PDFToEPUBPipeline {
                     out += " caption=\"\(captionText)\""
                 }
                 out += "\n"
+            case .verse(let lines):
+                out += "[\(i)] VERSE lines=\(lines.count)\n"
+                for (j, line) in lines.enumerated() {
+                    let text = line.runs.map(\.text).joined()
+                    out += "      [\(j)] indent=\(line.indent): \(text)\n"
+                }
             }
             out += "\n"
         }
@@ -2340,6 +2354,13 @@ public actor PDFToEPUBPipeline {
         switch block {
         case .anchor, .figure, .table: return true
         case .heading, .paragraph: return false
+        // P-Verse-Layout: bridging is a prose-only concern. A
+        // verse block sitting between two prose paragraphs
+        // shouldn't be silently skipped over for sentence merging
+        // — that would mash the surrounding prose together
+        // *across* a stanza. Return false so the verse block
+        // becomes a hard boundary.
+        case .verse: return false
         }
     }
 

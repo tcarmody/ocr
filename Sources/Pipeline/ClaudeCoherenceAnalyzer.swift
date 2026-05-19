@@ -211,6 +211,8 @@ public struct ClaudeCoherenceAnalyzer: Sendable {
                         row.flatMap { $0.runs.map(\.text) }
                     }
                     return cellTexts + caption.map(\.text)
+                case .verse(let lines):
+                    return lines.flatMap { $0.runs.map(\.text) }
                 case .anchor:
                     return []
                 }
@@ -318,6 +320,17 @@ public struct ClaudeCoherenceAnalyzer: Sendable {
                 }
             }
             return .table(rows: updatedRows, caption: applyToRuns(caption, accepted: accepted))
+        case .verse(let lines):
+            // Coherence pass corrections (typo fixes, etc.) apply
+            // line-by-line — preserve the indent bucket so the
+            // layout isn't reset by post-OCR cleanup.
+            let updatedLines = lines.map { line in
+                VerseLine(
+                    runs: applyToRuns(line.runs, accepted: accepted),
+                    indent: line.indent
+                )
+            }
+            return .verse(lines: updatedLines)
         case .anchor:
             return block
         }

@@ -98,6 +98,22 @@ struct XHTMLWriter {
                     rows: rows, caption: caption,
                     defaultLanguage: defaultLanguage
                 )
+            case .verse(let lines):
+                // P-Verse-Layout. Emit <div class="verse"> with one
+                // <p class="line indent-N"> per visual line. CSS in
+                // book.css maps each indent bucket to a padding-left
+                // that scales with the reader's font size.
+                body += "<div class=\"verse\">\n"
+                for line in lines {
+                    let cls = line.indent > 0
+                        ? "line indent-\(line.indent)"
+                        : "line"
+                    let runs = renderRuns(
+                        line.runs, parentLanguage: defaultLanguage
+                    )
+                    body += "<p class=\"\(cls)\">\(runs)</p>\n"
+                }
+                body += "</div>\n"
             }
         }
 

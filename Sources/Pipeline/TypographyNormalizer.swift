@@ -73,6 +73,11 @@ public enum TypographyNormalizer {
                 }
             }
             return .table(rows: normalizedRows, caption: normalizeRuns(caption))
+        case .verse(let lines):
+            let normalizedLines = lines.map { line in
+                VerseLine(runs: normalizeRuns(line.runs), indent: line.indent)
+            }
+            return .verse(lines: normalizedLines)
         case .anchor:
             return block
         }

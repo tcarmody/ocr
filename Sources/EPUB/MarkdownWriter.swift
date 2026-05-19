@@ -86,6 +86,23 @@ public enum MarkdownWriter {
                 out.append("\n")
             case .anchor:
                 continue
+            case .verse(let lines):
+                // Markdown has no native verse construct. Use a
+                // hard-break ("  \n") suffix per line so most
+                // renderers preserve line breaks within a stanza,
+                // plus leading spaces for indent. Wrap the whole
+                // thing in a blank-line-separated paragraph.
+                for line in lines {
+                    let text = renderRuns(line.runs)
+                    if text.isEmpty {
+                        out.append("\n")
+                        continue
+                    }
+                    out.append(String(repeating: " ", count: line.indent * 2))
+                    out.append(text)
+                    out.append("  \n")
+                }
+                out.append("\n")
             }
         }
         if !chapter.footnotes.isEmpty {

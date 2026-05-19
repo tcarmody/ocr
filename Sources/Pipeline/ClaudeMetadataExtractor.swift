@@ -129,6 +129,9 @@ public struct ClaudeMetadataExtractor: Sendable {
                     text = runs.map(\.text).joined()
                 case .figure(_, _, let caption):
                     text = caption.map(\.text).joined()
+                case .verse(let lines):
+                    text = lines.flatMap(\.runs).map(\.text)
+                        .joined(separator: " ")
                 case .anchor, .table:
                     continue
                 }

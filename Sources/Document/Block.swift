@@ -31,4 +31,17 @@ public enum Block: Sendable, Equatable, Codable {
     /// ⇒ no caption element). The first row's `isHeader` flags drive
     /// `<thead>` placement; remaining rows go in `<tbody>`.
     case table(rows: [[TableCell]], caption: [InlineRun])
+
+    /// P-Verse-Layout. Free-verse / irregular-poetry region. Emitted
+    /// by `VerseDetector` when the region's geometry triggers the
+    /// high-precision verse classifier (ragged right margin,
+    /// irregular leading indents, short lines). Each `VerseLine`
+    /// preserves its left-margin indent bucket so the XHTML output
+    /// can recreate the printed layout via CSS.
+    ///
+    /// Does NOT collapse lines into paragraphs — the whole point is
+    /// that line breaks and indentation are semantic. The
+    /// `RegionAwareReflow` / `ParagraphReflow` prose-paragraph
+    /// joining is bypassed for these regions.
+    case verse(lines: [VerseLine])
 }

@@ -510,6 +510,14 @@ public enum ChapterSplitter {
                 if !joined.isEmpty { return true }
             case .figure, .table:
                 return true
+            case .verse(let lines):
+                // Any non-empty verse line counts.
+                let any = lines.contains { line in
+                    !line.runs.map(\.text).joined()
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                }
+                if any { return true }
             }
         }
         return false
@@ -564,6 +572,12 @@ public enum ChapterSplitter {
                         for r in cell.runs {
                             if let id = r.noterefId { ids.insert(id) }
                         }
+                    }
+                }
+            case .verse(let lines):
+                for line in lines {
+                    for r in line.runs {
+                        if let id = r.noterefId { ids.insert(id) }
                     }
                 }
             case .anchor:

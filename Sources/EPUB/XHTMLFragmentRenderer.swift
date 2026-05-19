@@ -68,6 +68,17 @@ public enum XHTMLFragmentRenderer {
                     out += "</tr>"
                 }
                 out += "</tbody></table>\n"
+            case .verse(let lines):
+                out += "<div class=\"verse\">"
+                for line in lines {
+                    let cls = line.indent > 0
+                        ? "line indent-\(line.indent)"
+                        : "line"
+                    out += "<p class=\"\(cls)\">"
+                    out += renderRuns(line.runs, parentLanguage: language)
+                    out += "</p>"
+                }
+                out += "</div>\n"
             }
         }
         return out

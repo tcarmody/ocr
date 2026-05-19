@@ -111,6 +111,18 @@ public struct AppleFoundationModelClassifier: SemanticChapterClassifier {
                 if collected.count >= maxChars {
                     return String(collected.prefix(maxChars))
                 }
+            case .verse(let lines):
+                // Verse contributes to the chapter signal too —
+                // a poetry-heavy chapter shouldn't classify as
+                // bibliography or front-matter just because the
+                // prose content is sparse. Join lines with spaces
+                // for the bag-of-words classifier input.
+                let text = lines.flatMap(\.runs).map(\.text).joined(separator: " ")
+                if !collected.isEmpty { collected += " " }
+                collected += text
+                if collected.count >= maxChars {
+                    return String(collected.prefix(maxChars))
+                }
             case .anchor, .figure, .table:
                 continue
             }

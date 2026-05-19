@@ -503,7 +503,7 @@ public enum TOCDrivenSplitter {
     private static func hasSubstantiveContent(_ blocks: [Block]) -> Bool {
         for block in blocks {
             switch block {
-            case .heading, .paragraph, .figure, .table:
+            case .heading, .paragraph, .figure, .table, .verse:
                 return true
             case .anchor:
                 continue
@@ -552,6 +552,12 @@ public enum TOCDrivenSplitter {
                         for r in cell.runs {
                             if let id = r.noterefId { ids.insert(id) }
                         }
+                    }
+                }
+            case .verse(let lines):
+                for line in lines {
+                    for r in line.runs {
+                        if let id = r.noterefId { ids.insert(id) }
                     }
                 }
             case .anchor:

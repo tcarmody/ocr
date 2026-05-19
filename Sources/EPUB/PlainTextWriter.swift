@@ -75,6 +75,20 @@ public enum PlainTextWriter {
                 }
             case .anchor:
                 continue
+            case .verse(let lines):
+                for line in lines {
+                    let text = line.runs.map(\.text).joined()
+                    if text.isEmpty {
+                        out.append("\n")
+                        continue
+                    }
+                    // Preserve indent in plain-text by leading
+                    // spaces — two per indent bucket.
+                    out.append(String(repeating: " ", count: line.indent * 2))
+                    out.append(text)
+                    out.append("\n")
+                }
+                out.append("\n")
             }
         }
         if !chapter.footnotes.isEmpty {

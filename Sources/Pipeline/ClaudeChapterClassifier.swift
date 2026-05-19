@@ -127,6 +127,14 @@ public struct ClaudeChapterClassifier: Sendable {
                 if collected.count >= maxChars {
                     return String(collected.prefix(maxChars))
                 }
+            case .verse(let lines):
+                let text = lines.flatMap(\.runs).map(\.text)
+                    .joined(separator: " ")
+                if !collected.isEmpty { collected += " " }
+                collected += text
+                if collected.count >= maxChars {
+                    return String(collected.prefix(maxChars))
+                }
             case .anchor, .figure, .table:
                 continue
             }

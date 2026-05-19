@@ -90,6 +90,16 @@ public enum HTMLWriter {
                 renderTable(rows: rows, caption: caption, into: &out)
             case .anchor:
                 continue
+            case .verse(let lines):
+                out.append("  <div class=\"verse\">\n")
+                for line in lines {
+                    let cls = line.indent > 0
+                        ? "line indent-\(line.indent)"
+                        : "line"
+                    let body = renderRuns(line.runs)
+                    out.append("    <p class=\"\(cls)\">\(body)</p>\n")
+                }
+                out.append("  </div>\n")
             }
         }
         if !chapter.footnotes.isEmpty {
