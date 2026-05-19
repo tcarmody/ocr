@@ -227,10 +227,12 @@ public enum VerseDetector {
 
     /// Build the `[InlineRun]` for one verse line. Splits at
     /// script boundaries — consecutive Greek codepoints get
-    /// `language = BCP47("grc")`; everything else stays untagged
-    /// (defaulting to the parent block language). Italic /
-    /// bold flags propagate when *every* observation in the line
-    /// reports them (same strict-consensus posture as
+    /// `language = grc` (polytonic) or `el` (monotonic); Latin
+    /// segments are routed through `LatinLanguageDetector` for
+    /// per-language tagging among French / Spanish / German /
+    /// Italian / English. Italic / bold flags propagate when
+    /// *every* observation in the line reports them (same
+    /// strict-consensus posture as
     /// `RegionAwareReflow.blockForRegion`).
     static func makeRuns(for line: Line) -> [InlineRun] {
         let italic = !line.observations.isEmpty
@@ -256,18 +258,24 @@ public enum VerseDetector {
                 || ch.isWhitespace {
                 currentChars.append(ch)
             } else {
+                let segText = String(currentChars)
                 segments.append((
-                    String(currentChars),
-                    Self.language(for: currentScript)
+                    segText,
+                    Self.languageFor(
+                        script: currentScript, text: segText
+                    )
                 ))
                 currentChars = [ch]
                 currentScript = script
             }
         }
         if !currentChars.isEmpty {
+            let segText = String(currentChars)
             segments.append((
-                String(currentChars),
-                Self.language(for: currentScript)
+                segText,
+                Self.languageFor(
+                    script: currentScript, text: segText
+                )
             ))
         }
         return segments.map { (segText, lang) in
@@ -299,14 +307,43 @@ public enum VerseDetector {
         return .other
     }
 
-    static func language(for script: Script) -> BCP47? {
+    /// Resolve the BCP-47 language for a script-grouped segment.
+    /// Greek splits into `grc` (polytonic — any codepoint in the
+    /// Greek Extended block U+1F00–U+1FFF) vs `el` (monotonic —
+    /// only base Greek codepoints). Latin defers to
+    /// `LatinLanguageDetector`. Other scripts stay untagged.
+    static func languageFor(script: Script, text: String) -> BCP47? {
         switch script {
-        case .greek: return BCP47("grc")
-        // Latin / other: leave nil so the parent block's lang
-        // attribute applies. Italian / Latin / French distinction
-        // requires lexicon lookup — out of scope for v1-narrow.
-        case .latin, .other: return nil
+        case .greek:
+            return greekVariant(of: text)
+        case .latin:
+            return LatinLanguageDetector.detect(text)
+        case .other:
+            return nil
         }
+    }
+
+    /// Distinguish ancient (polytonic) from modern (monotonic)
+    /// Greek by codepoint range. Any character in the Greek
+    /// Extended block (U+1F00–U+1FFF) — which holds
+    /// pre-composed polytonic letters like ἀ, ὖ, ί — promotes
+    /// the segment to `grc`. A segment in only the base Greek
+    /// block (U+0370–U+03FF) without polytonic marks defaults
+    /// to `el`.
+    ///
+    /// Caveat documented in PLANS P-Verse-Layout: when OCR
+    /// drops diacritics on an ancient text (Vision's typical
+    /// behavior), polytonic Greek will look monotonic to this
+    /// detector and mis-tag as `el`. The reverse failure (a
+    /// modern Greek text mis-tagged as `grc`) can't happen
+    /// because modern Greek doesn't use the Extended block.
+    static func greekVariant(of text: String) -> BCP47 {
+        for scalar in text.unicodeScalars {
+            if (0x1F00...0x1FFF).contains(scalar.value) {
+                return BCP47("grc")
+            }
+        }
+        return BCP47("el")
     }
 
     // MARK: - Types

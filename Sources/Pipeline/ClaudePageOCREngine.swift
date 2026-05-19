@@ -429,10 +429,14 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         starting roughly one-third of the way across the column = \
         `<p class="line indent-3">`.
         - Preserve italic emphasis on foreign-language fragments with \
-        <i lang="XX">…</i>, using the same BCP-47 codes listed above. This \
-        replaces the prose-side <em>+<span lang> pattern for verse \
-        specifically — verse lines pack denser language mixing and the \
-        combined element keeps the markup readable.
+        <i lang="XX">…</i>. This replaces the prose-side <em>+<span lang> \
+        pattern for verse specifically — verse lines pack denser language \
+        mixing and the combined element keeps the markup readable. Use \
+        these BCP-47 codes for the languages most commonly mixed in \
+        literary verse: `grc` for ancient (polytonic) Greek, `el` for \
+        modern (monotonic) Greek, `it` for Italian, `fr` for French, `es` \
+        for Spanish, `de` for German, `la` for Latin. Other languages \
+        follow the standard BCP-47 list.
         - Do NOT try to "balance" quotation marks in verse. Pound and Olson \
         leave quotes open across multiple lines on purpose to trace a \
         speaker through a stanza; keep marks exactly as printed.
