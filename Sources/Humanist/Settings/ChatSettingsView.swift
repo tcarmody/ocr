@@ -81,9 +81,11 @@ struct ChatSettingsView: View {
     @AppStorage("humanist.chat.rrfK")
     private var rrfK: Int = 0          // 0 → defaults to 60
     @AppStorage("humanist.chat.topK")
-    private var topK: Int = 0          // 0 → defaults to 12
+    private var topK: Int = 0          // 0 → defaults to 24
     @AppStorage("humanist.chat.maxParaChars")
     private var maxParaChars: Int = 0  // 0 → defaults to 4_000
+    @AppStorage("humanist.chat.wholeBookMode")
+    private var wholeBookMode: Bool = false
     /// Buffer for the alias-dictionary text editor. Loaded on
     /// appear; persisted on commit (focus loss / blur).
     @State private var aliasEditorText: String = ""
@@ -242,6 +244,12 @@ struct ChatSettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            Toggle("Whole-book mode (small books only)", isOn: $wholeBookMode)
+            Text("When on, skip retrieval entirely and send the full text of every chapter to the model — the model effectively sees the whole book. Auto-falls-back to retrieval when the book is larger than ~150 KB of text (a typical 300-page book fits comfortably; an encyclopedia or anthology won't). Useful for books where you want the model to reason across the whole text, not just retrieved snippets. Local Ollama: free. Cloud: cost scales with book size per question.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             // Power-user retrieval knobs. Hidden behind a
             // DisclosureGroup so the section stays compact for
             // users who never tune. 0 = "use shipped default" so
@@ -257,9 +265,9 @@ struct ChatSettingsView: View {
                 tunableKnobRow(
                     label: "Top-K paragraphs",
                     binding: $topK,
-                    defaultValue: 12,
-                    range: 4...30,
-                    blurb: "Paragraphs returned per query. Lower = tighter context (cheaper, less recall); higher = broader context (more cost, higher chance of catching the answer)."
+                    defaultValue: 24,
+                    range: 4...60,
+                    blurb: "Paragraphs returned per query. Lower = tighter context (cheaper, less recall); higher = broader context (more cost, higher chance of catching the answer). Default raised 2026-05-19 from 12 to 24 to better cover cross-chapter questions."
                 )
                 tunableKnobRow(
                     label: "Max paragraph chars",

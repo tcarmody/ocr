@@ -340,6 +340,22 @@ final class BookChatViewModel: ObservableObject {
     /// rendering stays per-paragraph capped.
     private static let maxExpansionChars = 30_000
 
+    /// Whole-book mode toggle. When on AND the book's stripped
+    /// text fits under `wholeBookMaxChars`, the send path skips
+    /// retrieval and packages every chapter's full text as
+    /// context. Auto-falls-back to retrieval when the book is
+    /// too large.
+    private var wholeBookMode: Bool {
+        UserDefaults.standard.bool(forKey: "humanist.chat.wholeBookMode")
+    }
+    /// Char ceiling for whole-book mode. 150 KB ≈ 30K tokens, well
+    /// inside both Gemma 4 26B (128K) and Claude Sonnet (200K)
+    /// context windows when combined with the system prompt and
+    /// expected reply. Books larger than this fall back to
+    /// retrieval — typical encyclopedias / anthologies / source
+    /// readers will, but a normal 300-page book fits comfortably.
+    private static let wholeBookMaxChars = 150_000
+
     init(book: EPUBBook, epubURL: URL) {
         self.book = book
         self.epubURL = epubURL
@@ -423,9 +439,91 @@ final class BookChatViewModel: ObservableObject {
         }
     }
 
+    /// Assemble the whole-book context string used by
+    /// `runWholeBookSend`. Walks the spine in order, strips
+    /// each chapter's tags, and emits a labeled section per
+    /// chapter. Returns nil when the total stripped size
+    /// exceeds `wholeBookMaxChars` — caller falls back to
+    /// retrieval in that case. Includes the same "Retrieval
+    /// scope:" header retrieval uses so the meta-question
+    /// prompt's instructions ("answer using the retrieval-
+    /// scope line") still apply, just with "every chapter of
+    /// this book" as the scope.
+    private func buildWholeBookContext() -> String? {
+        var totalChars = 0
+        var sections: [String] = []
+        for (idx, resourceID) in book.spine.enumerated() {
+            guard let resource = book.resourcesByID[resourceID],
+                  let xhtml = resource.text else { continue }
+            let stripped = stripTags(xhtml)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !stripped.isEmpty else { continue }
+            totalChars += stripped.count
+            if totalChars > Self.wholeBookMaxChars {
+                return nil
+            }
+            let title = chapterTitle(forChapterIndex: idx)
+                ?? "Chapter \(idx + 1)"
+            sections.append("[chapter:\(idx)] \(title)\n\(stripped)")
+        }
+        guard !sections.isEmpty else { return nil }
+        let scope = """
+        Retrieval scope: every chapter of this book \
+        (\(sections.count) chapter\(sections.count == 1 ? "" : "s")) sent in full. \
+        Whole-book mode is on; no paragraph-level retrieval was applied.
+        """
+        let body = "Full text of \"\(bookTitle)\":\n\n"
+            + sections.joined(separator: "\n\n")
+        return scope + "\n\n" + body
+    }
+
+    /// Send path for whole-book mode. Skips retrieval; uses
+    /// the pre-built context directly. Mirrors the streaming
+    /// + draft-message pattern from `sendCurrentBook`'s
+    /// retrieval branch but without any per-paragraph hit
+    /// accounting (no retrieval = no retrieval detail; the
+    /// chat row's retrieval-debug strip just stays empty).
+    private func runWholeBookSend(query: String, context: String) async {
+        isThinking = true
+        let chosenBackend = backend
+        let userPrompt = context + "\n\nQuestion: " + query
+        let task = Task { [weak self] in
+            guard let self else { return }
+            switch chosenBackend {
+            case .cloudHaiku, .cloudSonnet:
+                await self.runCloudSend(
+                    userPrompt: userPrompt,
+                    allowedHits: [],
+                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                )
+            case .localOllama:
+                await self.runOllamaSend(
+                    userPrompt: userPrompt, allowedHits: []
+                )
+            }
+        }
+        streamTask?.cancel()
+        streamTask = task
+    }
+
     /// Per-book send path: BM25 + embedding hybrid retrieval scoped
     /// to the open EPUB. Same flow R-Chat-Embeddings shipped.
     private func sendCurrentBook(query: String) async {
+        // Whole-book mode short-circuit. When the user has opted
+        // in AND the book's stripped text fits under the
+        // wholeBookMaxChars ceiling, skip retrieval entirely and
+        // send every chapter as context. Otherwise fall through
+        // to the hybrid retrieval path.
+        if wholeBookMode {
+            if let wholeBookContext = buildWholeBookContext() {
+                await runWholeBookSend(query: query, context: wholeBookContext)
+                return
+            }
+            // Fall through to retrieval when the book exceeds the
+            // size cap. The model never knows the user wanted
+            // whole-book — silently does the more bounded thing.
+        }
+
         if bm25Index == nil {
             bm25Index = buildBM25Index()
         }
