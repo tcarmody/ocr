@@ -58,11 +58,42 @@ struct ReaderView: View {
             tocSidebar(book: book)
                 .frame(minWidth: 200, idealWidth: 240)
         } detail: {
-            readingPane(book: book)
+            detailPane(book: book)
         }
         .navigationTitle(vm.displayTitle)
         .navigationSubtitle(vm.currentChapterLabel)
         .toolbar { toolbarContent }
+    }
+
+    /// Detail column. Always shows the reading pane; adds the
+    /// chat pane on the right when `vm.showChatPane` is on. Uses
+    /// HSplitView so the user can drag the divider — matches the
+    /// editor's pane behavior.
+    @ViewBuilder
+    private func detailPane(book: EPUBBook) -> some View {
+        if vm.showChatPane, let chatVM = vm.chatViewModel {
+            HSplitView {
+                readingPane(book: book)
+                    .frame(minWidth: 360)
+                ReaderChatPaneView(
+                    vm: chatVM,
+                    onCitationTap: { citation in
+                        // Tap a citation chip → snap the reading
+                        // pane to the cited chapter. Library-scope
+                        // citations (which carry a bookEpubURL)
+                        // can't appear in reader chat because
+                        // scope is locked to .currentBook on the
+                        // VM, but defend anyway: only navigate
+                        // when the citation targets this book.
+                        guard citation.bookEpubURL == nil else { return }
+                        vm.jump(toSpineIndex: citation.chapterIndex)
+                    }
+                )
+                .frame(minWidth: 320, idealWidth: 380)
+            }
+        } else {
+            readingPane(book: book)
+        }
     }
 
     /// TOC sidebar. Titles come from `ReaderTOC.build` — preferring
@@ -167,9 +198,21 @@ struct ReaderView: View {
             }
 
             Button {
-                // R-Reader Phase 1 commit 2 wires this to the
-                // existing Editor scene via openWindow(id: "editor").
-                // Stubbed in commit 1 so the toolbar layout is final.
+                vm.showChatPane.toggle()
+            } label: {
+                Label(
+                    "Chat",
+                    systemImage: vm.showChatPane
+                        ? "bubble.left.and.text.bubble.right.fill"
+                        : "bubble.left.and.text.bubble.right"
+                )
+            }
+            .help(vm.showChatPane
+                  ? "Hide chat sidebar (⌥⌘C)"
+                  : "Chat with this book (⌥⌘C)")
+            .keyboardShortcut("c", modifiers: [.command, .option])
+
+            Button {
                 openWindow(id: "editor", value: epubURL)
             } label: {
                 Label("Edit Source…", systemImage: "pencil")

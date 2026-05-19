@@ -46,8 +46,36 @@ final class ReaderViewModel: ObservableObject {
     /// file moves and multi-machine syncs.
     @Published private(set) var contentHash: String?
 
+    /// Chat-sidebar visibility. Off by default — Cloud-mode chat
+    /// costs API tokens per question, and the reader's posture is
+    /// distraction-light; opt-in via the toolbar button (⌥⌘C). The
+    /// toggle persists across windows via `@AppStorage`-style
+    /// UserDefaults so the user's preference sticks.
+    @Published var showChatPane: Bool {
+        didSet {
+            UserDefaults.standard.set(showChatPane, forKey: Self.chatPaneKey)
+            if showChatPane { ensureChatViewModel() }
+        }
+    }
+
+    /// Per-book chat session. Lazy: only allocated when the chat
+    /// pane is first revealed, so opening a book to read stays
+    /// cheap (no embedding-index build kicked off for users who
+    /// only ever scroll).
+    @Published private(set) var chatViewModel: BookChatViewModel?
+
+    private static let chatPaneKey = "humanist.reader.showChatPane"
+
+    static func defaultShowChatPane() -> Bool {
+        if let v = UserDefaults.standard.object(forKey: chatPaneKey) as? Bool {
+            return v
+        }
+        return false
+    }
+
     init(epubURL: URL) {
         self.epubURL = epubURL
+        self.showChatPane = Self.defaultShowChatPane()
         Task { await load() }
     }
 
@@ -63,6 +91,10 @@ final class ReaderViewModel: ObservableObject {
             self.toc = ReaderTOC.build(from: opened)
             self.spineIndex = 0
             self.state = .ready
+            // Persisted `showChatPane = true` from a prior session
+            // tried to build the chat VM during init, but `book`
+            // was nil then. Build it now that the book is loaded.
+            if showChatPane { ensureChatViewModel() }
             // Hash + restore in the background. Don't gate the
             // reader window on this; the user can start reading
             // immediately and we'll jump them to the saved
@@ -198,5 +230,27 @@ final class ReaderViewModel: ObservableObject {
     /// Window title shown in the toolbar / titlebar.
     var displayTitle: String {
         book?.displayTitle ?? epubURL.deletingPathExtension().lastPathComponent
+    }
+
+    // MARK: - Chat
+
+    /// Build the chat VM on first show. Same pattern as the
+    /// editor's `EditorViewModel.ensureChatViewModel`, with one
+    /// difference: scope is locked to `.currentBook` and never
+    /// flipped. The reader's chat is intentionally focused on the
+    /// open book — library-scope chat lives in the Library window
+    /// where its full UI (federated index status, exclusion list,
+    /// per-collection scoping) makes sense.
+    func ensureChatViewModel() {
+        guard chatViewModel == nil, let book = book else { return }
+        let vm = BookChatViewModel(book: book, epubURL: epubURL)
+        // Locked scope — even if a future code path flips this,
+        // ReaderChatPaneView doesn't show the scope picker so the
+        // user can't toggle it from the reader. Per-book embedding
+        // index builds on first send; library federation never
+        // engages.
+        vm.chatScope = .currentBook
+        vm.library = OpenRouter.library
+        chatViewModel = vm
     }
 }

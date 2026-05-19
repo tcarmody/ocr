@@ -3147,13 +3147,14 @@ no-op, case-sensitivity flag, and per-book progress callback.
 
 ## R-Reader — EPUB viewer mode with chat sidebar
 
-**Status**: Phase 1 shipped 2026-05-19 across 4 commits. The reader
-is now the default open target for `.epub` URLs and is reachable
+**Status**: Phases 1 + 2 shipped 2026-05-19 across 5 commits. The
+reader is the default open target for `.epub` URLs, reachable
 via `Show Reader` (⌘5). Spine navigation, parsed-nav.xhtml TOC
-sidebar, font-size stepper, and content-hash-keyed reading-
-position persistence are all live. Phases 2 (chat sidebar), 3
-(paginated layout), and 4 (reading prefs + library "Continue"
-affordance) remain.
+sidebar, font-size stepper, content-hash-keyed reading-position
+persistence, and a current-book-only chat sidebar (⌥⌘C) are all
+live. Citation chips in the chat snap the reading pane to the
+cited spine index. Phases 3 (paginated layout) and 4 (reading
+prefs + library "Continue" affordance) remain.
 
 ### Decisions locked
 
