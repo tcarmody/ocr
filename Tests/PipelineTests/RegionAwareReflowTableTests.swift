@@ -234,6 +234,7 @@ final class RegionAwareReflowTableTests: XCTestCase {
             case .paragraph: return "p"
             case .figure:    return "f"
             case .table:     return "t"
+            case .verse:     return "v"
             }
         }
         XCTAssertFalse(kinds.contains("t"),
