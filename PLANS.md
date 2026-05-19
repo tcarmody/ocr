@@ -1615,6 +1615,217 @@ Phase 6 (figures) — same plumbing.
 
 ---
 
+## P-Verse-Layout — Free-verse and irregularly-spaced poetry
+
+**Status**: planned 2026-05-19. Pound's *Cantos*, Olson, late
+Stevens, and any concrete-poetry corpus all break the
+`ParagraphReflow` / `RegionAwareReflow` assumption that lines
+within a region collapse into prose paragraphs. Today verse
+regions emit as paragraph-shaped mush: meaningful indentation
+gone, right-aligned tails left-justified, mid-line gaps closed,
+multilingual italicized fragments stripped of language
+attribution. This plan adds verse as a first-class layout
+primitive and emits XHTML that preserves the geometry without
+hard-coding `<pre>`.
+
+### Goal
+
+Round-trip free verse with three properties preserved:
+
+1. **Indentation as semantics.** Each line's left margin
+   (relative to the verse region's left edge) is quantized into
+   ~8 buckets and emitted as `class="line indent-N"`. CSS in the
+   book stylesheet maps each bucket to an `em` indent that scales
+   with the reader's font size.
+2. **Mid-line gaps.** Pound's signature `Clutching the greasy
+   stone     "And the cloak floated"` records a gap at the
+   token-index where the whitespace exceeds the line's normal
+   inter-word width, emitted as `<span class="gap"></span>` with
+   a width proportional to the original gap (also quantized).
+3. **Right-alignment.** Lines whose `(left + text_width) ≈
+   region_right` and whose `left > region_midline` get
+   `class="line align-right"` — covers the `Caina attende`
+   footnote-style citation pattern.
+
+Plus correct per-fragment language tagging so screen readers
+hyphenate, Greek/Italian/Latin/English mixed pages get the right
+script-shaping, and the chat-with-book entity index doesn't
+mis-classify a Greek noun as a misspelled English word.
+
+### Approach
+
+**Detection — region-level classifier.** Add `.verse` as a region
+kind alongside `.text` / `.heading` / `.figure` / `.table`. Surya
+labels the region as `.text` today; we promote to `.verse` based
+on combined signals:
+
+- **Ragged-right ratio**: % of lines whose right edge is more
+  than 15% short of the region right margin. Prose: ~5%. Verse:
+  ~70%+.
+- **Line-length variance**: standard deviation of line widths.
+  High for verse, low for justified prose.
+- **First-token-x variance**: standard deviation of leading
+  indents across consecutive lines. Near zero for prose
+  (paragraphs only indent the first line); high for verse.
+- **Inter-line gap variance**: prose has tight, consistent
+  leading; verse often has stanza breaks.
+- **End-of-line punctuation rate**: prose lines almost always
+  end in a token (no trailing punctuation only matters for
+  mid-paragraph wraps); verse lines frequently end without
+  terminal punctuation.
+
+AFM (or Claude Haiku in Cloud mode) classifies per region with
+a yes/no verdict given those features. Cheap — one short call
+per detected text region per page, batched.
+
+**Capture — VerseRegion / VerseLine.** A new model alongside
+`PageObservations`:
+
+```swift
+struct VerseRegion {
+    let bbox: CGRect
+    let lines: [VerseLine]
+}
+struct VerseLine {
+    let text: String                   // raw OCR text
+    let leadingIndentFraction: Double  // 0.0–1.0, relative to region width
+    let intraLineGaps: [IntraLineGap]  // token-index → gap fraction
+    let alignment: Alignment           // .leading / .rightAligned
+    let italicSpans: [Range<String.Index>]
+    let scriptSpans: [(range: Range<String.Index>, script: Script)]
+}
+```
+
+Built by walking `TextObservation`s within a `.verse` region in
+y-then-x order, clustering into lines by y-overlap (already
+implemented in `RegionAwareReflow`), then computing per-line
+geometry without collapsing into paragraphs.
+
+**Emission — XHTML with CSS, not `<pre>`.** `<pre>` breaks reflow
+on narrow screens and looks like code rather than poetry. Per
+region:
+
+```xhtml
+<div class="verse" lang="en">
+  <p class="line">Click of the hooves, through garbage,</p>
+  <p class="line">Clutching the greasy stone<span class="gap"></span>"And the cloak floated"</p>
+  <p class="line indent-3">But Varchi of Florence,</p>
+  <p class="line">Then "<i lang="grc">Σίγα μαλ' αὖθις δευτέραν!</i></p>
+  ...
+  <p class="line align-right"><i lang="it">Caina attende</i></p>
+</div>
+```
+
+Stylesheet recipe (added to `BundleAssets/book.css`):
+
+```css
+.verse { margin: 1em 0; }
+.verse .line { margin: 0; text-indent: 0; }
+.verse .line.indent-1 { padding-left: 1em; }
+.verse .line.indent-2 { padding-left: 2em; }
+...
+.verse .line.align-right { text-align: right; }
+.verse .gap { display: inline-block; width: 2.5em; }
+```
+
+Quantizing indents into ~8 buckets keeps the visual rhythm
+without requiring `em`-level precision and survives font-size
+changes in the reader.
+
+**Per-fragment language attribution.** Verse mixes scripts more
+aggressively than prose. The captured `scriptSpans` get emitted
+as `<i lang="grc">` / `<i lang="it">` / `<i lang="la">` wrappers
+during XHTML generation. Heuristic: Greek codepoints →
+`lang="grc"`; tokens that follow `"` and contain a Romance
+trigram outside our English wordlist → `lang="it"` (or `lang="la"`
+when the trigram is more Latinate — confused-language tiebreaker
+defers to AFM when ambiguous). The Sonnet/Gemini page-OCR path
+can do this better than heuristics; new prompt addendum below.
+
+**Sonnet/Gemini page-OCR prompt addendum.** When the page has at
+least one `.verse` region, append to the existing prompt:
+
+> When a region is poetry, emit `<div class="verse">` containing
+> one `<p class="line">` per visual line. Use `class="line
+> indent-N"` where N is the visual indent bucket (0–8) measured
+> against the region's left margin. Use `<span class="gap"></span>`
+> for mid-line whitespace gaps that look intentional. Use
+> `class="line align-right"` for right-aligned lines. Preserve
+> italic emphasis with `<i lang="…">` where `lang` carries the
+> BCP-47 language tag (`grc` for Ancient Greek, `it` for Italian,
+> `la` for Latin, etc.).
+
+Sonnet and Gemini already do italic detection well; the addendum
+mostly redirects their default `<p>`-per-paragraph instinct
+toward `<p class="line">`-per-line. Estimated cost: zero — the
+prompt grows by ~150 tokens which is well under the per-page
+budget.
+
+**Don't balance quotes.** Pound (and Olson and Stevens) leave
+quotation marks open across many lines on purpose — it traces a
+speaker through a stanza. `OCRChangeGuardrail`, smart-quote
+pairing, and dictionary correction all skip `.verse` regions
+entirely. The user-visible default behavior matches the printed
+page.
+
+### Known OCR-character hazards specific to verse
+
+- **`?` misread as `>`** in serif fonts (`Se pia?` → `Se pia>`).
+  Affects all serif text but verse exposes it because the
+  context is shorter and grammar-checkers can't fix it.
+  Cleanup pass: when `>` appears immediately before a closing
+  quote or at end-of-line in a `.verse` region, promote to `?`.
+- **Polytonic Greek diacritics** (`αὖθις`, `Σίγα`) — Vision
+  drops them; Tesseract is uneven; Surya is better but not
+  perfect. Verse OCR quality is bottlenecked by the weakest
+  script engine on the page. Sonnet/Gemini OCR is the strongest
+  path here when Cloud mode is on.
+- **Italian elisions inside words** (`μαλ'` = `μάλα` with
+  elision) — apostrophe-inside-token can confuse line-splitters
+  that treat `'` as a clause boundary. Verse capture must
+  preserve the apostrophe as a regular character.
+
+### Effort estimate
+
+- **v1 narrow** — detect + classify + indent-bucketed emission +
+  per-line language tagging, no intra-line gaps, no
+  right-alignment: ~1 day.
+- **v2 full** — adds intra-line gaps, right-alignment detection,
+  Sonnet/Gemini prompt addendum, dedicated `.verse` post-OCR
+  cleanup rules: ~3–4 additional days.
+- **Corpus-side**: a handful of Pound / Olson / Stevens pages
+  added to the `compare-corpus` harness so regressions on
+  free-verse layout get caught. ~0.5 day.
+
+### Dependencies
+
+- Surya layout (already shipped) for `.text` region detection
+  that we promote to `.verse`.
+- AFM classifier path (already shipped) for the verse-vs-prose
+  per-region call.
+- Cloud Page OCR (already shipped) for the prompt-addendum
+  variant — strongest quality bar when Cloud mode is on.
+- Custom book CSS (R-Custom-Styles, shipped) for the
+  per-book stylesheet additions.
+
+### Out of scope (deferred)
+
+- **Concrete poetry / typewriter visual poetry** (e.g. Hollander,
+  bp Nichol). Requires exact-coordinate preservation, custom
+  glyph shapes, sometimes color. `<pre>` with `font-variant:
+  tabular-nums` would handle a subset; the full thing needs SVG
+  emission and is a Tier 8 stretch item.
+- **Verse drama with speaker labels** (Shakespeare, Beckett).
+  Heuristic: speaker labels are short, all-caps or italic, end
+  in punctuation, on their own line. Worth a separate
+  `.verse-drama` sub-classifier when a corpus demands it.
+- **Numbered/lined verse** (Whitman, classical epics). Line
+  numbers in the gutter map cleanly to `<p class="line"
+  data-line-number="N">` but only matter for a specialist
+  audience.
+
+---
+
 # Tier 1.5: Pre-flight intelligence
 
 Smart defaults set at queue-add time. Same architectural shape as
