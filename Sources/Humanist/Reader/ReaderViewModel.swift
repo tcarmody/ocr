@@ -39,6 +39,12 @@ final class ReaderViewModel: ObservableObject {
     @Published private(set) var reloadTrigger: Int = 0
 
     let epubURL: URL
+    /// SHA-256 of the EPUB file. Populated asynchronously after
+    /// `load()` finishes so the reader open isn't gated on
+    /// hashing a 50 MB book. Used to key the
+    /// `ReadingPositionStore` sidecar so positions survive
+    /// file moves and multi-machine syncs.
+    @Published private(set) var contentHash: String?
 
     init(epubURL: URL) {
         self.epubURL = epubURL
@@ -57,8 +63,61 @@ final class ReaderViewModel: ObservableObject {
             self.toc = ReaderTOC.build(from: opened)
             self.spineIndex = 0
             self.state = .ready
+            // Hash + restore in the background. Don't gate the
+            // reader window on this; the user can start reading
+            // immediately and we'll jump them to the saved
+            // position when the hash + lookup complete (usually
+            // a fraction of a second on Apple Silicon).
+            await restorePositionIfAvailable()
         } catch {
             self.state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Compute the content hash off the main actor, look up the
+    /// saved position, and jump to its spine index. No-op when
+    /// no position is stored yet (first open of this book).
+    /// `userHasNavigated` guards against racing the user — if
+    /// they clicked a TOC entry between book-open and hash-
+    /// done, don't yank them away from their click.
+    private var userHasNavigated: Bool = false
+
+    private func restorePositionIfAvailable() async {
+        let url = epubURL
+        let hash = await Task.detached(priority: .utility) {
+            return try? ContentHash.sha256(of: url)
+        }.value
+        guard let hash else { return }
+        self.contentHash = hash
+        guard !userHasNavigated else { return }
+        guard let saved = ReadingPositionStore.load(
+            forContentHash: hash
+        ) else { return }
+        // Only jump when the saved position is past chapter 0 —
+        // otherwise we'd issue a redundant load that flickers.
+        guard saved.spineIndex > 0 else { return }
+        guard !userHasNavigated else { return }
+        jump(toSpineIndex: saved.spineIndex)
+    }
+
+    /// Persist the current position to the store. Called from
+    /// every spine-changing path (`previousChapter`,
+    /// `nextChapter`, `jump`). Writes are cheap (one tiny JSON
+    /// file) so we don't bother debouncing at the spine
+    /// granularity; per-scroll persistence (when it lands) will
+    /// need debouncing.
+    private func persistCurrentPosition() {
+        guard let hash = contentHash else { return }
+        let position = ReadingPosition(
+            contentHash: hash,
+            spineIndex: spineIndex,
+            scrollFraction: 0,
+            updatedAt: Date()
+        )
+        // Hop off the main actor — disk I/O shouldn't block the
+        // chapter-change repaint, however cheap.
+        Task.detached(priority: .utility) {
+            ReadingPositionStore.save(position)
         }
     }
 
@@ -107,14 +166,18 @@ final class ReaderViewModel: ObservableObject {
 
     func previousChapter() {
         guard canGoPrevious else { return }
+        userHasNavigated = true
         spineIndex -= 1
         reloadTrigger += 1
+        persistCurrentPosition()
     }
 
     func nextChapter() {
         guard canGoNext else { return }
+        userHasNavigated = true
         spineIndex += 1
         reloadTrigger += 1
+        persistCurrentPosition()
     }
 
     /// Jump to an arbitrary spine index. Clamped to the valid range
@@ -126,8 +189,10 @@ final class ReaderViewModel: ObservableObject {
     func jump(toSpineIndex idx: Int) {
         guard let book, !book.spine.isEmpty else { return }
         let clamped = max(0, min(idx, book.spine.count - 1))
+        userHasNavigated = true
         spineIndex = clamped
         reloadTrigger += 1
+        persistCurrentPosition()
     }
 
     /// Window title shown in the toolbar / titlebar.

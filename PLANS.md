@@ -3147,10 +3147,13 @@ no-op, case-sensitivity flag, and per-book progress callback.
 
 ## R-Reader — EPUB viewer mode with chat sidebar
 
-**Status**: planned 2026-05-18. Adds a distraction-light reading
-surface alongside the existing Editor so Humanist works as a reader,
-not just a library + converter. Reader becomes the default action
-for an `.epub`; editing becomes an explicit jump.
+**Status**: Phase 1 shipped 2026-05-19 across 4 commits. The reader
+is now the default open target for `.epub` URLs and is reachable
+via `Show Reader` (⌘5). Spine navigation, parsed-nav.xhtml TOC
+sidebar, font-size stepper, and content-hash-keyed reading-
+position persistence are all live. Phases 2 (chat sidebar), 3
+(paginated layout), and 4 (reading prefs + library "Continue"
+affordance) remain.
 
 ### Decisions locked
 
