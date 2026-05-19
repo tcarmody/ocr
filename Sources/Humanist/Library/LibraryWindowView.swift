@@ -2179,6 +2179,7 @@ struct LibraryWindowView: View {
     @ViewBuilder
     private func rowContextMenu(for entry: LibraryEntry) -> some View {
         Button("Open") { openEntry(entry) }
+        Button("Edit Source…") { editEntry(entry) }
         Button("Reveal in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([entry.epubURL])
         }
@@ -2311,6 +2312,18 @@ struct LibraryWindowView: View {
 
     private func openEntry(_ entry: LibraryEntry) {
         OpenRouter.open(entry.epubURL, openWindow: openWindow)
+    }
+
+    /// Direct route to the editor scene — bypasses `OpenRouter`,
+    /// which sends .epub URLs to the reader by default. Used by
+    /// the row context menu's "Edit Source…" item and the future
+    /// hover action button. Bumps `lastOpened` the same way the
+    /// reader path does so the catalog row reflects recent
+    /// editor visits too.
+    private func editEntry(_ entry: LibraryEntry) {
+        RecentsStore.add(entry.epubURL)
+        library.recordOpen(entry.epubURL)
+        openWindow(id: "editor", value: entry.epubURL)
     }
 
     /// Map a BCP-47 code to a display label using the same picker
