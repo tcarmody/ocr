@@ -82,6 +82,55 @@ final class ReaderViewModel: ObservableObject {
     /// change so a window close mid-edit doesn't lose work.
     @Published private(set) var annotations: [Annotation] = []
 
+    /// Paginated-layout toggle. When on, the WKWebView applies a
+    /// CSS `column-width: 100vw` layout to the loaded chapter and
+    /// the reader navigates by pages instead of scrolling. Off
+    /// (default) keeps the original vertical-scroll behavior.
+    /// Persisted globally so a user who prefers paginated mode
+    /// gets it on every book open.
+    @Published var isPaginated: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                isPaginated, forKey: Self.paginatedKey
+            )
+            // Reset page state on toggle; the JS bridge re-reports
+            // these once it applies / removes the CSS.
+            currentPage = 0
+            pageCount = 0
+        }
+    }
+    private static let paginatedKey = "humanist.reader.paginated"
+
+    /// Current page in the active chapter (0-based). Updated by
+    /// the JS pagination bridge each time the user advances a
+    /// page or the chapter re-paginates after a window resize.
+    /// Meaningful only in paginated mode.
+    @Published private(set) var currentPage: Int = 0
+    /// Total pages in the active chapter (paginated mode). 0 means
+    /// "not yet measured" (chapter still loading or scroll mode).
+    @Published private(set) var pageCount: Int = 0
+    /// Pending page-navigation request — caught by `WebReaderPane`
+    /// and translated into a JS call. Nonce-tagged so repeat
+    /// presses on the same button re-fire instead of being
+    /// coalesced as a duplicate value.
+    @Published var pageNavRequest: PageNavRequest?
+
+    /// One page-navigation action. `direction` semantics:
+    ///   * `.next`: go forward one page, or to the next chapter's
+    ///     first page when already on the last page of the
+    ///     current chapter.
+    ///   * `.previous`: mirror — back one page, or to the
+    ///     previous chapter's last page.
+    ///   * `.toPage(N)`: absolute jump within the current
+    ///     chapter (used by position restore).
+    struct PageNavRequest: Equatable {
+        let direction: Direction
+        let nonce: UUID
+        enum Direction: Equatable {
+            case next, previous, toPage(Int)
+        }
+    }
+
     /// Anchor scroll request keyed by spine index + element id.
     /// Nonce-tagged so two requests to the same anchor still
     /// fire `onChange` in `WebReaderPane` — repeat-clicks on the
@@ -130,7 +179,54 @@ final class ReaderViewModel: ObservableObject {
     init(epubURL: URL) {
         self.epubURL = epubURL
         self.showChatPane = Self.defaultShowChatPane()
+        self.isPaginated = UserDefaults.standard
+            .bool(forKey: Self.paginatedKey)
         Task { await load() }
+    }
+
+    // MARK: - Pagination
+
+    /// Advance the WKWebView's pagination by one page, or roll
+    /// over to the next chapter's first page when already on
+    /// the last page. Bumps the nonce so consecutive ⌘→ /
+    /// space presses each fire individually instead of being
+    /// coalesced. Caller (WebReaderPane / ReaderView) gates on
+    /// `isPaginated` before invoking.
+    func nextPage() {
+        // Roll over at the last page — `pageCount` of 0 means
+        // "not measured yet," in which case we let the JS
+        // bridge handle the no-op via clamp.
+        if pageCount > 0 && currentPage >= pageCount - 1 {
+            if canGoNext { nextChapter() }
+            return
+        }
+        pageNavRequest = PageNavRequest(direction: .next, nonce: UUID())
+    }
+
+    func previousPage() {
+        if currentPage <= 0 {
+            if canGoPrevious {
+                // Going back into the previous chapter: queue a
+                // "jump to last page once measured" request via
+                // a pending-page flag the JS bridge consumes on
+                // didFinish. For v1 just open at chapter top —
+                // the user can press ← again to keep paging.
+                previousChapter()
+            }
+            return
+        }
+        pageNavRequest = PageNavRequest(
+            direction: .previous, nonce: UUID()
+        )
+    }
+
+    /// JS-bridge callback when the chapter's pagination
+    /// measures or re-measures (initial load, window resize).
+    /// Updates the published `currentPage` + `pageCount` so the
+    /// toolbar's "page X of Y" indicator stays accurate.
+    func didReportPagination(currentPage: Int, pageCount: Int) {
+        self.currentPage = max(0, currentPage)
+        self.pageCount = max(0, pageCount)
     }
 
     /// Open + parse the EPUB. Failure surfaces in `state.failed`;

@@ -3147,22 +3147,19 @@ no-op, case-sensitivity flag, and per-book progress callback.
 
 ## R-Reader — EPUB viewer mode with chat sidebar
 
-**Status**: Phases 1 + 2 shipped 2026-05-19; annotations
+**Status**: Phases 1 + 2 + 3 shipped 2026-05-19; annotations
 family (R-Reader-Annotations, originally not in the plan)
 shipped 2026-05-19 across 5 commits — sidebar visibility
 persistence + AnnotationStore + copy-with-citation (⇧⌘C) +
 bookmarks (⌘D) + annotations sidebar tab (Marks) + highlights
 (⌃⌘H) + notes/passages (sheet editor from sidebar context
 menu). Sub-chapter scroll persistence + ⌘F find in chapter
-also shipped. The reader is the default open target for
-`.epub` URLs, reachable via `Show Reader` (⌘5). Spine
-navigation, parsed-nav.xhtml TOC sidebar, font-size stepper,
-content-hash-keyed reading-position persistence, paragraph-
-level citation jumps from chat, current-book-only chat
-sidebar (⌥⌘C), and the full annotations workflow are all
-live. Phases 3 (paginated layout) and 4 (reading prefs +
-library "Continue" affordance + edit-reader staleness banner)
-remain.
+also shipped. Phase 3 (paginated layout) shipped 2026-05-19 —
+CSS-multicol layout, ⌥⌘P toggle, ←/→/space page nav,
+"page N / M" indicator. The reader is the default open
+target for `.epub` URLs, reachable via `Show Reader` (⌘5).
+Phase 4 (reading prefs + library "Continue" affordance +
+edit-reader staleness banner) remains.
 
 ### Decisions locked
 

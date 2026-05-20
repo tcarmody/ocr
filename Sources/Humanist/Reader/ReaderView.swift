@@ -507,7 +507,14 @@ struct ReaderView: View {
                         $0.chapterIdx == vm.spineIndex
                             && ($0.kind == .highlight || $0.kind == .passage)
                     },
-                    passageMarkerRequest: passageMarkerRequest
+                    passageMarkerRequest: passageMarkerRequest,
+                    isPaginated: vm.isPaginated,
+                    pageNavRequest: vm.pageNavRequest,
+                    onPaginationUpdate: { current, count in
+                        vm.didReportPagination(
+                            currentPage: current, pageCount: count
+                        )
+                    }
                 )
             }
             .background(Color(nsColor: .textBackgroundColor))
@@ -555,6 +562,34 @@ struct ReaderView: View {
             }
             .keyboardShortcut(.rightArrow, modifiers: .command)
             .disabled(!vm.canGoNext)
+
+            // Paginated-mode-only controls: previous page,
+            // page indicator, next page. ←/→ navigate within
+            // a chapter; ⌘← / ⌘→ still cross chapter boundaries.
+            if vm.isPaginated {
+                Divider()
+                Button { vm.previousPage() } label: {
+                    Label("Previous Page",
+                          systemImage: "arrowtriangle.left.fill")
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                Text(pageIndicatorLabel)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 56)
+                    .lineLimit(1)
+                Button { vm.nextPage() } label: {
+                    Label("Next Page",
+                          systemImage: "arrowtriangle.right.fill")
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                Button { vm.nextPage() } label: {
+                    Label("Next Page (Space)", systemImage: "space")
+                }
+                .keyboardShortcut(.space, modifiers: [])
+                .hidden()
+                .frame(width: 0, height: 0)
+            }
         }
         ToolbarItemGroup(placement: .primaryAction) {
             HStack(spacing: 4) {
@@ -647,7 +682,30 @@ struct ReaderView: View {
             }
             .help("Highlight the selected text (⌃⌘H)")
             .keyboardShortcut("h", modifiers: [.command, .control])
+
+            Button {
+                vm.isPaginated.toggle()
+            } label: {
+                Label(
+                    vm.isPaginated ? "Scroll View" : "Page View",
+                    systemImage: vm.isPaginated
+                        ? "scroll"
+                        : "rectangle.split.2x1"
+                )
+            }
+            .help(vm.isPaginated
+                  ? "Switch back to scrolling layout (⌥⌘P)"
+                  : "Switch to paginated layout (⌥⌘P)")
+            .keyboardShortcut("p", modifiers: [.command, .option])
         }
+    }
+
+    /// "1 / 47" — visible only in paginated mode. Pre-measurement
+    /// (chapter still loading) shows "—" so the slot stays a
+    /// stable size and doesn't jitter as the indicator catches up.
+    private var pageIndicatorLabel: String {
+        guard vm.pageCount > 0 else { return "—" }
+        return "\(vm.currentPage + 1) / \(vm.pageCount)"
     }
 
     /// Inline find bar shown above the chapter pane when
@@ -1014,6 +1072,22 @@ private struct WebReaderPane: NSViewRepresentable {
     /// reload. Same nonce pattern as the other request slots.
     var passageMarkerRequest: ReaderView.PassageMarkerRequest? = nil
 
+    /// Paginated-mode flag. Coordinator applies CSS columns
+    /// when this flips on, removes them when off. Initial
+    /// application happens after didFinish so the page-count
+    /// measurement runs against the laid-out document.
+    var isPaginated: Bool = false
+    /// Page-navigation request from the VM. Coordinator
+    /// translates to JS calls (`humanistPagination.next()` /
+    /// `.previous()` / `.toPage(N)`).
+    var pageNavRequest: ReaderViewModel.PageNavRequest? = nil
+    /// Callback for pagination measurement updates. JS posts
+    /// `{type: "pagination", current: N, count: M}` after
+    /// applying the column layout and after window-resize
+    /// re-layouts; this routes to the VM's
+    /// didReportPagination(currentPage:pageCount:).
+    var onPaginationUpdate: ((Int, Int) -> Void)? = nil
+
     /// JS-side capture for a successful highlight gesture.
     struct HighlightCapture: Equatable {
         let annotationId: UUID
@@ -1053,6 +1127,14 @@ private struct WebReaderPane: NSViewRepresentable {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))
+        // Inject the pagination bridge at document end. The
+        // module sits dormant until the Swift side calls
+        // `humanistPagination.enter()` (via JS evaluation).
+        userContent.addUserScript(WKUserScript(
+            source: Self.paginationBridgeJS,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
         // Inject the highlight stylesheet at document start so
         // restored highlights paint immediately on first render
         // (vs. flashing unstyled until didFinish runs the
@@ -1071,6 +1153,142 @@ private struct WebReaderPane: NSViewRepresentable {
         load(into: view)
         return view
     }
+
+    /// Pagination bridge: CSS-columns-based "real reader" layout.
+    /// Sits dormant on every chapter load. The Swift side calls
+    /// `humanistPagination.enter()` to apply the column layout
+    /// (which immediately re-measures + posts a pagination
+    /// message back to Swift) and `.next()` / `.previous()` /
+    /// `.toPage(N)` to navigate. `.exit()` reverts to scroll
+    /// mode without reloading the chapter.
+    ///
+    /// The layout strategy is CSS multicol: `column-width: 100vw`
+    /// + a fixed `height: 100vh` on the body, with horizontal
+    /// overflow hidden. We track the current page via a
+    /// `translateX(-N * 100vw)` transform on `<body>` so we get
+    /// a clean snap-to-page rhythm without using the scroll
+    /// position (CSS multicol's scrollLeft can be unreliable on
+    /// re-layout).
+    private static let paginationBridgeJS = """
+    (function() {
+      var STATE = {
+        active: false,
+        currentPage: 0,
+        pageCount: 0,
+      };
+      function post(currentPage, pageCount) {
+        try {
+          if (window.webkit && window.webkit.messageHandlers
+              && window.webkit.messageHandlers.reader) {
+            window.webkit.messageHandlers.reader.postMessage({
+              type: 'pagination',
+              current: currentPage,
+              count: pageCount,
+            });
+          }
+        } catch (e) {}
+      }
+      function ensureStyle() {
+        var s = document.getElementById('humanist-reader-pagination-style');
+        if (s) return s;
+        s = document.createElement('style');
+        s.id = 'humanist-reader-pagination-style';
+        s.textContent =
+          'html.hu-paginated, html.hu-paginated body {' +
+          '  height: 100vh !important;' +
+          '  overflow: hidden !important;' +
+          '  margin: 0 !important;' +
+          '}' +
+          'html.hu-paginated body {' +
+          '  column-width: 100vw !important;' +
+          '  column-gap: 0 !important;' +
+          '  column-fill: auto !important;' +
+          '  padding: 1.5em 2em !important;' +
+          '  box-sizing: border-box !important;' +
+          '  transition: transform 0.25s ease !important;' +
+          '  will-change: transform;' +
+          '}' +
+          'html.hu-paginated body * {' +
+          '  break-inside: avoid-column;' +
+          '}' +
+          'html.hu-paginated img, html.hu-paginated table {' +
+          '  max-width: 100% !important;' +
+          '  max-height: 90vh !important;' +
+          '}';
+        document.documentElement.appendChild(s);
+        return s;
+      }
+      function measure() {
+        // body.scrollWidth is the total laid-out width of all
+        // columns; window.innerWidth is the page width.
+        var pageW = window.innerWidth || 1;
+        var total = document.body.scrollWidth;
+        STATE.pageCount = Math.max(1, Math.round(total / pageW));
+        if (STATE.currentPage >= STATE.pageCount) {
+          STATE.currentPage = STATE.pageCount - 1;
+        }
+        if (STATE.currentPage < 0) STATE.currentPage = 0;
+        applyTransform();
+        post(STATE.currentPage, STATE.pageCount);
+      }
+      function applyTransform() {
+        document.body.style.transform =
+          'translateX(' + (-STATE.currentPage * 100) + 'vw)';
+      }
+      function onResize() {
+        if (!STATE.active) return;
+        // Brief debounce so a window-resize drag doesn't
+        // hammer the measure loop.
+        clearTimeout(window._humanistPagDebounce);
+        window._humanistPagDebounce = setTimeout(measure, 100);
+      }
+      window.humanistPagination = {
+        enter: function() {
+          if (STATE.active) { measure(); return; }
+          STATE.active = true;
+          ensureStyle();
+          document.documentElement.classList.add('hu-paginated');
+          window.addEventListener('resize', onResize);
+          // Defer measurement to next frame so the CSS has
+          // applied before scrollWidth is read.
+          requestAnimationFrame(measure);
+        },
+        exit: function() {
+          if (!STATE.active) return;
+          STATE.active = false;
+          document.documentElement.classList.remove('hu-paginated');
+          document.body.style.transform = '';
+          window.removeEventListener('resize', onResize);
+          STATE.currentPage = 0;
+          STATE.pageCount = 0;
+          post(0, 0);
+        },
+        next: function() {
+          if (!STATE.active) return;
+          if (STATE.currentPage < STATE.pageCount - 1) {
+            STATE.currentPage += 1;
+            applyTransform();
+            post(STATE.currentPage, STATE.pageCount);
+          }
+        },
+        previous: function() {
+          if (!STATE.active) return;
+          if (STATE.currentPage > 0) {
+            STATE.currentPage -= 1;
+            applyTransform();
+            post(STATE.currentPage, STATE.pageCount);
+          }
+        },
+        toPage: function(n) {
+          if (!STATE.active) return;
+          var p = Math.max(0, Math.min(n, STATE.pageCount - 1));
+          STATE.currentPage = p;
+          applyTransform();
+          post(STATE.currentPage, STATE.pageCount);
+        },
+      };
+    })();
+    """
 
     /// CSS for the highlight span. Yellow, semi-transparent so
     /// underlying text stays clearly legible. Same single
@@ -1149,6 +1367,21 @@ private struct WebReaderPane: NSViewRepresentable {
                 view: nsView
             )
         }
+        context.coordinator.onPaginationUpdate = onPaginationUpdate
+        // Apply / remove the pagination layout when the binding
+        // flips. Done after didFinish guards in the helper so
+        // pre-load enable requests get deferred to the next
+        // didFinish.
+        context.coordinator.syncPagination(
+            isPaginated: isPaginated, view: nsView
+        )
+        if let req = pageNavRequest,
+           context.coordinator.lastFlushedPageNavNonce != req.nonce {
+            context.coordinator.lastFlushedPageNavNonce = req.nonce
+            context.coordinator.dispatchPageNav(
+                request: req, view: nsView
+            )
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -1203,6 +1436,10 @@ private struct WebReaderPane: NSViewRepresentable {
         // is loading. `didFinish` re-sets it after the next
         // navigation completes.
         coord?.isLoaded = false
+        // The JS pagination module's state lives per-document;
+        // a fresh chapter load means we'll need to re-enter
+        // paginated mode against the new body in didFinish.
+        coord?.paginationActive = false
         view.stopLoading()
         view.loadFileURL(resolvedURL, allowingReadAccessTo: resolvedAccess)
     }
@@ -1274,6 +1511,20 @@ private struct WebReaderPane: NSViewRepresentable {
         /// update. Same compare-against-binding pattern as the
         /// other request slots.
         var lastFlushedPassageMarkerNonce: UUID?
+        /// Current pagination state — true means the JS bridge
+        /// has applied the column layout. Used to short-circuit
+        /// redundant enter() / exit() calls on
+        /// no-op updateNSView passes.
+        var paginationActive: Bool = false
+        /// Pagination-update callback. Fires whenever the JS
+        /// bridge measures (initial apply + window resize)
+        /// with the current page index + total page count.
+        var onPaginationUpdate: ((Int, Int) -> Void)?
+        /// Nonce of the most recently dispatched page-nav
+        /// request. Compared against the binding so consecutive
+        /// next / previous taps fire each time instead of
+        /// being coalesced.
+        var lastFlushedPageNavNonce: UUID?
         /// True while we're programmatically scrolling (anchor
         /// flush or fraction restore). The JS bridge can fire
         /// a scroll event from the scrollIntoView itself, which
@@ -1291,9 +1542,73 @@ private struct WebReaderPane: NSViewRepresentable {
                 self.isLoaded = true
                 self.applyFontSizeIfReady(view: webView)
                 self.restoreHighlights(view: webView)
+                // Re-enter paginated mode on every chapter load
+                // when the flag is on. JS module's `enter()` is
+                // idempotent (no-op if already active) but we
+                // need to call it AFTER the chapter's DOM is
+                // parsed so column-width measurement runs
+                // against the laid-out body.
+                if self.pendingPaginationOn {
+                    self.callPaginationEnter(view: webView)
+                }
                 self.flushPendingAnchorIfReady(view: webView)
                 self.flushPendingFractionIfReady(view: webView)
             }
+        }
+
+        /// Latest desired pagination state — set by
+        /// `syncPagination` and read by `didFinish`. Needed
+        /// because pagination must apply AFTER the chapter's
+        /// content is loaded, but `updateNSView` may run before
+        /// the load completes (initial render).
+        var pendingPaginationOn: Bool = false
+
+        /// Sync the JS pagination state with the desired
+        /// `isPaginated` from the binding. When the page is
+        /// still loading, defers the enter() call to didFinish
+        /// via `pendingPaginationOn`; immediate exit() is safe
+        /// either way (no-op if not active).
+        func syncPagination(isPaginated: Bool, view: WKWebView) {
+            pendingPaginationOn = isPaginated
+            if !isLoaded { return }
+            if isPaginated && !paginationActive {
+                callPaginationEnter(view: view)
+            } else if !isPaginated && paginationActive {
+                view.evaluateJavaScript(
+                    "humanistPagination.exit();",
+                    completionHandler: nil
+                )
+                paginationActive = false
+            }
+        }
+
+        /// Run `humanistPagination.enter()`. Marks the
+        /// coordinator's `paginationActive` so subsequent
+        /// sync passes know not to re-enter.
+        private func callPaginationEnter(view: WKWebView) {
+            view.evaluateJavaScript(
+                "humanistPagination.enter();",
+                completionHandler: nil
+            )
+            paginationActive = true
+        }
+
+        /// Dispatch a page-navigation request to the JS bridge.
+        /// Direction maps directly to the matching JS method;
+        /// `.toPage(N)` becomes a `.toPage(N)` call.
+        func dispatchPageNav(
+            request: ReaderViewModel.PageNavRequest, view: WKWebView
+        ) {
+            let js: String
+            switch request.direction {
+            case .next:
+                js = "humanistPagination.next();"
+            case .previous:
+                js = "humanistPagination.previous();"
+            case .toPage(let n):
+                js = "humanistPagination.toPage(\(n));"
+            }
+            view.evaluateJavaScript(js, completionHandler: nil)
         }
 
         nonisolated func userContentController(
@@ -1301,19 +1616,26 @@ private struct WebReaderPane: NSViewRepresentable {
             didReceive message: WKScriptMessage
         ) {
             guard message.name == "reader",
-                  let dict = message.body as? [String: Any],
-                  (dict["type"] as? String) == "scroll",
-                  let fraction = dict["fraction"] as? Double else {
-                return
-            }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                // Filter out programmatic-scroll feedback. The
-                // JS bridge fires immediately after a restore,
-                // which we don't want to interpret as a user-
-                // initiated change.
-                if self.suppressScrollReports { return }
-                self.onScrollUpdate?(fraction)
+                  let dict = message.body as? [String: Any]
+            else { return }
+            switch dict["type"] as? String {
+            case "scroll":
+                guard let fraction = dict["fraction"] as? Double
+                else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if self.suppressScrollReports { return }
+                    self.onScrollUpdate?(fraction)
+                }
+            case "pagination":
+                guard let cur = dict["current"] as? Int,
+                      let count = dict["count"] as? Int
+                else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.onPaginationUpdate?(cur, count)
+                }
+            default:
+                break
             }
         }
 
