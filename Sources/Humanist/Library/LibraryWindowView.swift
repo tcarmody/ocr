@@ -152,6 +152,12 @@ struct LibraryWindowView: View {
     @StateObject private var duplicateReviewModel = DuplicateReviewModel()
     @State private var showDuplicateReview: Bool = false
 
+    /// Broken-link review session — companion to Detect
+    /// Duplicates but for entries whose `.epub` is missing or
+    /// no longer opens. Same @StateObject + @State pattern.
+    @StateObject private var brokenLinkReviewModel = BrokenLinkReviewModel()
+    @State private var showBrokenLinkReview: Bool = false
+
     /// R-Library-Export. Drives the "Export Selected Books…" flow:
     /// `NSOpenPanel` for destination, then `LibraryExporter` copies
     /// each entry as `Author - Title.epub` (or just `Title.epub`
@@ -316,6 +322,11 @@ struct LibraryWindowView: View {
                 for: .humanistDetectDuplicatesRequested
             )) { _ in
                 startDuplicateReview()
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .humanistFindMissingFilesRequested
+            )) { _ in
+                startBrokenLinkReview()
             }
             .onReceive(NotificationCenter.default.publisher(
                 for: .humanistExportLibraryRequested
@@ -719,6 +730,13 @@ struct LibraryWindowView: View {
                 library: library,
                 coverCache: coverCache,
                 isPresented: $showDuplicateReview
+            )
+        }
+        .sheet(isPresented: $showBrokenLinkReview) {
+            BrokenLinkReviewSheet(
+                model: brokenLinkReviewModel,
+                library: library,
+                isPresented: $showBrokenLinkReview
             )
         }
         .sheet(item: $metadataEditContext) { ctx in
@@ -1273,6 +1291,17 @@ struct LibraryWindowView: View {
         Task {
             await duplicateReviewModel.startDetection(entries: entries)
         }
+    }
+
+    /// Open the broken-link review sheet and start the health
+    /// check. The model owns the scan task + result list; we
+    /// just hand it the entry snapshot. Like
+    /// `startDuplicateReview` this is a fire-and-forget — the
+    /// sheet's UI tracks the scan phase itself.
+    private func startBrokenLinkReview() {
+        let entries = library.entries
+        showBrokenLinkReview = true
+        brokenLinkReviewModel.startScan(entries: entries)
     }
 
     /// R-Library-Export. Validates the selection, picks a destination

@@ -554,6 +554,25 @@ private struct LibraryMaintenanceCommands: View {
         ExportSelectedBooksCommand()
         RestoreLibraryCatalogCommand()
         ConsolidatePDFsCommand()
+        FindMissingFilesCommand()
+    }
+}
+
+/// Reveal the Library window and post the find-missing-files
+/// request. The Library window's `.onReceive` opens
+/// `BrokenLinkReviewSheet` against its live `LibraryStore` and
+/// starts the scan. Pure menu-bar surface — like Detect
+/// Duplicates, this is occasional library maintenance, not a
+/// per-row workflow.
+private struct FindMissingFilesCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Find Missing Files in Library…") {
+            openWindow(id: "library")
+            NotificationCenter.default.post(
+                name: .humanistFindMissingFilesRequested, object: nil
+            )
+        }
     }
 }
 
@@ -904,6 +923,16 @@ extension Notification.Name {
     /// (file moved but sidecar update didn't).
     static let humanistConsolidatePDFsRequested = Notification.Name(
         "humanistConsolidatePDFsRequested"
+    )
+
+    /// Posted by File → Find Missing Files in Library…; the
+    /// Library window's listener opens `BrokenLinkReviewSheet`
+    /// and kicks off `LibraryHealthCheck` against the catalog.
+    /// Supplements the silent launch-time prune so users can
+    /// review broken entries (and keep ones on temporarily
+    /// offline volumes) before removing.
+    static let humanistFindMissingFilesRequested = Notification.Name(
+        "humanistFindMissingFilesRequested"
     )
 
     /// Posted by `EditorViewModel.save()` after a successful
