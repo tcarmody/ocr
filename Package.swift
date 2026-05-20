@@ -121,6 +121,15 @@ let package = Package(
             dependencies: ["Pipeline", "AI", "EPUB", "ZIPFoundation"],
             path: "Sources/SpikeRunner"
         ),
+        // Live smoke test for LandingAIDocumentEngine: feeds one image
+        // to /v1/ade/parse and prints the returned markdown. Hits the
+        // live LandingAI API and spends credits — invoke explicitly via
+        // `swift run LandingAISmoke <image-path>`.
+        .executableTarget(
+            name: "LandingAISmoke",
+            dependencies: ["Pipeline", "AI", "OCR"],
+            path: "Sources/LandingAISmoke"
+        ),
         // Command-line interface to the conversion pipeline.
         // Same engines as the SwiftUI app, exposed as `humanist-cli`
         // so conversions can be scripted, run in CI, or used in
