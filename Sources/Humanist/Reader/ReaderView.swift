@@ -73,6 +73,27 @@ struct ReaderView: View {
     /// Swift-side persistence.
     @State private var highlightRequest: WebReaderPane.HighlightRequest?
 
+    /// Annotation currently being edited in the note sheet.
+    /// nil → sheet hidden. Wraps the id rather than the
+    /// Annotation itself so the in-memory list is always the
+    /// source of truth while editing — saving mutates that
+    /// list directly via the VM.
+    @State private var editingAnnotationId: UUID?
+
+    /// In-flight passage-attribute update for the wrap span.
+    /// Bumped (new request) when a note save promotes a
+    /// highlight to a passage (or demotes the other way);
+    /// coordinator runs JS to stamp / strip the data-passage
+    /// attribute so the visual underline appears immediately
+    /// without a chapter reload.
+    @State private var passageMarkerRequest: PassageMarkerRequest?
+
+    struct PassageMarkerRequest: Equatable {
+        let annotationId: UUID
+        let isPassage: Bool
+        let nonce: UUID
+    }
+
     /// Sidebar tab. Persisted so a user who lives in the
     /// annotations list during a read stays there on reopen.
     @AppStorage("humanist.reader.sidebarTab")
@@ -129,6 +150,45 @@ struct ReaderView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: copyCitationToast)
+        .sheet(isPresented: Binding(
+            get: { editingAnnotationId != nil },
+            set: { presented in
+                if !presented { editingAnnotationId = nil }
+            }
+        )) {
+            if let id = editingAnnotationId,
+               let annot = vm.annotations.first(where: { $0.id == id }) {
+                NoteEditorSheet(
+                    annotation: annot,
+                    onSave: { newNote in
+                        saveNote(forAnnotationID: id, note: newNote)
+                        editingAnnotationId = nil
+                    },
+                    onCancel: { editingAnnotationId = nil }
+                )
+            }
+        }
+    }
+
+    /// Persist a note edit and trigger the visual passage-
+    /// marker update on the wrap span. Promotion / demotion
+    /// between highlight ↔ passage happens inside
+    /// `vm.updateAnnotationNote`; we just need to look at the
+    /// updated kind to decide whether the wrap should carry
+    /// the data-passage attribute.
+    private func saveNote(forAnnotationID id: UUID, note: String?) {
+        vm.updateAnnotationNote(id: id, note: note)
+        guard let updated = vm.annotations.first(where: { $0.id == id })
+        else { return }
+        // Bookmarks don't have a wrap span — visual update only
+        // applies to highlight / passage kinds.
+        guard updated.kind == .highlight || updated.kind == .passage
+        else { return }
+        passageMarkerRequest = PassageMarkerRequest(
+            annotationId: id,
+            isPassage: updated.kind == .passage,
+            nonce: UUID()
+        )
     }
 
     // MARK: - Ready body
@@ -272,6 +332,9 @@ struct ReaderView: View {
                     annotationRow(annot)
                         .contextMenu {
                             Button("Jump to") { jumpToAnnotation(annot) }
+                            Button(annot.note == nil ? "Add Note…" : "Edit Note…") {
+                                editingAnnotationId = annot.id
+                            }
                             Divider()
                             Button("Delete", role: .destructive) {
                                 vm.removeAnnotation(id: annot.id)
@@ -443,7 +506,8 @@ struct ReaderView: View {
                     chapterHighlights: vm.annotations.filter {
                         $0.chapterIdx == vm.spineIndex
                             && ($0.kind == .highlight || $0.kind == .passage)
-                    }
+                    },
+                    passageMarkerRequest: passageMarkerRequest
                 )
             }
             .background(Color(nsColor: .textBackgroundColor))
@@ -786,6 +850,75 @@ struct FindRequest: Equatable {
     let nonce: UUID
 }
 
+/// Modal note editor for a single annotation. Triggered from
+/// the annotations-sidebar context menu ("Add Note…" /
+/// "Edit Note…"). Shows the selected text as context (when
+/// available — bookmarks have no selected text) and a
+/// TextEditor for the note body. Cancel discards; Save writes
+/// through the VM, which promotes the annotation's kind to
+/// `.passage` when the note becomes non-empty (or demotes back
+/// to `.highlight` when cleared).
+private struct NoteEditorSheet: View {
+    let annotation: Annotation
+    let onSave: (String?) -> Void
+    let onCancel: () -> Void
+    @State private var noteText: String
+
+    init(
+        annotation: Annotation,
+        onSave: @escaping (String?) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.annotation = annotation
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _noteText = State(initialValue: annotation.note ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(headerTitle)
+                .font(.headline)
+            if let text = annotation.selectedText, !text.isEmpty {
+                Text("\u{201C}\(text)\u{201D}")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .controlBackgroundColor),
+                                in: RoundedRectangle(cornerRadius: 6))
+                    .lineLimit(5)
+            }
+            Text("Note")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+            TextEditor(text: $noteText)
+                .font(.body)
+                .frame(minHeight: 120)
+                .padding(4)
+                .background(Color(nsColor: .textBackgroundColor),
+                            in: RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.2))
+                )
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { onSave(noteText) }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 380, minHeight: 280)
+    }
+
+    private var headerTitle: String {
+        annotation.note == nil ? "Add Note" : "Edit Note"
+    }
+}
+
 // MARK: - WKWebView reader pane
 
 /// Minimal WKWebView wrapper for the reader's chapter pane. Far
@@ -873,6 +1006,13 @@ private struct WebReaderPane: NSViewRepresentable {
     /// matches the loaded spine index. Bookmarks aren't visual
     /// so they're excluded; restoration happens in didFinish.
     var chapterHighlights: [Annotation] = []
+
+    /// Passage-attribute toggle request. When the user saves a
+    /// note on an existing highlight (promoting it to passage)
+    /// the wrap span's `data-passage` attribute needs to flip
+    /// so the visual underline appears without a chapter
+    /// reload. Same nonce pattern as the other request slots.
+    var passageMarkerRequest: ReaderView.PassageMarkerRequest? = nil
 
     /// JS-side capture for a successful highlight gesture.
     struct HighlightCapture: Equatable {
@@ -1000,6 +1140,15 @@ private struct WebReaderPane: NSViewRepresentable {
                 annotationId: req.annotationId, view: nsView
             )
         }
+        if let req = passageMarkerRequest,
+           context.coordinator.lastFlushedPassageMarkerNonce != req.nonce {
+            context.coordinator.lastFlushedPassageMarkerNonce = req.nonce
+            context.coordinator.updatePassageMarker(
+                annotationId: req.annotationId,
+                isPassage: req.isPassage,
+                view: nsView
+            )
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -1121,6 +1270,10 @@ private struct WebReaderPane: NSViewRepresentable {
         /// `updateNSView` so didFinish has data to restore
         /// without re-reaching into the SwiftUI graph.
         var pendingChapterHighlights: [Annotation] = []
+        /// Nonce of the most recently applied passage-marker
+        /// update. Same compare-against-binding pattern as the
+        /// other request slots.
+        var lastFlushedPassageMarkerNonce: UUID?
         /// True while we're programmatically scrolling (anchor
         /// flush or fraction restore). The JS bridge can fire
         /// a scroll event from the scrollIntoView itself, which
@@ -1459,6 +1612,34 @@ private struct WebReaderPane: NSViewRepresentable {
                     range.insertNode(wrapper);
                   } catch (e2) {}
                 }
+              }
+            })();
+            """
+            view.evaluateJavaScript(js, completionHandler: nil)
+        }
+
+        /// Toggle the `data-passage` attribute on the wrap span
+        /// for an existing highlight. Promotion (note added →
+        /// kind becomes .passage) adds the attribute; demotion
+        /// (note cleared → kind back to .highlight) removes it.
+        /// CSS keys off the attribute to draw the orange
+        /// underline; updating it in-place avoids a full
+        /// chapter reload to see the visual change.
+        func updatePassageMarker(
+            annotationId: UUID, isPassage: Bool, view: WKWebView
+        ) {
+            let idString = annotationId.uuidString
+            let flag = isPassage ? "true" : "false"
+            let js = """
+            (function() {
+              var el = document.querySelector(
+                '[data-annotation-id="\(idString)"]'
+              );
+              if (!el) return;
+              if (\(flag)) {
+                el.setAttribute('data-passage', '1');
+              } else {
+                el.removeAttribute('data-passage');
               }
             })();
             """
