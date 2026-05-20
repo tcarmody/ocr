@@ -50,6 +50,17 @@ struct ReaderView: View {
     /// ("Match found." / "No match.") in the find bar.
     @State private var findResultMessage: String = ""
 
+    /// Copy-with-citation request. Bumped (new UUID) when the
+    /// user invokes ⇧⌘C / the toolbar button; the WKWebView's
+    /// coordinator catches the change, computes the selection
+    /// + nearest paragraph anchor, builds the citation string,
+    /// and writes it to the system clipboard.
+    @State private var copyCitationRequest: UUID?
+    /// Transient banner shown after a copy-with-citation: "Copied
+    /// with citation." or "Select some text first." Cleared after
+    /// a couple of seconds.
+    @State private var copyCitationToast: String?
+
     init(epubURL: URL) {
         self.epubURL = epubURL
         _vm = StateObject(wrappedValue: ReaderViewModel(epubURL: epubURL))
@@ -73,6 +84,18 @@ struct ReaderView: View {
         }
         .frame(minWidth: 720, minHeight: 560)
         .humanistChrome()
+        .overlay(alignment: .bottom) {
+            if let toast = copyCitationToast {
+                Text(toast)
+                    .font(.callout)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.thinMaterial, in: Capsule())
+                    .padding(.bottom, 24)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: copyCitationToast)
     }
 
     // MARK: - Ready body
@@ -200,6 +223,10 @@ struct ReaderView: View {
                         findResultMessage = matchFound
                             ? "Match found."
                             : "No match."
+                    },
+                    copyCitationRequest: copyCitationRequest,
+                    onCitationContext: { ctx in
+                        handleCitationContext(ctx)
                     }
                 )
             }
@@ -313,6 +340,14 @@ struct ReaderView: View {
             }
             .help("Find in chapter (⌘F)")
             .keyboardShortcut("f", modifiers: .command)
+
+            Button {
+                copyCitationRequest = UUID()
+            } label: {
+                Label("Copy with Citation", systemImage: "quote.opening")
+            }
+            .help("Copy selection with a citation back to the book (⇧⌘C)")
+            .keyboardShortcut("c", modifiers: [.command, .shift])
         }
     }
 
@@ -392,6 +427,70 @@ struct ReaderView: View {
             nonce: UUID()
         )
     }
+
+    /// Format the JS-side citation context as a clipboard
+    /// payload + write it. nil context (nothing selected) shows
+    /// a toast hint instead.
+    private func handleCitationContext(
+        _ ctx: WebReaderPane.CitationContext?
+    ) {
+        guard let ctx else {
+            showCopyToast("Select some text first.")
+            return
+        }
+        let citation = formatCitation(for: ctx)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(citation, forType: .string)
+        showCopyToast("Copied with citation.")
+    }
+
+    /// Build the clipboard payload. Shape:
+    ///
+    ///   "<selected text>"
+    ///   — <Book Title>, <Chapter Title>, ¶M
+    ///
+    /// Chapter title from the VM's `chapterTitle` lookup when
+    /// available; falls back to the current spine label. Paragraph
+    /// suffix only present when the source had an `hu-p-N-M`
+    /// anchor (Humanist-converted EPUBs).
+    private func formatCitation(
+        for ctx: WebReaderPane.CitationContext
+    ) -> String {
+        // Cite the chapter the selection actually came from
+        // (from the hu-p-N-M anchor) when present; fall back to
+        // the currently-displayed chapter when the EPUB lacks
+        // per-paragraph anchors.
+        let chapterIdx = ctx.chapterIdx ?? vm.spineIndex
+        let chapterTitle: String = {
+            if let entry = vm.toc.entries.first(
+                where: { $0.spineIndex == chapterIdx }
+            ) {
+                return entry.title
+            }
+            return "Chapter \(chapterIdx + 1)"
+        }()
+        let bookTitle = vm.displayTitle
+        var citation = "— \(bookTitle), \(chapterTitle)"
+        if let paragraphIdx = ctx.paragraphIdx {
+            citation += ", ¶\(paragraphIdx)"
+        }
+        return "\"\(ctx.text)\"\n\(citation)"
+    }
+
+    /// Brief toast banner after a copy attempt. Auto-clears
+    /// after 2 s.
+    private func showCopyToast(_ message: String) {
+        copyCitationToast = message
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await MainActor.run {
+                if copyCitationToast == message {
+                    copyCitationToast = nil
+                }
+            }
+        }
+    }
 }
 
 /// One find request from the reader's find bar to the
@@ -446,6 +545,36 @@ private struct WebReaderPane: NSViewRepresentable {
     /// `false` when no match exists. Caller surfaces a status
     /// label in the find bar.
     var onFindResult: ((Bool) -> Void)? = nil
+    /// Copy-with-citation request nonce. When this changes, the
+    /// coordinator runs a small JS snippet to grab the current
+    /// selection and find its nearest paragraph anchor, then
+    /// hands the result + chapter index to `onCitationContext`
+    /// for Swift-side citation assembly + clipboard write.
+    var copyCitationRequest: UUID? = nil
+    /// Result callback for copy-with-citation. Fires with a
+    /// `CitationContext` describing the user's selection (or
+    /// `nil` when nothing is selected so the toolbar action
+    /// can surface a "Select some text first." hint instead of
+    /// silently no-op'ing).
+    var onCitationContext: ((CitationContext?) -> Void)? = nil
+
+    /// What the WKWebView reports back for a copy-with-citation
+    /// request. The coordinator builds this from a selection
+    /// query; the Swift caller decides how to format it (the
+    /// book title + chapter title resolution live on the VM).
+    struct CitationContext: Equatable {
+        /// Selected text, verbatim — preserved with whatever
+        /// whitespace the user grabbed.
+        let text: String
+        /// Zero-based chapter index extracted from the nearest
+        /// `hu-p-N-M` ancestor's id. nil when the EPUB doesn't
+        /// carry Humanist per-paragraph anchors; caller falls
+        /// back to citing the current spine index.
+        let chapterIdx: Int?
+        /// Paragraph index extracted from the same anchor.
+        /// nil for the same reason as `chapterIdx`.
+        let paragraphIdx: Int?
+    }
 
     func makeNSView(context: Context) -> WKWebView {
         let cfg = WKWebViewConfiguration()
@@ -473,6 +602,7 @@ private struct WebReaderPane: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         context.coordinator.onScrollUpdate = onScrollUpdate
         context.coordinator.onFindResult = onFindResult
+        context.coordinator.onCitationContext = onCitationContext
         load(into: nsView, coordinator: context.coordinator)
         context.coordinator.applyFontSizeIfReady(view: nsView)
         // Stash the most recent pending anchor; the coordinator
@@ -494,6 +624,11 @@ private struct WebReaderPane: NSViewRepresentable {
            context.coordinator.lastFlushedFindNonce != req.nonce {
             context.coordinator.lastFlushedFindNonce = req.nonce
             context.coordinator.executeFind(request: req, view: nsView)
+        }
+        if let req = copyCitationRequest,
+           context.coordinator.lastFlushedCitationNonce != req {
+            context.coordinator.lastFlushedCitationNonce = req
+            context.coordinator.captureCitationContext(view: nsView)
         }
     }
 
@@ -595,6 +730,11 @@ private struct WebReaderPane: NSViewRepresentable {
         /// `updateNSView` compares against the binding's nonce
         /// to decide whether to fire a new find.
         var lastFlushedFindNonce: UUID?
+        /// Citation-context callback. Fires once per copy-with-
+        /// citation request with the JS-side selection + nearest
+        /// hu-p-N-M anchor, or nil when no text is selected.
+        var onCitationContext: ((CitationContext?) -> Void)?
+        var lastFlushedCitationNonce: UUID?
         /// True while we're programmatically scrolling (anchor
         /// flush or fraction restore). The JS bridge can fire
         /// a scroll event from the scrollIntoView itself, which
@@ -729,6 +869,75 @@ private struct WebReaderPane: NSViewRepresentable {
             lastFlushedFractionNonce = nonce
             pendingFraction = nil
             pendingFractionNonce = nil
+        }
+
+        /// Capture the current text selection + nearest hu-p-N-M
+        /// anchor for a copy-with-citation request. Posts the
+        /// result (nil for empty selection) to onCitationContext
+        /// for Swift-side assembly + clipboard write. JS does the
+        /// DOM walk because finding the closest matching
+        /// ancestor cleanly in Swift would mean serializing the
+        /// whole DOM across the bridge.
+        func captureCitationContext(view: WKWebView) {
+            let js = """
+            (function() {
+              var sel = window.getSelection();
+              if (!sel || sel.isCollapsed || !sel.rangeCount) {
+                return null;
+              }
+              var text = sel.toString();
+              if (!text) return null;
+              // Walk up from the selection's common ancestor
+              // looking for a hu-p-{N}-{M} id. Match by regex
+              // because the element type might be a span / p /
+              // div / etc. depending on how the renderer wrapped
+              // the paragraph.
+              var node = sel.getRangeAt(0).commonAncestorContainer;
+              var chapterIdx = null;
+              var paragraphIdx = null;
+              while (node) {
+                if (node.nodeType === 1 && node.id) {
+                  var m = node.id.match(/^hu-p-(\\d+)-(\\d+)$/);
+                  if (m) {
+                    chapterIdx = parseInt(m[1], 10);
+                    paragraphIdx = parseInt(m[2], 10);
+                    break;
+                  }
+                }
+                node = node.parentNode;
+              }
+              return JSON.stringify({
+                text: text,
+                chapterIdx: chapterIdx,
+                paragraphIdx: paragraphIdx,
+              });
+            })();
+            """
+            view.evaluateJavaScript(js) { [weak self] result, _ in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard let raw = result as? String,
+                          let data = raw.data(using: .utf8),
+                          let dict = try? JSONSerialization
+                            .jsonObject(with: data) as? [String: Any],
+                          let text = dict["text"] as? String,
+                          !text.isEmpty
+                    else {
+                        // No selection (or unexpected return
+                        // shape). Surface nil so the caller can
+                        // tell the user.
+                        self.onCitationContext?(nil)
+                        return
+                    }
+                    let chapter = dict["chapterIdx"] as? Int
+                    let paragraph = dict["paragraphIdx"] as? Int
+                    self.onCitationContext?(CitationContext(
+                        text: text,
+                        chapterIdx: chapter,
+                        paragraphIdx: paragraph
+                    ))
+                }
+            }
         }
 
         /// Execute a find request against the WKWebView. Uses
