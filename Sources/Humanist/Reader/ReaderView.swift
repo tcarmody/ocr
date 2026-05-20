@@ -80,6 +80,20 @@ struct ReaderView: View {
     /// list directly via the VM.
     @State private var editingAnnotationId: UUID?
 
+    /// Reading-prefs popover visibility.
+    @State private var showingReadingPrefs: Bool = false
+
+    // Reading preferences — persisted globally so a user's
+    // typographic preference travels across books / windows.
+    @AppStorage("humanist.reader.fontFamily")
+    private var fontFamily: ReaderFontFamily = .serif
+    @AppStorage("humanist.reader.lineHeight")
+    private var lineHeight: Double = 1.5
+    @AppStorage("humanist.reader.marginEm")
+    private var marginEm: Double = 2.0
+    @AppStorage("humanist.reader.theme")
+    private var theme: ReaderTheme = .system
+
     /// In-flight passage-attribute update for the wrap span.
     /// Bumped (new request) when a note save promotes a
     /// highlight to a passage (or demotes the other way);
@@ -514,7 +528,13 @@ struct ReaderView: View {
                         vm.didReportPagination(
                             currentPage: current, pageCount: count
                         )
-                    }
+                    },
+                    appearance: WebReaderPane.Appearance(
+                        fontStack: fontFamily.cssStack,
+                        lineHeight: lineHeight,
+                        marginEm: marginEm,
+                        themeName: theme.rawValue
+                    )
                 )
             }
             .background(Color(nsColor: .textBackgroundColor))
@@ -697,7 +717,94 @@ struct ReaderView: View {
                   ? "Switch back to scrolling layout (⌥⌘P)"
                   : "Switch to paginated layout (⌥⌘P)")
             .keyboardShortcut("p", modifiers: [.command, .option])
+
+            Button {
+                showingReadingPrefs.toggle()
+            } label: {
+                Label("Reading Preferences", systemImage: "textformat")
+            }
+            .help("Font, line spacing, margins, and theme (⌃⌘A)")
+            .keyboardShortcut("a", modifiers: [.command, .control])
+            .popover(
+                isPresented: $showingReadingPrefs,
+                arrowEdge: .bottom
+            ) {
+                readingPrefsPopover
+            }
         }
+    }
+
+    /// Reading preferences popover. Each control writes to the
+    /// matching @AppStorage; the WKWebView observes the values
+    /// and live-updates CSS variables on the loaded chapter via
+    /// the appearance JS bridge. No reload needed.
+    @ViewBuilder
+    private var readingPrefsPopover: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Reading Preferences")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Font").font(.callout.weight(.medium))
+                Picker("Font", selection: $fontFamily) {
+                    ForEach(ReaderFontFamily.allCases) { ff in
+                        Text(ff.displayName).tag(ff)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Size").font(.callout.weight(.medium))
+                    Spacer()
+                    Text("\(Int(fontSize)) pt")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Slider(
+                    value: $fontSize,
+                    in: Self.fontSizeMin...Self.fontSizeMax,
+                    step: 1
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Line spacing").font(.callout.weight(.medium))
+                    Spacer()
+                    Text(String(format: "%.1f×", lineHeight))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $lineHeight, in: 1.2...2.2, step: 0.1)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Margins").font(.callout.weight(.medium))
+                    Spacer()
+                    Text(String(format: "%.1f em", marginEm))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $marginEm, in: 0...8, step: 0.5)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Theme").font(.callout.weight(.medium))
+                Picker("Theme", selection: $theme) {
+                    ForEach(ReaderTheme.allCases) { t in
+                        Text(t.displayName).tag(t)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+        }
+        .padding(16)
+        .frame(width: 280)
     }
 
     /// "1 / 47" — visible only in paginated mode. Pre-measurement
@@ -908,6 +1015,62 @@ struct FindRequest: Equatable {
     let nonce: UUID
 }
 
+/// Reader font-family picker. Each case maps to a font-stack
+/// the WKWebView injects on the loaded chapter. Concrete fonts
+/// chosen for typographic quality on long-form reading on
+/// macOS; San Francisco is included for users who prefer the
+/// system sans-serif.
+enum ReaderFontFamily: String, CaseIterable, Identifiable, Sendable {
+    case serif        // Iowan Old Style → Hoefler Text → Georgia
+    case newYork      // New York (Apple's optical-size serif)
+    case sansSerif    // San Francisco → Helvetica Neue
+    case mono         // SF Mono → Menlo
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .serif:     return "Serif"
+        case .newYork:   return "New York"
+        case .sansSerif: return "Sans-serif"
+        case .mono:      return "Monospace"
+        }
+    }
+
+    /// CSS font-stack injected on the chapter body. macOS-only
+    /// — no fallback to web-safe fonts since the reader doesn't
+    /// run anywhere else.
+    var cssStack: String {
+        switch self {
+        case .serif:
+            return "\"Iowan Old Style\", \"Hoefler Text\", Georgia, serif"
+        case .newYork:
+            return "\"New York\", \"Iowan Old Style\", Georgia, serif"
+        case .sansSerif:
+            return "-apple-system, \"Helvetica Neue\", Helvetica, sans-serif"
+        case .mono:
+            return "\"SF Mono\", Menlo, Monaco, monospace"
+        }
+    }
+}
+
+/// Reader theme. System tracks `prefers-color-scheme`; Sepia
+/// + Dark are explicit overrides for users who want a fixed
+/// reading palette independent of system appearance.
+enum ReaderTheme: String, CaseIterable, Identifiable, Sendable {
+    case system, sepia, dark
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .system: return "System"
+        case .sepia:  return "Sepia"
+        case .dark:   return "Dark"
+        }
+    }
+}
+
 /// Modal note editor for a single annotation. Triggered from
 /// the annotations-sidebar context menu ("Add Note…" /
 /// "Edit Note…"). Shows the selected text as context (when
@@ -1088,6 +1251,22 @@ private struct WebReaderPane: NSViewRepresentable {
     /// didReportPagination(currentPage:pageCount:).
     var onPaginationUpdate: ((Int, Int) -> Void)? = nil
 
+    /// Bundled reading-appearance settings — font / line-height
+    /// / margins / theme. Passed through as a struct so a
+    /// single comparison drives whether to re-fire the JS
+    /// variable-setter (vs. checking each independently in
+    /// updateNSView).
+    struct Appearance: Equatable {
+        let fontStack: String
+        let lineHeight: Double
+        let marginEm: Double
+        let themeName: String
+    }
+    var appearance: Appearance = Appearance(
+        fontStack: ReaderFontFamily.serif.cssStack,
+        lineHeight: 1.5, marginEm: 2.0, themeName: "system"
+    )
+
     /// JS-side capture for a successful highlight gesture.
     struct HighlightCapture: Equatable {
         let annotationId: UUID
@@ -1144,6 +1323,14 @@ private struct WebReaderPane: NSViewRepresentable {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
+        // Reading-appearance stylesheet + JS variable-setter.
+        // Document-start so the styles apply before first paint
+        // (no FOUC when a saved Sepia/Dark theme reopens).
+        userContent.addUserScript(WKUserScript(
+            source: Self.appearanceBridgeJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
         cfg.userContentController = userContent
         let view = WKWebView(frame: .zero, configuration: cfg)
         view.navigationDelegate = context.coordinator
@@ -1153,6 +1340,48 @@ private struct WebReaderPane: NSViewRepresentable {
         load(into: view)
         return view
     }
+
+    /// Reading-appearance bridge: live-updates CSS variables on
+    /// `<html>` so font / line-height / margins / theme changes
+    /// don't require a chapter reload. The injected stylesheet
+    /// reads those variables; user-popover sliders just rewrite
+    /// the variable values via JS.
+    private static let appearanceBridgeJS = """
+    (function() {
+      var s = document.createElement('style');
+      s.id = 'humanist-reader-appearance-style';
+      s.textContent =
+        ':root { ' +
+        '  --hu-reader-font-family: serif; ' +
+        '  --hu-reader-line-height: 1.5; ' +
+        '  --hu-reader-margin: 2em; ' +
+        '}' +
+        'body {' +
+        '  font-family: var(--hu-reader-font-family) !important;' +
+        '  line-height: var(--hu-reader-line-height) !important;' +
+        '  padding-left: var(--hu-reader-margin) !important;' +
+        '  padding-right: var(--hu-reader-margin) !important;' +
+        '  transition: background-color 0.15s ease, color 0.15s ease;' +
+        '}' +
+        'html[data-hu-theme="sepia"] body {' +
+        '  background-color: #f4ecd8 !important;' +
+        '  color: #3b2f1a !important;' +
+        '}' +
+        'html[data-hu-theme="dark"] body {' +
+        '  background-color: #1a1a1a !important;' +
+        '  color: #e6e6e6 !important;' +
+        '}' +
+        'html[data-hu-theme="dark"] a { color: #6db4ff !important; }';
+      document.documentElement.appendChild(s);
+      window.humanistReaderAppearance = function(fontStack, lineHeight, marginEm, themeName) {
+        var r = document.documentElement.style;
+        r.setProperty('--hu-reader-font-family', fontStack);
+        r.setProperty('--hu-reader-line-height', String(lineHeight));
+        r.setProperty('--hu-reader-margin', marginEm + 'em');
+        document.documentElement.setAttribute('data-hu-theme', themeName);
+      };
+    })();
+    """
 
     /// Pagination bridge: CSS-columns-based "real reader" layout.
     /// Sits dormant on every chapter load. The Swift side calls
@@ -1368,6 +1597,11 @@ private struct WebReaderPane: NSViewRepresentable {
             )
         }
         context.coordinator.onPaginationUpdate = onPaginationUpdate
+        // Push appearance to the JS variable-setter on every
+        // pass. The setter is a cheap no-op when values match,
+        // so we don't bother diffing here.
+        context.coordinator.pendingAppearance = appearance
+        context.coordinator.applyAppearanceIfReady(view: nsView)
         // Apply / remove the pagination layout when the binding
         // flips. Done after didFinish guards in the helper so
         // pre-load enable requests get deferred to the next
@@ -1525,6 +1759,12 @@ private struct WebReaderPane: NSViewRepresentable {
         /// next / previous taps fire each time instead of
         /// being coalesced.
         var lastFlushedPageNavNonce: UUID?
+
+        /// Pending appearance — last value from updateNSView.
+        /// Flushed via humanistReaderAppearance() on every
+        /// updateNSView pass + on every didFinish (so a fresh
+        /// chapter load picks up the saved theme before paint).
+        var pendingAppearance: Appearance?
         /// True while we're programmatically scrolling (anchor
         /// flush or fraction restore). The JS bridge can fire
         /// a scroll event from the scrollIntoView itself, which
@@ -1541,6 +1781,7 @@ private struct WebReaderPane: NSViewRepresentable {
                 self.lastFinishedView = webView
                 self.isLoaded = true
                 self.applyFontSizeIfReady(view: webView)
+                self.applyAppearanceIfReady(view: webView)
                 self.restoreHighlights(view: webView)
                 // Re-enter paginated mode on every chapter load
                 // when the flag is on. JS module's `enter()` is
@@ -1637,6 +1878,25 @@ private struct WebReaderPane: NSViewRepresentable {
             default:
                 break
             }
+        }
+
+        /// Apply the pending appearance bundle by calling the JS
+        /// variable-setter installed by `appearanceBridgeJS`.
+        /// Idempotent — running with the same values is a cheap
+        /// no-op visually. Safe to call before didFinish; the
+        /// user-script setup at document start defines
+        /// `humanistReaderAppearance` even though body content
+        /// hasn't loaded yet.
+        func applyAppearanceIfReady(view: WKWebView) {
+            guard let app = pendingAppearance else { return }
+            let escapedFont = stringLiteral(app.fontStack)
+            let theme = stringLiteral(app.themeName)
+            let js = """
+            if (typeof window.humanistReaderAppearance === 'function') {
+              humanistReaderAppearance(\(escapedFont), \(app.lineHeight), \(app.marginEm), \(theme));
+            }
+            """
+            view.evaluateJavaScript(js, completionHandler: nil)
         }
 
         /// Inject (or update) the `<style id="humanist-reader-override">`
