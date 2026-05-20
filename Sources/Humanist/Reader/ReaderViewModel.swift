@@ -49,6 +49,32 @@ final class ReaderViewModel: ObservableObject {
     /// top.
     @Published var pendingScrollAnchor: ScrollAnchor?
 
+    /// Current scroll fraction inside the active chapter
+    /// (0.0 = top, 1.0 = bottom). Updated live by
+    /// `WebReaderPane`'s JS bridge as the user scrolls.
+    /// Persisted to `ReadingPositionStore` on a debounce so the
+    /// next reopen restores both the chapter AND the position
+    /// within it.
+    @Published private(set) var scrollFraction: Double = 0
+
+    /// Pending scroll-fraction request for a chapter load.
+    /// Set by `restorePositionIfAvailable` after the user's
+    /// saved position is read off disk; consumed by
+    /// `WebReaderPane` once the chapter's WKWebView finishes
+    /// loading, then cleared. Same nonce-tagged shape as
+    /// `pendingScrollAnchor` so identical re-requests still
+    /// fire (defensive — restore only happens once per open).
+    @Published var pendingScrollFraction: ScrollFractionRequest?
+
+    /// Scroll fraction restore request keyed by spine index +
+    /// target fraction. Nonce-tagged for the same reason as
+    /// `ScrollAnchor`.
+    struct ScrollFractionRequest: Equatable {
+        let spineIndex: Int
+        let fraction: Double
+        let nonce: UUID
+    }
+
     /// Anchor scroll request keyed by spine index + element id.
     /// Nonce-tagged so two requests to the same anchor still
     /// fire `onChange` in `WebReaderPane` — repeat-clicks on the
@@ -151,31 +177,79 @@ final class ReaderViewModel: ObservableObject {
         guard let saved = ReadingPositionStore.load(
             forContentHash: hash
         ) else { return }
-        // Only jump when the saved position is past chapter 0 —
-        // otherwise we'd issue a redundant load that flickers.
-        guard saved.spineIndex > 0 else { return }
         guard !userHasNavigated else { return }
-        jump(toSpineIndex: saved.spineIndex)
+        // Jump to the saved spine index unless we're already
+        // there (chapter 0). Either way, queue a scroll-
+        // fraction request so the WebReaderPane scrolls to the
+        // saved sub-chapter offset on load — fully restores
+        // "where I was reading," not just which chapter.
+        if saved.spineIndex > 0 && saved.spineIndex != spineIndex {
+            spineIndex = saved.spineIndex
+            reloadTrigger += 1
+        }
+        // Skip the scroll-restore step when the saved fraction
+        // is at or near the top — no point in firing a
+        // scrollTo(0) and reset the chapter's natural starting
+        // viewport.
+        if saved.scrollFraction > 0.01 {
+            pendingScrollFraction = ScrollFractionRequest(
+                spineIndex: saved.spineIndex,
+                fraction: saved.scrollFraction,
+                nonce: UUID()
+            )
+        }
+        // Seed the live fraction so a subsequent navigation-
+        // triggered persist doesn't write 0 before the JS
+        // bridge has reported the restored position.
+        scrollFraction = saved.scrollFraction
     }
 
     /// Persist the current position to the store. Called from
     /// every spine-changing path (`previousChapter`,
-    /// `nextChapter`, `jump`). Writes are cheap (one tiny JSON
-    /// file) so we don't bother debouncing at the spine
-    /// granularity; per-scroll persistence (when it lands) will
-    /// need debouncing.
+    /// `nextChapter`, `jump`) and from the scroll-update path
+    /// (debounced). Writes are cheap (one tiny JSON file).
     private func persistCurrentPosition() {
         guard let hash = contentHash else { return }
         let position = ReadingPosition(
             contentHash: hash,
             spineIndex: spineIndex,
-            scrollFraction: 0,
+            scrollFraction: scrollFraction,
             updatedAt: Date()
         )
         // Hop off the main actor — disk I/O shouldn't block the
         // chapter-change repaint, however cheap.
         Task.detached(priority: .utility) {
             ReadingPositionStore.save(position)
+        }
+    }
+
+    /// Debounce timer for scroll-position writes. The WKWebView
+    /// fires scroll events at ~60 Hz; we coalesce into one
+    /// disk write per ~750ms of quiet so the SSD isn't being
+    /// hammered on every wheel tick.
+    private var scrollPersistTask: Task<Void, Never>?
+
+    /// JS-side scroll bridge callback. Called every time the
+    /// reader's WKWebView reports a new scroll fraction.
+    /// Updates the live `scrollFraction` and schedules a
+    /// debounced persistence write.
+    func didReportScrollFraction(_ fraction: Double) {
+        // Clamp defensively — JS can occasionally report
+        // negatives during overscroll and >1 during bouncing.
+        let clamped = max(0, min(1, fraction))
+        scrollFraction = clamped
+        // Don't persist sub-chapter scroll until the user has
+        // explicitly navigated this session — otherwise the
+        // first auto-scroll during chapter load would clobber
+        // their saved position with 0.
+        guard userHasNavigated else { return }
+        scrollPersistTask?.cancel()
+        scrollPersistTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await MainActor.run {
+                self.persistCurrentPosition()
+            }
         }
     }
 
@@ -227,6 +301,9 @@ final class ReaderViewModel: ObservableObject {
         userHasNavigated = true
         spineIndex -= 1
         reloadTrigger += 1
+        scrollFraction = 0
+        pendingScrollAnchor = nil
+        pendingScrollFraction = nil
         persistCurrentPosition()
     }
 
@@ -235,6 +312,9 @@ final class ReaderViewModel: ObservableObject {
         userHasNavigated = true
         spineIndex += 1
         reloadTrigger += 1
+        scrollFraction = 0
+        pendingScrollAnchor = nil
+        pendingScrollFraction = nil
         persistCurrentPosition()
     }
 
@@ -254,6 +334,10 @@ final class ReaderViewModel: ObservableObject {
         // a chapter-top jump (TOC click, prev/next), not a
         // citation tap.
         pendingScrollAnchor = nil
+        pendingScrollFraction = nil
+        // New chapter starts at the top; the JS bridge will
+        // confirm via a scroll-event once the page loads.
+        scrollFraction = 0
         persistCurrentPosition()
     }
 

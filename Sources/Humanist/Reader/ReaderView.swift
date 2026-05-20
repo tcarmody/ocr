@@ -127,23 +127,33 @@ struct ReaderView: View {
     @ViewBuilder
     private func readingPane(book: EPUBBook) -> some View {
         if let chapterURL = vm.currentChapterURL {
-            // Only pass the anchor through when it targets the
-            // currently-loaded spine index — otherwise the WKWebView
-            // would try to scroll the wrong chapter's DOM. The VM's
-            // jumpToParagraph updates spineIndex first, so by the
-            // time updateNSView runs the anchor's spineIndex matches.
+            // Only pass the anchor / fraction through when it
+            // targets the currently-loaded spine index — otherwise
+            // the WKWebView would try to scroll the wrong chapter's
+            // DOM. The VM updates spineIndex first, so by the time
+            // updateNSView runs the target's spineIndex matches.
             let anchor: ReaderViewModel.ScrollAnchor? = {
                 guard let a = vm.pendingScrollAnchor,
                       a.spineIndex == vm.spineIndex
                 else { return nil }
                 return a
             }()
+            let fractionReq: ReaderViewModel.ScrollFractionRequest? = {
+                guard let f = vm.pendingScrollFraction,
+                      f.spineIndex == vm.spineIndex
+                else { return nil }
+                return f
+            }()
             WebReaderPane(
                 url: chapterURL,
                 accessRoot: book.workingDirectory,
                 reloadTrigger: vm.reloadTrigger,
                 fontSize: fontSize,
-                scrollAnchor: anchor
+                scrollAnchor: anchor,
+                scrollFraction: fractionReq,
+                onScrollUpdate: { fraction in
+                    vm.didReportScrollFraction(fraction)
+                }
             )
             .background(Color(nsColor: .textBackgroundColor))
         } else {
@@ -263,18 +273,43 @@ private struct WebReaderPane: NSViewRepresentable {
     /// the WKWebView to the matching element id after load (or
     /// immediately if already loaded).
     var scrollAnchor: ReaderViewModel.ScrollAnchor? = nil
+    /// Optional scroll-fraction restore target. Same shape as
+    /// `scrollAnchor` but targets a normalized position
+    /// (0.0–1.0) instead of an element id — used by the
+    /// position-persistence path so reopening a book lands at
+    /// the exact spot you stopped reading.
+    var scrollFraction: ReaderViewModel.ScrollFractionRequest? = nil
+    /// Live scroll-position callback. The injected JS posts
+    /// `{type: "scroll", fraction: 0.42}` on each scroll event;
+    /// this callback fires on the main actor with the new
+    /// fraction. Caller debounces persistence.
+    var onScrollUpdate: ((Double) -> Void)? = nil
 
     func makeNSView(context: Context) -> WKWebView {
-        let view = WKWebView(frame: .zero)
+        let cfg = WKWebViewConfiguration()
+        let userContent = WKUserContentController()
+        userContent.add(context.coordinator, name: "reader")
+        // Inject the scroll-tracking script at document end so it
+        // runs once the body exists. No-op on documents without
+        // a scrollable body.
+        userContent.addUserScript(WKUserScript(
+            source: Self.scrollBridgeJS,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        ))
+        cfg.userContentController = userContent
+        let view = WKWebView(frame: .zero, configuration: cfg)
         view.navigationDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
         context.coordinator.fontSize = fontSize
+        context.coordinator.onScrollUpdate = onScrollUpdate
         load(into: view)
         return view
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.fontSize = fontSize
+        context.coordinator.onScrollUpdate = onScrollUpdate
         load(into: nsView, coordinator: context.coordinator)
         context.coordinator.applyFontSizeIfReady(view: nsView)
         // Stash the most recent pending anchor; the coordinator
@@ -286,9 +321,51 @@ private struct WebReaderPane: NSViewRepresentable {
             context.coordinator.pendingAnchorNonce = anchor.nonce
             context.coordinator.flushPendingAnchorIfReady(view: nsView)
         }
+        if let req = scrollFraction,
+           context.coordinator.lastFlushedFractionNonce != req.nonce {
+            context.coordinator.pendingFraction = req.fraction
+            context.coordinator.pendingFractionNonce = req.nonce
+            context.coordinator.flushPendingFractionIfReady(view: nsView)
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// JS injected on every chapter load. Tracks scroll position
+    /// + posts it on a debounce so the Swift side gets one
+    /// message per ~250ms of quiet instead of one per wheel
+    /// tick. Posts `0` for pages that aren't scrollable
+    /// (`scrollMaxY <= 0`) so the Swift side knows the chapter
+    /// is fully visible without scrolling.
+    private static let scrollBridgeJS = """
+    (function() {
+      var pending = false;
+      function post() {
+        try {
+          var maxY = (document.documentElement.scrollHeight
+                      - document.documentElement.clientHeight);
+          var f = 0;
+          if (maxY > 0) { f = window.scrollY / maxY; }
+          if (window.webkit
+              && window.webkit.messageHandlers
+              && window.webkit.messageHandlers.reader) {
+            window.webkit.messageHandlers.reader.postMessage({
+              type: 'scroll', fraction: f,
+            });
+          }
+        } catch (e) {}
+      }
+      function schedulePost() {
+        if (pending) return;
+        pending = true;
+        setTimeout(function() { pending = false; post(); }, 250);
+      }
+      window.addEventListener('scroll', schedulePost, { passive: true });
+      // Fire one immediately so the Swift side knows the
+      // starting position (typically 0 unless restored).
+      post();
+    })();
+    """
 
     private func load(into view: WKWebView, coordinator: Coordinator? = nil) {
         let resolvedURL = url.canonicalForFile
@@ -308,7 +385,7 @@ private struct WebReaderPane: NSViewRepresentable {
         view.loadFileURL(resolvedURL, allowingReadAccessTo: resolvedAccess)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var loadedURL: URL?
         var loadedTrigger: Int = -1
         var fontSize: Double = EditorSettingsDefaults.previewFontSize
@@ -327,11 +404,27 @@ private struct WebReaderPane: NSViewRepresentable {
         /// `updateNSView` compares against the binding's nonce
         /// to decide whether a new scroll should fire.
         var lastFlushedAnchorNonce: UUID?
+        /// Pending scroll-fraction restore (0.0–1.0). Same shape
+        /// as the anchor pair above; flushed by `didFinish` or
+        /// `flushPendingFractionIfReady`.
+        var pendingFraction: Double?
+        var pendingFractionNonce: UUID?
+        var lastFlushedFractionNonce: UUID?
         /// True once the WKWebView's didFinish has fired for the
         /// current `loadedURL`. Until then, anchor flushes get
         /// deferred — `getElementById` would otherwise return
         /// null before the document is parsed.
         var isLoaded: Bool = false
+        /// Live scroll-update callback. Fires on the main actor
+        /// with the new fraction each time the JS bridge posts
+        /// a scroll event. nil → ignore (no listener wired).
+        var onScrollUpdate: ((Double) -> Void)?
+        /// True while we're programmatically scrolling (anchor
+        /// flush or fraction restore). The JS bridge can fire
+        /// a scroll event from the scrollIntoView itself, which
+        /// would otherwise feed back as "user scrolled to here"
+        /// and persist the restored position immediately.
+        var suppressScrollReports: Bool = false
 
         nonisolated func webView(
             _ webView: WKWebView,
@@ -343,6 +436,28 @@ private struct WebReaderPane: NSViewRepresentable {
                 self.isLoaded = true
                 self.applyFontSizeIfReady(view: webView)
                 self.flushPendingAnchorIfReady(view: webView)
+                self.flushPendingFractionIfReady(view: webView)
+            }
+        }
+
+        nonisolated func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            guard message.name == "reader",
+                  let dict = message.body as? [String: Any],
+                  (dict["type"] as? String) == "scroll",
+                  let fraction = dict["fraction"] as? Double else {
+                return
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                // Filter out programmatic-scroll feedback. The
+                // JS bridge fires immediately after a restore,
+                // which we don't want to interpret as a user-
+                // initiated change.
+                if self.suppressScrollReports { return }
+                self.onScrollUpdate?(fraction)
             }
         }
 
@@ -391,10 +506,53 @@ private struct WebReaderPane: NSViewRepresentable {
               }
             })();
             """
+            // Suppress feedback for ~1s — the smooth scroll
+            // generates intermediate scroll events that would
+            // otherwise be interpreted as user scrolls.
+            suppressScrollReports = true
             view.evaluateJavaScript(js, completionHandler: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.suppressScrollReports = false
+            }
             lastFlushedAnchorNonce = nonce
             pendingAnchorID = nil
             pendingAnchorNonce = nil
+        }
+
+        /// Restore a saved sub-chapter scroll position. Computes
+        /// the target Y from the fraction × document height
+        /// and jumps the WKWebView there. Like the anchor flush,
+        /// silently no-ops on documents with `scrollMaxY == 0`
+        /// (chapters that fit in the viewport).
+        func flushPendingFractionIfReady(view: WKWebView) {
+            guard isLoaded,
+                  let fraction = pendingFraction,
+                  let nonce = pendingFractionNonce,
+                  lastFlushedFractionNonce != nonce
+            else { return }
+            let js = """
+            (function() {
+              var maxY = (document.documentElement.scrollHeight
+                          - document.documentElement.clientHeight);
+              if (maxY > 0) {
+                window.scrollTo({
+                  top: \(fraction) * maxY,
+                  behavior: 'auto'
+                });
+              }
+            })();
+            """
+            // Same suppression as anchor flush — the programmatic
+            // scrollTo emits a scroll event we don't want to
+            // mis-interpret.
+            suppressScrollReports = true
+            view.evaluateJavaScript(js, completionHandler: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.suppressScrollReports = false
+            }
+            lastFlushedFractionNonce = nonce
+            pendingFraction = nil
+            pendingFractionNonce = nil
         }
 
         /// Turn a Swift String into a safely-escaped JS string
