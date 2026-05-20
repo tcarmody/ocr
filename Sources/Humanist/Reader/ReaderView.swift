@@ -25,6 +25,14 @@ struct ReaderView: View {
     @AppStorage(EditorSettingsKeys.previewFontSize)
     private var fontSize: Double = EditorSettingsDefaults.previewFontSize
 
+    /// TOC sidebar visibility. Persisted across reader window
+    /// opens — a user who closes the TOC sidebar for a focused-
+    /// reading session expects it to stay closed on the next
+    /// open. `NavigationSplitView` maps the Bool to its native
+    /// `.all` / `.detailOnly` visibility states.
+    @AppStorage("humanist.reader.sidebarVisible")
+    private var sidebarVisible: Bool = true
+
     // MARK: - Find state
 
     /// Find bar visibility — ⌘F toggles, Esc dismisses.
@@ -71,7 +79,18 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func readyBody(book: EPUBBook) -> some View {
-        NavigationSplitView {
+        NavigationSplitView(
+            columnVisibility: Binding(
+                get: { sidebarVisible ? .all : .detailOnly },
+                set: { newValue in
+                    // .all and .doubleColumn both count as visible
+                    // (the latter is what AppKit emits when the
+                    // user un-collapses a hidden sidebar); only
+                    // .detailOnly means the user actively hid it.
+                    sidebarVisible = newValue != .detailOnly
+                }
+            )
+        ) {
             tocSidebar(book: book)
                 .frame(minWidth: 200, idealWidth: 240)
         } detail: {
