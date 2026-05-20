@@ -25,6 +25,23 @@ struct ReaderView: View {
     @AppStorage(EditorSettingsKeys.previewFontSize)
     private var fontSize: Double = EditorSettingsDefaults.previewFontSize
 
+    // MARK: - Find state
+
+    /// Find bar visibility — ⌘F toggles, Esc dismisses.
+    @State private var showingFind: Bool = false
+    /// Current search query — bound to the find bar's TextField.
+    /// Each non-empty value mints a new FindRequest with
+    /// direction=forward so the WKWebView searches as the user
+    /// types.
+    @State private var findQuery: String = ""
+    /// Outbound find request. Bumped (new nonce) on user-driven
+    /// search events: query change (forward from current),
+    /// Find Next (⌘G), Find Previous (⇧⌘G).
+    @State private var findRequest: FindRequest?
+    /// Last find result — drives the small status label
+    /// ("Match found." / "No match.") in the find bar.
+    @State private var findResultMessage: String = ""
+
     init(epubURL: URL) {
         self.epubURL = epubURL
         _vm = StateObject(wrappedValue: ReaderViewModel(epubURL: epubURL))
@@ -144,17 +161,29 @@ struct ReaderView: View {
                 else { return nil }
                 return f
             }()
-            WebReaderPane(
-                url: chapterURL,
-                accessRoot: book.workingDirectory,
-                reloadTrigger: vm.reloadTrigger,
-                fontSize: fontSize,
-                scrollAnchor: anchor,
-                scrollFraction: fractionReq,
-                onScrollUpdate: { fraction in
-                    vm.didReportScrollFraction(fraction)
+            VStack(spacing: 0) {
+                if showingFind {
+                    findBar
+                    Divider()
                 }
-            )
+                WebReaderPane(
+                    url: chapterURL,
+                    accessRoot: book.workingDirectory,
+                    reloadTrigger: vm.reloadTrigger,
+                    fontSize: fontSize,
+                    scrollAnchor: anchor,
+                    scrollFraction: fractionReq,
+                    onScrollUpdate: { fraction in
+                        vm.didReportScrollFraction(fraction)
+                    },
+                    findRequest: findRequest,
+                    onFindResult: { matchFound in
+                        findResultMessage = matchFound
+                            ? "Match found."
+                            : "No match."
+                    }
+                )
+            }
             .background(Color(nsColor: .textBackgroundColor))
         } else {
             VStack(spacing: 6) {
@@ -248,8 +277,112 @@ struct ReaderView: View {
             }
             .help("Open this book in the Editor (⌥⌘O)")
             .keyboardShortcut("o", modifiers: [.command, .option])
+
+            Button {
+                showingFind.toggle()
+                if showingFind {
+                    findResultMessage = ""
+                } else {
+                    // Clearing the request on dismiss prevents
+                    // the next ⌘F open from re-running the stale
+                    // query against the new chapter.
+                    findRequest = nil
+                    findQuery = ""
+                }
+            } label: {
+                Label("Find in Chapter", systemImage: "magnifyingglass")
+            }
+            .help("Find in chapter (⌘F)")
+            .keyboardShortcut("f", modifiers: .command)
         }
     }
+
+    /// Inline find bar shown above the chapter pane when
+    /// `showingFind` is on. ⌘G / ⇧⌘G drive next / previous;
+    /// Esc dismisses. WKWebView's native `find(_:configuration:
+    /// completionHandler:)` API drives the actual search +
+    /// highlighting.
+    @ViewBuilder
+    private var findBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .imageScale(.small)
+            TextField("Find in chapter", text: $findQuery)
+                .textFieldStyle(.plain)
+                .onSubmit { fireFind(direction: .forward) }
+                .onChange(of: findQuery) { _, newValue in
+                    // Live find as the user types. Empty query
+                    // resets the result label.
+                    if newValue.isEmpty {
+                        findResultMessage = ""
+                        findRequest = nil
+                    } else {
+                        fireFind(direction: .forward)
+                    }
+                }
+                .frame(maxWidth: 280)
+
+            if !findResultMessage.isEmpty {
+                Text(findResultMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button { fireFind(direction: .backward) } label: {
+                Image(systemName: "chevron.up")
+            }
+            .help("Find previous (⇧⌘G)")
+            .disabled(findQuery.isEmpty)
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+
+            Button { fireFind(direction: .forward) } label: {
+                Image(systemName: "chevron.down")
+            }
+            .help("Find next (⌘G)")
+            .disabled(findQuery.isEmpty)
+            .keyboardShortcut("g", modifiers: .command)
+
+            Button {
+                showingFind = false
+                findRequest = nil
+                findQuery = ""
+                findResultMessage = ""
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .help("Close (Esc)")
+            .keyboardShortcut(.escape, modifiers: [])
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    /// Mint a new FindRequest with the current query + direction.
+    /// Bumps the nonce so the WKWebView re-fires even when the
+    /// query text didn't change (consecutive ⌘G presses).
+    private func fireFind(direction: FindRequest.Direction) {
+        guard !findQuery.isEmpty else { return }
+        findRequest = FindRequest(
+            query: findQuery,
+            direction: direction,
+            nonce: UUID()
+        )
+    }
+}
+
+/// One find request from the reader's find bar to the
+/// WKWebView. Nonce-tagged so consecutive Next-or-Previous
+/// presses on the same query each re-trigger the search.
+struct FindRequest: Equatable {
+    enum Direction { case forward, backward }
+    let query: String
+    let direction: Direction
+    let nonce: UUID
 }
 
 // MARK: - WKWebView reader pane
@@ -284,6 +417,16 @@ private struct WebReaderPane: NSViewRepresentable {
     /// this callback fires on the main actor with the new
     /// fraction. Caller debounces persistence.
     var onScrollUpdate: ((Double) -> Void)? = nil
+    /// Inbound find request. When the nonce changes,
+    /// `WKWebView.find(_:configuration:completionHandler:)` runs
+    /// against the new query + direction; the completion handler
+    /// posts the matchFound result back via `onFindResult`.
+    var findRequest: FindRequest? = nil
+    /// Find-result callback. Fires with `true` on a successful
+    /// find (selection updated + visible in the WKWebView),
+    /// `false` when no match exists. Caller surfaces a status
+    /// label in the find bar.
+    var onFindResult: ((Bool) -> Void)? = nil
 
     func makeNSView(context: Context) -> WKWebView {
         let cfg = WKWebViewConfiguration()
@@ -310,6 +453,7 @@ private struct WebReaderPane: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.fontSize = fontSize
         context.coordinator.onScrollUpdate = onScrollUpdate
+        context.coordinator.onFindResult = onFindResult
         load(into: nsView, coordinator: context.coordinator)
         context.coordinator.applyFontSizeIfReady(view: nsView)
         // Stash the most recent pending anchor; the coordinator
@@ -326,6 +470,11 @@ private struct WebReaderPane: NSViewRepresentable {
             context.coordinator.pendingFraction = req.fraction
             context.coordinator.pendingFractionNonce = req.nonce
             context.coordinator.flushPendingFractionIfReady(view: nsView)
+        }
+        if let req = findRequest,
+           context.coordinator.lastFlushedFindNonce != req.nonce {
+            context.coordinator.lastFlushedFindNonce = req.nonce
+            context.coordinator.executeFind(request: req, view: nsView)
         }
     }
 
@@ -419,6 +568,14 @@ private struct WebReaderPane: NSViewRepresentable {
         /// with the new fraction each time the JS bridge posts
         /// a scroll event. nil → ignore (no listener wired).
         var onScrollUpdate: ((Double) -> Void)?
+        /// Find-result callback. Fires after each
+        /// `WKWebView.find(_:configuration:completionHandler:)`
+        /// with the matchFound bool.
+        var onFindResult: ((Bool) -> Void)?
+        /// Nonce of the most recently executed find request.
+        /// `updateNSView` compares against the binding's nonce
+        /// to decide whether to fire a new find.
+        var lastFlushedFindNonce: UUID?
         /// True while we're programmatically scrolling (anchor
         /// flush or fraction restore). The JS bridge can fire
         /// a scroll event from the scrollIntoView itself, which
@@ -553,6 +710,36 @@ private struct WebReaderPane: NSViewRepresentable {
             lastFlushedFractionNonce = nonce
             pendingFraction = nil
             pendingFractionNonce = nil
+        }
+
+        /// Execute a find request against the WKWebView. Uses
+        /// the platform-native `find(_:configuration:
+        /// completionHandler:)` so highlight + selection
+        /// behavior matches every other macOS WebKit-based
+        /// reader. The first match wraps to the start; the
+        /// backward direction handles previous.
+        ///
+        /// Programmatic-scroll feedback is suppressed for ~1s
+        /// after the find — the find's selectionchange + scroll
+        /// would otherwise feed through the JS bridge as a
+        /// user-initiated scroll and overwrite the saved
+        /// position with the find result's offset.
+        func executeFind(request: FindRequest, view: WKWebView) {
+            let config = WKFindConfiguration()
+            config.caseSensitive = false
+            config.backwards = request.direction == .backward
+            // Wrap behavior is the default for WKFindConfiguration
+            // (matches user expectations from Safari + every
+            // other Mac app). No need to set explicitly.
+            suppressScrollReports = true
+            view.find(request.query, configuration: config) { [weak self] result in
+                DispatchQueue.main.async {
+                    self?.onFindResult?(result.matchFound)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.suppressScrollReports = false
+            }
         }
 
         /// Turn a Swift String into a safely-escaped JS string
