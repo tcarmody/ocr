@@ -139,9 +139,18 @@ struct AISettingsView: View {
                    isOn: $vm.settings.cloudFeatures.googleDocumentOCRInCascade)
             caption("Classical OCR at ~$0.0015/call as the cascade stage between Tesseract and Sonnet. Absorbs most hard-region work before falling through to Claude.")
 
+            Toggle("LandingAI ADE cascade (alternative to Google)",
+                   isOn: $vm.settings.cloudFeatures.landingAIInCascade)
+            caption("Cascade Stage 2.5 alternative at ~$0.03/call. When on AND a LandingAI key is set, replaces Google Cloud Vision at that slot for this conversion — ADE is purpose-built for document layout and often beats classical OCR on dense scans. Requires a LandingAI ADE key.")
+
             Toggle("Table extraction (Sonnet)",
                    isOn: $vm.settings.cloudFeatures.tableExtraction)
             caption("Extracts cell structure from .table regions instead of falling back to the X/Y heuristic. Useful on dense or merged-cell tables.")
+
+            Toggle("  …try LandingAI ADE first for tables",
+                   isOn: $vm.settings.cloudFeatures.landingAITableExtraction)
+                .disabled(!vm.settings.cloudFeatures.tableExtraction)
+            caption("Prepends LandingAI to the table-extractor chain ahead of Sonnet. ADE is purpose-built for tables; Sonnet still picks up cases ADE declines. Markdown table output means merged cells flatten to 1×1. Requires a LandingAI ADE key.")
 
             Toggle("Post-OCR character cleanup (Haiku)",
                    isOn: $vm.settings.cloudFeatures.postOCRCleanup)

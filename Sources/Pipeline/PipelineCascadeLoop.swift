@@ -73,9 +73,11 @@ extension PDFToEPUBPipeline {
         hints: OCRHints,
         figureExtractor: FigureExtractor,
         googleDocumentOCREngine: GoogleDocumentOCREngine?,
+        landingAIDocumentEngine: LandingAIDocumentEngine?,
         claudeOCREngine: ClaudeOCREngine?,
         claudePostProcessor: (any PostOCRProcessor)?,
-        claudeTableExtractor: ClaudeTableExtractor?
+        claudeTableExtractor: ClaudeTableExtractor?,
+        landingAITableExtractor: LandingAITableExtractor?
     ) async throws -> CascadePageOutcome {
         // Sync prep: embedded extraction + quality scoring. Wrap
         // in autoreleasepool so PDFKit/CoreGraphics NSObject
@@ -253,6 +255,13 @@ extension PDFToEPUBPipeline {
                         ? nil : suryaEngine
                     let cascadeTess = suppressLocalEngines
                         ? nil : tesseractEngine
+                    // Stage 2.5 picks the LandingAI engine when the
+                    // user explicitly opted in (it's the alternative),
+                    // otherwise falls back to the Google default.
+                    // RegionCascade catches both engines' budget-
+                    // exhausted errors at the per-region loop site.
+                    let documentAIEngine: (any OCREngine)? =
+                        landingAIDocumentEngine ?? googleDocumentOCREngine
                     observations = await RegionCascade.run(
                         observations: observations,
                         regions: regions,
@@ -260,7 +269,7 @@ extension PDFToEPUBPipeline {
                         hints: hints,
                         suryaEngine: cascadeSurya,
                         tesseractEngine: cascadeTess,
-                        documentAIEngine: googleDocumentOCREngine,
+                        documentAIEngine: documentAIEngine,
                         claudeEngine: claudeOCREngine,
                         forceClaudeOnAllRegions: options.disableLocalCascadeEscalation
                     )
@@ -327,9 +336,15 @@ extension PDFToEPUBPipeline {
                     case .privateLocal:
                         return [tableExtractor].compactMap { $0 }
                     case .cloud:
-                        // Cloud first, Surya as offline fallback
-                        // for declines / refusals / parse failures.
+                        // Cloud first, Surya as offline fallback for
+                        // declines / refusals / parse failures.
+                        // LandingAI prepended when the user opted in —
+                        // ADE is purpose-built for tables and often
+                        // beats the Claude prompt path on dense
+                        // layouts; Claude picks up cases where ADE
+                        // returned no parseable table.
                         return [
+                            landingAITableExtractor as (any TableExtractor)?,
                             claudeTableExtractor as (any TableExtractor)?,
                             tableExtractor as (any TableExtractor)?,
                         ].compactMap { $0 }

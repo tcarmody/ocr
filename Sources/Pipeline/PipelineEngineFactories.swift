@@ -61,6 +61,41 @@ extension PDFToEPUBPipeline {
         )
     }
 
+    /// Build the LandingAI ADE Stage-2.5 cascade engine — an
+    /// alternative to `GoogleDocumentOCREngine` at the same slot.
+    /// Gates on `processingMode == .cloud`, the `landingAIInCascade`
+    /// feature flag, and a configured LandingAI key. When both this
+    /// and the Google engine end up non-nil, the cascade prefers
+    /// LandingAI (explicit opt-in beats the default).
+    static func makeLandingAIDocumentEngine(
+        options: Options, budget: ClaudeCallBudget
+    ) -> LandingAIDocumentEngine? {
+        guard options.processingMode == .cloud,
+              options.cloudFeatures.landingAIInCascade,
+              let key = options.landingAIAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        return LandingAIDocumentEngine(
+            apiKeyProvider: { key }, budget: budget
+        )
+    }
+
+    /// Build the LandingAI ADE table extractor. Gates on
+    /// `processingMode == .cloud`, the `landingAITableExtraction`
+    /// flag, and a configured LandingAI key. When non-nil it's
+    /// prepended to the Cloud-mode extractor chain so it runs before
+    /// Claude — ADE is purpose-built for tables.
+    static func makeLandingAITableExtractor(
+        options: Options, budget: ClaudeCallBudget
+    ) -> LandingAITableExtractor? {
+        guard options.processingMode == .cloud,
+              options.cloudFeatures.landingAITableExtraction,
+              let key = options.landingAIAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        return LandingAITableExtractor(
+            apiKeyProvider: { key }, budget: budget
+        )
+    }
+
     static func makeClaudePostProcessor(
         options: Options, budget: ClaudeCallBudget
     ) -> ClaudePostProcessor? {
@@ -364,6 +399,12 @@ extension PDFToEPUBPipeline {
         /// Sits between Tesseract and `ocr` (Claude) in `RegionCascade`.
         /// Nil when not in `.cloud` mode or no Cloud Vision key.
         let googleDocumentOCR: GoogleDocumentOCREngine?
+        /// Cascade Stage 2.5 — LandingAI ADE parse. Alternative to
+        /// `googleDocumentOCR` at the same slot; when both happen to
+        /// be non-nil (user enabled both toggles + supplied both keys)
+        /// the cascade prefers this one. Nil when the toggle is off
+        /// or no LandingAI key is configured.
+        let landingAIDocument: LandingAIDocumentEngine?
         /// Post-OCR cleanup processor — Cloud (Haiku) or AFM
         /// depending on processingMode + feature toggles +
         /// runtime availability. Held as the protocol type so
@@ -372,6 +413,10 @@ extension PDFToEPUBPipeline {
         let postProcessor: (any PostOCRProcessor)?
         let tocParser: ClaudeTOCParser?
         let tableExtractor: ClaudeTableExtractor?
+        /// LandingAI ADE table extractor, prepended to the Cloud-mode
+        /// table extractor chain when configured. Nil when the toggle
+        /// is off or no LandingAI key is available.
+        let landingAITableExtractor: LandingAITableExtractor?
         /// Active page-OCR engine. Either `ClaudePageOCREngine` or
         /// `GeminiPageOCREngine` depending on the user's provider
         /// pick. Manuscript mode forces Claude.
@@ -400,9 +445,15 @@ extension PDFToEPUBPipeline {
                 googleDocumentOCR: makeGoogleDocumentOCREngine(
                     options: options, budget: budget
                 ),
+                landingAIDocument: makeLandingAIDocumentEngine(
+                    options: options, budget: budget
+                ),
                 postProcessor: makePostProcessor(options: options, budget: budget),
                 tocParser: makeClaudeTOCParser(options: options, budget: budget),
                 tableExtractor: makeClaudeTableExtractor(options: options, budget: budget),
+                landingAITableExtractor: makeLandingAITableExtractor(
+                    options: options, budget: budget
+                ),
                 pageEngine: pageEngine,
                 claudeBatchPageEngine: claudeBatch
             )

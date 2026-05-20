@@ -178,6 +178,23 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// before falling through to Claude. Independently keyed
         /// (Google Cloud Vision API key, not the AI Studio Gemini key).
         public var googleDocumentOCRInCascade: Bool
+        /// LandingAI Agentic Document Extraction (`/v1/ade/parse`) at
+        /// the same Stage 2.5 slot as Google Cloud Vision — a cloud
+        /// document-OCR alternative. When both this and
+        /// `googleDocumentOCRInCascade` are on, LandingAI wins (it's
+        /// the explicit opt-in; Google is the legacy default).
+        /// Independently keyed (LandingAI ADE key, distinct from the
+        /// Google Cloud Vision key).
+        public var landingAIInCascade: Bool
+        /// LandingAI ADE table-structure extraction prepended to the
+        /// Cloud-mode table extractor list. When on (and the LandingAI
+        /// key is configured), the per-region table pass tries
+        /// LandingAI first, falls back to `ClaudeTableExtractor`, then
+        /// the Surya offline path. ADE is purpose-built for tables
+        /// and often beats the Claude prompt-based path on dense
+        /// academic layouts. Markdown table syntax means no
+        /// rowspan/colspan fidelity — merged cells flatten to 1×1.
+        public var landingAITableExtraction: Bool
         /// Table-structure extraction from cropped table region
         /// images (Sonnet 4.6).
         public var tableExtraction: Bool
@@ -279,6 +296,8 @@ public struct AISettings: Sendable, Codable, Equatable {
         public init(
             hardRegionOCR: Bool = true,
             googleDocumentOCRInCascade: Bool = true,
+            landingAIInCascade: Bool = false,
+            landingAITableExtraction: Bool = false,
             tableExtraction: Bool = true,
             postOCRCleanup: Bool = false,
             postOCRCleanupVisionMode: Bool = false,
@@ -295,6 +314,8 @@ public struct AISettings: Sendable, Codable, Equatable {
         ) {
             self.hardRegionOCR = hardRegionOCR
             self.googleDocumentOCRInCascade = googleDocumentOCRInCascade
+            self.landingAIInCascade = landingAIInCascade
+            self.landingAITableExtraction = landingAITableExtraction
             self.tableExtraction = tableExtraction
             self.postOCRCleanup = postOCRCleanup
             self.postOCRCleanupVisionMode = postOCRCleanupVisionMode
@@ -323,6 +344,8 @@ public struct AISettings: Sendable, Codable, Equatable {
             case useBatchAPI
             case parallelPageOCRConcurrency
             case googleDocumentOCRInCascade
+            case landingAIInCascade
+            case landingAITableExtraction
             case chapterStructurePass
             case chapterMissedBreakDetection
             case frontBackMatterSplitting
@@ -336,6 +359,18 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.googleDocumentOCRInCascade = try c.decodeIfPresent(
                 Bool.self, forKey: .googleDocumentOCRInCascade
             ) ?? true
+            // Default-off: opt-in cascade alternative to Google. When
+            // on AND a key is configured, LandingAI wins over Google
+            // at Stage 2.5.
+            self.landingAIInCascade = try c.decodeIfPresent(
+                Bool.self, forKey: .landingAIInCascade
+            ) ?? false
+            // Default-off: opt-in table extractor. When on AND a key
+            // is configured, LandingAI is prepended to the Cloud-mode
+            // table extractor chain.
+            self.landingAITableExtraction = try c.decodeIfPresent(
+                Bool.self, forKey: .landingAITableExtraction
+            ) ?? false
             self.tableExtraction = try c.decode(Bool.self, forKey: .tableExtraction)
             self.postOCRCleanup = try c.decode(Bool.self, forKey: .postOCRCleanup)
             self.postOCRCleanupVisionMode = try c.decodeIfPresent(

@@ -105,6 +105,14 @@ public actor PDFToEPUBPipeline {
         /// the Gemini key — Cloud Vision uses a Cloud Console key, not
         /// an AI Studio key. Nil/empty → Stage 2.5 is skipped.
         public var googleCloudVisionAPIKeyProvider: @Sendable () -> String?
+        /// LandingAI ADE API key resolver (Agentic Document Extraction,
+        /// `/v1/ade/parse`). Powers the optional `LandingAIDocumentEngine`
+        /// (Stage 2.5 alternative to Google) and `LandingAITableExtractor`
+        /// (prepended to the Cloud table-extractor chain). The Python SDK
+        /// reads this key from `VISION_AGENT_API_KEY`; this provider
+        /// returns the same string in Swift contexts. Nil/empty → both
+        /// LandingAI features are skipped.
+        public var landingAIAPIKeyProvider: @Sendable () -> String?
         /// Which provider runs end-to-end page OCR. Mirrors
         /// `AISettings.pageOCRProvider`. Manuscript mode ignores this
         /// (Opus only).
@@ -242,6 +250,7 @@ public actor PDFToEPUBPipeline {
             anthropicAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
             geminiAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
             googleCloudVisionAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
+            landingAIAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
             pageOCRProvider: PageOCRProvider = .claude,
             disableLocalCascadeEscalation: Bool = false,
             useClaudePageOCR: Bool = false,
@@ -277,6 +286,7 @@ public actor PDFToEPUBPipeline {
             self.anthropicAPIKeyProvider = anthropicAPIKeyProvider
             self.geminiAPIKeyProvider = geminiAPIKeyProvider
             self.googleCloudVisionAPIKeyProvider = googleCloudVisionAPIKeyProvider
+            self.landingAIAPIKeyProvider = landingAIAPIKeyProvider
             self.pageOCRProvider = pageOCRProvider
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
             self.useClaudePageOCR = useClaudePageOCR
@@ -1303,9 +1313,11 @@ public actor PDFToEPUBPipeline {
         let claudeBudget = claudeEngines.budget
         let claudeOCREngine = claudeEngines.ocr
         let googleDocumentOCREngine = claudeEngines.googleDocumentOCR
+        let landingAIDocumentEngine = claudeEngines.landingAIDocument
         let claudePostProcessor = claudeEngines.postProcessor
         let claudeTOCParser = claudeEngines.tocParser
         let claudeTableExtractor = claudeEngines.tableExtractor
+        let landingAITableExtractor = claudeEngines.landingAITableExtractor
         let activePageEngine = claudeEngines.pageEngine
         let claudeBatchPageEngine = claudeEngines.claudeBatchPageEngine
 
@@ -1539,9 +1551,11 @@ public actor PDFToEPUBPipeline {
                 hints: hints,
                 figureExtractor: figureExtractor,
                 googleDocumentOCREngine: googleDocumentOCREngine,
+                landingAIDocumentEngine: landingAIDocumentEngine,
                 claudeOCREngine: claudeOCREngine,
                 claudePostProcessor: claudePostProcessor,
-                claudeTableExtractor: claudeTableExtractor
+                claudeTableExtractor: claudeTableExtractor,
+                landingAITableExtractor: landingAITableExtractor
             )
             extractorDiagnostics[i] = outcome.extractorDiagnostics
             qualityScores[i] = outcome.qualityScore
@@ -1651,9 +1665,11 @@ public actor PDFToEPUBPipeline {
                                 hints,
                                 figureExtractor,
                                 googleDocumentOCREngine,
+                                landingAIDocumentEngine,
                                 claudeOCREngine,
                                 claudePostProcessor,
-                                claudeTableExtractor
+                                claudeTableExtractor,
+                                landingAITableExtractor
                             )
                             return (pageIndex, outcome)
                         }

@@ -21,6 +21,8 @@ final class AISettingsViewModel: ObservableObject {
     @Published private(set) var hasGeminiKey: Bool
     /// Mirrored "is a Google Cloud Vision key stored." Same shape.
     @Published private(set) var hasGoogleCloudVisionKey: Bool
+    /// Mirrored "is a LandingAI ADE key stored." Same shape.
+    @Published private(set) var hasLandingAIKey: Bool
     /// Plain-text API key for the entry field. Only populated when
     /// the user is actively editing — saved to keychain on `commit`.
     @Published var pendingAPIKey: String = ""
@@ -28,6 +30,8 @@ final class AISettingsViewModel: ObservableObject {
     @Published var pendingGeminiKey: String = ""
     /// Plain-text Google Cloud Vision key entry buffer.
     @Published var pendingGoogleCloudVisionKey: String = ""
+    /// Plain-text LandingAI ADE key entry buffer.
+    @Published var pendingLandingAIKey: String = ""
     /// Result of the last "Test Connection" call. Nil before any
     /// test fires; non-nil shows an inline status message.
     @Published var testResult: TestResult?
@@ -41,6 +45,7 @@ final class AISettingsViewModel: ObservableObject {
     let keyStore: AnthropicAPIKeyStore
     let geminiKeyStore: GeminiAPIKeyStore
     let googleCloudVisionKeyStore: GoogleCloudVisionAPIKeyStore
+    let landingAIKeyStore: LandingAIAPIKeyStore
     /// Closure that builds an API client from the current key. Held
     /// as a closure so tests can swap in a mocked transport.
     let clientFactory: @MainActor (AnthropicAPIKeyStore) -> AnthropicAPIClient
@@ -50,6 +55,7 @@ final class AISettingsViewModel: ObservableObject {
         keyStore: AnthropicAPIKeyStore = AnthropicAPIKeyStore(),
         geminiKeyStore: GeminiAPIKeyStore = GeminiAPIKeyStore(),
         googleCloudVisionKeyStore: GoogleCloudVisionAPIKeyStore = GoogleCloudVisionAPIKeyStore(),
+        landingAIKeyStore: LandingAIAPIKeyStore = LandingAIAPIKeyStore(),
         clientFactory: @escaping @MainActor (AnthropicAPIKeyStore) -> AnthropicAPIClient = { keyStore in
             AnthropicAPIClient(apiKeyProvider: { keyStore.read() })
         }
@@ -58,11 +64,13 @@ final class AISettingsViewModel: ObservableObject {
         self.keyStore = keyStore
         self.geminiKeyStore = geminiKeyStore
         self.googleCloudVisionKeyStore = googleCloudVisionKeyStore
+        self.landingAIKeyStore = landingAIKeyStore
         self.clientFactory = clientFactory
         self.settings = settingsStore.load()
         self.hasAPIKey = keyStore.hasKey
         self.hasGeminiKey = geminiKeyStore.hasKey
         self.hasGoogleCloudVisionKey = googleCloudVisionKeyStore.hasKey
+        self.hasLandingAIKey = landingAIKeyStore.hasKey
     }
 
     // MARK: - API key flow
@@ -152,6 +160,38 @@ final class AISettingsViewModel: ObservableObject {
         } catch {
             testResult = .failure(
                 "Couldn't remove Cloud Vision key: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    // MARK: - LandingAI ADE key flow
+
+    func commitLandingAIKey() {
+        let trimmed = pendingLandingAIKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if trimmed.isEmpty {
+                try landingAIKeyStore.delete()
+            } else {
+                try landingAIKeyStore.write(trimmed)
+            }
+            hasLandingAIKey = landingAIKeyStore.hasKey
+            pendingLandingAIKey = ""
+        } catch {
+            testResult = .failure(
+                "Couldn't save LandingAI key: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func deleteLandingAIKey() {
+        do {
+            try landingAIKeyStore.delete()
+            hasLandingAIKey = landingAIKeyStore.hasKey
+            pendingLandingAIKey = ""
+        } catch {
+            testResult = .failure(
+                "Couldn't remove LandingAI key: \(error.localizedDescription)"
             )
         }
     }

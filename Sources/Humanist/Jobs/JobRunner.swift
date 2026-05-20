@@ -268,6 +268,7 @@ final class JobRunner: ObservableObject {
         let keyStore = AnthropicAPIKeyStore()
         let geminiKeyStore = GeminiAPIKeyStore()
         let googleCloudVisionKeyStore = GoogleCloudVisionAPIKeyStore()
+        let landingAIKeyStore = LandingAIAPIKeyStore()
         // Private Mode override: zero out every cloud surface for
         // this conversion regardless of global Settings. Empty
         // `CloudFeatures` makes every `make*ClaudeX` factory return
@@ -300,14 +301,17 @@ final class JobRunner: ObservableObject {
         let keyProvider: @Sendable () -> String?
         let geminiKeyProvider: @Sendable () -> String?
         let googleCloudVisionKeyProvider: @Sendable () -> String?
+        let landingAIKeyProvider: @Sendable () -> String?
         if privateOn {
             keyProvider = { nil }
             geminiKeyProvider = { nil }
             googleCloudVisionKeyProvider = { nil }
+            landingAIKeyProvider = { nil }
         } else {
             keyProvider = { keyStore.read() }
             geminiKeyProvider = { geminiKeyStore.read() }
             googleCloudVisionKeyProvider = { googleCloudVisionKeyStore.read() }
+            landingAIKeyProvider = { landingAIKeyStore.read() }
         }
         let options = PDFToEPUBPipeline.Options(
             documentProfile: job.profile,
@@ -326,6 +330,7 @@ final class JobRunner: ObservableObject {
             anthropicAPIKeyProvider: keyProvider,
             geminiAPIKeyProvider: geminiKeyProvider,
             googleCloudVisionAPIKeyProvider: googleCloudVisionKeyProvider,
+            landingAIAPIKeyProvider: landingAIKeyProvider,
             // Per-job override wins when the launcher picked a
             // specific provider (e.g. "Gemini OCR — Typeset" from
             // the OCR Engine picker); otherwise fall back to the

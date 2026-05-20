@@ -139,6 +139,15 @@ public enum CostEstimator {
             return AnthropicModel.googleDocumentOCR.pricing.cost(for: Usage(
                 inputTokens: 0, outputTokens: 1
             ))
+        case .landingAIDocumentOCR:
+            // LandingAI ADE parse: published $0.03 per page. Encoded
+            // in `AnthropicModel.pricing` as one synthetic output
+            // token × $30000/M. Charged once per per-region call
+            // (Stage 2.5 alternative) and once per table region
+            // (when the LandingAI table extractor is enabled).
+            return AnthropicModel.landingAIDocumentExtraction.pricing.cost(for: Usage(
+                inputTokens: 0, outputTokens: 1
+            ))
         case .chapterStructurePass:
             // Sonnet 4.6: one call per book validating the chapter
             // list. ~5K input tokens (chapter titles + opening text
@@ -184,6 +193,9 @@ public enum CostEstimator {
         /// Cloud Vision DOCUMENT_TEXT_DETECTION — cascade Stage 2.5.
         /// Fixed $0.0015 per call regardless of region size.
         case googleDocumentOCR
+        /// LandingAI ADE parse — cascade Stage 2.5 alternative and
+        /// optional table extractor. Fixed $0.03 per call.
+        case landingAIDocumentOCR
         /// P-Sonnet-Structure (chapter pass). One Sonnet call per
         /// book validating the splitter's chapter list.
         case chapterStructurePass

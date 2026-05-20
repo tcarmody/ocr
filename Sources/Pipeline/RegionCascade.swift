@@ -183,6 +183,12 @@ enum RegionCascade {
                     cropResult = try await docAI.recognize(image: cropped, hints: hints)
                 } catch GoogleDocumentOCREngine.DocumentOCRError.budgetExhausted {
                     break cascadeDocAILoop
+                } catch LandingAIDocumentEngine.DocumentOCRError.budgetExhausted {
+                    // Same posture as the Google budget catch — the
+                    // shared `ClaudeCallBudget` is exhausted, so no
+                    // further per-region docAI attempts will succeed
+                    // on this page.
+                    break cascadeDocAILoop
                 } catch {
                     continue
                 }

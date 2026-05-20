@@ -7,13 +7,13 @@ import AI
 /// configuring features; you're pasting a secret into the
 /// Keychain.
 ///
-/// All three providers (Anthropic, Google AI Studio for Gemini,
-/// Google Cloud Vision) land here. Test Connection only fires
-/// against the Anthropic key for now — it's the most expensive
-/// to misconfigure (Cloud-mode page OCR depends on it). The
-/// other two fail-open silently when misconfigured: Gemini falls
-/// back to Claude page OCR, Cloud Vision's cascade Stage 2.5 is
-/// skipped.
+/// All four providers (Anthropic, Google AI Studio for Gemini,
+/// Google Cloud Vision, LandingAI ADE) land here. Test Connection
+/// only fires against the Anthropic key for now — it's the most
+/// expensive to misconfigure (Cloud-mode page OCR depends on it).
+/// The others fail-open silently when misconfigured: Gemini falls
+/// back to Claude page OCR, Cloud Vision and LandingAI's cascade
+/// Stage 2.5 simply skip.
 ///
 /// Reuses `AISettingsViewModel`'s key-related state — the model
 /// is lightweight enough that owning a separate instance per tab
@@ -56,6 +56,11 @@ struct APIKeysSettingsView: View {
             Section("Google Cloud Vision") {
                 googleCloudVisionEntry
                 caption("Powers the cascade's Stage 2.5 classical OCR ($0.0015 per call) between Tesseract and Sonnet. Get one at console.cloud.google.com with the Vision API enabled. Distinct from the Gemini key — issued by a different Google console.")
+            }
+
+            Section("LandingAI (ADE)") {
+                landingAIEntry
+                caption("Powers the optional LandingAI Agentic Document Extraction path: a cascade Stage 2.5 alternative to Cloud Vision and a table-extractor option ahead of Sonnet. ~$0.03 per call. Get one at va.landing.ai → API keys (the same key the Python SDK reads from VISION_AGENT_API_KEY).")
             }
         }
         .formStyle(.grouped)
@@ -125,6 +130,27 @@ struct APIKeysSettingsView: View {
             if vm.hasGoogleCloudVisionKey {
                 Button("Remove", role: .destructive) {
                     vm.deleteGoogleCloudVisionKey()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var landingAIEntry: some View {
+        HStack {
+            SecureField(
+                vm.hasLandingAIKey
+                    ? "•••• stored — paste to replace ••••"
+                    : "land_sk_…",
+                text: $vm.pendingLandingAIKey
+            )
+            Button(vm.hasLandingAIKey ? "Replace" : "Save") {
+                vm.commitLandingAIKey()
+            }
+            .disabled(vm.pendingLandingAIKey.isEmpty)
+            if vm.hasLandingAIKey {
+                Button("Remove", role: .destructive) {
+                    vm.deleteLandingAIKey()
                 }
             }
         }
