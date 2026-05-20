@@ -80,6 +80,15 @@ struct ReaderView: View {
     /// list directly via the VM.
     @State private var editingAnnotationId: UUID?
 
+    /// One-shot flag: when true, the next successful highlight
+    /// capture opens the note editor for the just-created
+    /// annotation. Set by the right-click "Add Note…" menu
+    /// action and consumed in `handleHighlightCaptured`.
+    /// Lets the user go from selection → highlight + note in
+    /// one gesture instead of right-click-highlight then right-
+    /// click-the-sidebar-row-add-note.
+    @State private var openNoteEditorAfterNextHighlight: Bool = false
+
     /// Reading-prefs popover visibility.
     @State private var showingReadingPrefs: Bool = false
 
@@ -520,6 +529,23 @@ struct ReaderView: View {
                     highlightRequest: highlightRequest,
                     onHighlightCaptured: { capture in
                         handleHighlightCaptured(capture)
+                    },
+                    onContextHighlight: {
+                        openNoteEditorAfterNextHighlight = false
+                        highlightRequest = WebReaderPane.HighlightRequest(
+                            annotationId: UUID(),
+                            nonce: UUID()
+                        )
+                    },
+                    onContextAddNote: {
+                        openNoteEditorAfterNextHighlight = true
+                        highlightRequest = WebReaderPane.HighlightRequest(
+                            annotationId: UUID(),
+                            nonce: UUID()
+                        )
+                    },
+                    onContextCopyCitation: {
+                        copyCitationRequest = UUID()
                     },
                     chapterHighlights: vm.annotations.filter {
                         $0.chapterIdx == vm.spineIndex
@@ -1021,6 +1047,10 @@ struct ReaderView: View {
         _ capture: WebReaderPane.HighlightCapture?
     ) {
         guard let capture else {
+            // Reset the deferred-editor flag — a failed "Add
+            // Note…" still consumes its intent (no zombie state
+            // for the next highlight to inherit).
+            openNoteEditorAfterNextHighlight = false
             showCopyToast("Select some text first.")
             return
         }
@@ -1040,7 +1070,17 @@ struct ReaderView: View {
             selectedText: capture.text,
             selectionRange: range
         )
-        showCopyToast("Highlighted.")
+        if openNoteEditorAfterNextHighlight {
+            // Consume the flag and open the note sheet on the
+            // freshly-minted annotation. Saving a non-empty
+            // note will promote it from .highlight to .passage
+            // via the existing vm.updateAnnotationNote path.
+            openNoteEditorAfterNextHighlight = false
+            editingAnnotationId = capture.annotationId
+            showCopyToast("Highlighted — add a note.")
+        } else {
+            showCopyToast("Highlighted.")
+        }
     }
 }
 
@@ -1261,6 +1301,17 @@ private struct WebReaderPane: NSViewRepresentable {
     /// persistence into AnnotationStore.
     var onHighlightCaptured: ((HighlightCapture?) -> Void)? = nil
 
+    /// Right-click "Highlight" — same effect as the toolbar
+    /// Highlight button. Set on the WKWebView subclass once in
+    /// makeNSView and on every updateNSView pass (since the
+    /// closure captures live SwiftUI bindings).
+    var onContextHighlight: (() -> Void)? = nil
+    /// Right-click "Add Note…" — wraps the selection AND opens
+    /// the note editor for the freshly-minted annotation.
+    var onContextAddNote: (() -> Void)? = nil
+    /// Right-click "Copy with Citation" — same effect as ⇧⌘C.
+    var onContextCopyCitation: (() -> Void)? = nil
+
     /// Annotations to restore into the current chapter on
     /// load. Filtered to highlights / passages whose chapterIdx
     /// matches the loaded spine index. Bookmarks aren't visual
@@ -1371,11 +1422,19 @@ private struct WebReaderPane: NSViewRepresentable {
             forMainFrameOnly: true
         ))
         cfg.userContentController = userContent
-        let view = WKWebView(frame: .zero, configuration: cfg)
+        let view = ReaderWKWebView(frame: .zero, configuration: cfg)
         view.navigationDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
         context.coordinator.fontSize = fontSize
         context.coordinator.onScrollUpdate = onScrollUpdate
+        context.coordinator.readerView = view
+        // Wire the right-click menu actions. These three closures
+        // simply re-fire the same SwiftUI @State requests that
+        // the toolbar / keyboard shortcut paths use, so the JS
+        // wrap / capture pipeline is shared.
+        view.onContextHighlight = onContextHighlight
+        view.onContextAddNote = onContextAddNote
+        view.onContextCopyCitation = onContextCopyCitation
         load(into: view)
         return view
     }
@@ -1584,6 +1643,15 @@ private struct WebReaderPane: NSViewRepresentable {
         context.coordinator.onScrollUpdate = onScrollUpdate
         context.coordinator.onFindResult = onFindResult
         context.coordinator.onCitationContext = onCitationContext
+        // Re-bind the right-click menu closures so they capture
+        // the current pass's SwiftUI bindings. WebReaderPane is
+        // a value type that SwiftUI recreates per render; the
+        // closures it carries become stale otherwise.
+        if let reader = nsView as? ReaderWKWebView {
+            reader.onContextHighlight = onContextHighlight
+            reader.onContextAddNote = onContextAddNote
+            reader.onContextCopyCitation = onContextCopyCitation
+        }
         load(into: nsView, coordinator: context.coordinator)
         context.coordinator.applyFontSizeIfReady(view: nsView)
         // Stash the most recent pending anchor; the coordinator
@@ -1665,6 +1733,12 @@ private struct WebReaderPane: NSViewRepresentable {
     /// tick. Posts `0` for pages that aren't scrollable
     /// (`scrollMaxY <= 0`) so the Swift side knows the chapter
     /// is fully visible without scrolling.
+    ///
+    /// Also posts a `selectionchange` event whenever the user's
+    /// text selection state flips between empty and non-empty.
+    /// The Swift side caches the flag so the WKWebView's right-
+    /// click menu can decide whether to insert annotation
+    /// actions without doing a JS round-trip at menu-open time.
     private static let scrollBridgeJS = """
     (function() {
       var pending = false;
@@ -1692,6 +1766,27 @@ private struct WebReaderPane: NSViewRepresentable {
       // Fire one immediately so the Swift side knows the
       // starting position (typically 0 unless restored).
       post();
+
+      // Selection-state bridge. Only post when the boolean
+      // flips so a drag-select doesn't spam the Swift side.
+      var lastHas = false;
+      function postSelection() {
+        try {
+          var sel = window.getSelection();
+          var has = !!(sel && !sel.isCollapsed
+                       && sel.toString().trim().length > 0);
+          if (has === lastHas) return;
+          lastHas = has;
+          if (window.webkit
+              && window.webkit.messageHandlers
+              && window.webkit.messageHandlers.reader) {
+            window.webkit.messageHandlers.reader.postMessage({
+              type: 'selectionchange', has: has,
+            });
+          }
+        } catch (e) {}
+      }
+      document.addEventListener('selectionchange', postSelection);
     })();
     """
 
@@ -1804,6 +1899,13 @@ private struct WebReaderPane: NSViewRepresentable {
         /// updateNSView pass + on every didFinish (so a fresh
         /// chapter load picks up the saved theme before paint).
         var pendingAppearance: Appearance?
+
+        /// Weak ref to the WKWebView subclass we own. Set in
+        /// `makeNSView`. Used by the selectionchange message
+        /// handler to update the subclass's cached
+        /// `hasSelection` so right-click menu decisions stay
+        /// synchronous.
+        weak var readerView: ReaderWKWebView?
         /// True while we're programmatically scrolling (anchor
         /// flush or fraction restore). The JS bridge can fire
         /// a scroll event from the scrollIntoView itself, which
@@ -1913,6 +2015,11 @@ private struct WebReaderPane: NSViewRepresentable {
                 else { return }
                 DispatchQueue.main.async { [weak self] in
                     self?.onPaginationUpdate?(cur, count)
+                }
+            case "selectionchange":
+                guard let has = dict["has"] as? Bool else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.readerView?.hasSelection = has
                 }
             default:
                 break
@@ -2406,5 +2513,85 @@ private struct WebReaderPane: NSViewRepresentable {
             let str = String(data: data, encoding: .utf8) ?? "[\"\"]"
             return String(str.dropFirst().dropLast())
         }
+    }
+}
+
+/// WKWebView subclass that injects three reader-specific items
+/// at the top of the right-click menu when text is selected:
+/// Highlight, Add Note…, Copy with Citation. System items
+/// (Copy, Look Up, etc.) stay below. When no selection is
+/// active the menu falls through to WebKit's default.
+///
+/// `hasSelection` is set by the Coordinator on every
+/// `selectionchange` event so `willOpenMenu(_:with:)` can decide
+/// synchronously without a JS round-trip. The closures route
+/// each click back to ReaderView's @State requests via the
+/// Coordinator, mirroring how the toolbar buttons fire them.
+final class ReaderWKWebView: WKWebView {
+    /// Cached selection state — true when the user has a non-
+    /// empty text selection in the document. Kept in sync by the
+    /// Coordinator's `selectionchange` message handler.
+    var hasSelection: Bool = false
+
+    /// "Highlight" menu-item action. Fires `highlightRequest` on
+    /// ReaderView with `openNoteEditor: false`.
+    var onContextHighlight: (() -> Void)?
+    /// "Add Note…" menu-item action. Fires `highlightRequest`
+    /// on ReaderView with `openNoteEditor: true` so the note
+    /// editor opens immediately after the wrap completes.
+    var onContextAddNote: (() -> Void)?
+    /// "Copy with Citation" menu-item action. Bumps the
+    /// `copyCitationRequest` nonce, identical to the toolbar
+    /// + ⇧⌘C path.
+    var onContextCopyCitation: (() -> Void)?
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        // Only show annotation items when the user has actually
+        // selected text. Right-clicking on whitespace or an
+        // image falls through to the default menu.
+        guard hasSelection else { return }
+
+        // Three items + separator, inserted in reverse so the
+        // final order at the top is: Highlight, Add Note…,
+        // Copy with Citation, ──, [system items…].
+        let separator = NSMenuItem.separator()
+        let cite = NSMenuItem(
+            title: "Copy with Citation",
+            action: #selector(humanistContextCopyCitation(_:)),
+            keyEquivalent: "C"
+        )
+        cite.keyEquivalentModifierMask = [.command, .shift]
+        cite.target = self
+
+        let addNote = NSMenuItem(
+            title: "Add Note…",
+            action: #selector(humanistContextAddNote(_:)),
+            keyEquivalent: ""
+        )
+        addNote.target = self
+
+        let highlight = NSMenuItem(
+            title: "Highlight",
+            action: #selector(humanistContextHighlight(_:)),
+            keyEquivalent: "h"
+        )
+        highlight.keyEquivalentModifierMask = [.command, .control]
+        highlight.target = self
+
+        menu.insertItem(separator, at: 0)
+        menu.insertItem(cite, at: 0)
+        menu.insertItem(addNote, at: 0)
+        menu.insertItem(highlight, at: 0)
+    }
+
+    @objc private func humanistContextHighlight(_ sender: Any?) {
+        onContextHighlight?()
+    }
+    @objc private func humanistContextAddNote(_ sender: Any?) {
+        onContextAddNote?()
+    }
+    @objc private func humanistContextCopyCitation(_ sender: Any?) {
+        onContextCopyCitation?()
     }
 }
