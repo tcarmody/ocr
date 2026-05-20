@@ -114,7 +114,7 @@ Every produced EPUB opens in a five-pane editor:
 
 ## Reader
 
-Opening an `.epub` (Library double-click, File → Open, drag-drop, Recents) routes to the reader scene by default; the editor is reachable via the reader's *Edit Source…* (⌥⌘O) action or the Window menu's *Show Editor* (⌘3). The reader is its own window class (*Show Reader* — ⌘5) with sibling per-URL window-reuse semantics, so opening the same book twice reveals the existing window.
+Opening an `.epub` (Library double-click, File → Open, drag-drop, Recents) routes to the reader scene by default; the editor is reachable via the reader's *Edit Source…* (⌥⌘O) action or the Window menu's *Show Editor* (⌘3). Settings → **Reader** has a *Double-click opens books in* picker to flip the default to **Source Editor** instead — applies to every open path that goes through `OpenRouter.open` (so library double-click and File → Open stay consistent). The reader is its own window class (*Show Reader* — ⌘5) with sibling per-URL window-reuse semantics, so opening the same book twice reveals the existing window.
 
 **Layout:**
 

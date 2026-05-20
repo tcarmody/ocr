@@ -452,11 +452,19 @@ enum OpenRouter {
         switch ext {
         case "epub":
             library?.recordOpen(url)
-            // R-Reader: .epub default-opens in the reader scene
-            // now; the Editor is reached explicitly via the
-            // reader's "Edit Source…" toolbar action (⌥⌘O) or
-            // the Window menu's "Show Editor" item (⌘3).
-            openWindow(id: "reader", value: url)
+            // Settings → Reader → "Double-click opens books in"
+            // picks the default scene. .reader is the shipped
+            // default (post-R-Reader); .editor is the opt-back-
+            // in for users who treat the source editor as their
+            // primary surface. Every other path through this
+            // function (File → Open, drag-drop, Recents) flows
+            // through the same setting — one mental model.
+            switch ReaderOpenTarget.current {
+            case .reader:
+                openWindow(id: "reader", value: url)
+            case .editor:
+                openWindow(id: "editor", value: url)
+            }
         default:
             // PDF + every other format the SourceViewer can render
             // (HTML / DOCX / RTF / MD / TXT / ODT / DOC) goes through
@@ -786,7 +794,7 @@ struct HelpMenuCommands: Commands {
 /// e.g. the launcher's ModeStrip badge writes `.ai` so a Cloud-mode
 /// click lands on the AI pane rather than whatever tab was last viewed.
 enum SettingsTab: String {
-    case editor, conversion, ai, apiKeys, chat, appearance
+    case editor, reader, conversion, ai, apiKeys, chat, appearance
 
     static let storageKey = "humanist.settings.selectedTab"
 }
@@ -803,6 +811,9 @@ private struct SettingsRoot: View {
             EditorSettingsView()
                 .tabItem { Label("Editor", systemImage: "text.cursor") }
                 .tag(SettingsTab.editor)
+            ReaderSettingsView()
+                .tabItem { Label("Reader", systemImage: "book") }
+                .tag(SettingsTab.reader)
             ConversionSettingsView()
                 .tabItem { Label("Conversion", systemImage: "folder") }
                 .tag(SettingsTab.conversion)
