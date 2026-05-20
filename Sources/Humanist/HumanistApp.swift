@@ -905,4 +905,14 @@ extension Notification.Name {
     static let humanistConsolidatePDFsRequested = Notification.Name(
         "humanistConsolidatePDFsRequested"
     )
+
+    /// Posted by `EditorViewModel.save()` after a successful
+    /// repack. `userInfo["url"]` carries the saved EPUB's URL.
+    /// Reader windows open on the same URL listen and surface
+    /// a "Book changed on disk — Reload" banner. Never auto-
+    /// reload — that would lose the reader's scroll position
+    /// mid-paragraph.
+    static let humanistEPUBSavedFromEditor = Notification.Name(
+        "humanistEPUBSavedFromEditor"
+    )
 }

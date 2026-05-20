@@ -109,6 +109,22 @@ final class ReaderViewModel: ObservableObject {
     /// Total pages in the active chapter (paginated mode). 0 means
     /// "not yet measured" (chapter still loading or scroll mode).
     @Published private(set) var pageCount: Int = 0
+
+    /// Set when the editor saves this book while the reader is
+    /// open. Drives the "Book changed on disk — Reload" banner
+    /// so the user can refresh on their own schedule rather
+    /// than getting auto-yanked mid-paragraph.
+    @Published var bookChangedOnDisk: Bool = false
+
+    /// Token from the NotificationCenter observer set up in
+    /// `init` for `.humanistEPUBSavedFromEditor`. Removed in
+    /// deinit so a closed reader doesn't keep a dangling
+    /// observer hanging around. `nonisolated(unsafe)` because
+    /// the token is opaque (NSObjectProtocol), only touched in
+    /// init + deinit, and never races with the main-actor
+    /// notification callback — same posture as
+    /// `BookChatViewModel.backendChangeObserver`.
+    private nonisolated(unsafe) var editorSaveObserver: (any NSObjectProtocol)?
     /// Pending page-navigation request — caught by `WebReaderPane`
     /// and translated into a JS call. Nonce-tagged so repeat
     /// presses on the same button re-fire instead of being
@@ -181,7 +197,82 @@ final class ReaderViewModel: ObservableObject {
         self.showChatPane = Self.defaultShowChatPane()
         self.isPaginated = UserDefaults.standard
             .bool(forKey: Self.paginatedKey)
+        // Listen for editor saves on this same URL. The
+        // notification's userInfo carries the saved URL; we
+        // only flip the banner flag when it matches ours.
+        // Canonical-path compare to handle the /var ↔ /private/var
+        // symlink quirk that bites cross-process URL comparisons.
+        let watchedURL = epubURL.canonicalForFile
+        self.editorSaveObserver = NotificationCenter.default
+            .addObserver(
+                forName: .humanistEPUBSavedFromEditor,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self else { return }
+                guard let saved = notification.userInfo?["url"] as? URL
+                else { return }
+                if saved.canonicalForFile == watchedURL {
+                    Task { @MainActor in
+                        self.bookChangedOnDisk = true
+                    }
+                }
+            }
         Task { await load() }
+    }
+
+    deinit {
+        if let observer = editorSaveObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        scrollPersistTask?.cancel()
+    }
+
+    /// Reload the EPUB from disk after the editor saved over
+    /// it. Re-opens via `EPUBBook.open` (which re-unzips the
+    /// freshly-written file), refreshes the TOC + annotations,
+    /// keeps the current spineIndex when valid, clears the
+    /// stale-on-disk banner. Reading position within the
+    /// chapter is preserved through the live `scrollFraction`
+    /// (the bridge re-reports after the reload).
+    func reloadFromDisk() async {
+        let url = epubURL
+        let previousSpineIndex = spineIndex
+        do {
+            let opened = try await Task.detached(priority: .userInitiated) {
+                try EPUBBook.open(epubURL: url)
+            }.value
+            self.book = opened
+            self.toc = ReaderTOC.build(from: opened)
+            // Preserve the user's chapter when the new spine
+            // still has it; otherwise clamp to the new spine
+            // length.
+            if !opened.spine.isEmpty {
+                self.spineIndex = max(
+                    0, min(previousSpineIndex, opened.spine.count - 1)
+                )
+            } else {
+                self.spineIndex = 0
+            }
+            self.reloadTrigger += 1
+            self.bookChangedOnDisk = false
+            // Re-pull annotations — the editor's save shouldn't
+            // change the content-hash sidecar but a future
+            // sync conflict could.
+            if let hash = self.contentHash {
+                self.annotations = AnnotationStore.load(
+                    forContentHash: hash
+                ).annotations
+            }
+        } catch {
+            // Leave the banner up so the user knows the reload
+            // didn't take. A re-open from the Library row is
+            // the recovery path.
+            NSLog(
+                "Humanist: reader reload-from-disk failed: %@",
+                error.localizedDescription
+            )
+        }
     }
 
     // MARK: - Pagination

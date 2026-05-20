@@ -485,6 +485,10 @@ struct ReaderView: View {
                 return f
             }()
             VStack(spacing: 0) {
+                if vm.bookChangedOnDisk {
+                    staleBanner
+                    Divider()
+                }
                 if showingFind {
                     findBar
                     Divider()
@@ -813,6 +817,41 @@ struct ReaderView: View {
     private var pageIndicatorLabel: String {
         guard vm.pageCount > 0 else { return "—" }
         return "\(vm.currentPage + 1) / \(vm.pageCount)"
+    }
+
+    /// Stale-on-disk banner. Appears above the chapter pane
+    /// when the editor saves this book while the reader is
+    /// open. Two actions: Reload (re-open the EPUB and refresh
+    /// the reader VM) or Dismiss (keep the stale in-memory copy
+    /// — useful when the user knows the edit was minor and
+    /// they don't want to lose their place mid-paragraph).
+    @ViewBuilder
+    private var staleBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .imageScale(.small)
+            Text("Book changed on disk")
+                .font(.callout.weight(.medium))
+            Text("(saved from the Editor)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Reload") {
+                Task { await vm.reloadFromDisk() }
+            }
+            .controlSize(.small)
+            Button {
+                vm.bookChangedOnDisk = false
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .help("Dismiss (keeps your current in-memory copy)")
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
     }
 
     /// Inline find bar shown above the chapter pane when

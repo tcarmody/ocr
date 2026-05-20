@@ -2564,6 +2564,16 @@ final class EditorViewModel: ObservableObject {
             self.isDirty = false
             self.saveState = .idle
             self.wysiwygReloadToken &+= 1
+            // Notify any reader window open on this EPUB that
+            // the file on disk has changed. The reader shows a
+            // "Book changed on disk — Reload" banner so the
+            // user can refresh on their own schedule rather
+            // than getting auto-yanked mid-paragraph.
+            NotificationCenter.default.post(
+                name: .humanistEPUBSavedFromEditor,
+                object: nil,
+                userInfo: ["url": outURL]
+            )
             // Keep linked exports in sync. Best-effort: only
             // regenerates sibling files that already exist (next to
             // the EPUB or in the configured output folder), so the
