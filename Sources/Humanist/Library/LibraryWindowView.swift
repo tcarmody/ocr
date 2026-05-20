@@ -2101,6 +2101,17 @@ struct LibraryWindowView: View {
             }
             .width(min: 100, ideal: 130)
 
+            // R-Reader-Library-Continue. Shows the user's
+            // reading position per row when one's been
+            // recorded. Looks up the ReadingPosition by the
+            // cached EPUB content hash — books that have never
+            // been opened in the reader (cache empty) show
+            // "Not started" instead.
+            TableColumn("Reading") { (entry: LibraryEntry) in
+                readingProgressCell(for: entry)
+            }
+            .width(min: 110, ideal: 150)
+
             TableColumn("Actions") { (entry: LibraryEntry) in
                 actionButtons(for: entry)
             }
@@ -2160,6 +2171,59 @@ struct LibraryWindowView: View {
         }
         .frame(width: 28, height: 40)
         .clipShape(RoundedRectangle(cornerRadius: 2))
+    }
+
+    /// Renders the "Reading" column cell. Three states:
+    ///   * No content hash cached → "Not started" (entry has
+    ///     never been opened in the reader).
+    ///   * Hash present, position present → "Ch. N · <time
+    ///     ago>" using a relative-date formatter.
+    ///   * Hash present, no position → "Started" (the user
+    ///     opened the book but didn't advance past chapter 0).
+    @ViewBuilder
+    private func readingProgressCell(
+        for entry: LibraryEntry
+    ) -> some View {
+        let cellText = readingProgressText(for: entry)
+        Text(cellText)
+            .foregroundStyle(
+                cellText == "Not started" ? .tertiary : .secondary
+            )
+            .lineLimit(1)
+    }
+
+    private func readingProgressText(
+        for entry: LibraryEntry
+    ) -> String {
+        guard let hash = entry.epubContentHash else {
+            return "Not started"
+        }
+        guard let pos = ReadingPositionStore.load(
+            forContentHash: hash
+        ) else {
+            return "Started"
+        }
+        // The reader stores 0-based spineIndex; users think in
+        // 1-based "Chapter 5" terms.
+        let chapterLabel = "Ch. \(pos.spineIndex + 1)"
+        let relative = readingProgressRelativeFormatter
+            .localizedString(for: pos.updatedAt, relativeTo: Date())
+        return "\(chapterLabel) · \(relative)"
+    }
+
+    /// Shared relative-date formatter for the Reading column.
+    /// Caches to avoid re-allocating per row render.
+    private static let readingProgressRelativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    /// Instance-side accessor — the static is shared across
+    /// rows but the call site needs an instance reference for
+    /// `Self.foo` to resolve cleanly inside a `@ViewBuilder`.
+    private var readingProgressRelativeFormatter: RelativeDateTimeFormatter {
+        Self.readingProgressRelativeFormatter
     }
 
     @ViewBuilder

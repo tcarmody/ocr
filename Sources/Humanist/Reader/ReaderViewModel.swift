@@ -367,6 +367,13 @@ final class ReaderViewModel: ObservableObject {
         }.value
         guard let hash else { return }
         self.contentHash = hash
+        // Stamp the hash onto the library row so the Library
+        // window's reading-progress column can find this
+        // book's saved position without re-hashing the EPUB.
+        // No-op when the book isn't in the catalog.
+        OpenRouter.library?.recordEPUBContentHash(
+            hash, forEPUB: url
+        )
         // Pull annotations off disk in the background so the
         // sidebar list populates as soon as the content hash
         // resolves. Cheap (small JSON; just this book's marks).

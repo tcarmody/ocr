@@ -745,6 +745,24 @@ final class LibraryStore: ObservableObject {
         recordLinkedSourcePDF(path, on: entry.id)
     }
 
+    /// R-Reader-Library-Continue. Stamp the EPUB content hash
+    /// onto the catalog row keyed by the EPUB's canonical URL.
+    /// Called by `ReaderViewModel` after computing the hash for
+    /// the position-restore lookup — the cached value lets the
+    /// Library window display reading progress per row without
+    /// re-hashing every EPUB. Idempotent.
+    func recordEPUBContentHash(_ hash: String, forEPUB epubURL: URL) {
+        let canonical = epubURL.canonicalForFile
+        mutateEntries { entries in
+            guard let idx = entries.firstIndex(where: {
+                $0.epubURL.canonicalForFile == canonical
+            }) else { return }
+            if entries[idx].epubContentHash != hash {
+                entries[idx].epubContentHash = hash
+            }
+        }
+    }
+
     /// R-Library-Dedupe. Append `path` to `entryID`'s `priorPaths`
     /// (de-duped). Called when an import / scan hashes the same as
     /// an existing entry — the user gets to keep the breadcrumb to
@@ -1134,6 +1152,15 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
     /// values because the plan() function re-checks file
     /// existence and falls through to the unpack path on miss.
     var linkedSourcePDFPath: String?
+    /// R-Reader-Library-Continue. Cached SHA-256 hash of the
+    /// EPUB file. Populated by the reader on first open
+    /// (`ReaderViewModel.restorePositionIfAvailable` already
+    /// computes it for the ReadingPositionStore lookup) so the
+    /// Library window can look up the user's reading position
+    /// per row without hashing every EPUB on every render. nil
+    /// for books that have never been opened in the reader —
+    /// the row shows "Not started" in that case.
+    var epubContentHash: String?
 
     init(
         id: UUID = UUID(),
@@ -1148,7 +1175,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         genre: BookGenre? = nil,
         sourceContentHashes: [String] = [],
         priorPaths: [String] = [],
-        linkedSourcePDFPath: String? = nil
+        linkedSourcePDFPath: String? = nil,
+        epubContentHash: String? = nil
     ) {
         self.id = id
         self.epubURL = epubURL
@@ -1163,6 +1191,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.sourceContentHashes = sourceContentHashes
         self.priorPaths = priorPaths
         self.linkedSourcePDFPath = linkedSourcePDFPath
+        self.epubContentHash = epubContentHash
     }
 
     // MARK: - Codable (decodeIfPresent for relativePath)
@@ -1207,13 +1236,19 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.linkedSourcePDFPath = try c.decodeIfPresent(
             String.self, forKey: .linkedSourcePDFPath
         )
+        // R-Reader-Library-Continue cache. nil for entries that
+        // have never been opened in the reader; populated on
+        // first reader open from `ReaderViewModel`.
+        self.epubContentHash = try c.decodeIfPresent(
+            String.self, forKey: .epubContentHash
+        )
     }
 
     enum CodingKeys: String, CodingKey {
         case id, epubURL, title, languages, addedAt, lastOpened, relativePath
         case conversionType, author, genre
         case sourceContentHashes, priorPaths
-        case linkedSourcePDFPath
+        case linkedSourcePDFPath, epubContentHash
     }
 
     /// Resolve the cached `linkedSourcePDFPath` to an on-disk URL,

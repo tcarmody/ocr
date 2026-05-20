@@ -3158,8 +3158,9 @@ also shipped. Phase 3 (paginated layout) shipped 2026-05-19 —
 CSS-multicol layout, ⌥⌘P toggle, ←/→/space page nav,
 "page N / M" indicator. The reader is the default open
 target for `.epub` URLs, reachable via `Show Reader` (⌘5).
-Phase 4 (reading prefs + library "Continue" affordance +
-edit-reader staleness banner) remains.
+Phase 4 (reading prefs popover + edit-reader staleness banner
++ library "Continue reading" column) shipped 2026-05-19.
+R-Reader is complete.
 
 ### Decisions locked
 
