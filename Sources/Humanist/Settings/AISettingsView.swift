@@ -6,11 +6,16 @@ import AI
 /// Default mode is **Private** — first launch needs no setup and no
 /// data leaves the machine. Cloud mode reveals API-key entry,
 /// page-OCR provider selection, and per-feature toggles for
-/// Claude / Gemini / Google Document OCR backed features.
+/// Claude / Gemini / Google Document OCR / LandingAI backed
+/// features.
 ///
-/// Layout reads top-to-bottom in the order a user actually
-/// configures things: mode, the always-available local features,
-/// then the Cloud setup (keys → provider → features → cap).
+/// Cloud-mode sections are grouped by *pipeline stage* so users can
+/// scroll past stages they aren't tuning: Page OCR (whole-page
+/// engine), Region OCR (per-region cascade), Tables, Text Cleanup,
+/// Document Understanding, then the global Cost Cap. The previous
+/// flat "Cloud Features" dump mixed all of those into one list
+/// where the relationships between toggles weren't visible.
+///
 /// Chat-with-book + chat-with-library configuration moved to
 /// `ChatSettingsView` on 2026-05-12 (see U-HIG-AI-Settings-Split).
 struct AISettingsView: View {
@@ -21,9 +26,11 @@ struct AISettingsView: View {
             modeSection
             localAISection
             if vm.isCloud {
-                pageOCRProviderSection
-                cloudFeaturesSection
-                throughputSection
+                pageOCRSection
+                regionOCRSection
+                tablesSection
+                textCleanupSection
+                documentUnderstandingSection
                 costCapSection
             }
             restoreDefaultsSection
@@ -46,7 +53,7 @@ struct AISettingsView: View {
                 set: { vm.settings.processingMode = $0 }
             )) {
                 Text("Private (local-only)").tag(ProcessingMode.privateLocal)
-                Text("Cloud (Claude)").tag(ProcessingMode.cloud)
+                Text("Cloud").tag(ProcessingMode.cloud)
             }
             .pickerStyle(.radioGroup)
 
@@ -62,7 +69,7 @@ struct AISettingsView: View {
         case .privateLocal:
             return "Local-only. Surya, Vision, and Tesseract handle everything — no data leaves your machine. Best for sensitive material."
         case .cloud:
-            return "Optional Claude- and Gemini-backed features. Better quality on hard scripts, table structure, and chapter detection. Requires at least one API key — add yours in the API Keys tab."
+            return "Optional cloud features across multiple providers — Claude (Anthropic), Gemini (Google AI Studio), Google Cloud Vision, and LandingAI ADE. Configure each section below with whichever providers you have keys for. Requires at least one API key; add yours in the API Keys tab."
         }
     }
 
@@ -111,11 +118,11 @@ struct AISettingsView: View {
         }
     }
 
-    // MARK: - Page OCR Provider
+    // MARK: - Page OCR (whole-page engine + its throughput knobs)
 
     @ViewBuilder
-    private var pageOCRProviderSection: some View {
-        Section("Page OCR Provider") {
+    private var pageOCRSection: some View {
+        Section("Page OCR") {
             Picker("Provider", selection: $vm.settings.pageOCRProvider) {
                 Text("Claude Sonnet 4.6").tag(PageOCRProvider.claude)
                 Text("Gemini 2.5 Flash (lower cost)").tag(PageOCRProvider.gemini25Flash)
@@ -123,42 +130,78 @@ struct AISettingsView: View {
             }
             .pickerStyle(.radioGroup)
             caption("Model used when the launcher's OCR Engine is set to a page-OCR mode. Gemini 2.5 Flash is ~7–10× cheaper than Sonnet at comparable quality on typeset prose. Manuscript mode always uses Claude Opus.")
+
+            Picker("Parallel page OCR",
+                   selection: $vm.settings.cloudFeatures.parallelPageOCRConcurrency) {
+                Text("1 page at a time").tag(1)
+                Text("2 in parallel").tag(2)
+                Text("4 in parallel").tag(4)
+                Text("8 in parallel").tag(8)
+            }
+            caption("Pages in flight at the provider at once. 4 cuts a 300-page book from ~40 min to ~12 min; 8 caps out around ~7 min before the rate-limit floor kicks in. Higher = more memory pressure (each in-flight page holds a ~4 MB rendered image).")
+
+            Toggle("Use Batch API (50% cheaper, async)",
+                   isOn: $vm.settings.cloudFeatures.useBatchAPI)
+                .disabled(vm.settings.pageOCRProvider != .claude)
+            caption("Submits all pages for one book as a single batch — half the per-token cost in exchange for a 1–5 minute wait with no live per-page progress. Best for overnight bulk runs. Implemented for Claude only right now; Gemini supports batching but isn't wired here yet.")
         }
     }
 
-    // MARK: - Cloud Features
+    // MARK: - Region OCR (per-region cascade)
 
     @ViewBuilder
-    private var cloudFeaturesSection: some View {
-        Section("Cloud Features") {
+    private var regionOCRSection: some View {
+        Section("Region OCR (cascade)") {
             Toggle("Hard-region OCR (Sonnet)",
                    isOn: $vm.settings.cloudFeatures.hardRegionOCR)
-            caption("Re-OCRs regions where Vision and Tesseract produced low-quality output. Best on polytonic Greek, Hebrew, and mixed scripts.")
+            caption("Final cascade tier: re-OCRs regions where every cheaper engine produced low-quality output. ~$0.012 per region call. Best on polytonic Greek, Hebrew, and mixed scripts.")
 
-            Toggle("Google Document OCR cascade",
-                   isOn: $vm.settings.cloudFeatures.googleDocumentOCRInCascade)
-            caption("Classical OCR at ~$0.0015/call as the cascade stage between Tesseract and Sonnet. Absorbs most hard-region work before falling through to Claude.")
+            Picker("Mid-tier cloud OCR",
+                   selection: cascadeMidTierBinding) {
+                Text("Off").tag(CascadeMidTier.off)
+                Text("Google Cloud Vision — $0.0015/call").tag(CascadeMidTier.google)
+                Text("LandingAI ADE — $0.03/call").tag(CascadeMidTier.landingAI)
+            }
+            caption("Sits between Tesseract and Sonnet in the per-region cascade. Google's classical OCR absorbs most hard-region work for fractions of a cent. LandingAI ADE is purpose-built for document layout and is the better pick on dense scans, multi-column pages, and complex layouts; pricier per call but you'll typically need fewer calls because more first-tier regions succeed.")
+        }
+    }
 
-            Toggle("LandingAI ADE cascade (alternative to Google)",
-                   isOn: $vm.settings.cloudFeatures.landingAIInCascade)
-            caption("Cascade Stage 2.5 alternative at ~$0.03/call. When on AND a LandingAI key is set, replaces Google Cloud Vision at that slot for this conversion — ADE is purpose-built for document layout and often beats classical OCR on dense scans. Requires a LandingAI ADE key.")
+    // MARK: - Tables
 
-            Toggle("Table extraction (Sonnet)",
-                   isOn: $vm.settings.cloudFeatures.tableExtraction)
-            caption("Extracts cell structure from .table regions instead of falling back to the X/Y heuristic. Useful on dense or merged-cell tables.")
+    @ViewBuilder
+    private var tablesSection: some View {
+        Section("Tables") {
+            Picker("Cloud table extractor",
+                   selection: tableExtractorBinding) {
+                Text("Off (heuristic only)").tag(TableExtractorChoice.off)
+                Text("Sonnet").tag(TableExtractorChoice.sonnet)
+                Text("LandingAI first, Sonnet fallback").tag(TableExtractorChoice.landingAIThenSonnet)
+            }
+            caption("Replaces the X/Y heuristic on .table regions. Sonnet reads the cropped image and emits JSON cells (rowspan/colspan preserved). LandingAI is purpose-built for tables and often wins on dense layouts, but markdown output means merged cells flatten to 1×1; Sonnet picks up cases LandingAI declines. Surya is the offline fallback regardless.")
+        }
+    }
 
-            Toggle("  …try LandingAI ADE first for tables",
-                   isOn: $vm.settings.cloudFeatures.landingAITableExtraction)
-                .disabled(!vm.settings.cloudFeatures.tableExtraction)
-            caption("Prepends LandingAI to the table-extractor chain ahead of Sonnet. ADE is purpose-built for tables; Sonnet still picks up cases ADE declines. Markdown table output means merged cells flatten to 1×1. Requires a LandingAI ADE key.")
+    // MARK: - Text Cleanup
 
+    @ViewBuilder
+    private var textCleanupSection: some View {
+        Section("Text Cleanup") {
             Toggle("Post-OCR character cleanup (Haiku)",
                    isOn: $vm.settings.cloudFeatures.postOCRCleanup)
             caption("Fixes ligatures, missing diacritics, and dropped spaces on low-quality regions. Near-free at Haiku rates.")
+
             Toggle("  …in vision mode (send region image; ~5–10× cost)",
                    isOn: $vm.settings.cloudFeatures.postOCRCleanupVisionMode)
                 .disabled(!vm.settings.cloudFeatures.postOCRCleanup)
+            caption("Sends the rendered region image alongside the OCR text so Haiku can verify against the actual glyphs. Higher cost; better on worn type, faded scans, and polytonic Greek.")
+        }
+    }
 
+    // MARK: - Document Understanding
+
+    @ViewBuilder
+    private var documentUnderstandingSection: some View {
+        Section("Document Understanding") {
             Toggle("Semantic classification & TOC parsing (Haiku)",
                    isOn: semanticHaikuBinding)
             caption("Labels each chapter with an EPUB 3 epub:type and parses the printed TOC into authoritative chapter titles. Two Haiku calls per book; pennies total.")
@@ -166,9 +209,101 @@ struct AISettingsView: View {
             Toggle("Chapter structure refinement (Sonnet)",
                    isOn: chapterStructureBinding)
             caption("Three Sonnet passes that fix the local splitter's chapter list: a full-text scan for breaks the splitter missed entirely, validation + title and epub:type cleanup on the existing list, and splitting of bundled front/back-matter (Dedication + Preface stacked together, Bibliography → Index → Notes runs, etc.). Conservative posture — most books need few or zero edits. ~$0.35/book.")
-
-            footnote("Each toggle gates a separate feature. The cost cap below bounds the worst case if you flip several on at once.")
         }
+    }
+
+    // MARK: - Cost Cap
+
+    @ViewBuilder
+    private var costCapSection: some View {
+        Section("Cost Cap") {
+            HStack {
+                Text("Per-book cloud calls")
+                Spacer()
+                TextField("calls", value: $vm.settings.perBookCallCap, format: .number)
+                    .frame(width: 80)
+                    .multilineTextAlignment(.trailing)
+            }
+            caption("Hard ceiling shared across every cloud provider above (Claude, Gemini, Google Cloud Vision, LandingAI). Once exceeded, remaining work falls back to local tiers. Default 200.")
+        }
+    }
+
+    // MARK: - Restore Defaults
+
+    @ViewBuilder
+    private var restoreDefaultsSection: some View {
+        Section {
+            Button("Restore Defaults", role: .destructive) {
+                vm.resetToDefaults()
+            }
+        }
+    }
+
+    // MARK: - Picker bindings
+
+    /// Three cascade mid-tier states surfaced as one picker. The
+    /// underlying `googleDocumentOCRInCascade` and `landingAIInCascade`
+    /// flags remain independent in the data model (so users editing
+    /// the persisted JSON can run unusual combinations), but the UI
+    /// treats them as mutually exclusive since that's how the
+    /// pipeline actually behaves: when both are on, LandingAI wins.
+    enum CascadeMidTier: Hashable { case off, google, landingAI }
+
+    private var cascadeMidTierBinding: Binding<CascadeMidTier> {
+        Binding(
+            get: {
+                if vm.settings.cloudFeatures.landingAIInCascade { return .landingAI }
+                if vm.settings.cloudFeatures.googleDocumentOCRInCascade { return .google }
+                return .off
+            },
+            set: { newValue in
+                switch newValue {
+                case .off:
+                    vm.settings.cloudFeatures.googleDocumentOCRInCascade = false
+                    vm.settings.cloudFeatures.landingAIInCascade = false
+                case .google:
+                    vm.settings.cloudFeatures.googleDocumentOCRInCascade = true
+                    vm.settings.cloudFeatures.landingAIInCascade = false
+                case .landingAI:
+                    vm.settings.cloudFeatures.googleDocumentOCRInCascade = false
+                    vm.settings.cloudFeatures.landingAIInCascade = true
+                }
+            }
+        )
+    }
+
+    /// Three table-extractor chain states. `.sonnet` matches the
+    /// original "table extraction" toggle; `.landingAIThenSonnet`
+    /// matches what the previous "try LandingAI first" sub-toggle
+    /// did (it required the Sonnet toggle on, so LandingAI prepends
+    /// rather than replaces). The "LandingAI only, no Sonnet" combo
+    /// is reachable by JSON edit but not surfaced here — the
+    /// fallback to Sonnet on ADE declines is the well-tested path.
+    enum TableExtractorChoice: Hashable { case off, sonnet, landingAIThenSonnet }
+
+    private var tableExtractorBinding: Binding<TableExtractorChoice> {
+        Binding(
+            get: {
+                let table = vm.settings.cloudFeatures.tableExtraction
+                let landing = vm.settings.cloudFeatures.landingAITableExtraction
+                if landing && table { return .landingAIThenSonnet }
+                if table { return .sonnet }
+                return .off
+            },
+            set: { newValue in
+                switch newValue {
+                case .off:
+                    vm.settings.cloudFeatures.tableExtraction = false
+                    vm.settings.cloudFeatures.landingAITableExtraction = false
+                case .sonnet:
+                    vm.settings.cloudFeatures.tableExtraction = true
+                    vm.settings.cloudFeatures.landingAITableExtraction = false
+                case .landingAIThenSonnet:
+                    vm.settings.cloudFeatures.tableExtraction = true
+                    vm.settings.cloudFeatures.landingAITableExtraction = true
+                }
+            }
+        )
     }
 
     /// Combined binding for the two Haiku document-understanding
@@ -205,53 +340,6 @@ struct AISettingsView: View {
                 vm.settings.cloudFeatures.chapterMissedBreakDetection = newValue
             }
         )
-    }
-
-    // MARK: - Throughput
-
-    @ViewBuilder
-    private var throughputSection: some View {
-        Section("Throughput") {
-            Picker("Parallel page OCR",
-                   selection: $vm.settings.cloudFeatures.parallelPageOCRConcurrency) {
-                Text("1 page at a time").tag(1)
-                Text("2 in parallel").tag(2)
-                Text("4 in parallel").tag(4)
-                Text("8 in parallel").tag(8)
-            }
-            caption("How many pages can be in flight at the Sonnet/Gemini provider simultaneously. 4 cuts a 300-page book from ~40 min to ~12 min; 8 caps out around ~7 min before the rate-limit floor kicks in. Higher = more memory pressure (each in-flight page holds a rendered image, ~4 MB at 400 DPI) and less smooth per-page progress.")
-
-            Toggle("Use Batch API (50% cheaper, async)",
-                   isOn: $vm.settings.cloudFeatures.useBatchAPI)
-            caption("Submits all pages for one book as a single Anthropic batch — half the per-token cost in exchange for a 1–5 minute wait with no live per-page progress. Best for overnight bulk runs; pages don't fall back to Tesseract individually when the batch contains refusals — the whole batch returns at once.")
-        }
-    }
-
-    // MARK: - Cost Cap
-
-    @ViewBuilder
-    private var costCapSection: some View {
-        Section("Cost Cap") {
-            HStack {
-                Text("Per-book Claude calls")
-                Spacer()
-                TextField("calls", value: $vm.settings.perBookCallCap, format: .number)
-                    .frame(width: 80)
-                    .multilineTextAlignment(.trailing)
-            }
-            caption("Hard ceiling. Once exceeded, remaining calls fall back to non-Claude tiers. Default 200.")
-        }
-    }
-
-    // MARK: - Restore Defaults
-
-    @ViewBuilder
-    private var restoreDefaultsSection: some View {
-        Section {
-            Button("Restore Defaults", role: .destructive) {
-                vm.resetToDefaults()
-            }
-        }
     }
 
     // MARK: - text helpers
