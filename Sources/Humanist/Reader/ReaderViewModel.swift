@@ -412,13 +412,21 @@ final class ReaderViewModel: ObservableObject {
     /// (highlight gesture). `selectedText` is the verbatim
     /// selection; `selectionRange` is the character-offset
     /// fallback for restore when the text gets edited away.
+    /// The caller may pass a pre-minted `id` when it has
+    /// already used that id elsewhere (the highlight gesture
+    /// mints the id up front so the JS-wrapped span and the
+    /// persisted Annotation share it for later delete-by-id);
+    /// otherwise one is generated.
+    @discardableResult
     func addHighlight(
+        id: UUID = UUID(),
         chapterIdx: Int,
         paragraphAnchorId: String?,
         selectedText: String,
         selectionRange: Annotation.TextRange?
     ) -> Annotation {
         let highlight = Annotation(
+            id: id,
             chapterIdx: chapterIdx,
             paragraphAnchorId: paragraphAnchorId,
             selectedText: selectedText,

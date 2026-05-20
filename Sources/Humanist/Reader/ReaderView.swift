@@ -66,6 +66,13 @@ struct ReaderView: View {
     /// and posts back so the VM can append the bookmark.
     @State private var bookmarkRequest: UUID?
 
+    /// Highlight-selection request. Carries a pre-minted
+    /// annotation id so the wrap span and the persisted
+    /// Annotation share an id; coordinator wraps the selection
+    /// then reports back the text + anchor + offsets for
+    /// Swift-side persistence.
+    @State private var highlightRequest: WebReaderPane.HighlightRequest?
+
     /// Sidebar tab. Persisted so a user who lives in the
     /// annotations list during a read stays there on reopen.
     @AppStorage("humanist.reader.sidebarTab")
@@ -428,6 +435,14 @@ struct ReaderView: View {
                     bookmarkRequest: bookmarkRequest,
                     onBookmarkContext: { anchorId in
                         handleBookmarkRequest(anchorId)
+                    },
+                    highlightRequest: highlightRequest,
+                    onHighlightCaptured: { capture in
+                        handleHighlightCaptured(capture)
+                    },
+                    chapterHighlights: vm.annotations.filter {
+                        $0.chapterIdx == vm.spineIndex
+                            && ($0.kind == .highlight || $0.kind == .passage)
                     }
                 )
             }
@@ -557,6 +572,17 @@ struct ReaderView: View {
             }
             .help("Bookmark the current location (⌘D)")
             .keyboardShortcut("d", modifiers: .command)
+
+            Button {
+                highlightRequest = WebReaderPane.HighlightRequest(
+                    annotationId: UUID(),
+                    nonce: UUID()
+                )
+            } label: {
+                Label("Highlight", systemImage: "highlighter")
+            }
+            .help("Highlight the selected text (⌃⌘H)")
+            .keyboardShortcut("h", modifiers: [.command, .control])
         }
     }
 
@@ -716,6 +742,38 @@ struct ReaderView: View {
             ? "Bookmarked chapter."
             : "Bookmarked.")
     }
+
+    /// Handler for the highlight gesture's JS callback.
+    /// `capture == nil` means the user fired the gesture
+    /// without selecting text; surface a hint. Otherwise build
+    /// the Annotation with the pre-minted id (the JS-side wrap
+    /// span already carries that id in its dataset for later
+    /// delete-by-id flows) and persist via the VM.
+    private func handleHighlightCaptured(
+        _ capture: WebReaderPane.HighlightCapture?
+    ) {
+        guard let capture else {
+            showCopyToast("Select some text first.")
+            return
+        }
+        let range: Annotation.TextRange?
+        if let s = capture.startOffset, let e = capture.endOffset,
+           e > s {
+            range = Annotation.TextRange(
+                startOffset: s, endOffset: e
+            )
+        } else {
+            range = nil
+        }
+        vm.addHighlight(
+            id: capture.annotationId,
+            chapterIdx: vm.spineIndex,
+            paragraphAnchorId: capture.paragraphAnchorId,
+            selectedText: capture.text,
+            selectionRange: range
+        )
+        showCopyToast("Highlighted.")
+    }
 }
 
 /// One find request from the reader's find bar to the
@@ -793,6 +851,38 @@ private struct WebReaderPane: NSViewRepresentable {
     /// scrolled past); UI degrades to a chapter-level bookmark.
     var onBookmarkContext: ((String?) -> Void)? = nil
 
+    /// Highlight-selection request. The Swift side mints the
+    /// annotation id up front + passes it through so the JS
+    /// can stamp `data-annotation-id` on the wrapping span;
+    /// the same id then matches the persisted Annotation, so
+    /// later "delete this highlight" gestures (Phase E) can
+    /// strip the span by id.
+    struct HighlightRequest: Equatable {
+        let annotationId: UUID
+        let nonce: UUID
+    }
+    var highlightRequest: HighlightRequest? = nil
+    /// Result callback for the highlight gesture. nil → no
+    /// selection (toolbar/keyboard fired with cursor only);
+    /// non-nil → text + anchor + offsets for Swift-side
+    /// persistence into AnnotationStore.
+    var onHighlightCaptured: ((HighlightCapture?) -> Void)? = nil
+
+    /// Annotations to restore into the current chapter on
+    /// load. Filtered to highlights / passages whose chapterIdx
+    /// matches the loaded spine index. Bookmarks aren't visual
+    /// so they're excluded; restoration happens in didFinish.
+    var chapterHighlights: [Annotation] = []
+
+    /// JS-side capture for a successful highlight gesture.
+    struct HighlightCapture: Equatable {
+        let annotationId: UUID
+        let text: String
+        let paragraphAnchorId: String?
+        let startOffset: Int?
+        let endOffset: Int?
+    }
+
     /// What the WKWebView reports back for a copy-with-citation
     /// request. The coordinator builds this from a selection
     /// query; the Swift caller decides how to format it (the
@@ -823,6 +913,15 @@ private struct WebReaderPane: NSViewRepresentable {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         ))
+        // Inject the highlight stylesheet at document start so
+        // restored highlights paint immediately on first render
+        // (vs. flashing unstyled until didFinish runs the
+        // restore).
+        userContent.addUserScript(WKUserScript(
+            source: Self.highlightStylesheetJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
         cfg.userContentController = userContent
         let view = WKWebView(frame: .zero, configuration: cfg)
         view.navigationDelegate = context.coordinator
@@ -832,6 +931,27 @@ private struct WebReaderPane: NSViewRepresentable {
         load(into: view)
         return view
     }
+
+    /// CSS for the highlight span. Yellow, semi-transparent so
+    /// underlying text stays clearly legible. Same single
+    /// color choice we locked in the design — palette support
+    /// can layer on later. `display: inline` because the wrap
+    /// happens around inline ranges that may straddle existing
+    /// inline elements.
+    private static let highlightStylesheetJS = """
+    (function() {
+      var style = document.createElement('style');
+      style.id = 'humanist-reader-highlight-style';
+      style.textContent =
+        '.hu-highlight { background-color: rgba(255, 235, 59, 0.45); ' +
+        '  border-radius: 2px; ' +
+        '  padding: 0 1px; ' +
+        '  cursor: pointer; }' +
+        '.hu-highlight[data-passage="1"] { ' +
+        '  border-bottom: 2px solid rgba(255, 152, 0, 0.7); }';
+      document.documentElement.appendChild(style);
+    })();
+    """
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.fontSize = fontSize
@@ -870,6 +990,15 @@ private struct WebReaderPane: NSViewRepresentable {
            context.coordinator.lastFlushedBookmarkNonce != req {
             context.coordinator.lastFlushedBookmarkNonce = req
             context.coordinator.captureNearestVisibleAnchor(view: nsView)
+        }
+        context.coordinator.onHighlightCaptured = onHighlightCaptured
+        context.coordinator.pendingChapterHighlights = chapterHighlights
+        if let req = highlightRequest,
+           context.coordinator.lastFlushedHighlightNonce != req.nonce {
+            context.coordinator.lastFlushedHighlightNonce = req.nonce
+            context.coordinator.captureHighlight(
+                annotationId: req.annotationId, view: nsView
+            )
         }
     }
 
@@ -982,6 +1111,16 @@ private struct WebReaderPane: NSViewRepresentable {
         /// scrolled past.
         var onBookmarkContext: ((String?) -> Void)?
         var lastFlushedBookmarkNonce: UUID?
+        /// Highlight-captured callback. Fires after JS wraps the
+        /// selection in a `.hu-highlight` span; carries text +
+        /// anchor + offsets for Swift-side persistence.
+        var onHighlightCaptured: ((HighlightCapture?) -> Void)?
+        var lastFlushedHighlightNonce: UUID?
+        /// The most recent list of highlights / passages for
+        /// the currently-loaded chapter. Snapshotted by
+        /// `updateNSView` so didFinish has data to restore
+        /// without re-reaching into the SwiftUI graph.
+        var pendingChapterHighlights: [Annotation] = []
         /// True while we're programmatically scrolling (anchor
         /// flush or fraction restore). The JS bridge can fire
         /// a scroll event from the scrollIntoView itself, which
@@ -998,6 +1137,7 @@ private struct WebReaderPane: NSViewRepresentable {
                 self.lastFinishedView = webView
                 self.isLoaded = true
                 self.applyFontSizeIfReady(view: webView)
+                self.restoreHighlights(view: webView)
                 self.flushPendingAnchorIfReady(view: webView)
                 self.flushPendingFractionIfReady(view: webView)
             }
@@ -1116,6 +1256,213 @@ private struct WebReaderPane: NSViewRepresentable {
             lastFlushedFractionNonce = nonce
             pendingFraction = nil
             pendingFractionNonce = nil
+        }
+
+        /// Wrap the current selection in a `.hu-highlight` span
+        /// and report back the text + paragraph anchor + char
+        /// offsets so Swift can persist a matching Annotation.
+        /// The annotation id is minted in Swift first and passed
+        /// through so the wrapping span carries
+        /// `data-annotation-id` for later delete-by-id Phase E
+        /// gestures.
+        ///
+        /// Falls back through three wrap strategies:
+        ///   1. `surroundContents` — works when the selection
+        ///      doesn't cross element boundaries (the common
+        ///      case for inline-text highlights).
+        ///   2. `extractContents` + `insertNode` — works for
+        ///      cross-element ranges (selections spanning
+        ///      `<em>` boundaries, etc.).
+        ///   3. Skip wrapping — annotation still persists; the
+        ///      restore path uses text-match to wrap on the
+        ///      next chapter open.
+        func captureHighlight(annotationId: UUID, view: WKWebView) {
+            let idString = annotationId.uuidString
+            let js = """
+            (function() {
+              var sel = window.getSelection();
+              if (!sel || sel.isCollapsed || !sel.rangeCount) {
+                return null;
+              }
+              var range = sel.getRangeAt(0);
+              var text = range.toString();
+              if (!text) return null;
+              // Find containing hu-p-N-M paragraph.
+              var node = range.commonAncestorContainer;
+              while (node) {
+                if (node.nodeType === 1 && node.id
+                    && /^hu-p-\\d+-\\d+$/.test(node.id)) {
+                  break;
+                }
+                node = node.parentNode;
+              }
+              var anchorId = node ? node.id : null;
+              // Compute char offsets within the paragraph's
+              // flat textContent.
+              var startOffset = -1, endOffset = -1;
+              if (node) {
+                var preRange = document.createRange();
+                preRange.setStart(node, 0);
+                preRange.setEnd(range.startContainer, range.startOffset);
+                startOffset = preRange.toString().length;
+                endOffset = startOffset + text.length;
+              }
+              // Wrap the selection.
+              var wrapper = document.createElement('span');
+              wrapper.className = 'hu-highlight';
+              wrapper.setAttribute('data-annotation-id', '\(idString)');
+              try {
+                range.surroundContents(wrapper);
+              } catch (e1) {
+                try {
+                  wrapper.appendChild(range.extractContents());
+                  range.insertNode(wrapper);
+                } catch (e2) {
+                  // Couldn't wrap; persistence still works via
+                  // restore-by-text-match on next chapter load.
+                }
+              }
+              sel.removeAllRanges();
+              return JSON.stringify({
+                text: text,
+                anchorId: anchorId,
+                startOffset: startOffset,
+                endOffset: endOffset,
+              });
+            })();
+            """
+            view.evaluateJavaScript(js) { [weak self] result, _ in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard let raw = result as? String,
+                          let data = raw.data(using: .utf8),
+                          let dict = try? JSONSerialization
+                            .jsonObject(with: data) as? [String: Any],
+                          let text = dict["text"] as? String,
+                          !text.isEmpty
+                    else {
+                        self.onHighlightCaptured?(nil)
+                        return
+                    }
+                    let anchorId = dict["anchorId"] as? String
+                    let startOffset = (dict["startOffset"] as? Int)
+                        .flatMap { $0 >= 0 ? $0 : nil }
+                    let endOffset = (dict["endOffset"] as? Int)
+                        .flatMap { $0 >= 0 ? $0 : nil }
+                    self.onHighlightCaptured?(HighlightCapture(
+                        annotationId: annotationId,
+                        text: text,
+                        paragraphAnchorId: anchorId,
+                        startOffset: startOffset,
+                        endOffset: endOffset
+                    ))
+                }
+            }
+        }
+
+        /// Restore stored highlights for the current chapter
+        /// after the WKWebView finishes loading. Walks each
+        /// stored Annotation, locates its paragraph by anchor
+        /// id, then finds the matching text range — verbatim
+        /// match first, character-offset fallback — and wraps
+        /// it in a `.hu-highlight` span (with
+        /// `data-passage="1"` when the annotation carries a
+        /// note). Silent miss on chapters / paragraphs that no
+        /// longer exist (book changed on disk; underlying
+        /// XHTML rewritten) — the annotation stays in storage
+        /// for the next chapter load to retry.
+        func restoreHighlights(view: WKWebView) {
+            // Build a JSON-passable list of (id, anchorId, text,
+            // startOffset, endOffset, isPassage) tuples.
+            let entries = pendingChapterHighlights.compactMap { annot -> [String: Any]? in
+                guard annot.kind == .highlight || annot.kind == .passage,
+                      let anchorId = annot.paragraphAnchorId,
+                      let text = annot.selectedText,
+                      !text.isEmpty
+                else { return nil }
+                var dict: [String: Any] = [
+                    "id": annot.id.uuidString,
+                    "anchorId": anchorId,
+                    "text": text,
+                    "isPassage": annot.kind == .passage,
+                ]
+                if let r = annot.selectionRange {
+                    dict["startOffset"] = r.startOffset
+                    dict["endOffset"] = r.endOffset
+                }
+                return dict
+            }
+            guard !entries.isEmpty else { return }
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: entries
+            ), let json = String(data: data, encoding: .utf8) else {
+                return
+            }
+            let js = """
+            (function() {
+              var entries = \(json);
+              entries.forEach(function(e) {
+                var para = document.getElementById(e.anchorId);
+                if (!para) return;
+                // Skip if already restored — re-render of the
+                // same chapter shouldn't double-wrap.
+                if (para.querySelector(
+                  '[data-annotation-id="' + e.id + '"]'
+                )) return;
+                var content = para.textContent;
+                var start = content.indexOf(e.text);
+                if (start === -1) {
+                  // Verbatim match failed; fall back to offsets.
+                  if (typeof e.startOffset !== 'number'
+                      || typeof e.endOffset !== 'number') return;
+                  if (e.endOffset > content.length) return;
+                  start = e.startOffset;
+                }
+                var end = start + e.text.length;
+                wrapTextRange(para, start, end, e.id, e.isPassage);
+              });
+              function wrapTextRange(root, start, end, id, isPassage) {
+                var walker = document.createTreeWalker(
+                  root, NodeFilter.SHOW_TEXT
+                );
+                var cursor = 0;
+                var startNode, startOff, endNode, endOff;
+                while (walker.nextNode()) {
+                  var n = walker.currentNode;
+                  var len = n.textContent.length;
+                  if (startNode === undefined && cursor + len > start) {
+                    startNode = n;
+                    startOff = start - cursor;
+                  }
+                  if (cursor + len >= end) {
+                    endNode = n;
+                    endOff = end - cursor;
+                    break;
+                  }
+                  cursor += len;
+                }
+                if (!startNode || !endNode) return;
+                var range = document.createRange();
+                range.setStart(startNode, startOff);
+                range.setEnd(endNode, endOff);
+                var wrapper = document.createElement('span');
+                wrapper.className = 'hu-highlight';
+                wrapper.setAttribute('data-annotation-id', id);
+                if (isPassage) {
+                  wrapper.setAttribute('data-passage', '1');
+                }
+                try {
+                  range.surroundContents(wrapper);
+                } catch (e1) {
+                  try {
+                    wrapper.appendChild(range.extractContents());
+                    range.insertNode(wrapper);
+                  } catch (e2) {}
+                }
+              }
+            })();
+            """
+            view.evaluateJavaScript(js, completionHandler: nil)
         }
 
         /// Capture the topmost-visible `hu-p-N-M` anchor in the
