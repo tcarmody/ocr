@@ -2258,15 +2258,16 @@ struct LibraryWindowView: View {
     @ViewBuilder
     private func actionButtons(for entry: LibraryEntry) -> some View {
         HStack(spacing: 4) {
-            Button("Open") {
-                openEntry(entry)
+            Button("Read") {
+                readEntry(entry)
             }
             .controlSize(.small)
+            .help("Open in the reader")
             Button("Edit") {
                 editEntry(entry)
             }
             .controlSize(.small)
-            .help("Edit the EPUB source in the Editor")
+            .help("Edit the EPUB source in the editor")
             Button("Reveal") {
                 NSWorkspace.shared.activateFileViewerSelecting([entry.epubURL])
             }
@@ -2276,7 +2277,7 @@ struct LibraryWindowView: View {
 
     @ViewBuilder
     private func rowContextMenu(for entry: LibraryEntry) -> some View {
-        Button("Open") { openEntry(entry) }
+        Button("Read") { readEntry(entry) }
         Button("Edit Source…") { editEntry(entry) }
         Button("Reveal in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([entry.epubURL])
@@ -2408,16 +2409,31 @@ struct LibraryWindowView: View {
         return codes.sorted { languageLabel($0) < languageLabel($1) }
     }
 
+    /// Honour the user's Settings → Reader → "Double-click opens
+    /// books in" preference. Used by the table's primaryAction
+    /// (double-click / Return on the selection) so the choice in
+    /// Settings means what it says. Context-menu and inline-
+    /// button actions are explicit (Read / Edit Source…) instead.
     private func openEntry(_ entry: LibraryEntry) {
         OpenRouter.open(entry.epubURL, openWindow: openWindow)
     }
 
-    /// Direct route to the editor scene — bypasses `OpenRouter`,
-    /// which sends .epub URLs to the reader by default. Used by
-    /// the row context menu's "Edit Source…" item and the future
-    /// hover action button. Bumps `lastOpened` the same way the
-    /// reader path does so the catalog row reflects recent
-    /// editor visits too.
+    /// Direct route to the reader scene — bypasses `OpenRouter`
+    /// so a user whose Settings → Reader default points at the
+    /// editor can still pick "Read" from the row context menu
+    /// (or inline action button) and land in the reader. Same
+    /// `RecentsStore` + `recordOpen` housekeeping `OpenRouter`
+    /// does so catalog metadata stays in sync.
+    private func readEntry(_ entry: LibraryEntry) {
+        RecentsStore.add(entry.epubURL)
+        library.recordOpen(entry.epubURL)
+        openWindow(id: "reader", value: entry.epubURL)
+    }
+
+    /// Direct route to the editor scene — bypasses `OpenRouter`
+    /// for the same reason `readEntry` does, just aimed at the
+    /// other window. Bumps `lastOpened` the same way so the
+    /// catalog row reflects recent editor visits too.
     private func editEntry(_ entry: LibraryEntry) {
         RecentsStore.add(entry.epubURL)
         library.recordOpen(entry.epubURL)
