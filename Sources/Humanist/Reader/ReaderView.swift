@@ -61,6 +61,32 @@ struct ReaderView: View {
     /// a couple of seconds.
     @State private var copyCitationToast: String?
 
+    /// Bookmark-here request nonce. Bumped (new UUID) on the
+    /// gesture; coordinator captures the nearest visible anchor
+    /// and posts back so the VM can append the bookmark.
+    @State private var bookmarkRequest: UUID?
+
+    /// Sidebar tab. Persisted so a user who lives in the
+    /// annotations list during a read stays there on reopen.
+    @AppStorage("humanist.reader.sidebarTab")
+    private var sidebarTab: SidebarTab = .toc
+
+    enum SidebarTab: String, CaseIterable {
+        case toc, annotations
+        var label: String {
+            switch self {
+            case .toc:         return "Contents"
+            case .annotations: return "Marks"
+            }
+        }
+        var systemImage: String {
+            switch self {
+            case .toc:         return "list.bullet"
+            case .annotations: return "bookmark"
+            }
+        }
+    }
+
     init(epubURL: URL) {
         self.epubURL = epubURL
         _vm = StateObject(wrappedValue: ReaderViewModel(epubURL: epubURL))
@@ -114,8 +140,8 @@ struct ReaderView: View {
                 }
             )
         ) {
-            tocSidebar(book: book)
-                .frame(minWidth: 200, idealWidth: 240)
+            sidebarColumn(book: book)
+                .frame(minWidth: 220, idealWidth: 260)
         } detail: {
             detailPane(book: book)
         }
@@ -162,6 +188,33 @@ struct ReaderView: View {
         }
     }
 
+    /// Sidebar column = tab picker (Contents / Marks) + the
+    /// appropriate list below. Picker state persists via
+    /// @AppStorage so a user who lives in the annotations list
+    /// stays there on reopen.
+    @ViewBuilder
+    private func sidebarColumn(book: EPUBBook) -> some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $sidebarTab) {
+                ForEach(SidebarTab.allCases, id: \.self) { tab in
+                    Label(tab.label, systemImage: tab.systemImage)
+                        .tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            Divider()
+            switch sidebarTab {
+            case .toc:
+                tocSidebar(book: book)
+            case .annotations:
+                annotationsSidebar(book: book)
+            }
+        }
+    }
+
     /// TOC sidebar. Titles come from `ReaderTOC.build` — preferring
     /// the EPUB's `nav.xhtml` when present, falling back to per-
     /// spine-item `<title>` / first heading / filename otherwise.
@@ -181,6 +234,150 @@ struct ReaderView: View {
             }
         }
         .listStyle(.sidebar)
+    }
+
+    /// Annotations list — bookmarks / highlights / passages
+    /// across the whole book, sorted by spine order (then
+    /// paragraph index, then capture date). Tap an entry to
+    /// jump the reader to that paragraph; right-click for
+    /// edit / delete.
+    @ViewBuilder
+    private func annotationsSidebar(book: EPUBBook) -> some View {
+        if vm.annotations.isEmpty {
+            VStack(alignment: .center, spacing: 8) {
+                Image(systemName: "bookmark")
+                    .font(.system(size: 32))
+                    .foregroundStyle(.tertiary)
+                Text("No marks yet")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                Text("Use ⌘D to bookmark a paragraph or select text and use the Highlight gesture (lands in Phase D).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List {
+                ForEach(sortedAnnotations()) { annot in
+                    annotationRow(annot)
+                        .contextMenu {
+                            Button("Jump to") { jumpToAnnotation(annot) }
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                vm.removeAnnotation(id: annot.id)
+                            }
+                        }
+                        .onTapGesture {
+                            jumpToAnnotation(annot)
+                        }
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    /// Single-row rendering for the annotations sidebar. Layout
+    /// is icon + chapter title + (selected text excerpt or note
+    /// preview when present). Bookmark = bookmark icon;
+    /// Highlight = highlighter icon; Passage = note icon. Capped
+    /// preview text length so a paragraph-long highlight doesn't
+    /// stretch the row.
+    @ViewBuilder
+    private func annotationRow(_ annot: Annotation) -> some View {
+        let chapterTitle = vm.toc.entries.first(
+            where: { $0.spineIndex == annot.chapterIdx }
+        )?.title ?? "Chapter \(annot.chapterIdx + 1)"
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: annotationIcon(annot.kind))
+                .foregroundStyle(annotationTint(annot.kind))
+                .imageScale(.small)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(chapterTitle)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                if let text = annot.selectedText, !text.isEmpty {
+                    Text("\u{201C}\(text.prefix(80))\u{201D}")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if let note = annot.note, !note.isEmpty {
+                    Text(note.prefix(80))
+                        .font(.caption.italic())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// Stable ordering: by chapter index, then by paragraph
+    /// number (parsed from `hu-p-N-M`), then by creation time.
+    /// Matches a reader's natural "show me my marks in reading
+    /// order" expectation.
+    private func sortedAnnotations() -> [Annotation] {
+        vm.annotations.sorted { a, b in
+            if a.chapterIdx != b.chapterIdx {
+                return a.chapterIdx < b.chapterIdx
+            }
+            let aP = paragraphIdx(from: a.paragraphAnchorId)
+            let bP = paragraphIdx(from: b.paragraphAnchorId)
+            if aP != bP { return aP < bP }
+            return a.createdAt < b.createdAt
+        }
+    }
+
+    /// Parse the paragraph index out of `hu-p-N-M`. Returns
+    /// `Int.max` for nil / malformed anchors so they sort to
+    /// the end within their chapter.
+    private func paragraphIdx(from anchor: String?) -> Int {
+        guard let anchor else { return Int.max }
+        let parts = anchor.split(separator: "-")
+        guard parts.count >= 4, let idx = Int(parts[3]) else {
+            return Int.max
+        }
+        return idx
+    }
+
+    private func annotationIcon(_ kind: Annotation.Kind) -> String {
+        switch kind {
+        case .bookmark:  return "bookmark.fill"
+        case .highlight: return "highlighter"
+        case .passage:   return "text.bubble.fill"
+        }
+    }
+
+    private func annotationTint(_ kind: Annotation.Kind) -> Color {
+        switch kind {
+        case .bookmark:  return .blue
+        case .highlight: return .yellow
+        case .passage:   return .orange
+        }
+    }
+
+    /// Jump the reader to the annotation's anchor. Uses the
+    /// paragraph anchor when present; falls back to chapter
+    /// top.
+    private func jumpToAnnotation(_ annot: Annotation) {
+        if let anchor = annot.paragraphAnchorId,
+           let paraIdx = parseParagraphIdx(from: anchor) {
+            vm.jumpToParagraph(
+                chapterIdx: annot.chapterIdx, paragraphIdx: paraIdx
+            )
+        } else {
+            vm.jump(toSpineIndex: annot.chapterIdx)
+        }
+    }
+
+    private func parseParagraphIdx(from anchor: String) -> Int? {
+        let parts = anchor.split(separator: "-")
+        guard parts.count >= 4 else { return nil }
+        return Int(parts[3])
     }
 
     @ViewBuilder
@@ -227,6 +424,10 @@ struct ReaderView: View {
                     copyCitationRequest: copyCitationRequest,
                     onCitationContext: { ctx in
                         handleCitationContext(ctx)
+                    },
+                    bookmarkRequest: bookmarkRequest,
+                    onBookmarkContext: { anchorId in
+                        handleBookmarkRequest(anchorId)
                     }
                 )
             }
@@ -348,6 +549,14 @@ struct ReaderView: View {
             }
             .help("Copy selection with a citation back to the book (⇧⌘C)")
             .keyboardShortcut("c", modifiers: [.command, .shift])
+
+            Button {
+                bookmarkRequest = UUID()
+            } label: {
+                Label("Bookmark", systemImage: "bookmark")
+            }
+            .help("Bookmark the current location (⌘D)")
+            .keyboardShortcut("d", modifiers: .command)
         }
     }
 
@@ -491,6 +700,22 @@ struct ReaderView: View {
             }
         }
     }
+
+    /// Handler for the ⌘D bookmark gesture. Builds a bookmark
+    /// Annotation from the JS-reported topmost-visible anchor
+    /// + the current spine index, persists it via the VM, and
+    /// flashes a brief toast confirming the action. Degrades
+    /// gracefully when no anchor is found (third-party EPUB)
+    /// — the bookmark stores chapter-level only.
+    private func handleBookmarkRequest(_ anchorId: String?) {
+        vm.addBookmark(
+            chapterIdx: vm.spineIndex,
+            paragraphAnchorId: anchorId
+        )
+        showCopyToast(anchorId == nil
+            ? "Bookmarked chapter."
+            : "Bookmarked.")
+    }
 }
 
 /// One find request from the reader's find bar to the
@@ -557,6 +782,16 @@ private struct WebReaderPane: NSViewRepresentable {
     /// can surface a "Select some text first." hint instead of
     /// silently no-op'ing).
     var onCitationContext: ((CitationContext?) -> Void)? = nil
+
+    /// Bookmark-here request nonce. Coordinator runs JS that
+    /// finds the topmost-visible `hu-p-N-M` anchor in the
+    /// current viewport and posts it back via
+    /// `onBookmarkContext`. Swift assembles the Annotation.
+    var bookmarkRequest: UUID? = nil
+    /// Result callback for the bookmark gesture. nil → no
+    /// anchor found (chapter has no Humanist anchors or fully
+    /// scrolled past); UI degrades to a chapter-level bookmark.
+    var onBookmarkContext: ((String?) -> Void)? = nil
 
     /// What the WKWebView reports back for a copy-with-citation
     /// request. The coordinator builds this from a selection
@@ -629,6 +864,12 @@ private struct WebReaderPane: NSViewRepresentable {
            context.coordinator.lastFlushedCitationNonce != req {
             context.coordinator.lastFlushedCitationNonce = req
             context.coordinator.captureCitationContext(view: nsView)
+        }
+        context.coordinator.onBookmarkContext = onBookmarkContext
+        if let req = bookmarkRequest,
+           context.coordinator.lastFlushedBookmarkNonce != req {
+            context.coordinator.lastFlushedBookmarkNonce = req
+            context.coordinator.captureNearestVisibleAnchor(view: nsView)
         }
     }
 
@@ -735,6 +976,12 @@ private struct WebReaderPane: NSViewRepresentable {
         /// hu-p-N-M anchor, or nil when no text is selected.
         var onCitationContext: ((CitationContext?) -> Void)?
         var lastFlushedCitationNonce: UUID?
+        /// Bookmark-here callback. Fires with the topmost-visible
+        /// hu-p-N-M anchor in the viewport, or nil when the
+        /// chapter has no Humanist anchors / has been fully
+        /// scrolled past.
+        var onBookmarkContext: ((String?) -> Void)?
+        var lastFlushedBookmarkNonce: UUID?
         /// True while we're programmatically scrolling (anchor
         /// flush or fraction restore). The JS bridge can fire
         /// a scroll event from the scrollIntoView itself, which
@@ -869,6 +1116,36 @@ private struct WebReaderPane: NSViewRepresentable {
             lastFlushedFractionNonce = nonce
             pendingFraction = nil
             pendingFractionNonce = nil
+        }
+
+        /// Capture the topmost-visible `hu-p-N-M` anchor in the
+        /// viewport for the bookmark-here gesture. Walks every
+        /// anchor in document order; first one whose bottom is
+        /// past the top viewport edge wins. Returns nil when
+        /// the chapter has no Humanist anchors (third-party
+        /// EPUB) or is short enough that no anchor sits in the
+        /// visible region.
+        func captureNearestVisibleAnchor(view: WKWebView) {
+            let js = """
+            (function() {
+              var anchors = document.querySelectorAll('[id^="hu-p-"]');
+              for (var i = 0; i < anchors.length; i++) {
+                var rect = anchors[i].getBoundingClientRect();
+                // First anchor whose bottom is below the top
+                // viewport edge — i.e. visible or upcoming.
+                if (rect.bottom > 0) {
+                  return anchors[i].id;
+                }
+              }
+              return null;
+            })();
+            """
+            view.evaluateJavaScript(js) { [weak self] result, _ in
+                DispatchQueue.main.async {
+                    let anchor = result as? String
+                    self?.onBookmarkContext?(anchor)
+                }
+            }
         }
 
         /// Capture the current text selection + nearest hu-p-N-M

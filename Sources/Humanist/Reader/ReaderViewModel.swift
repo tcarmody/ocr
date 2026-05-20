@@ -75,6 +75,13 @@ final class ReaderViewModel: ObservableObject {
         let nonce: UUID
     }
 
+    /// In-memory cache of the book's annotations (bookmarks +
+    /// highlights + passages). Loaded after the content hash
+    /// resolves; mutated by the bookmark / highlight / note
+    /// actions; written back to `AnnotationStore` on every
+    /// change so a window close mid-edit doesn't lose work.
+    @Published private(set) var annotations: [Annotation] = []
+
     /// Anchor scroll request keyed by spine index + element id.
     /// Nonce-tagged so two requests to the same anchor still
     /// fire `onChange` in `WebReaderPane` — repeat-clicks on the
@@ -173,6 +180,12 @@ final class ReaderViewModel: ObservableObject {
         }.value
         guard let hash else { return }
         self.contentHash = hash
+        // Pull annotations off disk in the background so the
+        // sidebar list populates as soon as the content hash
+        // resolves. Cheap (small JSON; just this book's marks).
+        self.annotations = AnnotationStore.load(
+            forContentHash: hash
+        ).annotations
         guard !userHasNavigated else { return }
         guard let saved = ReadingPositionStore.load(
             forContentHash: hash
@@ -373,6 +386,92 @@ final class ReaderViewModel: ObservableObject {
     /// Window title shown in the toolbar / titlebar.
     var displayTitle: String {
         book?.displayTitle ?? epubURL.deletingPathExtension().lastPathComponent
+    }
+
+    // MARK: - Annotations
+
+    /// Add a bookmark at the given paragraph anchor.
+    /// `paragraphAnchorId` carries the `hu-p-N-M` id from the
+    /// reader pane's JS capture; nil → bookmark the chapter
+    /// itself (third-party EPUBs without anchors). Persists
+    /// immediately + updates the in-memory list.
+    func addBookmark(
+        chapterIdx: Int, paragraphAnchorId: String?
+    ) {
+        guard let hash = contentHash else { return }
+        let bookmark = Annotation(
+            chapterIdx: chapterIdx,
+            paragraphAnchorId: paragraphAnchorId,
+            kind: .bookmark
+        )
+        annotations.append(bookmark)
+        AnnotationStore.add(bookmark, forContentHash: hash)
+    }
+
+    /// Add a highlight at the given selection. Used by Phase D
+    /// (highlight gesture). `selectedText` is the verbatim
+    /// selection; `selectionRange` is the character-offset
+    /// fallback for restore when the text gets edited away.
+    func addHighlight(
+        chapterIdx: Int,
+        paragraphAnchorId: String?,
+        selectedText: String,
+        selectionRange: Annotation.TextRange?
+    ) -> Annotation {
+        let highlight = Annotation(
+            chapterIdx: chapterIdx,
+            paragraphAnchorId: paragraphAnchorId,
+            selectedText: selectedText,
+            selectionRange: selectionRange,
+            kind: .highlight
+        )
+        annotations.append(highlight)
+        if let hash = contentHash {
+            AnnotationStore.add(highlight, forContentHash: hash)
+        }
+        return highlight
+    }
+
+    /// Edit the note on an existing annotation. Setting a
+    /// non-empty note on a highlight promotes it to `.passage`;
+    /// clearing the note on a passage demotes back to
+    /// `.highlight`. Bookmarks can also carry notes but stay
+    /// `.bookmark` kind (their distinction is the anchor-only
+    /// shape, not the note presence).
+    func updateAnnotationNote(id: UUID, note: String?) {
+        guard let idx = annotations.firstIndex(
+            where: { $0.id == id }
+        ) else { return }
+        let trimmed = note?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        annotations[idx].note = (trimmed?.isEmpty == false)
+            ? trimmed
+            : nil
+        annotations[idx].updatedAt = Date()
+        // Promote highlight ↔ passage based on note presence.
+        // Bookmarks keep their kind (anchor-only marker).
+        switch annotations[idx].kind {
+        case .highlight, .passage:
+            annotations[idx].kind = annotations[idx].note != nil
+                ? .passage
+                : .highlight
+        case .bookmark:
+            break
+        }
+        if let hash = contentHash {
+            AnnotationStore.update(annotations[idx], forContentHash: hash)
+        }
+    }
+
+    /// Drop an annotation. The reader-side renderer (Phase D)
+    /// observes `annotations` and removes any visual highlight
+    /// for the dropped id on next chapter re-render.
+    func removeAnnotation(id: UUID) {
+        annotations.removeAll { $0.id == id }
+        if let hash = contentHash {
+            AnnotationStore.remove(id: id, forContentHash: hash)
+        }
     }
 
     // MARK: - Chat
