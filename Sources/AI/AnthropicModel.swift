@@ -67,6 +67,15 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// `outputTokens = 1` per page → multiplied by the per-image rate.
     public static let googleDocumentOCR = AnthropicModel(rawValue: "google-document-ocr")
 
+    /// LandingAI Agentic Document Extraction (`/v1/ade/parse`) — cloud
+    /// document-OCR alternative to Cloud Vision. Same encoding trick
+    /// as `googleDocumentOCR`: per-request flat rate carried as one
+    /// synthetic output token. Verify the per-page rate against the
+    /// current LandingAI pricing page before relying on the cost
+    /// estimator for billing reconciliation — pricing has moved
+    /// since the SDK's first release.
+    public static let landingAIDocumentExtraction = AnthropicModel(rawValue: "landingai-ade-parse")
+
     /// Per-million-token pricing in USD. Used by `ConversionStats` to
     /// produce ≈-cost estimates for the post-conversion summary.
     /// Treat as estimates, not invoices — Anthropic's billing is the
@@ -99,6 +108,14 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
             // existing pricing/cost helpers working without
             // adding a per-request rate carrier.
             return Pricing(inputPerMTok: 0.00, outputPerMTok: 1500.00)
+        case "landingai-ade-parse":
+            // LandingAI ADE published rate: $0.03/page on the
+            // pay-as-you-go tier. Encoded as $30000/M output tokens
+            // with one synthetic token per call → (in=0, out=1)
+            // bills at $0.03. VERIFY against current LandingAI
+            // pricing before using these numbers for billing
+            // reconciliation — the rate has moved in past releases.
+            return Pricing(inputPerMTok: 0.00, outputPerMTok: 30000.00)
         default:
             // Unknown / future model — assume Sonnet rates as a
             // safe upper-middle estimate. Surface in the UI as
