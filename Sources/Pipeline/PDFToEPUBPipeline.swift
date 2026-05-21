@@ -1340,6 +1340,7 @@ public actor PDFToEPUBPipeline {
         let landingAITableExtractor = claudeEngines.landingAITableExtractor
         let activePageEngine = claudeEngines.pageEngine
         let claudeBatchPageEngine = claudeEngines.claudeBatchPageEngine
+        let geminiBatchPageEngine = claudeEngines.geminiBatchPageEngine
 
         // Dictionary-match cleanup. Built unconditionally so we
         // can hand it to `assembleBook`, but the assembly step
@@ -1786,16 +1787,16 @@ public actor PDFToEPUBPipeline {
             let freshIndices = pageOCRPageIndices.filter {
                 pageOCRPendingByIndex[$0] == nil
             }
-            // Tier 9 / E-Batches step 2: when the toggle is on AND
-            // Claude is the active page-OCR provider, dispatch all
-            // fresh Sonnet calls as a single Anthropic Messages
-            // Batches API request — 50% input/output token discount
-            // in exchange for async wall time. Gemini has no equivalent
-            // batch path, so a Gemini-selected run silently falls back
-            // to the synchronous TaskGroup dispatch even when
-            // useBatchAPI is on. Trust-routed pages still skip the
-            // network entirely; figure extraction runs per page in
-            // parallel.
+            // Tier 9 / E-Batches step 2 + P-Gemini-Batch: when the
+            // toggle is on, dispatch all fresh page-OCR calls as a
+            // single batch — 50% input/output token discount in
+            // exchange for async wall time. Provider-specific
+            // dispatcher picked from `claudeBatchPageEngine` /
+            // `geminiBatchPageEngine` (only one is non-nil per
+            // run). When neither has a usable key, falls through
+            // to the synchronous TaskGroup. Trust-routed pages
+            // still skip the network entirely; figure extraction
+            // runs per page in parallel within Phase A.
             if options.cloudFeatures.useBatchAPI && !freshIndices.isEmpty,
                let claudeBatchEngine = claudeBatchPageEngine,
                let key = options.anthropicAPIKeyProvider(),
@@ -1808,6 +1809,23 @@ public actor PDFToEPUBPipeline {
                     pageEngine: claudeBatchEngine,
                     figureExtractor: figureExtractor,
                     apiKey: key,
+                    progress: progress,
+                    totalPages: totalPages,
+                    pendingByIndex: &pageOCRPendingByIndex
+                )
+            } else if options.cloudFeatures.useBatchAPI && !freshIndices.isEmpty,
+                      let geminiBatchEngine = geminiBatchPageEngine,
+                      let key = options.geminiAPIKeyProvider(),
+                      !key.isEmpty {
+                try await dispatchGeminiPageOCRViaBatch(
+                    freshIndices: freshIndices,
+                    pdf: pdf,
+                    options: options,
+                    stagingDir: stagingDir,
+                    pageEngine: geminiBatchEngine,
+                    figureExtractor: figureExtractor,
+                    apiKey: key,
+                    modelId: geminiBatchEngine.model,
                     progress: progress,
                     totalPages: totalPages,
                     pendingByIndex: &pageOCRPendingByIndex

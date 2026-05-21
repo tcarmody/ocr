@@ -771,6 +771,391 @@ extension PDFToEPUBPipeline {
         return Int(customId.dropFirst("page-".count))
     }
 
+    // MARK: - Gemini batch dispatch (P-Gemini-Batch)
+
+    /// Internal per-page Gemini Phase A result. Parallel to
+    /// `BatchPrepared` but carries a JSONL-line `Data` instead of
+    /// an `AnthropicMessageRequest`. `entryLine == nil` means the
+    /// page was trust-routed and `partial` is fully populated.
+    struct GeminiBatchPrepared: Sendable {
+        let pageIndex: Int
+        let partial: PendingPageOCR
+        let entryLine: Data?
+    }
+
+    /// Phase A for one page in the Gemini batch path. Same trust-
+    /// routing + render + Surya + figure extraction as
+    /// `preparePageForBatch`; the only divergence is the request
+    /// build at the end (Gemini batch entry JSON instead of
+    /// `AnthropicMessageRequest`).
+    nonisolated func prepareGeminiPageForBatch(
+        pageIndex i: Int,
+        pdf: LoadedPDF,
+        options: Options,
+        stagingDir: URL,
+        pageEngine: GeminiPageOCREngine,
+        figureExtractor: FigureExtractor
+    ) async throws -> GeminiBatchPrepared {
+        try Task.checkCancellation()
+        let anchorId = RegionAwareReflow.anchorId(forPageIndex: i)
+
+        var routingScore: EmbeddedTextQualityScorer.Score?
+        var routingDiagnostics: EmbeddedTextExtractor.Diagnostics?
+        if options.cloudFeatures.adaptivePageRouting
+           && !options.shouldForceOCR(forPageIndex: i) {
+            let extracted = autoreleasepool {
+                embeddedExtractor.extract(from: pdf, pageIndex: i)
+            }
+            let combined = extracted.lines
+                .map(\.text).joined(separator: " ")
+            let score = qualityScorer.score(
+                text: combined,
+                expectedLanguages: options.languages.map(\.rawValue)
+            )
+            routingScore = score
+            routingDiagnostics = extracted.diagnostics
+            if score.verdict == .trust {
+                let observations = extracted.lines.map { line in
+                    TextObservation(
+                        text: line.text, confidence: 0.95,
+                        box: line.box, source: .embedded
+                    )
+                }
+                let trustBlocks = ParagraphReflow().reflow(observations)
+                let bounds: CGSize = autoreleasepool {
+                    if let pdfPage = pdf.document.page(at: i) {
+                        let r = pdfPage.bounds(for: .mediaBox)
+                        return CGSize(width: r.width, height: r.height)
+                    }
+                    return .zero
+                }
+                let pending = PendingPageOCR(
+                    pageIndex: i,
+                    anchorId: anchorId,
+                    pageBoundsCG: bounds,
+                    blocks: trustBlocks,
+                    footnotes: [],
+                    figures: [],
+                    verdict: .trust,
+                    qualityScore: score,
+                    extractorDiagnostics: extracted.diagnostics,
+                    pageOCRStatus: .skippedTrustRouted,
+                    providerId: pageEngine.providerId,
+                    usedLocalFallback: false
+                )
+                return GeminiBatchPrepared(
+                    pageIndex: i, partial: pending, entryLine: nil
+                )
+            }
+        }
+
+        // Gemini path: render, save PNG, kick Surya layout, extract
+        // figures, build one batch-entry JSON line.
+        let renderer = PDFRenderer(dpi: options.dpi)
+        let image = try renderer.renderPage(at: i, of: pdf)
+        let pageBoundsCG = CGSize(
+            width: image.width, height: image.height
+        )
+        let pngURL = stagingDir.appendingPathComponent(
+            String(format: "page-%05d.png", i)
+        )
+        Self.savePNG(image, to: pngURL)
+
+        let layoutOutcome = await analyzeLayoutWithRetry(
+            pdf: pdf, pageIndex: i,
+            initialDPI: options.dpi,
+            initialPNGURL: pngURL,
+            initialPageBounds: pageBoundsCG,
+            stagingDir: stagingDir
+        )
+        var figures: [FigureExtractor.ExtractedFigure] = []
+        if let regions = layoutOutcome.layout, !regions.isEmpty {
+            figures = figureExtractor.extract(
+                pageIndex: i, regions: regions, pageImage: image
+            )
+        }
+        let fallbackFigures = await extractFallbackFigures(
+            pdf: pdf, pageIndex: i,
+            pageImage: image,
+            textObservations: [],
+            layoutAvailable: layoutOutcome.layout != nil
+        )
+        figures.append(contentsOf: fallbackFigures)
+
+        let entryLine = pageEngine.buildBatchEntryData(
+            pageImage: image,
+            languages: options.languages,
+            pageIndex: i
+        )
+
+        let partial = PendingPageOCR(
+            pageIndex: i,
+            anchorId: anchorId,
+            pageBoundsCG: pageBoundsCG,
+            blocks: [],
+            footnotes: [],
+            figures: figures,
+            verdict: .reocr,
+            qualityScore: routingScore,
+            extractorDiagnostics: routingDiagnostics,
+            pageOCRStatus: .empty,
+            providerId: pageEngine.providerId,
+            usedLocalFallback: false
+        )
+        return GeminiBatchPrepared(
+            pageIndex: i, partial: partial, entryLine: entryLine
+        )
+    }
+
+    /// Dispatch the Gemini page-OCR calls as a single Google
+    /// Batches API request. Same Phase A/B/C shape as the
+    /// Anthropic equivalent; differences live in the middle:
+    ///
+    ///   * Phase B uploads a JSONL of per-page entries via the
+    ///     Files API, submits the batch referencing that file
+    ///     (file-based path — image-heavy batches exceed the
+    ///     20 MB inline cap), polls until terminal.
+    ///   * `JOB_STATE_EXPIRED` / `_FAILED` / `_CANCELLED` are
+    ///     handled like an Anthropic batch failure: settle every
+    ///     non-trust page's partial as final, surface empty
+    ///     pages, let the user re-run.
+    ///   * Phase C looks up results by `metadata.key` (same
+    ///     `"page-NNNNN"` format as Claude's `custom_id`) and
+    ///     parses each response into blocks + footnotes.
+    ///
+    /// Best-effort cleanup of the uploaded input + downloaded
+    /// result files at the end so Google's per-account storage
+    /// doesn't accumulate cruft across many conversions.
+    func dispatchGeminiPageOCRViaBatch(
+        freshIndices: [Int],
+        pdf: LoadedPDF,
+        options: Options,
+        stagingDir: URL,
+        pageEngine: GeminiPageOCREngine,
+        figureExtractor: FigureExtractor,
+        apiKey: String,
+        modelId: String,
+        progress: ProgressHandler?,
+        totalPages: Int,
+        pendingByIndex: inout [Int: PendingPageOCR]
+    ) async throws {
+        // Phase A — same shape as Anthropic dispatch.
+        let concurrency = max(
+            1, options.cloudFeatures.parallelPageOCRConcurrency
+        )
+        let baselineCount = pendingByIndex.count
+        var prepared: [Int: GeminiBatchPrepared] = [:]
+        var preppedCount = 0
+        try await withThrowingTaskGroup(of: GeminiBatchPrepared.self) { group in
+            var nextSubmit = 0
+            var inflight = 0
+            while nextSubmit < freshIndices.count || inflight > 0 {
+                while inflight < concurrency
+                    && nextSubmit < freshIndices.count {
+                    let i = freshIndices[nextSubmit]
+                    nextSubmit += 1
+                    let perform = self.prepareGeminiPageForBatch
+                    let pdfRef = pdf
+                    group.addTask { @Sendable in
+                        try await perform(
+                            i, pdfRef, options,
+                            stagingDir, pageEngine, figureExtractor
+                        )
+                    }
+                    inflight += 1
+                }
+                if let p = try await group.next() {
+                    inflight -= 1
+                    prepared[p.pageIndex] = p
+                    preppedCount += 1
+                    progress?(Progress(
+                        totalPages: totalPages,
+                        completedPages: baselineCount + preppedCount,
+                        currentPageMeanConfidence: 1.0
+                    ))
+                }
+            }
+        }
+
+        // Trust-routed pages settle immediately.
+        for (i, p) in prepared where p.entryLine == nil {
+            pendingByIndex[i] = p.partial
+        }
+
+        // Gather Gemini-bound entries.
+        let geminiEntries = freshIndices.compactMap { i -> (Int, Data)? in
+            guard let p = prepared[i], let line = p.entryLine else { return nil }
+            return (i, line)
+        }
+        guard !geminiEntries.isEmpty else { return }
+
+        // Reserve budget upfront — one call per page.
+        let budget = pageEngine.budget
+        for _ in geminiEntries {
+            guard await budget.tryConsume() else {
+                for (i, _) in geminiEntries {
+                    if pendingByIndex[i] == nil,
+                       let p = prepared[i] {
+                        pendingByIndex[i] = p.partial
+                    }
+                }
+                return
+            }
+        }
+
+        // Build JSONL bytes.
+        var jsonl = Data()
+        for (_, line) in geminiEntries {
+            jsonl.append(line)
+            jsonl.append(0x0A)  // newline
+        }
+
+        let batchClient = GeminiBatchAPIClient(
+            apiKeyProvider: { apiKey }
+        )
+
+        // Phase B — upload, submit, poll. On any failure, settle
+        // every Gemini-bound page's partial as final and return.
+        let inputFileName: String
+        do {
+            inputFileName = try await batchClient.uploadJSONL(
+                jsonl, displayName: "humanist-batch-input.jsonl"
+            )
+        } catch {
+            for (i, _) in geminiEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            return
+        }
+
+        let submitted: GeminiBatchSubmitResponse
+        do {
+            let req = GeminiBatchSubmitRequest(
+                displayName: "humanist-page-batch",
+                inputFileName: inputFileName
+            )
+            submitted = try await batchClient.submit(
+                model: modelId, request: req
+            )
+        } catch {
+            for (i, _) in geminiEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            // Best-effort cleanup of the uploaded input file.
+            try? await batchClient.deleteFile(name: inputFileName)
+            return
+        }
+
+        // Signal "batch waiting" to the queue UI — same shape as
+        // the Anthropic path so the row gets the spinner + label.
+        progress?(Progress(
+            totalPages: totalPages,
+            completedPages: baselineCount + preppedCount,
+            currentPageMeanConfidence: 1.0,
+            phase: .batchWaiting
+        ))
+
+        let final: GeminiBatchStatusResponse
+        do {
+            final = try await batchClient.awaitCompletion(
+                name: submitted.name
+            )
+        } catch {
+            for (i, _) in geminiEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            try? await batchClient.deleteFile(name: inputFileName)
+            return
+        }
+
+        guard final.state == .succeeded,
+              let resultsFile = final.resultsFileName else {
+            // FAILED / CANCELLED / EXPIRED — same posture as
+            // Anthropic batch failure. Surface empty pages.
+            for (i, _) in geminiEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            try? await batchClient.deleteFile(name: inputFileName)
+            return
+        }
+
+        let results: [GeminiBatchResultLine]
+        do {
+            results = try await batchClient.fetchResults(
+                fileName: resultsFile
+            )
+        } catch {
+            for (i, _) in geminiEntries where pendingByIndex[i] == nil {
+                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            }
+            try? await batchClient.deleteFile(name: inputFileName)
+            try? await batchClient.deleteFile(name: resultsFile)
+            return
+        }
+
+        // Phase C — walk results, parse each, fill in pending slots.
+        for line in results {
+            guard let pageIndex = Self.pageIndexFromCustomId(line.key)
+            else { continue }
+            guard let prep = prepared[pageIndex] else { continue }
+            let parsedBlocks: [Block]
+            let parsedFootnotes: [Footnote]
+            let status: ProviderStatus
+            switch line.result {
+            case .succeeded(let raw):
+                let outcome = await pageEngine.parseBatchResponseOutcome(
+                    rawJSON: raw, pageIndex: pageIndex
+                )
+                if let parsed = outcome.result {
+                    parsedBlocks = parsed.blocks
+                    parsedFootnotes = parsed.footnotes
+                    status = .succeeded
+                } else {
+                    parsedBlocks = []
+                    parsedFootnotes = []
+                    status = outcome.status
+                }
+            case .errored:
+                parsedBlocks = []
+                parsedFootnotes = []
+                status = .apiError
+            }
+            let finalPending = PendingPageOCR(
+                pageIndex: prep.partial.pageIndex,
+                anchorId: prep.partial.anchorId,
+                pageBoundsCG: prep.partial.pageBoundsCG,
+                blocks: parsedBlocks,
+                footnotes: parsedFootnotes,
+                figures: prep.partial.figures,
+                verdict: prep.partial.verdict,
+                qualityScore: prep.partial.qualityScore,
+                extractorDiagnostics: prep.partial.extractorDiagnostics,
+                pageOCRStatus: status,
+                providerId: pageEngine.providerId,
+                usedLocalFallback: false
+            )
+            pendingByIndex[pageIndex] = finalPending
+            let prepHighWater = baselineCount + preppedCount
+            progress?(Progress(
+                totalPages: totalPages,
+                completedPages: max(prepHighWater, pendingByIndex.count),
+                currentPageMeanConfidence: 1.0
+            ))
+        }
+
+        // Any Gemini-bound pages whose result didn't appear in
+        // the JSONL get their partial as final.
+        for (i, _) in geminiEntries where pendingByIndex[i] == nil {
+            if let p = prepared[i] { pendingByIndex[i] = p.partial }
+        }
+
+        // Best-effort cleanup. Failures here are logged via the
+        // try? but don't affect the conversion outcome — Google
+        // expires files automatically.
+        try? await batchClient.deleteFile(name: inputFileName)
+        try? await batchClient.deleteFile(name: resultsFile)
+    }
+
     /// page-OCR path (after Surya extraction) and the resume
     /// fast-path (re-walking checkpointed `figures`).
     ///

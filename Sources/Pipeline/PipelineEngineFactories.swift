@@ -423,9 +423,15 @@ extension PDFToEPUBPipeline {
         let pageEngine: (any PageOCREngine)?
         /// Concrete Claude page engine for the batch dispatch path.
         /// Non-nil only when `pageEngine` is the Claude variant —
-        /// batch / prompt-cache features are Anthropic-only, so
-        /// Gemini-selected runs silently fall back to serial.
+        /// prompt caching is Anthropic-only, so Gemini-selected
+        /// runs use `geminiBatchPageEngine` below instead.
         let claudeBatchPageEngine: ClaudePageOCREngine?
+        /// Concrete Gemini page engine for the batch dispatch path
+        /// (P-Gemini-Batch). Non-nil only when `pageEngine` is the
+        /// Gemini variant. Manuscript mode hard-pins Claude, so
+        /// this is nil there even when the user has Gemini
+        /// selected globally.
+        let geminiBatchPageEngine: GeminiPageOCREngine?
 
         static func make(
             options: Options,
@@ -439,6 +445,7 @@ extension PDFToEPUBPipeline {
                 options: options, budget: budget, captureSink: captureSink
             )
             let claudeBatch = pageEngine as? ClaudePageOCREngine
+            let geminiBatch = pageEngine as? GeminiPageOCREngine
             return ClaudeEngines(
                 budget: budget,
                 ocr: makeClaudeOCREngine(options: options, budget: budget),
@@ -455,7 +462,8 @@ extension PDFToEPUBPipeline {
                     options: options, budget: budget
                 ),
                 pageEngine: pageEngine,
-                claudeBatchPageEngine: claudeBatch
+                claudeBatchPageEngine: claudeBatch,
+                geminiBatchPageEngine: geminiBatch
             )
         }
     }

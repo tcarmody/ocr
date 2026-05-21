@@ -560,15 +560,16 @@ struct ContentView: View {
                         .toggleStyle(.checkbox)
                         .help("""
                             Applies only to full-page OCR modes (Page OCR / \
-                            Manuscript / Early Print). Cascade-mode Claude \
-                            calls stay synchronous regardless. When active: \
-                            submit all pages as one Anthropic batch — half \
-                            the per-token cost in exchange for asynchronous \
-                            processing. Anthropic documents most batches \
-                            completing within an hour, with a 24 h cap. \
-                            Seeded from Settings → AI → Throughput; per- \
-                            session flip doesn't write back. Good for \
-                            overnight or background runs.
+                            Manuscript / Early Print). Cascade-mode calls \
+                            stay synchronous regardless. When active: \
+                            submit all pages as one batch via the provider \
+                            you've picked — half the per-token cost in \
+                            exchange for asynchronous processing. Claude \
+                            documents most batches under an hour (24 h \
+                            cap); Gemini's target is 24 h with a 48 h \
+                            hard cap. Seeded from Settings → AI → \
+                            Throughput; per-session flip doesn't write \
+                            back. Good for overnight or background runs.
                             """)
                     Spacer()
                 }

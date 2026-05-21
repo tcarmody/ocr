@@ -265,6 +265,128 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
         return result
     }
 
+    // MARK: - Batch helpers (P-Gemini-Batch)
+
+    /// Build one batch-API entry for the given page image. Returns
+    /// nil on PNG encode failure. The caller serializes a sequence
+    /// of these to JSONL bytes and uploads via
+    /// `GeminiBatchAPIClient.uploadJSONL`. Each entry carries a
+    /// `metadata.key` of the form `"page-NNNNN"` matching the
+    /// Anthropic `custom_id` convention so the result-walk loop
+    /// can share the page-index extractor.
+    public func buildBatchEntryData(
+        pageImage: CGImage, languages: [BCP47], pageIndex: Int
+    ) -> Data? {
+        guard let (png, _) = Self.encodeForGemini(pageImage) else { return nil }
+        let base64 = png.base64EncodedString()
+        let body = RequestBody(
+            systemInstruction: SystemInstruction(parts: [
+                TextPart(text: Self.systemPrompt)
+            ]),
+            contents: [
+                Content(parts: [
+                    Part(
+                        inlineData: InlineData(
+                            mimeType: "image/png", data: base64
+                        ),
+                        text: nil
+                    ),
+                    Part(
+                        inlineData: nil,
+                        text: Self.userPromptForLanguages(languages)
+                    ),
+                ])
+            ],
+            generationConfig: GenerationConfig(
+                maxOutputTokens: maxOutputTokens,
+                temperature: 0.1,
+                thinkingConfig: thinkingLevel.map {
+                    ThinkingConfig(thinkingLevel: $0)
+                }
+            )
+        )
+        let key = String(format: "page-%05d", pageIndex)
+        let entry = BatchEntry(request: body, metadata: .init(key: key))
+        return try? Self.encoder.encode(entry)
+    }
+
+    /// JSONL envelope for one batch entry. Wraps the same
+    /// `RequestBody` the sync path sends, plus the per-entry
+    /// `metadata.key` Google uses to correlate results.
+    private struct BatchEntry: Encodable {
+        let request: RequestBody
+        let metadata: Metadata
+
+        struct Metadata: Encodable {
+            let key: String
+        }
+    }
+
+    /// Parse the raw `response` sub-object JSON from a Gemini
+    /// batch result line. Returns the parsed `ClaudePageResult`
+    /// on success, plus a `ProviderStatus` describing what
+    /// happened — `succeeded` / `refused` / `empty` / `apiError`
+    /// so the dispatch loop can roll up refusal-rate stats the
+    /// same way the sync path does. Records token usage against
+    /// the per-book budget along the way.
+    public func parseBatchResponseOutcome(
+        rawJSON: Data, pageIndex: Int
+    ) async -> (result: ClaudePageResult?, status: ProviderStatus) {
+        let envelope: ResponseBody
+        do {
+            envelope = try Self.decoder.decode(
+                ResponseBody.self, from: rawJSON
+            )
+        } catch {
+            capture(
+                pageIndex: pageIndex,
+                raw: "[BATCH DECODE FAILED: \(error)]",
+                parseEmpty: true
+            )
+            return (nil, .apiError)
+        }
+        if let usage = envelope.usageMetadata {
+            await budget.recordUsage(
+                Usage(
+                    inputTokens: usage.promptTokenCount ?? 0,
+                    outputTokens: usage.candidatesTokenCount ?? 0
+                ),
+                for: AnthropicModel(rawValue: model)
+            )
+        }
+        let candidate = envelope.candidates?.first
+        let finishReason = candidate?.finishReason ?? ""
+        let parts = candidate?.content?.parts ?? []
+        let text = parts.compactMap { $0.text }.joined()
+        if text.isEmpty {
+            let refusalReasons: Set<String> = [
+                "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"
+            ]
+            let upper = finishReason.uppercased()
+            if refusalReasons.contains(upper) {
+                capture(
+                    pageIndex: pageIndex,
+                    raw: "[REFUSED: \(finishReason)]",
+                    parseEmpty: true
+                )
+                return (nil, .refused)
+            }
+            let marker = finishReason.isEmpty
+                ? "[EMPTY]" : "[FINISH: \(finishReason)]"
+            capture(pageIndex: pageIndex, raw: marker, parseEmpty: true)
+            return (nil, .empty)
+        }
+        let xhtml = Self.stripCodeFence(text)
+        let parser = ClaudePageXHTMLParser()
+        let result = parser.parse(xhtml, pageIndex: pageIndex)
+        capture(
+            pageIndex: pageIndex,
+            raw: xhtml,
+            parseEmpty: result.blocks.isEmpty
+        )
+        return (result, .succeeded)
+    }
+
     // MARK: - Prompts (mirror ClaudePageOCREngine.baseSystemPrompt)
 
     static let systemPrompt = ClaudePageOCREngine.baseSystemPrompt

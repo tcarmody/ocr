@@ -142,8 +142,7 @@ struct AISettingsView: View {
 
             Toggle("Use Batch API (50% cheaper, async)",
                    isOn: $vm.settings.cloudFeatures.useBatchAPI)
-                .disabled(vm.settings.pageOCRProvider != .claude)
-            caption("Applies only to full-page OCR (Page OCR / Manuscript / Early Print modes). The per-region cascade — residual region OCR, table extraction, post-OCR cleanup, TOC parsing, coherence, metadata — keeps making synchronous calls regardless of this toggle; flipping it on without a full-page mode active is a no-op. When active: submits all pages for one book as a single batch — half the per-token cost in exchange for asynchronous processing. Anthropic documents most batches completing within an hour, with a 24-hour cap; the queue row replaces the per-page bar with a “Waiting for batch” indicator while the poll loop runs. Best for overnight or background runs. Implemented for Claude only right now; Gemini supports batching (24 h target, 48 h hard cap) but isn't wired here yet.")
+            caption("Applies only to full-page OCR (Page OCR / Manuscript / Early Print modes). The per-region cascade — residual region OCR, table extraction, post-OCR cleanup, TOC parsing, coherence, metadata — keeps making synchronous calls regardless of this toggle; flipping it on without a full-page mode active is a no-op. When active: submits all pages for one book as a single batch — half the per-token cost in exchange for asynchronous processing. The queue row replaces the per-page bar with a “Waiting for batch” indicator while the poll loop runs. Best for overnight or background runs. Wired for Claude (most batches under an hour, 24 h hard cap) and Gemini Flash (24 h target, 48 h hard cap); Manuscript mode hard-pins Claude regardless of provider pick.")
         }
     }
 
