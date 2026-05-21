@@ -322,6 +322,25 @@ public actor PDFToEPUBPipeline {
         public var totalPages: Int
         public var completedPages: Int
         public var currentPageMeanConfidence: Double  // NaN if no observations
+        /// What the pipeline is doing while this progress was
+        /// emitted. Defaults to `.processing` so every existing
+        /// call site continues to work. The Batch API dispatch
+        /// flips this to `.batchWaiting` after submitting so the
+        /// queue UI can swap its bar for an indeterminate
+        /// spinner during the 1–5 min poll wait.
+        public var phase: Phase = .processing
+
+        public enum Phase: Sendable, Equatable {
+            /// Normal forward motion — bar fills with completed
+            /// / total pages.
+            case processing
+            /// Anthropic Batch API submitted and we're polling
+            /// for completion. `completedPages` is the Phase A
+            /// high-water mark; the UI should treat that as
+            /// "everything queued, waiting" rather than a
+            /// partial percentage.
+            case batchWaiting
+        }
     }
 
     public typealias ProgressHandler = @Sendable (Progress) -> Void

@@ -115,13 +115,26 @@ struct QueueWindowView: View {
             Text("Queued").foregroundStyle(.secondary)
         case .running:
             if let p = job.progress, p.totalPages > 0 {
-                HStack(spacing: 6) {
-                    Text("Page \(p.completedPages) / \(p.totalPages)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ProgressView(value: p.fraction)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: 100)
+                switch p.phase {
+                case .batchWaiting:
+                    // Batch API submitted; show an inline spinner +
+                    // label instead of the linear bar so users
+                    // recognise this isn't a stuck job.
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Waiting for batch (~1–5 min)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                case .processing:
+                    HStack(spacing: 6) {
+                        Text("Page \(p.completedPages) / \(p.totalPages)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: p.fraction)
+                            .progressViewStyle(.linear)
+                            .frame(maxWidth: 100)
+                    }
                 }
             } else {
                 Text("Starting…").foregroundStyle(.secondary)

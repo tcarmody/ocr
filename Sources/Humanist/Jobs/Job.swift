@@ -452,9 +452,47 @@ struct ConversionOptions: Codable, Equatable {
 struct JobProgress: Codable, Equatable {
     var completedPages: Int
     var totalPages: Int
+    /// What the pipeline is doing while this progress was
+    /// emitted. Mirrors `PDFToEPUBPipeline.Progress.Phase`.
+    /// Defaults to `.processing` so older `queue.json` blobs
+    /// (no phase field) decode cleanly.
+    var phase: Phase = .processing
+
+    enum Phase: String, Codable, Equatable {
+        case processing
+        case batchWaiting
+    }
 
     var fraction: Double {
         guard totalPages > 0 else { return 0 }
         return Double(completedPages) / Double(totalPages)
+    }
+
+    init(
+        completedPages: Int,
+        totalPages: Int,
+        phase: Phase = .processing
+    ) {
+        self.completedPages = completedPages
+        self.totalPages = totalPages
+        self.phase = phase
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case completedPages, totalPages, phase
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.completedPages = try c.decode(Int.self, forKey: .completedPages)
+        self.totalPages = try c.decode(Int.self, forKey: .totalPages)
+        self.phase = try c.decodeIfPresent(Phase.self, forKey: .phase) ?? .processing
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(completedPages, forKey: .completedPages)
+        try c.encode(totalPages, forKey: .totalPages)
+        try c.encode(phase, forKey: .phase)
     }
 }

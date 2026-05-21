@@ -453,6 +453,18 @@ extension PDFToEPUBPipeline {
             return
         }
 
+        // Tell the queue UI we've entered the poll-wait window so
+        // it can swap the linear bar for an indeterminate spinner
+        // + a "Waiting for batch (~1–5 min)" label. We re-emit
+        // the same page counts so the visible position doesn't
+        // jump; only `phase` changes.
+        progress?(Progress(
+            totalPages: totalPages,
+            completedPages: baselineCount + preppedCount,
+            currentPageMeanConfidence: 1.0,
+            phase: .batchWaiting
+        ))
+
         // Phase B continued: poll until done.
         let final: AnthropicBatchStatusResponse
         do {

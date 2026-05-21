@@ -984,10 +984,24 @@ private struct JobRow: View {
         case .running:
             if let p = job.progress, p.totalPages > 0 {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Page \(p.completedPages) of \(p.totalPages)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ProgressView(value: p.fraction)
+                    switch p.phase {
+                    case .batchWaiting:
+                        // Anthropic Batch API submitted; we're
+                        // polling for completion. Swap the linear
+                        // bar for a small inline spinner so the
+                        // user doesn't think the job is stuck.
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Waiting for batch (~1–5 min)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    case .processing:
+                        Text("Page \(p.completedPages) of \(p.totalPages)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: p.fraction)
+                    }
                 }
             } else {
                 Text("Starting…").font(.caption).foregroundStyle(.secondary)

@@ -396,11 +396,16 @@ final class JobRunner: ObservableObject {
                 outputURL: job.outputURL,
                 options: options,
                 progress: { p in
+                    let mapped: JobProgress.Phase = switch p.phase {
+                    case .processing:   .processing
+                    case .batchWaiting: .batchWaiting
+                    }
                     Task { @MainActor in
                         storeRef.update(jobID) { mutable in
                             mutable.progress = JobProgress(
                                 completedPages: p.completedPages,
-                                totalPages: p.totalPages
+                                totalPages: p.totalPages,
+                                phase: mapped
                             )
                         }
                     }
