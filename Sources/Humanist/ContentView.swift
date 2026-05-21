@@ -559,8 +559,11 @@ struct ContentView: View {
                            isOn: $queue.useBatchAPI)
                         .toggleStyle(.checkbox)
                         .help("""
-                            Submit all pages as one Anthropic batch — half the \
-                            per-token cost in exchange for asynchronous \
+                            Applies only to full-page OCR modes (Page OCR / \
+                            Manuscript / Early Print). Cascade-mode Claude \
+                            calls stay synchronous regardless. When active: \
+                            submit all pages as one Anthropic batch — half \
+                            the per-token cost in exchange for asynchronous \
                             processing. Anthropic documents most batches \
                             completing within an hour, with a 24 h cap. \
                             Seeded from Settings → AI → Throughput; per- \
