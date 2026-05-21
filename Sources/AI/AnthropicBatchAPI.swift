@@ -199,10 +199,11 @@ public actor AnthropicBatchAPIClient {
     public struct Config: Sendable, Equatable {
         public var baseURL: URL
         public var apiVersion: String
-        /// Polling cadence for `awaitCompletion`. Default 10s —
-        /// batches typically take 1-5 minutes for the kinds of
-        /// workloads we submit, so a 10s tick gives reasonable
-        /// status updates without hammering the API.
+        /// Polling cadence for `awaitCompletion`. Default 10s.
+        /// Anthropic documents most batches completing within an
+        /// hour, with a 24 h cap — a 10s tick gives reasonable
+        /// status updates without hammering the API even for
+        /// the faster end of that range.
         public var pollInterval: TimeInterval
         /// Hard timeout on `awaitCompletion`. 24h to match
         /// Anthropic's documented max processing window. Caller

@@ -253,8 +253,9 @@ struct ConversionOptions: Codable, Equatable {
     /// detection still fires when the source qualifies.
     var forceBilingualFacingPage: Bool
     /// Whether this conversion uses the Anthropic Batch API
-    /// (50% cheaper per-token, 1–5 minute async wait, no live
-    /// per-page progress). The launcher seeds this from the
+    /// (50% cheaper per-token; most batches complete within an
+    /// hour, capped at 24 h; no live per-page progress while the
+    /// poll loop runs). The launcher seeds this from the
     /// user's Settings → AI → Throughput default and the
     /// launcher toggle can flip it per-session. Coerced to
     /// `false` in private mode (no Cloud calls means nothing

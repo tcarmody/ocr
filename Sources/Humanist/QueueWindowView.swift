@@ -119,12 +119,15 @@ struct QueueWindowView: View {
                 case .batchWaiting:
                     // Batch API submitted; show an inline spinner +
                     // label instead of the linear bar so users
-                    // recognise this isn't a stuck job.
+                    // recognise this isn't a stuck job. Anthropic
+                    // documents "most batches" complete under an
+                    // hour with a 24 h cap.
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("Waiting for batch (~1–5 min)")
+                        Text("Waiting for batch · usually <1 h")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .help("Anthropic Batch API: most batches complete within an hour; the API allows up to 24 h before timing out.")
                     }
                 case .processing:
                     HStack(spacing: 6) {

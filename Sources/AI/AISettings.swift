@@ -278,8 +278,8 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// this flag is on, all the page-OCR Sonnet calls for one
         /// conversion submit as a single Anthropic Batches API
         /// request. 50% input + output token discount in exchange
-        /// for asynchronous processing (typically 1-5 minutes
-        /// total for a book of normal length, capped at 24h).
+        /// for asynchronous processing (Anthropic documents most
+        /// batches completing within an hour; hard cap 24 h).
         /// Off by default — opt-in because the wait time changes
         /// the conversion experience from per-page progress to
         /// "submitting batch / waiting / processing".

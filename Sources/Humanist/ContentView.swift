@@ -560,10 +560,12 @@ struct ContentView: View {
                         .toggleStyle(.checkbox)
                         .help("""
                             Submit all pages as one Anthropic batch — half the \
-                            per-token cost in exchange for a 1–5 minute async \
-                            wait with no live per-page progress. Seeded from \
-                            Settings → AI → Throughput; per-session flip \
-                            doesn't write back. Good for overnight bulk runs.
+                            per-token cost in exchange for asynchronous \
+                            processing. Anthropic documents most batches \
+                            completing within an hour, with a 24 h cap. \
+                            Seeded from Settings → AI → Throughput; per- \
+                            session flip doesn't write back. Good for \
+                            overnight or background runs.
                             """)
                     Spacer()
                 }
@@ -990,11 +992,15 @@ private struct JobRow: View {
                         // polling for completion. Swap the linear
                         // bar for a small inline spinner so the
                         // user doesn't think the job is stuck.
+                        // Wording matches Anthropic's docs: "most
+                        // batches finishing in less than 1 hour"
+                        // with a 24 h hard cap.
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Text("Waiting for batch (~1–5 min)")
+                            Text("Waiting for batch · usually <1 h")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .help("Anthropic Batch API: most batches complete within an hour; the API allows up to 24 h before timing out.")
                         }
                     case .processing:
                         Text("Page \(p.completedPages) of \(p.totalPages)")

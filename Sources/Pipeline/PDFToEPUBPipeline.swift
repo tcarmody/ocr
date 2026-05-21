@@ -327,7 +327,8 @@ public actor PDFToEPUBPipeline {
         /// call site continues to work. The Batch API dispatch
         /// flips this to `.batchWaiting` after submitting so the
         /// queue UI can swap its bar for an indeterminate
-        /// spinner during the 1–5 min poll wait.
+        /// spinner during the poll wait (Anthropic documents
+        /// most batches under an hour, hard cap 24 h).
         public var phase: Phase = .processing
 
         public enum Phase: Sendable, Equatable {

@@ -308,10 +308,11 @@ extension PDFToEPUBPipeline {
     ///     ("page-NNN"), parse each into blocks + footnotes,
     ///     fill in the corresponding `PendingPageOCR` slot.
     ///
-    /// Trades wall time (~1-5 minutes typical, capped at 24h)
-    /// for a 50% input + output token discount on the Sonnet
-    /// calls. Figure extraction happens in Phase A so the page
-    /// images don't need to stay alive across the batch wait.
+    /// Trades wall time (Anthropic documents most batches under
+    /// an hour, hard cap 24 h) for a 50% input + output token
+    /// discount on the Sonnet calls. Figure extraction happens
+    /// in Phase A so the page images don't need to stay alive
+    /// across the batch wait.
     ///
     /// Falls back silently to the synchronous TaskGroup path on
     /// batch submission / poll / fetch failure — the caller
@@ -455,7 +456,7 @@ extension PDFToEPUBPipeline {
 
         // Tell the queue UI we've entered the poll-wait window so
         // it can swap the linear bar for an indeterminate spinner
-        // + a "Waiting for batch (~1–5 min)" label. We re-emit
+        // + a "Waiting for batch · usually <1 h" label. We re-emit
         // the same page counts so the visible position doesn't
         // jump; only `phase` changes.
         progress?(Progress(
