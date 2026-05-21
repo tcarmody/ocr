@@ -322,7 +322,7 @@ struct ContentView: View {
                         .tag(LauncherOCREngine.geminiTypeset)
                 }
                 if queue.hasAnthropicKey {
-                    Text("Claude OCR — Typeset ($$$)")
+                    Text("Claude OCR — Typeset ($$)")
                         .tag(LauncherOCREngine.claudeTypeset)
                     Text("Claude OCR — Early Print ($$$)")
                         .tag(LauncherOCREngine.earlyPrint)

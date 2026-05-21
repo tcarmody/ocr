@@ -272,6 +272,7 @@ struct ConversionSettingsView: View {
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 folderLine("📥 \(ConversionOutputSubfolder.input)/", "Drop zone — auto-scanned when the toggle below is on")
+                folderLine("📕 \(ConversionOutputSubfolder.pdfs)/", "Source PDFs — moved here after conversion (or copied when imported from elsewhere)")
                 folderLine("📚 \(ConversionOutputSubfolder.books)/", "EPUBs — your reading library")
                 folderLine("🔎 \(ConversionOutputSubfolder.searchablePDFs)/", "Source PDFs with an invisible OCR text overlay")
                 folderLine("📝 \(ConversionOutputSubfolder.textFiles)/", "Plain-text sibling outputs")

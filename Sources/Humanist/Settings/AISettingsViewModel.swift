@@ -32,9 +32,16 @@ final class AISettingsViewModel: ObservableObject {
     @Published var pendingGoogleCloudVisionKey: String = ""
     /// Plain-text LandingAI ADE key entry buffer.
     @Published var pendingLandingAIKey: String = ""
-    /// Result of the last "Test Connection" call. Nil before any
-    /// test fires; non-nil shows an inline status message.
+    /// Result of the last Anthropic "Test Connection" call. Nil
+    /// before any test fires; non-nil shows an inline status message.
     @Published var testResult: TestResult?
+    /// Result of the last Gemini test. Per-provider field so the
+    /// four rows can show their own status without colliding.
+    @Published var geminiTestResult: TestResult?
+    /// Result of the last Google Cloud Vision test.
+    @Published var googleCloudVisionTestResult: TestResult?
+    /// Result of the last LandingAI ADE test.
+    @Published var landingAITestResult: TestResult?
 
     enum TestResult {
         case success(String)
@@ -221,6 +228,192 @@ final class AISettingsViewModel: ObservableObject {
         } catch {
             testResult = .failure(error.localizedDescription)
         }
+    }
+
+    /// Probe the Gemini API by listing available models. Free —
+    /// `GET /v1beta/models` doesn't count against generation quota
+    /// and returns a list of models the key has access to.
+    func testGeminiConnection() async {
+        guard hasGeminiKey, let key = geminiKeyStore.read(), !key.isEmpty else {
+            geminiTestResult = .failure("No Gemini key set.")
+            return
+        }
+        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models")!
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "GET"
+        request.addValue(key, forHTTPHeaderField: "x-goog-api-key")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                geminiTestResult = .failure("Non-HTTP response.")
+                return
+            }
+            if (200..<300).contains(http.statusCode) {
+                let count = Self.countGeminiModels(in: data)
+                geminiTestResult = .success(
+                    count > 0
+                        ? "Connected. \(count) models available."
+                        : "Connected."
+                )
+            } else {
+                let message = Self.googleErrorMessage(in: data)
+                    ?? "HTTP \(http.statusCode)"
+                geminiTestResult = .failure(message)
+            }
+        } catch {
+            geminiTestResult = .failure(error.localizedDescription)
+        }
+    }
+
+    /// Probe the Google Cloud Vision API with a tiny 1×1 PNG +
+    /// `LABEL_DETECTION` request. Costs ~$0.0015 — the cheapest
+    /// usable annotate call. Returning 200 with an empty
+    /// `responses` array confirms the key is valid and the Vision
+    /// API is enabled on the project. Anything 4xx surfaces the
+    /// server's error message (typical: `PERMISSION_DENIED` when
+    /// the Vision API isn't enabled).
+    func testGoogleCloudVisionConnection() async {
+        guard hasGoogleCloudVisionKey,
+              let key = googleCloudVisionKeyStore.read(),
+              !key.isEmpty
+        else {
+            googleCloudVisionTestResult = .failure("No Cloud Vision key set.")
+            return
+        }
+        // 1x1 transparent PNG (smallest valid PNG bytes).
+        let onePixelPNG: [UInt8] = [
+            0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A,
+            0x00,0x00,0x00,0x0D,0x49,0x48,0x44,0x52,
+            0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,
+            0x08,0x06,0x00,0x00,0x00,0x1F,0x15,0xC4,
+            0x89,0x00,0x00,0x00,0x0D,0x49,0x44,0x41,
+            0x54,0x78,0x9C,0x63,0x00,0x01,0x00,0x00,
+            0x05,0x00,0x01,0x0D,0x0A,0x2D,0xB4,0x00,
+            0x00,0x00,0x00,0x49,0x45,0x4E,0x44,0xAE,
+            0x42,0x60,0x82
+        ]
+        let base64 = Data(onePixelPNG).base64EncodedString()
+        let bodyJSON = """
+        {"requests":[{"image":{"content":"\(base64)"},"features":[{"type":"LABEL_DETECTION","maxResults":1}]}]}
+        """
+        guard let url = URL(string: "https://vision.googleapis.com/v1/images:annotate?key=\(key)") else {
+            googleCloudVisionTestResult = .failure("Invalid URL.")
+            return
+        }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bodyJSON.data(using: .utf8)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                googleCloudVisionTestResult = .failure("Non-HTTP response.")
+                return
+            }
+            if (200..<300).contains(http.statusCode) {
+                googleCloudVisionTestResult = .success("Connected.")
+            } else {
+                let message = Self.googleErrorMessage(in: data)
+                    ?? "HTTP \(http.statusCode)"
+                googleCloudVisionTestResult = .failure(message)
+            }
+        } catch {
+            googleCloudVisionTestResult = .failure(error.localizedDescription)
+        }
+    }
+
+    /// Probe the LandingAI ADE API. There's no auth-only ping
+    /// endpoint; the cheapest probe is a real `:parse` call with a
+    /// 1×1 PNG. Costs ~$0.03 — significant for a Test button, so
+    /// the UI caption flags the cost. A 200 response confirms the
+    /// key + endpoint, even when the parsed markdown is empty.
+    func testLandingAIConnection() async {
+        guard hasLandingAIKey,
+              let key = landingAIKeyStore.read(),
+              !key.isEmpty
+        else {
+            landingAITestResult = .failure("No LandingAI key set.")
+            return
+        }
+        let onePixelPNG: [UInt8] = [
+            0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A,
+            0x00,0x00,0x00,0x0D,0x49,0x48,0x44,0x52,
+            0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,
+            0x08,0x06,0x00,0x00,0x00,0x1F,0x15,0xC4,
+            0x89,0x00,0x00,0x00,0x0D,0x49,0x44,0x41,
+            0x54,0x78,0x9C,0x63,0x00,0x01,0x00,0x00,
+            0x05,0x00,0x01,0x0D,0x0A,0x2D,0xB4,0x00,
+            0x00,0x00,0x00,0x49,0x45,0x4E,0x44,0xAE,
+            0x42,0x60,0x82
+        ]
+        let png = Data(onePixelPNG)
+        let boundary = "Boundary-" + UUID().uuidString
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\ndpt-2-latest\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append(
+            "Content-Disposition: form-data; name=\"document\"; filename=\"probe.png\"\r\n".data(using: .utf8)!
+        )
+        body.append("Content-Type: image/png\r\n\r\n".data(using: .utf8)!)
+        body.append(png)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+
+        guard let url = URL(string: "https://api.va.landing.ai/v1/ade/parse") else {
+            landingAITestResult = .failure("Invalid URL.")
+            return
+        }
+        var request = URLRequest(url: url, timeoutInterval: 60)
+        request.httpMethod = "POST"
+        request.addValue(
+            "multipart/form-data; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type"
+        )
+        request.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.httpBody = body
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                landingAITestResult = .failure("Non-HTTP response.")
+                return
+            }
+            if (200..<300).contains(http.statusCode) {
+                landingAITestResult = .success("Connected.")
+            } else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                let trimmed = body.count > 140
+                    ? String(body.prefix(140)) + "…" : body
+                landingAITestResult = .failure(
+                    "HTTP \(http.statusCode): \(trimmed)"
+                )
+            }
+        } catch {
+            landingAITestResult = .failure(error.localizedDescription)
+        }
+    }
+
+    /// Extract `error.message` from a Google API error envelope.
+    /// Returns nil when the body isn't a recognizable Google
+    /// error JSON.
+    private static func googleErrorMessage(in data: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let err = obj["error"] as? [String: Any],
+              let m = err["message"] as? String
+        else { return nil }
+        return m
+    }
+
+    /// Count `models[].name` entries in a Gemini list-models
+    /// response. Defensive: returns 0 if the body shape is
+    /// unexpected (a successful 200 with empty list still tells
+    /// the user "connected").
+    private static func countGeminiModels(in data: Data) -> Int {
+        guard let obj = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let list = obj["models"] as? [Any]
+        else { return 0 }
+        return list.count
     }
 
     // MARK: - Convenience for the view

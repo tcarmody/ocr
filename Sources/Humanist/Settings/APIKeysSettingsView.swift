@@ -8,12 +8,16 @@ import AI
 /// Keychain.
 ///
 /// All four providers (Anthropic, Google AI Studio for Gemini,
-/// Google Cloud Vision, LandingAI ADE) land here. Test Connection
-/// only fires against the Anthropic key for now — it's the most
-/// expensive to misconfigure (Cloud-mode page OCR depends on it).
-/// The others fail-open silently when misconfigured: Gemini falls
-/// back to Claude page OCR, Cloud Vision and LandingAI's cascade
-/// Stage 2.5 simply skip.
+/// Google Cloud Vision, LandingAI ADE) land here. Each has a
+/// Test Connection button:
+///   * Anthropic — 1-token Haiku ping (~sub-cent)
+///   * Gemini — `GET /v1beta/models` model-list (free)
+///   * Google Cloud Vision — minimal annotate call (~$0.0015)
+///   * LandingAI — minimal ADE parse (~$0.03 — flagged in copy)
+/// When a provider fails-open silently in normal use (Gemini
+/// falls back to Claude, Cloud Vision / LandingAI skip cascade
+/// Stage 2.5), Test Connection is the only way to catch a
+/// typo'd key short of firing a real conversion.
 ///
 /// Reuses `AISettingsViewModel`'s key-related state — the model
 /// is lightweight enough that owning a separate instance per tab
@@ -50,17 +54,20 @@ struct APIKeysSettingsView: View {
 
             Section("Google AI Studio (Gemini)") {
                 geminiEntry
-                caption("Powers Gemini 2.5 Flash and Gemini 3 Flash preview in the Page OCR Provider picker. Get one at aistudio.google.com → API keys.")
+                testResultRow(vm.geminiTestResult)
+                caption("Powers Gemini 2.5 Flash and Gemini 3 Flash preview in the Page OCR Provider picker. Get one at aistudio.google.com → API keys. Test Connection lists models — free.")
             }
 
             Section("Google Cloud Vision") {
                 googleCloudVisionEntry
-                caption("Powers the cascade's Stage 2.5 classical OCR ($0.0015 per call) between Tesseract and Sonnet. Get one at console.cloud.google.com with the Vision API enabled. Distinct from the Gemini key — issued by a different Google console.")
+                testResultRow(vm.googleCloudVisionTestResult)
+                caption("Powers the cascade's Stage 2.5 classical OCR ($0.0015 per call) between Tesseract and Sonnet. Get one at console.cloud.google.com with the Vision API enabled. Distinct from the Gemini key — issued by a different Google console. Test Connection fires a minimal annotate call (~$0.0015).")
             }
 
             Section("LandingAI (ADE)") {
                 landingAIEntry
-                caption("Powers the optional LandingAI Agentic Document Extraction path: a cascade Stage 2.5 alternative to Cloud Vision and a table-extractor option ahead of Sonnet. ~$0.03 per call. Get one at va.landing.ai → API keys (the same key the Python SDK reads from VISION_AGENT_API_KEY).")
+                testResultRow(vm.landingAITestResult)
+                caption("Powers the optional LandingAI Agentic Document Extraction path: a cascade Stage 2.5 alternative to Cloud Vision and a table-extractor option ahead of Sonnet. ~$0.03 per call. Get one at va.landing.ai → API keys (the same key the Python SDK reads from VISION_AGENT_API_KEY). Test Connection fires a minimal parse (~$0.03).")
             }
         }
         .formStyle(.grouped)
@@ -110,6 +117,9 @@ struct APIKeysSettingsView: View {
                 Button("Remove", role: .destructive) {
                     vm.deleteGeminiKey()
                 }
+                Button("Test") {
+                    Task { await vm.testGeminiConnection() }
+                }
             }
         }
     }
@@ -130,6 +140,9 @@ struct APIKeysSettingsView: View {
             if vm.hasGoogleCloudVisionKey {
                 Button("Remove", role: .destructive) {
                     vm.deleteGoogleCloudVisionKey()
+                }
+                Button("Test") {
+                    Task { await vm.testGoogleCloudVisionConnection() }
                 }
             }
         }
@@ -152,6 +165,30 @@ struct APIKeysSettingsView: View {
                 Button("Remove", role: .destructive) {
                     vm.deleteLandingAIKey()
                 }
+                Button("Test") {
+                    Task { await vm.testLandingAIConnection() }
+                }
+            }
+        }
+    }
+
+    /// Render the inline success / failure status line for any
+    /// provider's Test Connection result. Hidden when no test
+    /// has fired yet.
+    @ViewBuilder
+    private func testResultRow(
+        _ result: AISettingsViewModel.TestResult?
+    ) -> some View {
+        if let result {
+            switch result {
+            case .success(let msg):
+                Label(msg, systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.caption)
+            case .failure(let msg):
+                Label(msg, systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .font(.caption)
             }
         }
     }
