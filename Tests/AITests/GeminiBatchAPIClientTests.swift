@@ -125,8 +125,15 @@ final class GeminiBatchAPIClientTests: XCTestCase {
     // MARK: - submit
 
     func test_submit_posts_to_per_model_endpoint_with_required_headers() async throws {
+        // Real submit body shape: Long-Running Operation envelope
+        // with state under `metadata`, prefix BATCH_STATE_*.
         let body = #"""
-        {"name":"batches/abc","state":"JOB_STATE_PENDING"}
+        {"name":"batches/abc",
+         "metadata":{
+           "@type":"type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatch",
+           "state":"BATCH_STATE_PENDING",
+           "displayName":"book-x"
+         }}
         """#.data(using: .utf8)!
         let mock = MockTransport(steps: [.init(status: 200, body: body)])
         let client = makeClient(transport: mock)
@@ -172,11 +179,13 @@ final class GeminiBatchAPIClientTests: XCTestCase {
 
     // MARK: - status
 
-    func test_status_decodes_succeeded_with_dest_file_name() async throws {
+    func test_status_decodes_succeeded_with_response_responsesFile() async throws {
+        // Live API shape: metadata.state + response.responsesFile
+        // on a succeeded LRO.
         let body = #"""
         {"name":"batches/abc",
-         "state":"JOB_STATE_SUCCEEDED",
-         "dest":{"file_name":"files/results-xyz"}}
+         "metadata":{"state":"BATCH_STATE_SUCCEEDED"},
+         "response":{"responsesFile":"files/results-xyz"}}
         """#.data(using: .utf8)!
         let mock = MockTransport(steps: [.init(status: 200, body: body)])
         let client = makeClient(transport: mock)
@@ -186,11 +195,40 @@ final class GeminiBatchAPIClientTests: XCTestCase {
         XCTAssertNil(resp.errorMessage)
     }
 
+    func test_status_decodes_succeeded_fallback_dest_fileName() async throws {
+        // Some SDK paths surface `dest.fileName` instead. Decoder
+        // should accept either.
+        let body = #"""
+        {"name":"batches/abc",
+         "metadata":{"state":"BATCH_STATE_SUCCEEDED"},
+         "dest":{"fileName":"files/results-xyz"}}
+        """#.data(using: .utf8)!
+        let mock = MockTransport(steps: [.init(status: 200, body: body)])
+        let client = makeClient(transport: mock)
+        let resp = try await client.status(name: "batches/abc")
+        XCTAssertEqual(resp.resultsFileName, "files/results-xyz")
+    }
+
+    func test_status_decodes_succeeded_fallback_dest_file_name_snake() async throws {
+        // Older docs show `dest.file_name` (snake). Still accepted.
+        let body = #"""
+        {"name":"batches/abc",
+         "metadata":{"state":"BATCH_STATE_SUCCEEDED"},
+         "dest":{"file_name":"files/results-xyz"}}
+        """#.data(using: .utf8)!
+        let mock = MockTransport(steps: [.init(status: 200, body: body)])
+        let client = makeClient(transport: mock)
+        let resp = try await client.status(name: "batches/abc")
+        XCTAssertEqual(resp.resultsFileName, "files/results-xyz")
+    }
+
     func test_status_decodes_failed_with_error_message() async throws {
         let body = #"""
         {"name":"batches/abc",
-         "state":"JOB_STATE_FAILED",
-         "error":{"message":"invalid file","code":3}}
+         "metadata":{
+           "state":"BATCH_STATE_FAILED",
+           "error":{"message":"invalid file","code":3}
+         }}
         """#.data(using: .utf8)!
         let mock = MockTransport(steps: [.init(status: 200, body: body)])
         let client = makeClient(transport: mock)
@@ -200,16 +238,29 @@ final class GeminiBatchAPIClientTests: XCTestCase {
         XCTAssertNil(resp.resultsFileName)
     }
 
+    func test_status_accepts_legacy_JOB_STATE_prefix() async throws {
+        // Older docs surface JOB_STATE_* — decoder should still
+        // accept it.
+        let body = #"""
+        {"name":"batches/abc",
+         "metadata":{"state":"JOB_STATE_RUNNING"}}
+        """#.data(using: .utf8)!
+        let mock = MockTransport(steps: [.init(status: 200, body: body)])
+        let client = makeClient(transport: mock)
+        let resp = try await client.status(name: "batches/abc")
+        XCTAssertEqual(resp.state, .running)
+    }
+
     // MARK: - await completion
 
     func test_awaitCompletion_polls_until_terminal() async throws {
         let running = #"""
-        {"name":"batches/abc","state":"JOB_STATE_RUNNING"}
+        {"name":"batches/abc","metadata":{"state":"BATCH_STATE_RUNNING"}}
         """#.data(using: .utf8)!
         let done = #"""
         {"name":"batches/abc",
-         "state":"JOB_STATE_SUCCEEDED",
-         "dest":{"file_name":"files/r"}}
+         "metadata":{"state":"BATCH_STATE_SUCCEEDED"},
+         "response":{"responsesFile":"files/r"}}
         """#.data(using: .utf8)!
         let mock = MockTransport(steps: [
             .init(status: 200, body: running),
@@ -226,9 +277,9 @@ final class GeminiBatchAPIClientTests: XCTestCase {
 
     func test_awaitCompletion_returns_unsuccessful_terminals_for_inspection() async throws {
         // Expired / failed / cancelled all return — caller inspects.
-        for state in ["JOB_STATE_EXPIRED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"] {
+        for state in ["BATCH_STATE_EXPIRED", "BATCH_STATE_FAILED", "BATCH_STATE_CANCELLED"] {
             let body = #"""
-            {"name":"batches/abc","state":"\#(state)"}
+            {"name":"batches/abc","metadata":{"state":"\#(state)"}}
             """#.data(using: .utf8)!
             let mock = MockTransport(steps: [.init(status: 200, body: body)])
             let client = makeClient(transport: mock)
@@ -240,7 +291,7 @@ final class GeminiBatchAPIClientTests: XCTestCase {
 
     func test_awaitCompletion_throws_on_poll_timeout() async throws {
         let running = #"""
-        {"name":"batches/abc","state":"JOB_STATE_RUNNING"}
+        {"name":"batches/abc","metadata":{"state":"BATCH_STATE_RUNNING"}}
         """#.data(using: .utf8)!
         let steps = Array(repeating: MockTransport.Step(
             status: 200, body: running

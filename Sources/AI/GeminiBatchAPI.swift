@@ -32,16 +32,20 @@ import Foundation
 
 // MARK: - State
 
-/// Google's job state enum. `SUCCEEDED` is the happy terminal;
-/// `FAILED` / `CANCELLED` / `EXPIRED` are unhappy terminals;
-/// `PENDING` / `RUNNING` are still in flight.
-public enum GeminiBatchState: String, Sendable, Codable, Equatable {
-    case pending     = "JOB_STATE_PENDING"
-    case running     = "JOB_STATE_RUNNING"
-    case succeeded   = "JOB_STATE_SUCCEEDED"
-    case failed      = "JOB_STATE_FAILED"
-    case cancelled   = "JOB_STATE_CANCELLED"
-    case expired     = "JOB_STATE_EXPIRED"
+/// Google's batch-state enum. The live API returns
+/// `BATCH_STATE_*`; older docs (and the LRO machinery elsewhere
+/// in Google's stack) use `JOB_STATE_*`. We accept both spellings
+/// on decode and serialize as the `BATCH_STATE_*` form to match
+/// what the wire actually returns today. `succeeded` is the
+/// happy terminal; `failed` / `cancelled` / `expired` are
+/// unhappy terminals; `pending` / `running` are still in flight.
+public enum GeminiBatchState: String, Sendable, Equatable {
+    case pending
+    case running
+    case succeeded
+    case failed
+    case cancelled
+    case expired
 
     /// True when the batch will no longer change state — caller
     /// can stop polling. `succeeded` is the only terminal we
@@ -53,6 +57,49 @@ public enum GeminiBatchState: String, Sendable, Codable, Equatable {
         case .pending, .running:
             return false
         }
+    }
+}
+
+extension GeminiBatchState: Codable {
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        // Strip whichever prefix the API picked. Live responses
+        // use BATCH_STATE_*; older docs / SDKs surface JOB_STATE_*.
+        let stripped: String
+        if raw.hasPrefix("BATCH_STATE_") {
+            stripped = String(raw.dropFirst("BATCH_STATE_".count))
+        } else if raw.hasPrefix("JOB_STATE_") {
+            stripped = String(raw.dropFirst("JOB_STATE_".count))
+        } else {
+            stripped = raw
+        }
+        switch stripped.uppercased() {
+        case "PENDING":   self = .pending
+        case "RUNNING":   self = .running
+        case "SUCCEEDED": self = .succeeded
+        case "FAILED":    self = .failed
+        case "CANCELLED", "CANCELED": self = .cancelled
+        case "EXPIRED":   self = .expired
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown batch state: \(raw)"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        let token: String
+        switch self {
+        case .pending:   token = "BATCH_STATE_PENDING"
+        case .running:   token = "BATCH_STATE_RUNNING"
+        case .succeeded: token = "BATCH_STATE_SUCCEEDED"
+        case .failed:    token = "BATCH_STATE_FAILED"
+        case .cancelled: token = "BATCH_STATE_CANCELLED"
+        case .expired:   token = "BATCH_STATE_EXPIRED"
+        }
+        try c.encode(token)
     }
 }
 
@@ -93,18 +140,20 @@ public struct GeminiBatchSubmitRequest: Sendable, Encodable, Equatable {
     }
 }
 
-/// Response from the create-batch endpoint. The server returns
-/// the batch resource itself (not a long-running operation
-/// envelope), so `name` is immediately usable for the status
-/// poll: `GET /v1beta/{name}` where `name` is `batches/abc-123`.
+/// Response from the create-batch endpoint. Google returns a
+/// Long-Running Operation envelope: top-level `name` is the
+/// batch resource name; `metadata` carries the live state +
+/// stats. We surface the fields we actually use.
 public struct GeminiBatchSubmitResponse: Sendable, Decodable, Equatable {
     /// Fully-qualified resource name like `batches/abc-123` —
     /// use directly as the path for `status` / cancellation.
     public var name: String
     /// Initial state — typically `.pending`. Caller polls.
+    /// Lives at `metadata.state` on the wire.
     public var state: GeminiBatchState
     /// User-visible label echoed from the submit request. Not
-    /// load-bearing; useful for logging.
+    /// load-bearing; useful for logging. Lives at
+    /// `metadata.displayName`.
     public var displayName: String?
 
     public init(
@@ -118,24 +167,47 @@ public struct GeminiBatchSubmitResponse: Sendable, Decodable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, state
-        case displayName = "displayName"
+        case name, metadata, state, displayName
+    }
+
+    private struct Metadata: Decodable {
+        var state: GeminiBatchState
+        var displayName: String?
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try c.decode(String.self, forKey: .name)
+        // Try `metadata.state` first (live API shape); fall back
+        // to top-level `state` if a future SDK surfaces it flat.
+        if let meta = try? c.decode(Metadata.self, forKey: .metadata) {
+            self.state = meta.state
+            self.displayName = meta.displayName
+        } else {
+            self.state = try c.decode(GeminiBatchState.self, forKey: .state)
+            self.displayName = try? c.decode(String.self, forKey: .displayName)
+        }
     }
 }
 
 // MARK: - Status
 
-/// Body of `GET /v1beta/{name}`. The interesting fields are
-/// `state` (terminal check) and `dest.fileName` (where to
-/// download results from, populated once `state == .succeeded`).
+/// Body of `GET /v1beta/{name}` — the same Long-Running
+/// Operation envelope as submit. Once `metadata.state` reaches
+/// `.succeeded`, the results file name appears at either
+/// `response.responsesFile` (live API per docs hint) or
+/// `metadata.responsesFile` / a `dest.fileName` shape (older
+/// SDK paths). We try each defensively so an API tweak doesn't
+/// silently re-empty the EPUB.
 public struct GeminiBatchStatusResponse: Sendable, Decodable, Equatable {
     public var name: String
     public var state: GeminiBatchState
     /// Where to download the results JSONL from. Populated once
     /// `state == .succeeded`. Nil otherwise.
     public var resultsFileName: String?
-    /// Free-text error message when `state == .failed` — Google
-    /// puts this in `error.message`. nil on the happy path.
+    /// Free-text error message when `state == .failed`. Lives at
+    /// `error.message` or `metadata.error.message` depending on
+    /// the API path that surfaced it.
     public var errorMessage: String?
 
     public init(
@@ -150,15 +222,79 @@ public struct GeminiBatchStatusResponse: Sendable, Decodable, Equatable {
         self.errorMessage = errorMessage
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case name, state, dest, error
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: TopKeys.self)
+        self.name = try c.decode(String.self, forKey: .name)
+
+        // State + (some shapes) error.message + (some shapes)
+        // results file all live under `metadata`. Try that
+        // first; fall back to flat top-level shape.
+        var state: GeminiBatchState? = nil
+        var resultsFile: String? = nil
+        var errorMessage: String? = nil
+
+        if let meta = try? c.decode(Metadata.self, forKey: .metadata) {
+            state = meta.state
+            if let f = meta.responsesFile { resultsFile = f }
+            if let f = meta.dest?.fileName { resultsFile = resultsFile ?? f }
+            if let m = meta.error?.message { errorMessage = m }
+        }
+        if state == nil {
+            state = try c.decode(GeminiBatchState.self, forKey: .state)
+        }
+        // `response.responsesFile` is the docs-hinted location on
+        // the succeeded LRO. Falls back through alternative
+        // shapes so we tolerate minor API drift.
+        if let resp = try? c.decode(ResponseEnvelope.self, forKey: .response) {
+            if let f = resp.responsesFile { resultsFile = resultsFile ?? f }
+            if let f = resp.dest?.fileName { resultsFile = resultsFile ?? f }
+        }
+        // Flat top-level dest as a last-ditch fallback.
+        if let dest = try? c.decode(Dest.self, forKey: .dest) {
+            if let f = dest.fileName { resultsFile = resultsFile ?? f }
+        }
+        if errorMessage == nil,
+           let err = try? c.decode(ErrorEnvelope.self, forKey: .error) {
+            errorMessage = err.message
+        }
+
+        self.state = state!
+        self.resultsFileName = resultsFile
+        self.errorMessage = errorMessage
     }
 
+    private enum TopKeys: String, CodingKey {
+        case name, state, metadata, response, dest, error
+    }
+
+    /// `metadata` block on the LRO envelope.
+    private struct Metadata: Decodable {
+        var state: GeminiBatchState
+        var responsesFile: String?
+        var dest: Dest?
+        var error: ErrorEnvelope?
+
+        private enum CodingKeys: String, CodingKey {
+            case state, responsesFile, dest, error
+        }
+    }
+
+    /// `response` block on a succeeded LRO. Holds the file name
+    /// either as `responsesFile` (docs-hinted) or nested in a
+    /// `dest` object.
+    private struct ResponseEnvelope: Decodable {
+        var responsesFile: String?
+        var dest: Dest?
+    }
+
+    /// `dest` block — accepts both camelCase and snake_case.
     private struct Dest: Decodable {
         var fileName: String?
 
-        private enum CodingKeys: String, CodingKey {
-            case fileName = "file_name"
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: AnyCodingKey.self)
+            self.fileName = (try? c.decode(String.self, forKey: .init(stringValue: "fileName")!))
+                ?? (try? c.decode(String.self, forKey: .init(stringValue: "file_name")!))
         }
     }
 
@@ -166,14 +302,14 @@ public struct GeminiBatchStatusResponse: Sendable, Decodable, Equatable {
         var message: String?
     }
 
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try c.decode(String.self, forKey: .name)
-        self.state = try c.decode(GeminiBatchState.self, forKey: .state)
-        let dest = try c.decodeIfPresent(Dest.self, forKey: .dest)
-        self.resultsFileName = dest?.fileName
-        let err = try c.decodeIfPresent(ErrorEnvelope.self, forKey: .error)
-        self.errorMessage = err?.message
+    /// Tiny dynamic-key helper so the `Dest` decoder can probe
+    /// both spellings without exploding into two CodingKeys
+    /// enums.
+    private struct AnyCodingKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
     }
 }
 
