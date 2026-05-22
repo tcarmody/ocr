@@ -533,6 +533,8 @@ extension PDFToEPUBPipeline {
         var matchedCount = 0
         var unmatchedKeyCount = 0
         var unknownPageCount = 0
+        var statusHistogram: [ProviderStatus: Int] = [:]
+        var nonSuccessPages: [(Int, ProviderStatus, String?)] = []
         for line in results {
             guard let pageIndex = Self.pageIndexFromCustomId(line.customId) else {
                 unmatchedKeyCount += 1
@@ -546,6 +548,7 @@ extension PDFToEPUBPipeline {
             let parsedBlocks: [Block]
             let parsedFootnotes: [Footnote]
             let status: ProviderStatus
+            var failureDetail: String? = nil
             switch line.result {
             case .succeeded(let msg):
                 await pageEngine.recordBatchUsage(msg.usage)
@@ -566,10 +569,25 @@ extension PDFToEPUBPipeline {
                 parsedBlocks = []
                 parsedFootnotes = []
                 status = .refused
-            case .errored, .canceled, .expired:
+            case .errored(let message):
                 parsedBlocks = []
                 parsedFootnotes = []
                 status = .apiError
+                failureDetail = message
+            case .canceled:
+                parsedBlocks = []
+                parsedFootnotes = []
+                status = .apiError
+                failureDetail = "canceled"
+            case .expired:
+                parsedBlocks = []
+                parsedFootnotes = []
+                status = .apiError
+                failureDetail = "expired"
+            }
+            statusHistogram[status, default: 0] += 1
+            if status != .succeeded || parsedBlocks.isEmpty {
+                nonSuccessPages.append((pageIndex, status, failureDetail))
             }
             // Re-emit a final PendingPageOCR with Sonnet content
             // merged in. Preserves the partial's anchor / bounds /
@@ -611,13 +629,28 @@ extension PDFToEPUBPipeline {
         // JSONL (corrupt line, unknown custom_id) get their
         // partial as final so the page emits empty.
         var orphanedPageCount = 0
+        var orphanedPages: [Int] = []
         for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
             if let p = prepared[i] {
                 pendingByIndex[i] = p.partial
                 orphanedPageCount += 1
+                orphanedPages.append(i)
             }
         }
-        dispatchLog("Phase C summary: results=\(results.count) matched=\(matchedCount) unmatchedKey=\(unmatchedKeyCount) unknownPage=\(unknownPageCount) orphanedPages=\(orphanedPageCount)")
+        let histogramSummary = statusHistogram
+            .sorted(by: { $0.value > $1.value })
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+        dispatchLog("Phase C summary: results=\(results.count) matched=\(matchedCount) unmatchedKey=\(unmatchedKeyCount) unknownPage=\(unknownPageCount) orphanedPages=\(orphanedPageCount) statusHistogram={\(histogramSummary)}")
+        if !nonSuccessPages.isEmpty {
+            dispatchLog("non-success pages (pageIdx,status,detail):")
+            for (idx, status, detail) in nonSuccessPages.sorted(by: { $0.0 < $1.0 }) {
+                dispatchLog("  page=\(idx) status=\(status) detail=\(detail ?? "")")
+            }
+        }
+        if !orphanedPages.isEmpty {
+            dispatchLog("orphaned pages (no result line returned): \(orphanedPages.sorted())")
+        }
 
         // Q-Vision-Backfill-Batch (2026-05-12): pages whose batch
         // result didn't produce usable blocks (refused, errored,
@@ -1192,6 +1225,14 @@ extension PDFToEPUBPipeline {
         var matchedCount = 0
         var unmatchedKeyCount = 0
         var unknownPageCount = 0
+        // Per-status histogram so the log surfaces the
+        // "scattered pages failed" pattern at a glance instead
+        // of forcing the reader to count by hand.
+        var statusHistogram: [ProviderStatus: Int] = [:]
+        // Pages with a non-success final status, listed by index
+        // so the user can correlate against the PDF and see
+        // whether (e.g.) page 7 is a content the model refuses.
+        var nonSuccessPages: [(Int, ProviderStatus, String?)] = []
         for line in results {
             guard let pageIndex = Self.pageIndexFromCustomId(line.key) else {
                 unmatchedKeyCount += 1
@@ -1205,6 +1246,7 @@ extension PDFToEPUBPipeline {
             let parsedBlocks: [Block]
             let parsedFootnotes: [Footnote]
             let status: ProviderStatus
+            var failureDetail: String? = nil
             switch line.result {
             case .succeeded(let raw):
                 let outcome = await pageEngine.parseBatchResponseOutcome(
@@ -1218,11 +1260,23 @@ extension PDFToEPUBPipeline {
                     parsedBlocks = []
                     parsedFootnotes = []
                     status = outcome.status
+                    // Also record when a "succeeded" line parsed
+                    // to .empty (zero blocks despite the model
+                    // succeeding) — common Gemini failure mode
+                    // worth surfacing separately.
+                    if status == .succeeded && parsedBlocks.isEmpty {
+                        failureDetail = "succeeded-but-parsed-empty"
+                    }
                 }
-            case .errored:
+            case .errored(let message):
                 parsedBlocks = []
                 parsedFootnotes = []
                 status = .apiError
+                failureDetail = message
+            }
+            statusHistogram[status, default: 0] += 1
+            if status != .succeeded || parsedBlocks.isEmpty {
+                nonSuccessPages.append((pageIndex, status, failureDetail))
             }
             let finalPending = PendingPageOCR(
                 pageIndex: prep.partial.pageIndex,
@@ -1250,13 +1304,28 @@ extension PDFToEPUBPipeline {
         // Any Gemini-bound pages whose result didn't appear in
         // the JSONL get their partial as final.
         var orphanedPageCount = 0
+        var orphanedPages: [Int] = []
         for (i, _) in geminiEntries where pendingByIndex[i] == nil {
             if let p = prepared[i] {
                 pendingByIndex[i] = p.partial
                 orphanedPageCount += 1
+                orphanedPages.append(i)
             }
         }
-        dispatchLog("Phase C summary: results=\(results.count) matched=\(matchedCount) unmatchedKey=\(unmatchedKeyCount) unknownPage=\(unknownPageCount) orphanedPages=\(orphanedPageCount)")
+        let histogramSummary = statusHistogram
+            .sorted(by: { $0.value > $1.value })
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+        dispatchLog("Phase C summary: results=\(results.count) matched=\(matchedCount) unmatchedKey=\(unmatchedKeyCount) unknownPage=\(unknownPageCount) orphanedPages=\(orphanedPageCount) statusHistogram={\(histogramSummary)}")
+        if !nonSuccessPages.isEmpty {
+            dispatchLog("non-success pages (pageIdx,status,detail):")
+            for (idx, status, detail) in nonSuccessPages.sorted(by: { $0.0 < $1.0 }) {
+                dispatchLog("  page=\(idx) status=\(status) detail=\(detail ?? "")")
+            }
+        }
+        if !orphanedPages.isEmpty {
+            dispatchLog("orphaned pages (no result line returned): \(orphanedPages.sorted())")
+        }
 
         // Best-effort cleanup. Failures here are logged via the
         // try? but don't affect the conversion outcome — Google
