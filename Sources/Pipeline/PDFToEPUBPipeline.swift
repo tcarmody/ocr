@@ -1801,6 +1801,9 @@ public actor PDFToEPUBPipeline {
                let claudeBatchEngine = claudeBatchPageEngine,
                let key = options.anthropicAPIKeyProvider(),
                !key.isEmpty {
+                let claudeBatchLogURL = options.emitDebugLog
+                    ? stagingDir.appendingPathComponent("claude-batch.txt")
+                    : nil
                 try await dispatchPageOCRViaBatch(
                     freshIndices: freshIndices,
                     pdf: pdf,
@@ -1811,6 +1814,7 @@ public actor PDFToEPUBPipeline {
                     apiKey: key,
                     progress: progress,
                     totalPages: totalPages,
+                    debugLogURL: claudeBatchLogURL,
                     pendingByIndex: &pageOCRPendingByIndex
                 )
             } else if options.cloudFeatures.useBatchAPI && !freshIndices.isEmpty,

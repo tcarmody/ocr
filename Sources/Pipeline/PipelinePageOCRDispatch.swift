@@ -329,8 +329,28 @@ extension PDFToEPUBPipeline {
         apiKey: String,
         progress: ProgressHandler?,
         totalPages: Int,
+        debugLogURL: URL?,
         pendingByIndex: inout [Int: PendingPageOCR]
     ) async throws {
+        // Mirror of the Gemini dispatcher's logger. Nil URL =
+        // no-op so the diagnostic path costs nothing when the
+        // caller doesn't request it.
+        func dispatchLog(_ message: String) {
+            guard let url = debugLogURL else { return }
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let line = "[\(stamp)] [dispatch] \(message)\n"
+            guard let data = line.data(using: .utf8) else { return }
+            if FileManager.default.fileExists(atPath: url.path) {
+                if let handle = try? FileHandle(forWritingTo: url) {
+                    _ = try? handle.seekToEnd()
+                    try? handle.write(contentsOf: data)
+                    try? handle.close()
+                }
+            } else {
+                try? data.write(to: url)
+            }
+        }
+        dispatchLog("dispatch begin — freshIndices=\(freshIndices.count) totalPages=\(totalPages)")
         // Phase A: per-page prep. Trust-routed pages emit final
         // PendingPageOCR; Sonnet pages emit a partial pending +
         // a request-builder. Run in parallel since prep is I/O-
@@ -394,16 +414,22 @@ extension PDFToEPUBPipeline {
         // Trust-routed pages are already fully populated;
         // settle them now so the assembly walk doesn't see them
         // as fresh-but-missing.
+        let trustCount = prepared.values.filter { $0.request == nil }.count
         for (i, p) in prepared where p.request == nil {
             pendingByIndex[i] = p.partial
         }
+        dispatchLog("Phase A complete — preppedCount=\(preppedCount) trustRouted=\(trustCount)")
 
         // Phase B: build + submit batch from Sonnet pages.
         let sonnetEntries = freshIndices.compactMap { i -> (Int, AnthropicMessageRequest)? in
             guard let p = prepared[i], let req = p.request else { return nil }
             return (i, req)
         }
-        guard !sonnetEntries.isEmpty else { return }
+        guard !sonnetEntries.isEmpty else {
+            dispatchLog("no Sonnet-bound entries — all pages trust-routed; returning")
+            return
+        }
+        dispatchLog("sonnetEntries to batch: \(sonnetEntries.count)")
 
         // Reserve budget upfront — one call per page in the batch.
         // If the cap can't accommodate the full batch, fall back
@@ -420,6 +446,7 @@ extension PDFToEPUBPipeline {
                 // alternatively shrink the batch to whatever fit;
                 // simpler is to bail and let the user know via
                 // the cap-clamping cost estimate.
+                dispatchLog("budget exhausted mid-reservation — settling partials as final")
                 for (i, _) in sonnetEntries {
                     if pendingByIndex[i] == nil,
                        let p = prepared[i] {
@@ -437,7 +464,8 @@ extension PDFToEPUBPipeline {
             )
         }
         let batchClient = AnthropicBatchAPIClient(
-            apiKeyProvider: { apiKey }
+            apiKeyProvider: { apiKey },
+            debugLogURL: debugLogURL
         )
         let submitted: AnthropicBatchSubmitResponse
         do {
@@ -448,6 +476,7 @@ extension PDFToEPUBPipeline {
             // Batch submission failed entirely. Settle every
             // Sonnet page's partial as the final pending so the
             // assembly emits empty pages (anchor + figures only).
+            dispatchLog("submit threw: \(error) — settling partials")
             for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
@@ -473,21 +502,25 @@ extension PDFToEPUBPipeline {
                 batchId: submitted.id
             )
         } catch {
+            dispatchLog("awaitCompletion threw: \(error) — settling partials")
             for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
             return
         }
         guard let resultsURL = final.resultsUrl else {
+            dispatchLog("terminal status without results_url — settling partials as empty")
             for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
             return
         }
+        dispatchLog("succeeded — fetching results from \(resultsURL)")
         let results: [AnthropicBatchResultLine]
         do {
             results = try await batchClient.fetchResults(from: resultsURL)
         } catch {
+            dispatchLog("fetchResults threw: \(error) — settling partials")
             for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
@@ -497,10 +530,19 @@ extension PDFToEPUBPipeline {
         // Phase C: walk results, parse each, fill in the
         // matching pending slot. Result order is unspecified;
         // we look up by custom_id.
+        var matchedCount = 0
+        var unmatchedKeyCount = 0
+        var unknownPageCount = 0
         for line in results {
-            guard let pageIndex = Self.pageIndexFromCustomId(line.customId)
-            else { continue }
-            guard let prep = prepared[pageIndex] else { continue }
+            guard let pageIndex = Self.pageIndexFromCustomId(line.customId) else {
+                unmatchedKeyCount += 1
+                continue
+            }
+            guard let prep = prepared[pageIndex] else {
+                unknownPageCount += 1
+                continue
+            }
+            matchedCount += 1
             let parsedBlocks: [Block]
             let parsedFootnotes: [Footnote]
             let status: ProviderStatus
@@ -568,9 +610,14 @@ extension PDFToEPUBPipeline {
         // Any Sonnet pages whose result didn't show up in the
         // JSONL (corrupt line, unknown custom_id) get their
         // partial as final so the page emits empty.
+        var orphanedPageCount = 0
         for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
-            if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            if let p = prepared[i] {
+                pendingByIndex[i] = p.partial
+                orphanedPageCount += 1
+            }
         }
+        dispatchLog("Phase C summary: results=\(results.count) matched=\(matchedCount) unmatchedKey=\(unmatchedKeyCount) unknownPage=\(unknownPageCount) orphanedPages=\(orphanedPageCount)")
 
         // Q-Vision-Backfill-Batch (2026-05-12): pages whose batch
         // result didn't produce usable blocks (refused, errored,
@@ -585,7 +632,11 @@ extension PDFToEPUBPipeline {
                 guard let pending = pendingByIndex[i] else { return true }
                 return !pending.sonnetSucceeded && pending.blocks.isEmpty
             }
-        guard !needsFallback.isEmpty else { return }
+        guard !needsFallback.isEmpty else {
+            dispatchLog("dispatch end — no Vision-backfill needed")
+            return
+        }
+        dispatchLog("Vision-backfill needed for \(needsFallback.count) pages")
         let visionRenderer = PDFRenderer(dpi: options.dpi)
         let hints = OCRHints(
             languages: options.languages,
@@ -593,7 +644,12 @@ extension PDFToEPUBPipeline {
         )
         guard let (fallbackEngine, fallbackId) =
             selectLocalFallbackEngine(for: options.languages)
-        else { return }
+        else {
+            dispatchLog("dispatch end — no local fallback engine for these languages")
+            return
+        }
+        var fallbackSucceeded = 0
+        var fallbackFailed = 0
         for i in needsFallback {
             try Task.checkCancellation()
             guard let prep = prepared[i] else { continue }
@@ -626,11 +682,14 @@ extension PDFToEPUBPipeline {
                     usedLocalFallback: true,
                     localFallbackEngineId: fallbackId
                 )
+                fallbackSucceeded += 1
             } catch {
                 // Local OCR also failed — leave the page empty.
                 // Same posture as the sync path's nested catch.
+                fallbackFailed += 1
             }
         }
+        dispatchLog("dispatch end — Vision-backfill succeeded=\(fallbackSucceeded) failed=\(fallbackFailed)")
     }
 
     /// Helper for `dispatchPageOCRViaBatch`. Does Phase A for

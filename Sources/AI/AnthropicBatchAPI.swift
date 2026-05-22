@@ -231,17 +231,55 @@ public actor AnthropicBatchAPIClient {
     private let apiKeyProvider: @Sendable () -> String?
     /// Test seam — replaces `Task.sleep` for poll-loop testing.
     private let sleeper: (@Sendable (TimeInterval) async throws -> Void)?
+    /// Optional append-only diagnostic log destination. When
+    /// non-nil, every phase boundary (submit, status poll,
+    /// fetchResults) appends a timestamped line. Mirrors the
+    /// `GeminiBatchAPIClient` instrumentation so the Sonnet
+    /// batch path has the same forensic trail when something
+    /// silently empties out the EPUB. Nil = no-op.
+    private let debugLogURL: URL?
 
     public init(
         config: Config = Config(),
         transport: any AnthropicTransport = URLSessionTransport(),
         apiKeyProvider: @escaping @Sendable () -> String?,
-        sleeper: (@Sendable (TimeInterval) async throws -> Void)? = nil
+        sleeper: (@Sendable (TimeInterval) async throws -> Void)? = nil,
+        debugLogURL: URL? = nil
     ) {
         self.config = config
         self.transport = transport
         self.apiKeyProvider = apiKeyProvider
         self.sleeper = sleeper
+        self.debugLogURL = debugLogURL
+    }
+
+    /// Append one diagnostic line to `debugLogURL`. Same shape +
+    /// no-op-when-nil posture as `GeminiBatchAPIClient.log`.
+    private func log(_ message: String) {
+        guard let url = debugLogURL else { return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [
+            .withInternetDateTime, .withFractionalSeconds
+        ]
+        let stamp = formatter.string(from: Date())
+        let line = "[\(stamp)] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if FileManager.default.fileExists(atPath: url.path) {
+            if let handle = try? FileHandle(forWritingTo: url) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    /// Truncate to `n` chars for the log, with a tail marker.
+    /// Keeps long response bodies from blowing up the log file.
+    private static func truncate(_ s: String, max n: Int = 2048) -> String {
+        if s.count <= n { return s }
+        return String(s.prefix(n)) + "… [+\(s.count - n) chars]"
     }
 
     // MARK: - Submit
@@ -264,22 +302,30 @@ public actor AnthropicBatchAPIClient {
         do {
             ur.httpBody = try Self.encoder.encode(batch)
         } catch {
+            log("submit encode failed: \(error)")
             throw AnthropicAPIError.invalidRequest(
                 message: "batch encoding failed: \(error)"
             )
         }
+        log("submit POST \(url.path) — \(batch.requests.count) requests, \(ur.httpBody?.count ?? 0) bytes")
         let (data, response) = try await sendRaw(ur)
         guard let http = response as? HTTPURLResponse else {
+            log("submit: non-HTTP response")
             throw AnthropicAPIError.decode("non-HTTP response")
         }
+        let bodyText = String(data: data, encoding: .utf8) ?? ""
+        log("submit response: status=\(http.statusCode) body=\(Self.truncate(bodyText))")
         guard (200..<300).contains(http.statusCode) else {
             throw mapErrorResponse(status: http.statusCode, headers: http, body: data)
         }
         do {
-            return try Self.decoder.decode(
+            let decoded = try Self.decoder.decode(
                 AnthropicBatchSubmitResponse.self, from: data
             )
+            log("submit OK — id=\(decoded.id) processing_status=\(decoded.processingStatus.rawValue)")
+            return decoded
         } catch {
+            log("submit decode failed: \(error)")
             throw AnthropicAPIError.decode(String(describing: error))
         }
     }
@@ -300,16 +346,27 @@ public actor AnthropicBatchAPIClient {
         ur.addValue(config.apiVersion, forHTTPHeaderField: "anthropic-version")
         let (data, response) = try await sendRaw(ur)
         guard let http = response as? HTTPURLResponse else {
+            log("status: non-HTTP response for \(batchId)")
             throw AnthropicAPIError.decode("non-HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            log("status \(batchId) failed: \(http.statusCode) body=\(Self.truncate(bodyText))")
             throw mapErrorResponse(status: http.statusCode, headers: http, body: data)
         }
         do {
-            return try Self.decoder.decode(
+            let decoded = try Self.decoder.decode(
                 AnthropicBatchStatusResponse.self, from: data
             )
+            // Log the full raw status body alongside the decoded
+            // view — this is the seam where shape disagreements
+            // (e.g. results_url moving) would surface.
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            log("status \(batchId) decoded: processing_status=\(decoded.processingStatus.rawValue) results_url=\(decoded.resultsUrl ?? "nil") rawBody=\(Self.truncate(bodyText))")
+            return decoded
         } catch {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            log("status \(batchId) decode failed: \(error) rawBody=\(Self.truncate(bodyText))")
             throw AnthropicAPIError.decode(String(describing: error))
         }
     }
@@ -321,11 +378,17 @@ public actor AnthropicBatchAPIClient {
         batchId: String
     ) async throws -> AnthropicBatchStatusResponse {
         let start = Date()
+        var pollCount = 0
         while true {
             try Task.checkCancellation()
             let s = try await status(batchId: batchId)
-            if s.processingStatus == .ended { return s }
+            pollCount += 1
+            if s.processingStatus == .ended {
+                log("awaitCompletion ended for \(batchId) after \(pollCount) polls / \(Int(Date().timeIntervalSince(start)))s")
+                return s
+            }
             if Date().timeIntervalSince(start) >= config.pollTimeout {
+                log("awaitCompletion timed out for \(batchId) after \(pollCount) polls / \(Int(Date().timeIntervalSince(start)))s")
                 throw AnthropicAPIError.serverError(
                     status: -1,
                     message: "batch \(batchId) did not complete within \(config.pollTimeout)s"
@@ -348,32 +411,56 @@ public actor AnthropicBatchAPIClient {
             throw AnthropicAPIError.missingAPIKey
         }
         guard let url = URL(string: resultsUrl) else {
+            log("fetchResults: invalid results_url=\(resultsUrl)")
             throw AnthropicAPIError.decode("invalid results_url")
         }
+        log("fetchResults GET \(resultsUrl)")
         var ur = URLRequest(url: url, timeoutInterval: config.requestTimeout)
         ur.httpMethod = "GET"
         ur.addValue(key, forHTTPHeaderField: "x-api-key")
         ur.addValue(config.apiVersion, forHTTPHeaderField: "anthropic-version")
         let (data, response) = try await sendRaw(ur)
         guard let http = response as? HTTPURLResponse else {
+            log("fetchResults: non-HTTP response")
             throw AnthropicAPIError.decode("non-HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            log("fetchResults failed: \(http.statusCode) body=\(Self.truncate(bodyText))")
             throw mapErrorResponse(status: http.statusCode, headers: http, body: data)
         }
         // JSONL: one JSON object per line. Decode each
         // independently so a single corrupt line doesn't fail
         // the whole batch.
         let text = String(data: data, encoding: .utf8) ?? ""
+        let firstLine = text.split(separator: "\n").first.map(String.init) ?? ""
+        log("fetchResults OK: bytes=\(data.count) firstLine=\(Self.truncate(firstLine))")
         var out: [AnthropicBatchResultLine] = []
+        var skippedDecode = 0
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let lineData = line.data(using: .utf8) else { continue }
-            if let entry = try? Self.decoder.decode(
-                AnthropicBatchResultLine.self, from: lineData
-            ) {
+            do {
+                let entry = try Self.decoder.decode(
+                    AnthropicBatchResultLine.self, from: lineData
+                )
                 out.append(entry)
+            } catch {
+                skippedDecode += 1
             }
         }
+        let succeeded = out.filter {
+            if case .succeeded = $0.result { return true }
+            return false
+        }.count
+        let refused = out.filter {
+            if case .refused = $0.result { return true }
+            return false
+        }.count
+        let errored = out.filter {
+            if case .errored = $0.result { return true }
+            return false
+        }.count
+        log("fetchResults parsed: total=\(out.count) succeeded=\(succeeded) refused=\(refused) errored=\(errored) skippedDecode=\(skippedDecode) firstKeys=\(out.prefix(5).map(\.customId).joined(separator: ","))")
         return out
     }
 
