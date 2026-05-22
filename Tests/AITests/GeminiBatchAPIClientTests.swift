@@ -316,7 +316,26 @@ final class GeminiBatchAPIClientTests: XCTestCase {
 
     // MARK: - fetch results
 
+    func test_parseResultsJSONL_handles_live_shape_with_metadata_key() throws {
+        // Live API result-line shape captured from a real run:
+        // `metadata.key` (mirrors how the submit body nests it).
+        let jsonl = #"""
+        {"metadata":{"key":"page-00000"},"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"totalTokenCount":42}}}
+        """#
+        let data = jsonl.data(using: .utf8)!
+        let lines = GeminiBatchAPIClient.parseResultsJSONL(data: data)
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(lines[0].key, "page-00000")
+        if case .succeeded = lines[0].result {
+            // expected
+        } else {
+            XCTFail("expected succeeded result")
+        }
+    }
+
     func test_parseResultsJSONL_handles_success_status_error_and_malformed() throws {
+        // Mix of legacy top-level-key shape (kept tolerant in
+        // case Google ever flips back) and edge cases.
         let jsonl = [
             #"{"key":"page-00000","response":{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}}"#,
             #"{"key":"page-00001","status":{"code":3,"message":"safety filter"}}"#,

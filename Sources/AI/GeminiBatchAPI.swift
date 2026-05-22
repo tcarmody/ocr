@@ -777,7 +777,19 @@ public actor GeminiBatchAPIClient {
             guard let obj = try? JSONSerialization.jsonObject(
                 with: lineData, options: []
             ) as? [String: Any] else { continue }
-            guard let key = obj["key"] as? String else { continue }
+            // Live API shape: `metadata.key` (mirrors how the
+            // submit body nests it). Older docs hint at a
+            // top-level `key` — accept either so a future API
+            // tweak doesn't re-empty the EPUB.
+            let key: String
+            if let meta = obj["metadata"] as? [String: Any],
+               let metaKey = meta["key"] as? String {
+                key = metaKey
+            } else if let topKey = obj["key"] as? String {
+                key = topKey
+            } else {
+                continue
+            }
             if let response = obj["response"] {
                 // Re-serialize the response sub-object so callers
                 // can run their own decoder (matches the existing
