@@ -298,17 +298,65 @@ public actor GeminiBatchAPIClient {
     private let apiKeyProvider: @Sendable () -> String?
     /// Test seam — replaces `Task.sleep` for poll-loop testing.
     private let sleeper: (@Sendable (TimeInterval) async throws -> Void)?
+    /// Optional append-only log destination for diagnostic
+    /// tracing. When non-nil, every phase boundary (upload init,
+    /// upload finalize, submit, status poll, fetchResults) writes
+    /// a timestamped line to this URL. Used by the pipeline's
+    /// `emitDebugLog` path so a failed run leaves a forensic
+    /// trail next to the rest of the staging artifacts. Nil =
+    /// no-op.
+    private let debugLogURL: URL?
 
     public init(
         config: Config = Config(),
         transport: any GoogleAITransport = URLSessionGoogleAITransport(),
         apiKeyProvider: @escaping @Sendable () -> String?,
-        sleeper: (@Sendable (TimeInterval) async throws -> Void)? = nil
+        sleeper: (@Sendable (TimeInterval) async throws -> Void)? = nil,
+        debugLogURL: URL? = nil
     ) {
         self.config = config
         self.transport = transport
         self.apiKeyProvider = apiKeyProvider
         self.sleeper = sleeper
+        self.debugLogURL = debugLogURL
+    }
+
+    /// Append one diagnostic line to `debugLogURL`. Cheap when
+    /// the URL is nil (early return) so it's safe to scatter
+    /// calls liberally through the phase-boundary code. Each
+    /// call opens / appends / closes — wasteful on a fast loop,
+    /// fine for the ~10-20 lines a real batch generates.
+    private func log(_ message: String) {
+        guard let url = debugLogURL else { return }
+        // Build a fresh formatter per call — cheap, sidesteps
+        // ISO8601DateFormatter's non-Sendable status without
+        // needing `nonisolated(unsafe)` ceremony for what's a
+        // diagnostic-only path.
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [
+            .withInternetDateTime, .withFractionalSeconds
+        ]
+        let stamp = formatter.string(from: Date())
+        let line = "[\(stamp)] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if FileManager.default.fileExists(atPath: url.path) {
+            if let handle = try? FileHandle(forWritingTo: url) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    /// Truncate a string to `n` characters with a tail marker, so
+    /// long response bodies don't blow up the log file. JSON bodies
+    /// over a few KB get capped — enough to see the wire shape +
+    /// any error message without spamming the log.
+    private static func truncate(_ s: String, max n: Int = 1024) -> String {
+        if s.count <= n { return s }
+        return String(s.prefix(n)) + "… [+\(s.count - n) chars]"
     }
 
     // MARK: - Files API: upload JSONL
@@ -328,6 +376,7 @@ public actor GeminiBatchAPIClient {
         guard let key = apiKeyProvider(), !key.isEmpty else {
             throw GeminiBatchError.missingAPIKey
         }
+        log("uploadJSONL begin — \(data.count) bytes, displayName=\(displayName)")
 
         // Step 1 — init the resumable upload.
         var initURL = config.baseURL
@@ -352,17 +401,23 @@ public actor GeminiBatchAPIClient {
         }
         let (initData, initResp) = try await sendRaw(initReq)
         guard let initHTTP = initResp as? HTTPURLResponse else {
+            log("uploadJSONL init: non-HTTP response")
             throw GeminiBatchError.decode("non-HTTP response (init)")
         }
+        log("uploadJSONL init response: status=\(initHTTP.statusCode) headers=\(initHTTP.allHeaderFields)")
         guard (200..<300).contains(initHTTP.statusCode) else {
+            let body = String(data: initData, encoding: .utf8) ?? ""
+            log("uploadJSONL init failed body: \(Self.truncate(body))")
             throw mapErrorResponse(status: initHTTP.statusCode, body: initData)
         }
         guard let uploadURLString = initHTTP.value(
             forHTTPHeaderField: "x-goog-upload-url"
         ) ?? initHTTP.value(forHTTPHeaderField: "X-Goog-Upload-URL"),
               let uploadURL = URL(string: uploadURLString) else {
+            log("uploadJSONL init missing x-goog-upload-url header — headers: \(initHTTP.allHeaderFields)")
             throw GeminiBatchError.missingUploadURL
         }
+        log("uploadJSONL init OK — uploadURL=\(uploadURLString)")
 
         // Step 2 — POST the bytes to the resumable URL.
         var uploadReq = URLRequest(url: uploadURL, timeoutInterval: config.requestTimeout)
@@ -375,8 +430,11 @@ public actor GeminiBatchAPIClient {
         uploadReq.httpBody = data
         let (uploadData, uploadResp) = try await sendRaw(uploadReq)
         guard let uploadHTTP = uploadResp as? HTTPURLResponse else {
+            log("uploadJSONL finalize: non-HTTP response")
             throw GeminiBatchError.decode("non-HTTP response (upload)")
         }
+        let uploadBody = String(data: uploadData, encoding: .utf8) ?? ""
+        log("uploadJSONL finalize: status=\(uploadHTTP.statusCode) body=\(Self.truncate(uploadBody))")
         guard (200..<300).contains(uploadHTTP.statusCode) else {
             throw mapErrorResponse(status: uploadHTTP.statusCode, body: uploadData)
         }
@@ -384,8 +442,10 @@ public actor GeminiBatchAPIClient {
             let resource = try Self.decoder.decode(
                 GeminiFileResource.self, from: uploadData
             )
+            log("uploadJSONL OK — file.name=\(resource.file.name)")
             return resource.file.name
         } catch {
+            log("uploadJSONL decode failed: \(error) (raw body shown above)")
             throw GeminiBatchError.decode(String(describing: error))
         }
     }
@@ -410,22 +470,33 @@ public actor GeminiBatchAPIClient {
         do {
             ur.httpBody = try Self.encoder.encode(request)
         } catch {
+            log("submit encode failed: \(error)")
             throw GeminiBatchError.invalidRequest(
                 message: "batch encoding failed: \(error)"
             )
         }
+        if let body = ur.httpBody,
+           let bodyText = String(data: body, encoding: .utf8) {
+            log("submit POST \(url.path) body=\(Self.truncate(bodyText))")
+        }
         let (data, response) = try await sendRaw(ur)
         guard let http = response as? HTTPURLResponse else {
+            log("submit: non-HTTP response")
             throw GeminiBatchError.decode("non-HTTP response")
         }
+        let bodyText = String(data: data, encoding: .utf8) ?? ""
+        log("submit response: status=\(http.statusCode) body=\(Self.truncate(bodyText))")
         guard (200..<300).contains(http.statusCode) else {
             throw mapErrorResponse(status: http.statusCode, body: data)
         }
         do {
-            return try Self.decoder.decode(
+            let decoded = try Self.decoder.decode(
                 GeminiBatchSubmitResponse.self, from: data
             )
+            log("submit OK — name=\(decoded.name) state=\(decoded.state.rawValue)")
+            return decoded
         } catch {
+            log("submit decode failed: \(error)")
             throw GeminiBatchError.decode(String(describing: error))
         }
     }
@@ -445,16 +516,27 @@ public actor GeminiBatchAPIClient {
         ur.addValue(key, forHTTPHeaderField: "x-goog-api-key")
         let (data, response) = try await sendRaw(ur)
         guard let http = response as? HTTPURLResponse else {
+            log("status: non-HTTP response for \(name)")
             throw GeminiBatchError.decode("non-HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            log("status \(name) failed: \(http.statusCode) body=\(Self.truncate(bodyText))")
             throw mapErrorResponse(status: http.statusCode, body: data)
         }
         do {
-            return try Self.decoder.decode(
+            let decoded = try Self.decoder.decode(
                 GeminiBatchStatusResponse.self, from: data
             )
+            // Always log the FULL raw status body so we can compare
+            // wire shape vs decoded values. This is the spot where
+            // dest.fileName vs dest.file_name disagreements surface.
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            log("status \(name) decoded: state=\(decoded.state.rawValue) resultsFileName=\(decoded.resultsFileName ?? "nil") errorMessage=\(decoded.errorMessage ?? "nil") rawBody=\(Self.truncate(bodyText, max: 2048))")
+            return decoded
         } catch {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            log("status \(name) decode failed: \(error) rawBody=\(Self.truncate(bodyText, max: 2048))")
             throw GeminiBatchError.decode(String(describing: error))
         }
     }
@@ -501,19 +583,37 @@ public actor GeminiBatchAPIClient {
         )
         components?.queryItems = [URLQueryItem(name: "alt", value: "media")]
         guard let finalURL = components?.url else {
+            log("fetchResults: invalid URL for \(fileName)")
             throw GeminiBatchError.decode("invalid results URL")
         }
+        log("fetchResults GET \(finalURL.absoluteString)")
         var ur = URLRequest(url: finalURL, timeoutInterval: config.requestTimeout)
         ur.httpMethod = "GET"
         ur.addValue(key, forHTTPHeaderField: "x-goog-api-key")
         let (data, response) = try await sendRaw(ur)
         guard let http = response as? HTTPURLResponse else {
+            log("fetchResults: non-HTTP response")
             throw GeminiBatchError.decode("non-HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            log("fetchResults failed: \(http.statusCode) body=\(Self.truncate(bodyText))")
             throw mapErrorResponse(status: http.statusCode, body: data)
         }
-        return Self.parseResultsJSONL(data: data)
+        // Log the first result-line raw bytes so we can see the
+        // actual wire shape — `key` field, nested vs top-level,
+        // any unexpected wrappers Google adds.
+        let bodyText = String(data: data, encoding: .utf8) ?? ""
+        let firstLine = bodyText.split(separator: "\n").first.map(String.init) ?? ""
+        log("fetchResults OK: bytes=\(data.count) firstLine=\(Self.truncate(firstLine, max: 1500))")
+        let parsed = Self.parseResultsJSONL(data: data)
+        let succeeded = parsed.filter {
+            if case .succeeded = $0.result { return true }
+            return false
+        }.count
+        let errored = parsed.count - succeeded
+        log("fetchResults parsed: total=\(parsed.count) succeeded=\(succeeded) errored=\(errored) keys=\(parsed.prefix(5).map(\.key).joined(separator: ","))")
+        return parsed
     }
 
     /// Parse a result JSONL byte buffer into per-request result

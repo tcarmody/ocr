@@ -937,8 +937,29 @@ extension PDFToEPUBPipeline {
         modelId: String,
         progress: ProgressHandler?,
         totalPages: Int,
+        debugLogURL: URL?,
         pendingByIndex: inout [Int: PendingPageOCR]
     ) async throws {
+        // Inline file-append logger, mirrors the client's `log(_:)`.
+        // Nil URL = no-op. Used to mark the dispatch-level phase
+        // boundaries (Phase A done, fallthroughs) the client itself
+        // can't see.
+        func dispatchLog(_ message: String) {
+            guard let url = debugLogURL else { return }
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let line = "[\(stamp)] [dispatch] \(message)\n"
+            guard let data = line.data(using: .utf8) else { return }
+            if FileManager.default.fileExists(atPath: url.path) {
+                if let handle = try? FileHandle(forWritingTo: url) {
+                    try? handle.seekToEnd()
+                    try? handle.write(contentsOf: data)
+                    try? handle.close()
+                }
+            } else {
+                try? data.write(to: url)
+            }
+        }
+        dispatchLog("dispatch begin — freshIndices=\(freshIndices.count) totalPages=\(totalPages) model=\(modelId)")
         // Phase A — same shape as Anthropic dispatch.
         let concurrency = max(
             1, options.cloudFeatures.parallelPageOCRConcurrency
@@ -978,21 +999,28 @@ extension PDFToEPUBPipeline {
         }
 
         // Trust-routed pages settle immediately.
+        let trustCount = prepared.values.filter { $0.entryLine == nil }.count
         for (i, p) in prepared where p.entryLine == nil {
             pendingByIndex[i] = p.partial
         }
+        dispatchLog("Phase A complete — preppedCount=\(preppedCount) trustRouted=\(trustCount)")
 
         // Gather Gemini-bound entries.
         let geminiEntries = freshIndices.compactMap { i -> (Int, Data)? in
             guard let p = prepared[i], let line = p.entryLine else { return nil }
             return (i, line)
         }
-        guard !geminiEntries.isEmpty else { return }
+        guard !geminiEntries.isEmpty else {
+            dispatchLog("no Gemini-bound entries — all pages trust-routed; returning")
+            return
+        }
+        dispatchLog("geminiEntries to batch: \(geminiEntries.count)")
 
         // Reserve budget upfront — one call per page.
         let budget = pageEngine.budget
         for _ in geminiEntries {
             guard await budget.tryConsume() else {
+                dispatchLog("budget exhausted mid-reservation — settling partials as final")
                 for (i, _) in geminiEntries {
                     if pendingByIndex[i] == nil,
                        let p = prepared[i] {
@@ -1009,9 +1037,11 @@ extension PDFToEPUBPipeline {
             jsonl.append(line)
             jsonl.append(0x0A)  // newline
         }
+        dispatchLog("built JSONL bytes=\(jsonl.count) for \(geminiEntries.count) entries")
 
         let batchClient = GeminiBatchAPIClient(
-            apiKeyProvider: { apiKey }
+            apiKeyProvider: { apiKey },
+            debugLogURL: debugLogURL
         )
 
         // Phase B — upload, submit, poll. On any failure, settle
@@ -1022,6 +1052,7 @@ extension PDFToEPUBPipeline {
                 jsonl, displayName: "humanist-batch-input.jsonl"
             )
         } catch {
+            dispatchLog("uploadJSONL threw: \(error) — settling partials")
             for (i, _) in geminiEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
@@ -1038,6 +1069,7 @@ extension PDFToEPUBPipeline {
                 model: modelId, request: req
             )
         } catch {
+            dispatchLog("submit threw: \(error) — settling partials")
             for (i, _) in geminiEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
@@ -1061,6 +1093,7 @@ extension PDFToEPUBPipeline {
                 name: submitted.name
             )
         } catch {
+            dispatchLog("awaitCompletion threw: \(error) — settling partials")
             for (i, _) in geminiEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
@@ -1072,12 +1105,14 @@ extension PDFToEPUBPipeline {
               let resultsFile = final.resultsFileName else {
             // FAILED / CANCELLED / EXPIRED — same posture as
             // Anthropic batch failure. Surface empty pages.
+            dispatchLog("terminal state=\(final.state.rawValue) resultsFileName=\(final.resultsFileName ?? "nil") errorMessage=\(final.errorMessage ?? "nil") — settling partials as empty")
             for (i, _) in geminiEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
             try? await batchClient.deleteFile(name: inputFileName)
             return
         }
+        dispatchLog("succeeded — fetching results file=\(resultsFile)")
 
         let results: [GeminiBatchResultLine]
         do {
@@ -1085,6 +1120,7 @@ extension PDFToEPUBPipeline {
                 fileName: resultsFile
             )
         } catch {
+            dispatchLog("fetchResults threw: \(error) — settling partials")
             for (i, _) in geminiEntries where pendingByIndex[i] == nil {
                 if let p = prepared[i] { pendingByIndex[i] = p.partial }
             }
@@ -1094,10 +1130,19 @@ extension PDFToEPUBPipeline {
         }
 
         // Phase C — walk results, parse each, fill in pending slots.
+        var matchedCount = 0
+        var unmatchedKeyCount = 0
+        var unknownPageCount = 0
         for line in results {
-            guard let pageIndex = Self.pageIndexFromCustomId(line.key)
-            else { continue }
-            guard let prep = prepared[pageIndex] else { continue }
+            guard let pageIndex = Self.pageIndexFromCustomId(line.key) else {
+                unmatchedKeyCount += 1
+                continue
+            }
+            guard let prep = prepared[pageIndex] else {
+                unknownPageCount += 1
+                continue
+            }
+            matchedCount += 1
             let parsedBlocks: [Block]
             let parsedFootnotes: [Footnote]
             let status: ProviderStatus
@@ -1145,15 +1190,21 @@ extension PDFToEPUBPipeline {
 
         // Any Gemini-bound pages whose result didn't appear in
         // the JSONL get their partial as final.
+        var orphanedPageCount = 0
         for (i, _) in geminiEntries where pendingByIndex[i] == nil {
-            if let p = prepared[i] { pendingByIndex[i] = p.partial }
+            if let p = prepared[i] {
+                pendingByIndex[i] = p.partial
+                orphanedPageCount += 1
+            }
         }
+        dispatchLog("Phase C summary: results=\(results.count) matched=\(matchedCount) unmatchedKey=\(unmatchedKeyCount) unknownPage=\(unknownPageCount) orphanedPages=\(orphanedPageCount)")
 
         // Best-effort cleanup. Failures here are logged via the
         // try? but don't affect the conversion outcome — Google
         // expires files automatically.
         try? await batchClient.deleteFile(name: inputFileName)
         try? await batchClient.deleteFile(name: resultsFile)
+        dispatchLog("dispatch end")
     }
 
     /// page-OCR path (after Surya extraction) and the resume

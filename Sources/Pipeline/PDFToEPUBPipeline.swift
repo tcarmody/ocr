@@ -1817,6 +1817,16 @@ public actor PDFToEPUBPipeline {
                       let geminiBatchEngine = geminiBatchPageEngine,
                       let key = options.geminiAPIKeyProvider(),
                       !key.isEmpty {
+                // When emitDebugLog is on, drop a per-phase trace
+                // into `<stagingDir>/gemini-batch.txt` so a failed
+                // run leaves enough forensic evidence to diagnose
+                // which step misbehaved (upload? submit? status
+                // decode? Phase C key match?). The file gets
+                // preserved alongside claude-pages.txt + log.txt
+                // when emitDebugLog keeps the staging dir.
+                let batchLogURL = options.emitDebugLog
+                    ? stagingDir.appendingPathComponent("gemini-batch.txt")
+                    : nil
                 try await dispatchGeminiPageOCRViaBatch(
                     freshIndices: freshIndices,
                     pdf: pdf,
@@ -1828,6 +1838,7 @@ public actor PDFToEPUBPipeline {
                     modelId: geminiBatchEngine.model,
                     progress: progress,
                     totalPages: totalPages,
+                    debugLogURL: batchLogURL,
                     pendingByIndex: &pageOCRPendingByIndex
                 )
             } else {
