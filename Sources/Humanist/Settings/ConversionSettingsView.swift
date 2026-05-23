@@ -148,9 +148,9 @@ struct ConversionSettingsView: View {
     @ViewBuilder
     private var conversionDefaultsSection: some View {
         Section("Conversion defaults") {
-            helpText("These set the initial values of the launcher's toggles each session. Per-conversion changes don't write back here.")
+            helpText("These set the initial values of the launcher's toggles each session. Per-conversion changes don't write back here. The page-OCR provider (Claude vs Gemini) is picked in AI Settings, not here — this toggle just controls whether whole-page OCR mode is on by default.")
             Toggle("Surya OCR", isOn: $defaultUseSuryaOCR)
-            Toggle("Claude OCR ($$$)", isOn: $defaultUseClaudePageOCR)
+            Toggle("Whole-page OCR mode", isOn: $defaultUseClaudePageOCR)
             Toggle("Force OCR (ignore embedded PDF text)", isOn: $defaultForceOCR)
             Toggle("Private mode (disable every Cloud feature)", isOn: $defaultPrivateMode)
             Toggle("Save log (keep debug staging directory)", isOn: $defaultEmitDebugLog)

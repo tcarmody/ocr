@@ -9,22 +9,25 @@ import PDFIngest
 ///
 /// **The estimate is intentionally rough.** Per-book actual cost
 /// depends on which regions trip the cascade's quality floor, how
-/// often Haiku rejects via the guardrail, and per-call token counts
-/// that vary with region size. The estimate uses fixed per-feature
-/// trigger rates and average per-call token counts to land in the
-/// right order of magnitude — enough to flag a likely-expensive
-/// run before the user kicks it off, not enough to reconcile with
-/// Anthropic's billing afterwards.
+/// often the cleanup model rejects via the guardrail, and per-call
+/// token counts that vary with region size. The estimate uses fixed
+/// per-feature trigger rates and average per-call token counts to
+/// land in the right order of magnitude — enough to flag a likely-
+/// expensive run before the user kicks it off, not enough to
+/// reconcile with the provider's billing afterwards. Provider-
+/// agnostic: counts cloud calls against whichever model the user
+/// configured (Anthropic + Google Gemini + Google Cloud Vision +
+/// LandingAI ADE all factor in).
 ///
 /// Outputs both a single `estimatedCostUSD` and a per-feature
 /// breakdown so the queue UI can show a one-liner with a tooltip.
 public enum CostEstimator {
 
     public struct Estimate: Sendable, Equatable, Codable {
-        /// Total estimated Claude calls for this conversion across
-        /// all enabled features. Capped at `perBookCallCap` — the
-        /// cap is a hard ceiling at runtime, so the estimate above
-        /// that doesn't represent reality.
+        /// Total estimated cloud calls for this conversion across
+        /// all enabled features and providers. Capped at
+        /// `perBookCallCap` — the cap is a hard ceiling at runtime,
+        /// so the estimate above that doesn't represent reality.
         public var estimatedCalls: Int
         /// Total estimated USD cost across all features.
         public var estimatedCostUSD: Double
@@ -57,9 +60,12 @@ public enum CostEstimator {
     public static let regionsPerPageEstimate: Double = 5
 
     /// Per-region trigger rate for hard-region OCR. The cascade
-    /// invokes Stage 3 (Claude) only when Vision/Tesseract output
-    /// trips the quality floor; on a clean born-digital book that's
-    /// near zero, on a scanned book it's ~5-15%.
+    /// invokes the final cloud tier (Claude Sonnet or Gemini Flash
+    /// depending on `pageOCRProvider`) only when Vision/Tesseract
+    /// output trips the quality floor; on a clean born-digital
+    /// book that's near zero, on a scanned book it's ~5-15%. The
+    /// per-call cost constant below assumes Sonnet rates as the
+    /// upper bound — Gemini-routed runs are cheaper in practice.
     public static let hardRegionOCRRateScan: Double = 0.10
     public static let hardRegionOCRRateBornDigital: Double = 0.005
 

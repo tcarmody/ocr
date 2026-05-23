@@ -130,7 +130,7 @@ struct AISettingsView: View {
                 Text("Gemini 3.5 Flash (experimental)").tag(PageOCRProvider.gemini35Flash)
             }
             .pickerStyle(.radioGroup)
-            caption("Model used when the launcher's OCR Engine is set to a page-OCR mode. Gemini 2.5 Flash is ~7–10× cheaper than Sonnet at comparable quality on typeset prose. Gemini 3.5 Flash (released May 2026) sits between the two — half Sonnet's cost, 3× the cost of 3 Flash Preview; no published document-OCR benchmarks yet, so try it against your own corpus before committing. Manuscript mode always uses Claude Opus.")
+            caption("Drives every cloud-vision step: whole-page OCR (when the launcher's OCR Engine is set to a page-OCR mode), the cascade's hard-region OCR tier, and table extraction. Gemini 2.5 Flash is ~7–10× cheaper than Sonnet at comparable quality on typeset prose. Gemini 3.5 Flash (released May 2026) sits between the two — half Sonnet's cost, 3× the cost of 3 Flash Preview; no published document-OCR benchmarks yet, so try it against your own corpus before committing. Manuscript mode always uses Claude Opus regardless of this picker.")
 
             Picker("Parallel page OCR",
                    selection: $vm.settings.cloudFeatures.parallelPageOCRConcurrency) {
@@ -152,9 +152,9 @@ struct AISettingsView: View {
     @ViewBuilder
     private var regionOCRSection: some View {
         Section("Region OCR (cascade)") {
-            Toggle("Hard-region OCR (Sonnet)",
+            Toggle("Hard-region cloud OCR",
                    isOn: $vm.settings.cloudFeatures.hardRegionOCR)
-            caption("Final cascade tier: re-OCRs regions where every cheaper engine produced low-quality output. ~$0.012 per region call. Best on polytonic Greek, Hebrew, and mixed scripts.")
+            caption("Final cascade tier: re-OCRs regions where every cheaper engine produced low-quality output. Routes to whichever Page OCR provider you picked above (Sonnet runs ~$0.012/region; Gemini Flash variants run a small fraction of that). Best on polytonic Greek, Hebrew, and mixed scripts.")
 
             Picker("Mid-tier cloud OCR",
                    selection: cascadeMidTierBinding) {
@@ -162,7 +162,7 @@ struct AISettingsView: View {
                 Text("Google Cloud Vision — $0.0015/call").tag(CascadeMidTier.google)
                 Text("LandingAI ADE — $0.03/call").tag(CascadeMidTier.landingAI)
             }
-            caption("Sits between Tesseract and Sonnet in the per-region cascade. Google's classical OCR absorbs most hard-region work for fractions of a cent. LandingAI ADE is purpose-built for document layout and is the better pick on dense scans, multi-column pages, and complex layouts; pricier per call but you'll typically need fewer calls because more first-tier regions succeed.")
+            caption("Sits between Tesseract and the hard-region cloud OCR in the per-region cascade. Google's classical OCR absorbs most hard-region work for fractions of a cent. LandingAI ADE is purpose-built for document layout and is the better pick on dense scans, multi-column pages, and complex layouts; pricier per call but you'll typically need fewer calls because more first-tier regions succeed.")
         }
     }
 
@@ -174,10 +174,10 @@ struct AISettingsView: View {
             Picker("Cloud table extractor",
                    selection: tableExtractorBinding) {
                 Text("Off (heuristic only)").tag(TableExtractorChoice.off)
-                Text("Sonnet").tag(TableExtractorChoice.sonnet)
-                Text("LandingAI first, Sonnet fallback").tag(TableExtractorChoice.landingAIThenSonnet)
+                Text("Cloud (uses Page OCR provider)").tag(TableExtractorChoice.sonnet)
+                Text("LandingAI first, cloud fallback").tag(TableExtractorChoice.landingAIThenSonnet)
             }
-            caption("Replaces the X/Y heuristic on .table regions. Sonnet reads the cropped image and emits JSON cells (rowspan/colspan preserved). LandingAI is purpose-built for tables and often wins on dense layouts, but markdown output means merged cells flatten to 1×1; Sonnet picks up cases LandingAI declines. Surya is the offline fallback regardless.")
+            caption("Replaces the X/Y heuristic on .table regions. Routes to whichever Page OCR provider you picked above — Sonnet (~$0.04/table) or Gemini Flash (a fraction of that). The model reads the cropped image and emits JSON cells (rowspan/colspan preserved). LandingAI is purpose-built for tables and often wins on dense layouts, but markdown output means merged cells flatten to 1×1; the cloud-model path picks up cases LandingAI declines. Surya is the offline fallback regardless.")
         }
     }
 
@@ -272,13 +272,15 @@ struct AISettingsView: View {
         )
     }
 
-    /// Three table-extractor chain states. `.sonnet` matches the
-    /// original "table extraction" toggle; `.landingAIThenSonnet`
-    /// matches what the previous "try LandingAI first" sub-toggle
-    /// did (it required the Sonnet toggle on, so LandingAI prepends
-    /// rather than replaces). The "LandingAI only, no Sonnet" combo
-    /// is reachable by JSON edit but not surfaced here — the
-    /// fallback to Sonnet on ADE declines is the well-tested path.
+    /// Three table-extractor chain states. `.cloud` matches the
+    /// original "table extraction" toggle, now provider-agnostic:
+    /// the active engine is Claude Sonnet or Gemini Flash
+    /// depending on Page OCR provider. `.landingAIThenCloud`
+    /// matches the previous "try LandingAI first" combo (it
+    /// requires the cloud toggle on, so LandingAI prepends rather
+    /// than replaces). The "LandingAI only, no cloud fallback"
+    /// combo is reachable by JSON edit but not surfaced — the
+    /// fallback on ADE declines is the well-tested path.
     enum TableExtractorChoice: Hashable { case off, sonnet, landingAIThenSonnet }
 
     private var tableExtractorBinding: Binding<TableExtractorChoice> {

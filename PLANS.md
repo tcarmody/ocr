@@ -6440,6 +6440,47 @@ lie family is fully cleaned up.
 
 ---
 
+## C-UseClaudePageOCR-Rename — Whole-page OCR flag name
+
+**Status**: queued. The `useClaudePageOCR: Bool` option flag (in
+`PDFToEPUBPipeline.Options`, `Job.options`, AISettings UI store,
+and ~71 call sites across Sources + Tests) was correctly named
+when only Claude could do page-OCR. Today it gates whole-page
+OCR mode regardless of provider — when on, the active provider
+(Claude / Gemini Flash variants) is picked by `pageOCRProvider`.
+The user-facing label was updated 2026-05-23 from "Claude OCR"
+to "Whole-page OCR mode" in both Settings → Conversion defaults
+and the launcher; the underlying field name still leaks "Claude."
+
+### Goal
+
+Rename `useClaudePageOCR` → `useWholePageOCR` (or similar
+provider-agnostic name) across Sources, Tests, UserDefaults
+keys, and `Codable` keys in `Job` / `ConversionSettings`. Add
+the same decode-both-keys backward-compatibility shim the
+`useBatchAPI` field used so existing `queue.json` blobs keep
+parsing.
+
+### Why split it out
+
+~71 references; touches `Job` serialization (durable on-disk
+shape), `ConversionSettings` (`UserDefaults` keys), and every
+`makeXxx` engine factory. Worth its own commit so the rename
+bisects cleanly and the UserDefaults migration is easy to
+inspect / revert.
+
+### Effort
+
+~1 hour mechanical sed + backward-compat shims for the two
+persisted shapes + a build + tests. The rename has no behavior
+impact; it just kills the last "Claude" mis-naming.
+
+### Dependencies
+
+None. Pick up next time the page-OCR plumbing needs a touch.
+
+---
+
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
 **Status**: one shared Surya sidecar serves all pipelines. Sequential
