@@ -652,77 +652,24 @@ extension PDFToEPUBPipeline {
             dispatchLog("orphaned pages (no result line returned): \(orphanedPages.sorted())")
         }
 
-        // Q-Vision-Backfill-Batch (2026-05-12): pages whose batch
-        // result didn't produce usable blocks (refused, errored,
-        // canceled, expired, or empty parse) get a Vision-OCR pass
-        // so they contribute *something* to the EPUB instead of
-        // going blank. Mirrors the sync path's per-page fallback
-        // (see `runPageOCRPage`); the batches dispatch had this
-        // TODO'd until now.
-        let needsFallback = sonnetEntries
-            .map(\.0)
-            .filter { i in
-                guard let pending = pendingByIndex[i] else { return true }
-                return !pending.sonnetSucceeded && pending.blocks.isEmpty
-            }
-        guard !needsFallback.isEmpty else {
-            dispatchLog("dispatch end — no Vision-backfill needed")
-            return
-        }
-        dispatchLog("Vision-backfill needed for \(needsFallback.count) pages")
-        let visionRenderer = PDFRenderer(dpi: options.dpi)
-        let hints = OCRHints(
-            languages: options.languages,
-            quality: options.ocrQuality
+        // Q-Vision-Backfill-Batch: pages whose batch result didn't
+        // produce usable blocks (refused, errored, canceled,
+        // expired, or empty parse) get a local Vision / Tesseract
+        // OCR pass so they contribute *something* to the EPUB
+        // instead of going blank. Shared with the Gemini batch
+        // dispatcher via `applyVisionBackfillForBatch`.
+        var partialsByIndex: [Int: PendingPageOCR] = [:]
+        for (idx, prep) in prepared { partialsByIndex[idx] = prep.partial }
+        try await applyVisionBackfillForBatch(
+            pageIndices: sonnetEntries.map(\.0),
+            partialsByIndex: partialsByIndex,
+            pdf: pdf,
+            options: options,
+            providerId: pageEngine.providerId,
+            debugLogURL: debugLogURL,
+            pendingByIndex: &pendingByIndex
         )
-        guard let (fallbackEngine, fallbackId) =
-            selectLocalFallbackEngine(for: options.languages)
-        else {
-            dispatchLog("dispatch end — no local fallback engine for these languages")
-            return
-        }
-        var fallbackSucceeded = 0
-        var fallbackFailed = 0
-        for i in needsFallback {
-            try Task.checkCancellation()
-            guard let prep = prepared[i] else { continue }
-            do {
-                let image = try visionRenderer.renderPage(
-                    at: i, of: pdf
-                )
-                let result = try await fallbackEngine.recognize(
-                    image: image, hints: hints
-                )
-                let blocks = ParagraphReflow().reflow(result.observations)
-                guard !blocks.isEmpty else { continue }
-                // Preserve the original failure status so refusal-rate
-                // stats count this page correctly even though local
-                // OCR filled in the body.
-                let priorStatus = pendingByIndex[i]?.pageOCRStatus
-                    ?? .apiError
-                pendingByIndex[i] = PendingPageOCR(
-                    pageIndex: prep.partial.pageIndex,
-                    anchorId: prep.partial.anchorId,
-                    pageBoundsCG: prep.partial.pageBoundsCG,
-                    blocks: blocks,
-                    footnotes: prep.partial.footnotes,
-                    figures: prep.partial.figures,
-                    verdict: prep.partial.verdict,
-                    qualityScore: prep.partial.qualityScore,
-                    extractorDiagnostics: prep.partial.extractorDiagnostics,
-                    pageOCRStatus: priorStatus,
-                    providerId: pageEngine.providerId,
-                    usedLocalFallback: true,
-                    localFallbackEngineId: fallbackId
-                )
-                fallbackSucceeded += 1
-            } catch {
-                // Local OCR also failed — leave the page empty.
-                // Same posture as the sync path's nested catch.
-                fallbackFailed += 1
-            }
-        }
-        dispatchLog("dispatch end — Vision-backfill succeeded=\(fallbackSucceeded) failed=\(fallbackFailed)")
+        dispatchLog("dispatch end")
     }
 
     /// Helper for `dispatchPageOCRViaBatch`. Does Phase A for
@@ -861,6 +808,126 @@ extension PDFToEPUBPipeline {
     static func pageIndexFromCustomId(_ customId: String) -> Int? {
         guard customId.hasPrefix("page-") else { return nil }
         return Int(customId.dropFirst("page-".count))
+    }
+
+    // MARK: - Vision-backfill for batch refusals
+
+    /// Q-Vision-Backfill-Batch. Shared between the Anthropic and
+    /// Gemini batch dispatchers. After Phase C, any batched page
+    /// whose final `PendingPageOCR` carries no blocks AND wasn't
+    /// `.succeeded` (refused, empty parts, errored, expired,
+    /// canceled, decode-failed) gets a local Vision / Tesseract
+    /// OCR pass against the page image. Preserves the original
+    /// `pageOCRStatus` so refusal-rate stats stay honest, but
+    /// flips `usedLocalFallback = true` and stamps the fallback
+    /// engine's id so downstream callers can attribute the body.
+    ///
+    /// Conditions for skipping:
+    ///   * No pages qualify → "all pages already populated" path
+    ///   * No local fallback engine available for the requested
+    ///     languages (e.g. classical script with no Tesseract
+    ///     traineddata installed) → "no fallback engine" path
+    ///
+    /// `partialsByIndex` lets the dispatcher pass the per-page
+    /// `PendingPageOCR` partial the helper needs to preserve
+    /// anchorId / pageBoundsCG / figures across the refill,
+    /// without coupling to the provider-specific `prepared`
+    /// dictionary type (Anthropic's `BatchPrepared` vs Gemini's
+    /// `GeminiBatchPrepared`).
+    func applyVisionBackfillForBatch(
+        pageIndices: [Int],
+        partialsByIndex: [Int: PendingPageOCR],
+        pdf: LoadedPDF,
+        options: Options,
+        providerId: String,
+        debugLogURL: URL?,
+        pendingByIndex: inout [Int: PendingPageOCR]
+    ) async throws {
+        // Local logger — same shape as the dispatcher's, but
+        // prefixed `[vision-backfill]` so the log clearly shows
+        // which phase emitted the line.
+        func log(_ message: String) {
+            guard let url = debugLogURL else { return }
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let line = "[\(stamp)] [vision-backfill] \(message)\n"
+            guard let data = line.data(using: .utf8) else { return }
+            if FileManager.default.fileExists(atPath: url.path) {
+                if let handle = try? FileHandle(forWritingTo: url) {
+                    _ = try? handle.seekToEnd()
+                    try? handle.write(contentsOf: data)
+                    try? handle.close()
+                }
+            } else {
+                try? data.write(to: url)
+            }
+        }
+
+        let needsFallback = pageIndices.filter { i in
+            guard let pending = pendingByIndex[i] else { return true }
+            return !pending.sonnetSucceeded && pending.blocks.isEmpty
+        }
+        guard !needsFallback.isEmpty else {
+            log("no pages need backfill")
+            return
+        }
+        log("needed for \(needsFallback.count) pages: \(needsFallback)")
+        let visionRenderer = PDFRenderer(dpi: options.dpi)
+        let hints = OCRHints(
+            languages: options.languages,
+            quality: options.ocrQuality
+        )
+        guard let (fallbackEngine, fallbackId) =
+            selectLocalFallbackEngine(for: options.languages)
+        else {
+            log("no local fallback engine available for these languages — leaving pages empty")
+            return
+        }
+        var fallbackSucceeded = 0
+        var fallbackFailed = 0
+        var fallbackProducedNoBlocks = 0
+        for i in needsFallback {
+            try Task.checkCancellation()
+            guard let partial = partialsByIndex[i] else { continue }
+            do {
+                let image = try visionRenderer.renderPage(at: i, of: pdf)
+                let result = try await fallbackEngine.recognize(
+                    image: image, hints: hints
+                )
+                let blocks = ParagraphReflow().reflow(result.observations)
+                guard !blocks.isEmpty else {
+                    fallbackProducedNoBlocks += 1
+                    continue
+                }
+                // Preserve the original failure status so refusal-
+                // rate stats count this page correctly even though
+                // local OCR filled in the body. usedLocalFallback
+                // flag tells downstream consumers the body didn't
+                // come from the configured page-OCR provider.
+                let priorStatus = pendingByIndex[i]?.pageOCRStatus
+                    ?? .apiError
+                pendingByIndex[i] = PendingPageOCR(
+                    pageIndex: partial.pageIndex,
+                    anchorId: partial.anchorId,
+                    pageBoundsCG: partial.pageBoundsCG,
+                    blocks: blocks,
+                    footnotes: partial.footnotes,
+                    figures: partial.figures,
+                    verdict: partial.verdict,
+                    qualityScore: partial.qualityScore,
+                    extractorDiagnostics: partial.extractorDiagnostics,
+                    pageOCRStatus: priorStatus,
+                    providerId: providerId,
+                    usedLocalFallback: true,
+                    localFallbackEngineId: fallbackId
+                )
+                fallbackSucceeded += 1
+            } catch {
+                // Local OCR also failed — leave the page empty.
+                // Same posture as the sync path's nested catch.
+                fallbackFailed += 1
+            }
+        }
+        log("end — succeeded=\(fallbackSucceeded) producedNoBlocks=\(fallbackProducedNoBlocks) failed=\(fallbackFailed) engine=\(fallbackId)")
     }
 
     // MARK: - Gemini batch dispatch (P-Gemini-Batch)
@@ -1326,6 +1393,25 @@ extension PDFToEPUBPipeline {
         if !orphanedPages.isEmpty {
             dispatchLog("orphaned pages (no result line returned): \(orphanedPages.sorted())")
         }
+
+        // Q-Vision-Backfill-Batch: same posture as Anthropic batch.
+        // Refused / empty / errored pages get a local Vision /
+        // Tesseract OCR pass so the EPUB has *something* on them
+        // instead of staying blank. Important for Gemini because
+        // Flash's safety filter triggers on a non-trivial slice
+        // of academic content (e.g., scattered pages in the
+        // Becker book hit "succeeded-but-parsed-empty" / refused).
+        var partialsByIndex: [Int: PendingPageOCR] = [:]
+        for (idx, prep) in prepared { partialsByIndex[idx] = prep.partial }
+        try await applyVisionBackfillForBatch(
+            pageIndices: geminiEntries.map(\.0),
+            partialsByIndex: partialsByIndex,
+            pdf: pdf,
+            options: options,
+            providerId: pageEngine.providerId,
+            debugLogURL: debugLogURL,
+            pendingByIndex: &pendingByIndex
+        )
 
         // Best-effort cleanup. Failures here are logged via the
         // try? but don't affect the conversion outcome — Google
