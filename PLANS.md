@@ -6329,12 +6329,12 @@ expansion + EPUB round-trip pending. The Cloud page-OCR prompt
 engine that shares it) teaches the model to emit
 `<section data-stream="…">` wrappers for clearly parallel
 streams (Glas-style multi-column body + sidebar + insets, Loeb
-verso/recto, Talmud commentary). The parser
-(`ClaudePageXHTMLParser`) recognizes these as block-level
-no-ops — content paragraphs land in the flat block stream in
-document order — and captures the distinct stream IDs into
-`ClaudePageResult.detectedStreams` as a diagnostic. EPUB output
-is still linearized.
+verso/recto, Talmud commentary). The parser (`PageXHTMLParser`,
+formerly `ClaudePageXHTMLParser` until the 2026-05-22 rename)
+recognizes these as block-level no-ops — content paragraphs
+land in the flat block stream in document order — and captures
+the distinct stream IDs into `ClaudePageResult.detectedStreams`
+as a diagnostic. EPUB output is still linearized.
 
 ### Goal
 
@@ -6417,6 +6417,50 @@ Behind P-Bilingual-FacingPage Phase (b) — that work has
 overlapping shape (multi-spine EPUB with cross-link metadata)
 and will inform the IR shape for this one. Earns priority when
 a real Glas-style or Talmud-style book becomes a target.
+
+---
+
+## C-AnthropicModel-Rename — Provider-neutral name for the shared LLM model carrier
+
+**Status**: queued. Companion to the 2026-05-22 rename of
+`ClaudeCallBudget → CloudCallBudget` /
+`ClaudePageXHTMLParser → PageXHTMLParser` /
+`ClaudeEngines → CloudEngines`. The `AnthropicModel` type
+(in `Sources/AI/AnthropicModel.swift`) has the same naming-lie:
+it's the project's generic "LLM model id + pricing" carrier and
+already holds entries for Anthropic models, Gemini 2.5 / 3 Flash
+Preview / 3.5 Flash, Google Cloud Vision, and LandingAI ADE. The
+type's own doc comment admits it ("not strictly Anthropic-only.
+Rename deferred to avoid churn").
+
+### Goal
+
+Rename `AnthropicModel` → `CloudModel` (or `LLMModel`; pick one
+during the work — `CloudModel` matches the just-shipped
+`CloudCallBudget` / `CloudEngines` family and reads naturally
+alongside `ProcessingMode.cloud`). File becomes
+`Sources/AI/CloudModel.swift`. All call sites updated. No
+behavior change.
+
+### Why split it out
+
+Sits in the `AI` module rather than `Pipeline`, so the rename
+touches more callers than the 2026-05-22 sweep did: every
+engine + cost estimator + ConversionStats + the AISettings
+viewmodel all import `AnthropicModel` by name. A naive sed sweep
+is fine but should land in its own commit so a regression is
+easy to bisect.
+
+### Effort
+
+~1 hour. Mechanical sed + a build + tests. The bulk is verifying
+that grep for `AnthropicModel` returns zero residues afterward
+(modulo strings inside comments where "Anthropic" is the real
+provider name, e.g. "Anthropic Messages API").
+
+### Dependencies
+
+None. Pick up next time the LLM-pricing carrier needs a touch.
 
 ---
 
