@@ -25,6 +25,30 @@ public enum PageOCRProvider: String, Sendable, Codable, Equatable, CaseIterable 
     /// reasoning and would otherwise inflate output token count.
     /// Opt-in: 2.5 Flash stays default until 3 Flash hits GA.
     case gemini3FlashPreview
+    /// Gemini 3.5 Flash — stable model released at Google I/O 2026
+    /// (API id `gemini-3.5-flash`). Marketed as the strongest
+    /// agentic/coding Flash to date; Google doesn't publish
+    /// document-understanding benchmarks specifically. Priced
+    /// 3× Gemini 3 Flash Preview ($1.50/$9 per 1M vs $0.50/$3),
+    /// 50% cheaper than Sonnet on per-page cost. `thinking_level`
+    /// pinned to `minimal` for OCR for the same reason as 3 Flash.
+    /// Experimental for our workload — wired so users can A/B
+    /// against 2.5 Flash and Sonnet on real corpora.
+    case gemini35Flash
+
+    /// True for any Gemini-family pick. Helps the launcher's OCR
+    /// Engine picker show "Gemini — Typeset" rather than
+    /// "Claude — Typeset" no matter which Gemini variant is the
+    /// Settings default. Updated alongside `case` additions so
+    /// new variants don't go silently mis-classified.
+    public var isGeminiFamily: Bool {
+        switch self {
+        case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
+            return true
+        case .claude:
+            return false
+        }
+    }
 }
 
 public struct AISettings: Sendable, Codable, Equatable {

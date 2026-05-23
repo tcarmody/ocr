@@ -60,6 +60,14 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// for OCR to keep output tokens bounded.
     public static let gemini3FlashPreview = AnthropicModel(rawValue: "gemini-3-flash-preview")
 
+    /// Gemini 3.5 Flash — stable model from Google I/O 2026, released
+    /// May 19. Same multimodal contract as 2.5/3 Flash; thinking pinned
+    /// to `minimal` for OCR. 3× the per-token price of 3 Flash Preview;
+    /// per-page cost lands around $0.009 (vs $0.006 for 3 Flash Preview
+    /// and $0.04 for Sonnet 4.6). Wired as an opt-in alternative for
+    /// users running A/B comparisons against Sonnet at lower cost.
+    public static let gemini35Flash = AnthropicModel(rawValue: "gemini-3.5-flash")
+
     /// Google Cloud Vision API DOCUMENT_TEXT_DETECTION — classical OCR
     /// (not an LLM). Tracked here so `ClaudeCallBudget.recordUsage`
     /// can attribute the per-page cost; pricing is fixed per request,
@@ -100,6 +108,13 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
             // verify before relying on the post-conversion cost
             // estimate for billing reconciliation.
             return Pricing(inputPerMTok: 0.50, outputPerMTok: 3.00)
+        case "gemini-3.5-flash":
+            // Gemini 3.5 Flash (released May 19, 2026): $1.50/M input,
+            // $9.00/M output. 3× Gemini 3 Flash Preview's rates, but
+            // still 50% cheaper than Sonnet ($3/$15). Cached input
+            // ($0.15/M) not modelled — same posture as Anthropic's
+            // cache discount above.
+            return Pricing(inputPerMTok: 1.50, outputPerMTok: 9.00)
         case "google-document-ocr":
             // Cloud Vision DOCUMENT_TEXT_DETECTION: $1.50 per 1000
             // images = $0.0015/image. Encoded as $1500/M output

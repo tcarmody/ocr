@@ -127,9 +127,10 @@ struct AISettingsView: View {
                 Text("Claude Sonnet 4.6").tag(PageOCRProvider.claude)
                 Text("Gemini 2.5 Flash (lower cost)").tag(PageOCRProvider.gemini25Flash)
                 Text("Gemini 3 Flash (preview)").tag(PageOCRProvider.gemini3FlashPreview)
+                Text("Gemini 3.5 Flash (experimental)").tag(PageOCRProvider.gemini35Flash)
             }
             .pickerStyle(.radioGroup)
-            caption("Model used when the launcher's OCR Engine is set to a page-OCR mode. Gemini 2.5 Flash is ~7–10× cheaper than Sonnet at comparable quality on typeset prose. Manuscript mode always uses Claude Opus.")
+            caption("Model used when the launcher's OCR Engine is set to a page-OCR mode. Gemini 2.5 Flash is ~7–10× cheaper than Sonnet at comparable quality on typeset prose. Gemini 3.5 Flash (released May 2026) sits between the two — half Sonnet's cost, 3× the cost of 3 Flash Preview; no published document-OCR benchmarks yet, so try it against your own corpus before committing. Manuscript mode always uses Claude Opus.")
 
             Picker("Parallel page OCR",
                    selection: $vm.settings.cloudFeatures.parallelPageOCRConcurrency) {

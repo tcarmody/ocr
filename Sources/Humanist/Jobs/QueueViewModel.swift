@@ -229,7 +229,7 @@ final class QueueViewModel: ObservableObject {
         }
         if useClaudePageOCR {
             switch pageOCRProvider {
-            case .gemini25Flash, .gemini3FlashPreview:
+            case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
                 if !gemini {
                     useClaudePageOCR = false
                     pageOCRProvider = nil

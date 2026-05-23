@@ -333,7 +333,7 @@ extension PDFToEPUBPipeline {
             return makeClaudePageOCREngine(
                 options: options, budget: budget, captureSink: captureSink
             )
-        case .gemini25Flash, .gemini3FlashPreview:
+        case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
             guard options.processingMode == .cloud,
                   let key = options.geminiAPIKeyProvider(),
                   !key.isEmpty
@@ -345,14 +345,18 @@ extension PDFToEPUBPipeline {
                     options: options, budget: budget, captureSink: captureSink
                 )
             }
-            // Pin `thinking_level: minimal` for 3 Flash since OCR
-            // doesn't benefit from reasoning and any thinking inflates
-            // output tokens. 2.5 Flash has no thinking config; leave nil.
+            // Pin `thinking_level: minimal` for 3 / 3.5 Flash since
+            // OCR doesn't benefit from reasoning and any thinking
+            // inflates output tokens. 2.5 Flash has no thinking
+            // config; leave nil.
             let modelId: String
             let thinking: String?
             switch options.pageOCRProvider {
             case .gemini3FlashPreview:
                 modelId = "gemini-3-flash-preview"
+                thinking = "minimal"
+            case .gemini35Flash:
+                modelId = "gemini-3.5-flash"
                 thinking = "minimal"
             default:
                 modelId = "gemini-2.5-flash"

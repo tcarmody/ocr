@@ -442,7 +442,12 @@ struct ContentView: View {
                 if queue.useManuscriptMode { return .manuscript }
                 if queue.useEarlyPrintMode { return .earlyPrint }
                 if queue.useClaudePageOCR {
-                    return queue.pageOCRProvider == .gemini25Flash
+                    // Any Gemini variant lights up the
+                    // "Gemini — Typeset" row in the picker; otherwise
+                    // it's the Claude path. Goes through
+                    // `isGeminiFamily` so adding new Gemini variants
+                    // doesn't silently mis-classify the menu label.
+                    return (queue.pageOCRProvider?.isGeminiFamily ?? false)
                         ? .geminiTypeset
                         : .claudeTypeset
                 }

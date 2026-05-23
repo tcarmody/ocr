@@ -132,6 +132,14 @@ public enum CostEstimator {
             return AnthropicModel.gemini3FlashPreview.pricing.cost(for: Usage(
                 inputTokens: 1000, outputTokens: 2000
             ))
+        case .pageOCRGemini35:
+            // Gemini 3.5 Flash (stable, May 2026): 3× the per-token
+            // rates of 3 Flash Preview. Per-page lands ~$0.02 — about
+            // half of Sonnet. Same `thinking_level: minimal` pin so
+            // output stays bounded.
+            return AnthropicModel.gemini35Flash.pricing.cost(for: Usage(
+                inputTokens: 1000, outputTokens: 2000
+            ))
         case .googleDocumentOCR:
             // Cloud Vision DOCUMENT_TEXT_DETECTION: fixed $0.0015
             // per call. Encoded in `AnthropicModel.pricing` as one
@@ -190,6 +198,11 @@ public enum CostEstimator {
         /// but with stronger reasoning; thinking pinned to minimal
         /// so output token count stays comparable.
         case pageOCRGemini3Preview
+        /// Gemini 3.5 Flash page-OCR. Stable model (May 2026); 3×
+        /// the per-token cost of 3 Flash Preview but ~50% cheaper
+        /// than Sonnet. Thinking pinned to minimal so output token
+        /// count stays bounded for pure transcription.
+        case pageOCRGemini35
         /// Cloud Vision DOCUMENT_TEXT_DETECTION — cascade Stage 2.5.
         /// Fixed $0.0015 per call regardless of region size.
         case googleDocumentOCR
@@ -250,6 +263,10 @@ public enum CostEstimator {
                 feature = .pageOCRGemini3Preview
                 label = "Page OCR (Gemini 3 Flash preview)"
                 modelId = AnthropicModel.gemini3FlashPreview.rawValue
+            case .gemini35Flash:
+                feature = .pageOCRGemini35
+                label = "Page OCR (Gemini 3.5 Flash)"
+                modelId = AnthropicModel.gemini35Flash.rawValue
             }
             let cost = Double(calls) * costPerCall(feature)
             lines.append(.init(
