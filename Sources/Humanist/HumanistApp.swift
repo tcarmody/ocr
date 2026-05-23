@@ -563,6 +563,31 @@ private struct LibraryMaintenanceCommands: View {
         RestoreLibraryCatalogCommand()
         ConsolidatePDFsCommand()
         FindMissingFilesCommand()
+        Divider()
+        RemoveFromLibraryCommand()
+    }
+}
+
+/// Menu-bar entry point for "Remove from Library…" — same
+/// confirmation dialog the row context menu opens, but reachable
+/// from the menu bar (and ⌘⌫) when the Library window is focused
+/// with a non-empty selection. MACUX core posture #1: menu bar is
+/// primary; every action the user might reach for has to be there.
+///
+/// Gated on `LibraryCommandRouter.shared.canRemove` so the item
+/// grays out (per MACUX "Disabled items: gray them out rather than
+/// hiding") when no Library row is selected. `@FocusedObject` /
+/// `@FocusedValue` don't propagate reliably into `CommandGroup`
+/// items (the editor router solved the same problem the same way).
+private struct RemoveFromLibraryCommand: View {
+    @ObservedObject private var router = LibraryCommandRouter.shared
+
+    var body: some View {
+        Button("Remove from Library…") {
+            router.triggerRemove()
+        }
+        .keyboardShortcut(.delete, modifiers: [.command])
+        .disabled(!router.canRemove)
     }
 }
 

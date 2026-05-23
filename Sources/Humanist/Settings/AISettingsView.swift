@@ -123,6 +123,12 @@ struct AISettingsView: View {
     @ViewBuilder
     private var pageOCRSection: some View {
         Section("Page OCR") {
+            // Popup style (rather than radioGroup) once the choice
+            // list passes 4 entries — Mail, Notes, Pages, and Xcode
+            // all use a popup for >4 mutually-exclusive options in
+            // Settings. Keeps the row compact and scales cleanly as
+            // more providers come online (Mathpix, future Gemini /
+            // Claude variants).
             Picker("Provider", selection: $vm.settings.pageOCRProvider) {
                 Text("Claude Sonnet 4.6").tag(PageOCRProvider.claude)
                 Text("Gemini 2.5 Flash (lower cost)").tag(PageOCRProvider.gemini25Flash)
@@ -130,7 +136,7 @@ struct AISettingsView: View {
                 Text("Gemini 3.5 Flash (experimental)").tag(PageOCRProvider.gemini35Flash)
                 Text("LandingAI ADE (diagram-heavy, expensive)").tag(PageOCRProvider.landingAI)
             }
-            .pickerStyle(.radioGroup)
+            .pickerStyle(.menu)
             caption("Drives every cloud-vision step: whole-page OCR (when the launcher's OCR Engine is set to a page-OCR mode), the cascade's hard-region OCR tier, and table extraction. Gemini 2.5 Flash is ~7–10× cheaper than Sonnet at comparable quality on typeset prose. Gemini 3.5 Flash (released May 2026) sits between the two — half Sonnet's cost, 3× the cost of 3 Flash Preview; no published document-OCR benchmarks yet, so try it against your own corpus before committing. LandingAI ADE is purpose-built for diagram-heavy documents (technical reports, multi-figure papers) — best segmentation of the lot but most expensive (~$0.03/page, no batch API). Picks the LandingAI ADE key from Settings → Keys; falls back to Claude when the key isn't configured. Manuscript mode always uses Claude Opus regardless of this picker.")
 
             Picker("Parallel page OCR",

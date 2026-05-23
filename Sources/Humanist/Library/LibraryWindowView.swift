@@ -471,7 +471,7 @@ struct LibraryWindowView: View {
                 titleVisibility: .visible,
                 presenting: removeContext
             ) { ctx in
-                Button("Move to Trash", role: .destructive) {
+                Button("Move Library Files to Trash", role: .destructive) {
                     performRemove(ctx, alsoTrashFiles: true, rejectSource: false)
                 }
                 // Auto-scanner answer to "I deleted the bad EPUB
@@ -591,6 +591,20 @@ struct LibraryWindowView: View {
         // re-appear is fine.
         .onAppear {
             chatVM.library = library
+            updateLibraryRemoveBinding()
+        }
+        .onDisappear {
+            // Cleanly drop the router binding so a menu-bar
+            // "Remove from Library…" can't fire against a stale
+            // selection closure when the window is closed.
+            LibraryCommandRouter.shared.unbind()
+        }
+        // Re-publish the menu-bar binding every time the selection
+        // changes — the closure captures the *current* selected
+        // entries, so the menu action acts on whatever rows are
+        // selected at click time without re-deriving them.
+        .onChange(of: selection) { _, _ in
+            updateLibraryRemoveBinding()
         }
         // R-EPUB-Import: drag-drop entry point. Accepts individual
         // `.epub` files and folders (walked recursively). The
@@ -978,6 +992,17 @@ struct LibraryWindowView: View {
         removeContext = RemoveContext(entries: entries)
     }
 
+    /// Push the current selection-derived "Remove from Library"
+    /// trigger into the singleton router so the menu-bar item
+    /// stays in sync. Cheap on every selection change — the
+    /// closure captures the selected-entry IDs only.
+    private func updateLibraryRemoveBinding() {
+        let entries = selectedEntries
+        LibraryCommandRouter.shared.bind(selectionCount: entries.count) {
+            requestRemove(entries)
+        }
+    }
+
     /// Selection-aware target set: if `entry` is part of the current
     /// selection, return every selected entry in display order;
     /// otherwise just `entry`. Matches Finder's right-click semantics.
@@ -1090,7 +1115,7 @@ struct LibraryWindowView: View {
             preamble = titles.joined(separator: ", ") + suffix
         }
         var trailer = "\n\nRemove from Library forgets the book but leaves files on disk."
-            + " Move to Trash sends the EPUB and every per-conversion sibling — Markdown, plain text, HTML, Word, searchable PDF, the consolidated source PDF, and debug logs — to the Trash."
+            + " Move Library Files to Trash sends the EPUB and all of its conversion siblings (Markdown, text, HTML, Word, PDFs, debug logs) to the Trash."
         if ctx.entries.contains(where: { entryHasRejectablePDFSource($0) }) {
             trailer += " Trash & Don\u{2019}t Re-scan Source also tells the Input-folder auto-scanner to skip the source PDF on every Mac sharing this library."
         }
