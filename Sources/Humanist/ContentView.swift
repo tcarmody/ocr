@@ -329,6 +329,10 @@ struct ContentView: View {
                     Text("Claude OCR — Manuscript ($$$$)")
                         .tag(LauncherOCREngine.manuscript)
                 }
+                if queue.hasLandingAIKey {
+                    Text("LandingAI OCR — Typeset ($$$, diagram-heavy)")
+                        .tag(LauncherOCREngine.landingAITypeset)
+                }
             }
             .pickerStyle(.inline)
             if ocrEngineBinding.wrappedValue == .earlyPrint {
@@ -432,6 +436,11 @@ struct ContentView: View {
         /// has a Claude-tuned normalizing prompt that hasn't been
         /// validated against Gemini.
         case geminiTypeset
+        /// LandingAI ADE in whole-page mode — purpose-built for
+        /// diagram-heavy documents. ~$0.03/page (~6× Gemini Flash,
+        /// ~30% pricier than Sonnet). Routed via per-conversion
+        /// override on `queue.pageOCRProvider = .landingAI`.
+        case landingAITypeset
         case earlyPrint
         case manuscript
     }
@@ -443,10 +452,14 @@ struct ContentView: View {
                 if queue.useEarlyPrintMode { return .earlyPrint }
                 if queue.useWholePageOCR {
                     // Any Gemini variant lights up the
-                    // "Gemini — Typeset" row in the picker; otherwise
-                    // it's the Claude path. Goes through
-                    // `isGeminiFamily` so adding new Gemini variants
-                    // doesn't silently mis-classify the menu label.
+                    // "Gemini — Typeset" row in the picker; LandingAI
+                    // lights up its own row; otherwise it's the
+                    // Claude path. Goes through `isGeminiFamily` so
+                    // adding new Gemini variants doesn't silently
+                    // mis-classify the menu label.
+                    if queue.pageOCRProvider == .landingAI {
+                        return .landingAITypeset
+                    }
                     return (queue.pageOCRProvider?.isGeminiFamily ?? false)
                         ? .geminiTypeset
                         : .claudeTypeset
@@ -467,6 +480,9 @@ struct ContentView: View {
                 case .geminiTypeset:
                     queue.useWholePageOCR = true
                     queue.pageOCRProvider = .gemini25Flash
+                case .landingAITypeset:
+                    queue.useWholePageOCR = true
+                    queue.pageOCRProvider = .landingAI
                 case .earlyPrint: queue.useEarlyPrintMode = true
                 case .manuscript: queue.useManuscriptMode = true
                 }
@@ -483,6 +499,7 @@ struct ContentView: View {
         case .surya: return "Surya OCR"
         case .claudeTypeset: return "Claude — Typeset"
         case .geminiTypeset: return "Gemini — Typeset"
+        case .landingAITypeset: return "LandingAI — Typeset"
         case .earlyPrint:
             return "Claude — Early Print (\(queue.earlyPrintTypeface.displayName))"
         case .manuscript:
@@ -500,6 +517,8 @@ struct ContentView: View {
             return "Sonnet OCRs each page end-to-end. Best for modern printed material with hard scripts or dense academic prose. Requires Cloud mode + API key. ≈ $15–25 per book."
         case .geminiTypeset:
             return "Gemini 2.5 Flash OCRs each page end-to-end. Same XHTML output as Claude Typeset at ~7–10× lower cost (~$2 per book). Best on typeset prose; Sonnet still wins on dense academic layouts. Requires Cloud mode + a Google AI Studio key in Settings → AI."
+        case .landingAITypeset:
+            return "LandingAI ADE OCRs each page via /v1/ade/parse. Purpose-built for diagram-heavy documents (technical reports, multi-figure papers, dense tables-and-figures interleaved with prose). Best segmentation of the lot, but most expensive (~$0.03/page, ~$10–15 per book). No batch API; pages dispatch synchronously. Requires Cloud mode + a LandingAI ADE key in Settings → AI."
         case .earlyPrint:
             return "Sonnet with a normalizing prompt tuned for 15th–18th c. printed material (long-s, u/v, i/j, ligatures). Pick a typeface inside the menu; \"Auto\" lets the model identify Roman vs Blackletter."
         case .manuscript:

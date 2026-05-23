@@ -35,6 +35,16 @@ public enum PageOCRProvider: String, Sendable, Codable, Equatable, CaseIterable 
     /// Experimental for our workload — wired so users can A/B
     /// against 2.5 Flash and Sonnet on real corpora.
     case gemini35Flash
+    /// LandingAI ADE (`/v1/ade/parse`) wired as a whole-page OCR
+    /// engine. Most expensive option (~$0.03/page, ~6× Gemini Flash,
+    /// ~30% pricier than Sonnet) but purpose-built for "agentic
+    /// document extraction" — segments dense diagram-heavy layouts
+    /// better than the LLM-prompt path, returns inline MathML and
+    /// pipe-table markdown for the page-XHTML parser. No prompt
+    /// caching, no batch API, no streaming — single sync call per
+    /// page. Manuscript mode still forces Claude; this is for
+    /// typeset / early-print runs on diagram-rich corpora.
+    case landingAI
 
     /// True for any Gemini-family pick. Helps the launcher's OCR
     /// Engine picker show "Gemini — Typeset" rather than
@@ -45,7 +55,7 @@ public enum PageOCRProvider: String, Sendable, Codable, Equatable, CaseIterable 
         switch self {
         case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
             return true
-        case .claude:
+        case .claude, .landingAI:
             return false
         }
     }

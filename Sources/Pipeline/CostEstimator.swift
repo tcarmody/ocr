@@ -273,6 +273,15 @@ public enum CostEstimator {
                 feature = .pageOCRGemini35
                 label = "Page OCR (Gemini 3.5 Flash)"
                 modelId = CloudModel.gemini35Flash.rawValue
+            case .landingAI:
+                // LandingAI ADE parse, fixed $0.03/page. Reuses
+                // the existing `landingAIDocumentOCR` Feature
+                // (same per-call price whether the call is
+                // page-level OCR or cascade Stage 2.5 / table
+                // extraction).
+                feature = .landingAIDocumentOCR
+                label = "Page OCR (LandingAI ADE)"
+                modelId = CloudModel.landingAIDocumentExtraction.rawValue
             }
             let cost = Double(calls) * costPerCall(feature)
             lines.append(.init(

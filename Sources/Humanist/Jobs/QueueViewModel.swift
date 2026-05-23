@@ -165,6 +165,9 @@ final class QueueViewModel: ObservableObject {
     /// (Gemini) key. Hides the "Gemini OCR — Typeset" entry when
     /// missing.
     @Published var hasGeminiKey: Bool = false
+    /// Same posture as `hasAnthropicKey`, for the LandingAI ADE
+    /// key. Hides the "LandingAI OCR — Typeset" entry when missing.
+    @Published var hasLandingAIKey: Bool = false
 
     init(store: JobStore, runner: JobRunner) {
         self.store = store
@@ -172,6 +175,7 @@ final class QueueViewModel: ObservableObject {
         self.tesseractAvailable = (TesseractOCREngine.detect() != nil)
         self.hasAnthropicKey = AnthropicAPIKeyStore().hasKey
         self.hasGeminiKey = GeminiAPIKeyStore().hasKey
+        self.hasLandingAIKey = LandingAIAPIKeyStore().hasKey
         // Seed the launcher's per-conversion toggles from Settings
         // → Conversion → Defaults. Per-session overrides made in
         // the launcher UI don't persist back; the next launch
@@ -219,8 +223,10 @@ final class QueueViewModel: ObservableObject {
     func refreshAPIKeyAvailability() {
         let anthropic = AnthropicAPIKeyStore().hasKey
         let gemini = GeminiAPIKeyStore().hasKey
+        let landingAI = LandingAIAPIKeyStore().hasKey
         if anthropic != hasAnthropicKey { hasAnthropicKey = anthropic }
         if gemini != hasGeminiKey { hasGeminiKey = gemini }
+        if landingAI != hasLandingAIKey { hasLandingAIKey = landingAI }
         if useManuscriptMode && !anthropic {
             useManuscriptMode = false
         }
@@ -231,6 +237,11 @@ final class QueueViewModel: ObservableObject {
             switch pageOCRProvider {
             case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
                 if !gemini {
+                    useWholePageOCR = false
+                    pageOCRProvider = nil
+                }
+            case .landingAI:
+                if !landingAI {
                     useWholePageOCR = false
                     pageOCRProvider = nil
                 }

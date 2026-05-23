@@ -62,6 +62,13 @@ extension PDFToEPUBPipeline {
         switch options.pageOCRProvider {
         case .claude:
             return makeClaudeOCREngine(options: options, budget: budget)
+        case .landingAI:
+            // LandingAI is wired for whole-page OCR only. Hard-region
+            // dispatch per-region would burn ~$0.03 per region — far
+            // too expensive vs. Sonnet's ~$0.005/region. Fall back to
+            // Claude for the cascade's final tier when the user has
+            // picked LandingAI as their page-OCR provider.
+            return makeClaudeOCREngine(options: options, budget: budget)
         case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
             guard let key = options.geminiAPIKeyProvider(),
                   !key.isEmpty else {
@@ -141,6 +148,28 @@ extension PDFToEPUBPipeline {
               !key.isEmpty else { return nil }
         return LandingAITableExtractor(
             apiKeyProvider: { key }, budget: budget
+        )
+    }
+
+    /// Build a LandingAI whole-page OCR engine. Distinct from
+    /// `makeLandingAIDocumentEngine` (which gates on the cascade
+    /// Stage 2.5 toggle): this one fires when the user has picked
+    /// `.landingAI` as their `pageOCRProvider` and a key is
+    /// configured. Gates on `processingMode == .cloud` plus
+    /// `useWholePageOCR` / `useEarlyPrintMode` (manuscript hard-
+    /// pins Claude one level up). Returns nil → caller falls back
+    /// to Claude for the page-OCR engine.
+    static func makeLandingAIPageOCREngine(
+        options: Options, budget: CloudCallBudget
+    ) -> LandingAIPageOCREngine? {
+        guard options.processingMode == .cloud,
+              (options.useWholePageOCR || options.useEarlyPrintMode),
+              let key = options.landingAIAPIKeyProvider(),
+              !key.isEmpty else { return nil }
+        return LandingAIPageOCREngine(
+            document: LandingAIDocumentEngine(
+                apiKeyProvider: { key }, budget: budget
+            )
         )
     }
 
@@ -374,6 +403,18 @@ extension PDFToEPUBPipeline {
             return makeClaudeTableExtractor(
                 options: options, budget: budget
             )
+        case .landingAI:
+            // Per-table cascade extraction has a separate toggle
+            // (`landingAITableExtraction`) and a dedicated extractor
+            // (`LandingAITableExtractor`); honor that switch
+            // independently of the page-OCR provider pick. Fall
+            // back to Claude for the table extractor chain when
+            // LandingAI is the page-OCR provider but the user
+            // hasn't explicitly opted into the per-region table
+            // extractor too.
+            return makeClaudeTableExtractor(
+                options: options, budget: budget
+            )
         case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
             guard let key = options.geminiAPIKeyProvider(),
                   !key.isEmpty else {
@@ -473,6 +514,16 @@ extension PDFToEPUBPipeline {
         switch options.pageOCRProvider {
         case .claude:
             return makeClaudePageOCREngine(
+                options: options, budget: budget, captureSink: captureSink
+            )
+        case .landingAI:
+            return makeLandingAIPageOCREngine(
+                options: options, budget: budget
+            ) ?? makeClaudePageOCREngine(
+                // LandingAI selected but no ADE key configured. Fall
+                // back to Claude so the user gets *some* page OCR
+                // rather than silent no-op (mirrors the Gemini-no-key
+                // fallback below).
                 options: options, budget: budget, captureSink: captureSink
             )
         case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
