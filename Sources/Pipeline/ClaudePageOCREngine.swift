@@ -49,7 +49,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         case earlyPrint(typeface: EarlyPrintTypeface)
         case manuscript(hand: ManuscriptHand)
 
-        var defaultModel: AnthropicModel {
+        var defaultModel: CloudModel {
             switch self {
             case .typeset: return .sonnet4_6
             case .earlyPrint: return .sonnet4_6
@@ -61,7 +61,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     public let client: AnthropicAPIClient
     public let budget: CloudCallBudget
     public var mode: Mode
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxOutputTokens: Int
     /// Optional per-page response sink. Each call to `recognize` /
     /// `parseBatchMessage` reports the raw XHTML (or sentinel marker
@@ -83,7 +83,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
         mode: Mode = .typeset,
-        model: AnthropicModel? = nil,
+        model: CloudModel? = nil,
         maxOutputTokens: Int = 8192,
         captureSink: CaptureSink? = nil
     ) {
@@ -297,7 +297,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     private static func buildRequest(
         pageImage: CGImage,
         languages: [BCP47],
-        model: AnthropicModel,
+        model: CloudModel,
         mode: Mode,
         maxOutputTokens: Int
     ) -> AnthropicMessageRequest? {

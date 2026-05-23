@@ -36,7 +36,7 @@ public actor CloudCallBudget {
     public private(set) var consumed: Int = 0
     /// Aggregate token usage by model. Empty until the first
     /// `recordUsage` call.
-    public private(set) var modelUsage: [AnthropicModel: AggregateUsage] = [:]
+    public private(set) var modelUsage: [CloudModel: AggregateUsage] = [:]
 
     /// Per-model accumulated token totals across one conversion.
     /// Sendable + Codable so it can be persisted on a `Job` value
@@ -95,7 +95,7 @@ public actor CloudCallBudget {
     /// every Claude-backed engine after `client.send(...)` returns.
     /// Per-model accumulation lets the stats panel break down cost by
     /// Sonnet (vision OCR + tables) vs Haiku (cleanup features).
-    public func recordUsage(_ usage: Usage, for model: AnthropicModel) {
+    public func recordUsage(_ usage: Usage, for model: CloudModel) {
         var aggregate = modelUsage[model] ?? AggregateUsage()
         aggregate.inputTokens += usage.inputTokens
         aggregate.outputTokens += usage.outputTokens

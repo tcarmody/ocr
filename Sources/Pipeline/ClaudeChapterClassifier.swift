@@ -21,13 +21,13 @@ import Document
 public struct ClaudeChapterClassifier: Sendable {
     public let client: AnthropicAPIClient
     public let budget: CloudCallBudget
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: AnthropicModel = .haiku4_5,
+        model: CloudModel = .haiku4_5,
         maxOutputTokens: Int = 32  // ample for a single label string
     ) {
         self.client = client

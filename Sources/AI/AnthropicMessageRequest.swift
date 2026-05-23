@@ -10,7 +10,7 @@ import Foundation
 /// names map to the API's snake_case via custom `CodingKeys`; Swift
 /// property names stay camelCase.
 public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxTokens: Int
     public var system: SystemPrompt?
     public var messages: [Message]
@@ -24,7 +24,7 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
     public var stream: Bool?
 
     public init(
-        model: AnthropicModel,
+        model: CloudModel,
         maxTokens: Int,
         system: SystemPrompt? = nil,
         messages: [Message],

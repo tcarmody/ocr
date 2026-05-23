@@ -760,7 +760,7 @@ final class BookChatViewModel: ObservableObject {
     private func runCloudSend(
         userPrompt: String,
         allowedHits: [HybridRetriever.Hit],
-        model: AnthropicModel
+        model: CloudModel
     ) async {
         defer {
             isThinking = false
@@ -1458,7 +1458,7 @@ final class BookChatViewModel: ObservableObject {
     private func runLibraryCloudSend(
         userPrompt: String,
         allowedHits: [ResolvedLibraryHit],
-        model: AnthropicModel
+        model: CloudModel
     ) async {
         defer {
             isThinking = false

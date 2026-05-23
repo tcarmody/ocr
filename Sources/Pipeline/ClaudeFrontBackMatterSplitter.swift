@@ -37,7 +37,7 @@ import Document
 public struct ClaudeFrontBackMatterSplitter: Sendable {
     public let client: AnthropicAPIClient
     public let budget: CloudCallBudget
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxOutputTokens: Int
     /// Per-chapter cap for the digest. Keeps a single very long
     /// "appendix" from monopolizing the input budget. 10K chars
@@ -48,7 +48,7 @@ public struct ClaudeFrontBackMatterSplitter: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: AnthropicModel = .sonnet4_6,
+        model: CloudModel = .sonnet4_6,
         maxOutputTokens: Int = 1024,
         maxCharsPerChapter: Int = 10_000
     ) {

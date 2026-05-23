@@ -141,7 +141,7 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
 
         // Record one synthetic output token per call so per-book cost
         // accounting can attribute the per-page rate (see
-        // AnthropicModel.pricing.landingAIDocumentExtraction).
+        // CloudModel.pricing.landingAIDocumentExtraction).
         await budget.recordUsage(
             Usage(inputTokens: 0, outputTokens: 1),
             for: .landingAIDocumentExtraction

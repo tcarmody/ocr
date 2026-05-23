@@ -313,32 +313,32 @@ final class CloudCallBudgetUsageTests: XCTestCase {
     }
 }
 
-/// Tests for `Pricing` — the per-model rate table on `AnthropicModel`.
+/// Tests for `Pricing` — the per-model rate table on `CloudModel`.
 final class PricingTests: XCTestCase {
     func test_sonnet_rates() {
-        let p = AnthropicModel.sonnet4_6.pricing
+        let p = CloudModel.sonnet4_6.pricing
         XCTAssertEqual(p.inputPerMTok, 3.00)
         XCTAssertEqual(p.outputPerMTok, 15.00)
     }
 
     func test_haiku_rates() {
-        let p = AnthropicModel.haiku4_5.pricing
+        let p = CloudModel.haiku4_5.pricing
         XCTAssertEqual(p.inputPerMTok, 1.00)
         XCTAssertEqual(p.outputPerMTok, 5.00)
     }
 
     func test_haiku_dated_alias_uses_same_rates() {
-        let p = AnthropicModel.haiku4_5_20251001.pricing
+        let p = CloudModel.haiku4_5_20251001.pricing
         XCTAssertEqual(p.inputPerMTok, 1.00)
     }
 
     func test_unknown_model_falls_back_to_sonnet_rates() {
-        let p = AnthropicModel(rawValue: "claude-future-9-9").pricing
+        let p = CloudModel(rawValue: "claude-future-9-9").pricing
         XCTAssertEqual(p.inputPerMTok, 3.00)
     }
 
     func test_cache_rates_derived_from_input() {
-        let p = AnthropicModel.sonnet4_6.pricing
+        let p = CloudModel.sonnet4_6.pricing
         XCTAssertEqual(p.cacheCreationPerMTok, 3.75)  // 1.25× input
         XCTAssertEqual(p.cacheReadPerMTok, 0.30, accuracy: 0.001)  // 0.1× input
     }

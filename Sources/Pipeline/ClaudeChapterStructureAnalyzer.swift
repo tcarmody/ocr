@@ -31,13 +31,13 @@ import Document
 public struct ClaudeChapterStructureAnalyzer: Sendable {
     public let client: AnthropicAPIClient
     public let budget: CloudCallBudget
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: AnthropicModel = .sonnet4_6,
+        model: CloudModel = .sonnet4_6,
         maxOutputTokens: Int = 2048
     ) {
         self.client = client

@@ -29,7 +29,7 @@ import OCR
 public struct ClaudeOCREngine: OCREngine {
     public let client: AnthropicAPIClient
     public let budget: CloudCallBudget
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxOutputTokens: Int
 
     /// Build an engine wired to a specific API client + per-book budget.
@@ -40,7 +40,7 @@ public struct ClaudeOCREngine: OCREngine {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: AnthropicModel = .sonnet4_6,
+        model: CloudModel = .sonnet4_6,
         maxOutputTokens: Int = 4096
     ) {
         self.client = client

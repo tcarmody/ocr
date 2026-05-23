@@ -88,23 +88,23 @@ public enum CostEstimator {
         case .hardRegionOCR:
             // Sonnet 4.6: ~1500 input (region image, ~10K base64
             // chars) + ~500 output (transcription).
-            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 1500, outputTokens: 500
             ))
         case .postOCRCleanupPassages:
             // Haiku 4.5: ~500 input (text + prompts) + ~200 output.
-            return AnthropicModel.haiku4_5.pricing.cost(for: Usage(
+            return CloudModel.haiku4_5.pricing.cost(for: Usage(
                 inputTokens: 500, outputTokens: 200
             ))
         case .postOCRCleanupVision:
             // Haiku 4.5 with image: ~3000 input + ~200 output.
-            return AnthropicModel.haiku4_5.pricing.cost(for: Usage(
+            return CloudModel.haiku4_5.pricing.cost(for: Usage(
                 inputTokens: 3000, outputTokens: 200
             ))
         case .tableExtraction:
             // Sonnet 4.6: ~2500 input (table region image) + ~800
             // output (cell array).
-            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 2500, outputTokens: 800
             ))
         case .pageOCR:
@@ -112,7 +112,7 @@ public enum CostEstimator {
             // base64) + ~2000 output (XHTML for typical academic
             // page; dense pages can run higher). The output cost
             // dominates; a 400-page book runs ~$16-20.
-            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 4000, outputTokens: 2000
             ))
         case .pageOCRGemini:
@@ -120,7 +120,7 @@ public enum CostEstimator {
             // ~258 tokens/tile vs Claude's ~1500) + ~2000 output.
             // Per-page cost lands around $0.005 vs Sonnet's ~$0.04
             // — a 400-page book runs ~$2-3.
-            return AnthropicModel.gemini25Flash.pricing.cost(for: Usage(
+            return CloudModel.gemini25Flash.pricing.cost(for: Usage(
                 inputTokens: 1000, outputTokens: 2000
             ))
         case .pageOCRGemini3Preview:
@@ -129,7 +129,7 @@ public enum CostEstimator {
             // input (image tiles ~258 tokens). Output token count
             // assumes `thinking_level: minimal` — without that pin
             // reasoning would inflate output significantly.
-            return AnthropicModel.gemini3FlashPreview.pricing.cost(for: Usage(
+            return CloudModel.gemini3FlashPreview.pricing.cost(for: Usage(
                 inputTokens: 1000, outputTokens: 2000
             ))
         case .pageOCRGemini35:
@@ -137,23 +137,23 @@ public enum CostEstimator {
             // rates of 3 Flash Preview. Per-page lands ~$0.02 — about
             // half of Sonnet. Same `thinking_level: minimal` pin so
             // output stays bounded.
-            return AnthropicModel.gemini35Flash.pricing.cost(for: Usage(
+            return CloudModel.gemini35Flash.pricing.cost(for: Usage(
                 inputTokens: 1000, outputTokens: 2000
             ))
         case .googleDocumentOCR:
             // Cloud Vision DOCUMENT_TEXT_DETECTION: fixed $0.0015
-            // per call. Encoded in `AnthropicModel.pricing` as one
+            // per call. Encoded in `CloudModel.pricing` as one
             // synthetic output token × $1500/M.
-            return AnthropicModel.googleDocumentOCR.pricing.cost(for: Usage(
+            return CloudModel.googleDocumentOCR.pricing.cost(for: Usage(
                 inputTokens: 0, outputTokens: 1
             ))
         case .landingAIDocumentOCR:
             // LandingAI ADE parse: published $0.03 per page. Encoded
-            // in `AnthropicModel.pricing` as one synthetic output
+            // in `CloudModel.pricing` as one synthetic output
             // token × $30000/M. Charged once per per-region call
             // (Stage 2.5 alternative) and once per table region
             // (when the LandingAI table extractor is enabled).
-            return AnthropicModel.landingAIDocumentExtraction.pricing.cost(for: Usage(
+            return CloudModel.landingAIDocumentExtraction.pricing.cost(for: Usage(
                 inputTokens: 0, outputTokens: 1
             ))
         case .chapterStructurePass:
@@ -161,7 +161,7 @@ public enum CostEstimator {
             // list. ~5K input tokens (chapter titles + opening text
             // per chapter, capped at 16K) + ~1K output (per-chapter
             // decision JSON). Lands around $0.03-0.05 per book.
-            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 5000, outputTokens: 1000
             ))
         case .chapterMissedBreakDetection:
@@ -169,7 +169,7 @@ public enum CostEstimator {
             // ~80K input tokens (capped via mid-chapter truncation
             // for very long books) + ~500 output (typically 0-3
             // insertions). Lands around $0.24-0.30 per book.
-            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 80_000, outputTokens: 500
             ))
         case .frontBackMatterSplitting:
@@ -179,7 +179,7 @@ public enum CostEstimator {
             // ≈ 15K-20K input tokens + ~300 output. Lands around
             // $0.05-0.07 per book; floor at $0 when the book has
             // no front/back-matter chapters (call doesn't fire).
-            return AnthropicModel.sonnet4_6.pricing.cost(for: Usage(
+            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
                 inputTokens: 18_000, outputTokens: 300
             ))
         }
@@ -254,19 +254,19 @@ public enum CostEstimator {
             case .claude:
                 feature = .pageOCR
                 label = "Page OCR (whole-page Sonnet)"
-                modelId = AnthropicModel.sonnet4_6.rawValue
+                modelId = CloudModel.sonnet4_6.rawValue
             case .gemini25Flash:
                 feature = .pageOCRGemini
                 label = "Page OCR (Gemini 2.5 Flash)"
-                modelId = AnthropicModel.gemini25Flash.rawValue
+                modelId = CloudModel.gemini25Flash.rawValue
             case .gemini3FlashPreview:
                 feature = .pageOCRGemini3Preview
                 label = "Page OCR (Gemini 3 Flash preview)"
-                modelId = AnthropicModel.gemini3FlashPreview.rawValue
+                modelId = CloudModel.gemini3FlashPreview.rawValue
             case .gemini35Flash:
                 feature = .pageOCRGemini35
                 label = "Page OCR (Gemini 3.5 Flash)"
-                modelId = AnthropicModel.gemini35Flash.rawValue
+                modelId = CloudModel.gemini35Flash.rawValue
             }
             let cost = Double(calls) * costPerCall(feature)
             lines.append(.init(
@@ -286,7 +286,7 @@ public enum CostEstimator {
                         * costPerCall(.tableExtraction)
                     lines.append(.init(
                         label: "Table extraction",
-                        model: AnthropicModel.sonnet4_6.rawValue,
+                        model: CloudModel.sonnet4_6.rawValue,
                         calls: tableCalls, costUSD: tableCost
                     ))
                     totalCalls += tableCalls
@@ -301,7 +301,7 @@ public enum CostEstimator {
                 let cost = costPerCall(.chapterStructurePass)
                 lines.append(.init(
                     label: "Chapter structure (Sonnet)",
-                    model: AnthropicModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet4_6.rawValue,
                     calls: 1, costUSD: cost
                 ))
                 totalCalls += 1
@@ -311,7 +311,7 @@ public enum CostEstimator {
                 let cost = costPerCall(.chapterMissedBreakDetection)
                 lines.append(.init(
                     label: "Missed chapter breaks (Sonnet, full text)",
-                    model: AnthropicModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet4_6.rawValue,
                     calls: 1, costUSD: cost
                 ))
                 totalCalls += 1
@@ -321,7 +321,7 @@ public enum CostEstimator {
                 let cost = costPerCall(.frontBackMatterSplitting)
                 lines.append(.init(
                     label: "Front/back-matter splitting (Sonnet)",
-                    model: AnthropicModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet4_6.rawValue,
                     calls: 1, costUSD: cost
                 ))
                 totalCalls += 1
@@ -346,7 +346,7 @@ public enum CostEstimator {
                 let cost = Double(calls) * costPerCall(.hardRegionOCR)
                 lines.append(.init(
                     label: "Hard-region OCR",
-                    model: AnthropicModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet4_6.rawValue,
                     calls: calls, costUSD: cost
                 ))
                 totalCalls += calls
@@ -369,7 +369,7 @@ public enum CostEstimator {
                 lines.append(.init(
                     label: "Post-OCR cleanup"
                         + (cloudFeatures.postOCRCleanupVisionMode ? " (vision)" : ""),
-                    model: AnthropicModel.haiku4_5.rawValue,
+                    model: CloudModel.haiku4_5.rawValue,
                     calls: calls, costUSD: cost
                 ))
                 totalCalls += calls
@@ -385,7 +385,7 @@ public enum CostEstimator {
                 let cost = Double(calls) * costPerCall(.tableExtraction)
                 lines.append(.init(
                     label: "Table extraction",
-                    model: AnthropicModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet4_6.rawValue,
                     calls: calls, costUSD: cost
                 ))
                 totalCalls += calls
@@ -398,7 +398,7 @@ public enum CostEstimator {
             let cost = costPerCall(.chapterStructurePass)
             lines.append(.init(
                 label: "Chapter structure (Sonnet)",
-                model: AnthropicModel.sonnet4_6.rawValue,
+                model: CloudModel.sonnet4_6.rawValue,
                 calls: 1, costUSD: cost
             ))
             totalCalls += 1
@@ -409,7 +409,7 @@ public enum CostEstimator {
             let cost = costPerCall(.chapterMissedBreakDetection)
             lines.append(.init(
                 label: "Missed chapter breaks (Sonnet, full text)",
-                model: AnthropicModel.sonnet4_6.rawValue,
+                model: CloudModel.sonnet4_6.rawValue,
                 calls: 1, costUSD: cost
             ))
             totalCalls += 1
@@ -422,7 +422,7 @@ public enum CostEstimator {
             let cost = costPerCall(.frontBackMatterSplitting)
             lines.append(.init(
                 label: "Front/back-matter splitting (Sonnet)",
-                model: AnthropicModel.sonnet4_6.rawValue,
+                model: CloudModel.sonnet4_6.rawValue,
                 calls: 1, costUSD: cost
             ))
             totalCalls += 1

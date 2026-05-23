@@ -82,7 +82,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     /// so the cost estimate is accurate at different rates.
     public var claudeUsageByModel: [String: CloudCallBudget.AggregateUsage]
     /// Estimated USD cost across all Claude calls. Computed from
-    /// per-model usage and the rate table on `AnthropicModel`.
+    /// per-model usage and the rate table on `CloudModel`.
     /// Estimate, not invoice — Anthropic's billing is authoritative.
     public var estimatedCostUSD: Double
 
@@ -253,7 +253,7 @@ extension ConversionStats {
         refusedPageIndices: [Int] = [],
         pageOCRProviderId: String = "",
         claudeCallCount: Int,
-        claudeUsageByModel: [AnthropicModel: CloudCallBudget.AggregateUsage]
+        claudeUsageByModel: [CloudModel: CloudCallBudget.AggregateUsage]
     ) -> ConversionStats {
         // Stringify keys for JSON stability.
         let sources: [String: Int] = Dictionary(

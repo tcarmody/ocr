@@ -667,7 +667,7 @@ final class LibraryChatViewModel: ObservableObject {
     private func runCloudSend(
         userPrompt: String,
         allowedHits: [LibraryEmbeddingIndex.Hit],
-        model: AnthropicModel
+        model: CloudModel
     ) async {
         defer {
             isThinking = false

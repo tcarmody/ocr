@@ -6422,45 +6422,21 @@ a real Glas-style or Talmud-style book becomes a target.
 
 ## C-AnthropicModel-Rename — Provider-neutral name for the shared LLM model carrier
 
-**Status**: queued. Companion to the 2026-05-22 rename of
+**Status**: shipped 2026-05-23. `AnthropicModel` → `CloudModel`;
+file `Sources/AI/AnthropicModel.swift` → `Sources/AI/CloudModel.swift`.
+Mechanical sed across 21 files (every engine + cost estimator +
+ConversionStats + the chat view-models). Doc comments updated:
+the type's own "the name is a slight lie / rename deferred" admission
+on the Gemini 2.5 Flash constant is gone; the top-of-file overview
+now describes the carrier's provider-agnostic posture. All 1,443
+tests pass; no behavior change. Bundled as one commit so a
+regression bisects cleanly.
+
+Companion to the 2026-05-22 sweep that renamed
 `ClaudeCallBudget → CloudCallBudget` /
 `ClaudePageXHTMLParser → PageXHTMLParser` /
-`ClaudeEngines → CloudEngines`. The `AnthropicModel` type
-(in `Sources/AI/AnthropicModel.swift`) has the same naming-lie:
-it's the project's generic "LLM model id + pricing" carrier and
-already holds entries for Anthropic models, Gemini 2.5 / 3 Flash
-Preview / 3.5 Flash, Google Cloud Vision, and LandingAI ADE. The
-type's own doc comment admits it ("not strictly Anthropic-only.
-Rename deferred to avoid churn").
-
-### Goal
-
-Rename `AnthropicModel` → `CloudModel` (or `LLMModel`; pick one
-during the work — `CloudModel` matches the just-shipped
-`CloudCallBudget` / `CloudEngines` family and reads naturally
-alongside `ProcessingMode.cloud`). File becomes
-`Sources/AI/CloudModel.swift`. All call sites updated. No
-behavior change.
-
-### Why split it out
-
-Sits in the `AI` module rather than `Pipeline`, so the rename
-touches more callers than the 2026-05-22 sweep did: every
-engine + cost estimator + ConversionStats + the AISettings
-viewmodel all import `AnthropicModel` by name. A naive sed sweep
-is fine but should land in its own commit so a regression is
-easy to bisect.
-
-### Effort
-
-~1 hour. Mechanical sed + a build + tests. The bulk is verifying
-that grep for `AnthropicModel` returns zero residues afterward
-(modulo strings inside comments where "Anthropic" is the real
-provider name, e.g. "Anthropic Messages API").
-
-### Dependencies
-
-None. Pick up next time the LLM-pricing carrier needs a touch.
+`ClaudeEngines → CloudEngines`. With this commit the naming-
+lie family is fully cleaned up.
 
 ---
 

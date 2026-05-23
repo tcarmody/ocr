@@ -23,13 +23,13 @@ import EPUB
 public struct ClaudeTOCParser: Sendable {
     public let client: AnthropicAPIClient
     public let budget: CloudCallBudget
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: AnthropicModel = .haiku4_5,
+        model: CloudModel = .haiku4_5,
         maxOutputTokens: Int = 4096
     ) {
         self.client = client

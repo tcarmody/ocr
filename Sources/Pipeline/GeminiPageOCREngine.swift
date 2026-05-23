@@ -218,7 +218,7 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
                     inputTokens: usage.promptTokenCount ?? 0,
                     outputTokens: usage.candidatesTokenCount ?? 0
                 ),
-                for: AnthropicModel(rawValue: model)
+                for: CloudModel(rawValue: model)
             )
         }
 
@@ -351,7 +351,7 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
                     inputTokens: usage.promptTokenCount ?? 0,
                     outputTokens: usage.candidatesTokenCount ?? 0
                 ),
-                for: AnthropicModel(rawValue: model)
+                for: CloudModel(rawValue: model)
             )
         }
         let candidate = envelope.candidates?.first

@@ -30,13 +30,13 @@ import OCR
 public struct ClaudeTableExtractor: TableExtractor {
     public let client: AnthropicAPIClient
     public let budget: CloudCallBudget
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: AnthropicModel = .sonnet4_6,
+        model: CloudModel = .sonnet4_6,
         // Tables can carry a lot of cell text; budget output tokens
         // generously. A 10×6 academic table at ~30 chars/cell still
         // fits well under 4K, but multi-paragraph cells push higher.

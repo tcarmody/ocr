@@ -127,7 +127,7 @@ public struct GoogleDocumentOCREngine: OCREngine, Sendable {
 
         // Record one synthetic output token per call so per-book cost
         // accounting attributes $0.0015 per request (see
-        // AnthropicModel.pricing for the encoding).
+        // CloudModel.pricing for the encoding).
         await budget.recordUsage(
             Usage(inputTokens: 0, outputTokens: 1),
             for: .googleDocumentOCR

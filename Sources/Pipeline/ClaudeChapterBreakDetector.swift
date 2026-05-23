@@ -38,7 +38,7 @@ import Document
 public struct ClaudeChapterBreakDetector: Sendable {
     public let client: AnthropicAPIClient
     public let budget: CloudCallBudget
-    public var model: AnthropicModel
+    public var model: CloudModel
     public var maxOutputTokens: Int
     /// Hard cap on the input digest size, measured in approximate
     /// tokens (4 chars/token rule of thumb). Defaults to 80K to
@@ -48,7 +48,7 @@ public struct ClaudeChapterBreakDetector: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: AnthropicModel = .sonnet4_6,
+        model: CloudModel = .sonnet4_6,
         maxOutputTokens: Int = 2048,
         maxInputTokens: Int = 80_000
     ) {

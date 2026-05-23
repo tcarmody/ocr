@@ -1,19 +1,27 @@
 import Foundation
 
-/// Pinned Claude model identifier for the Messages API.
+/// Pinned cloud-LLM model identifier — provider-agnostic. Holds
+/// entries for Anthropic Messages API models (Sonnet / Haiku /
+/// Opus), Google Generative Language API models (Gemini Flash
+/// variants), and synthetic "single-call rate" carriers for
+/// Google Cloud Vision and LandingAI ADE so the per-book
+/// `CloudCallBudget` can attribute cost across every provider.
+/// Previously named `AnthropicModel` from the era when only
+/// Sonnet had pricing tracked.
 ///
 /// Use only the exact strings declared here — appending a date suffix
-/// to an alias (e.g. `claude-sonnet-4-6-20251101`) returns a 404.
-/// Added new models by extending `rawValue` cases or constructing
-/// `AnthropicModel(rawValue:)` directly with an authoritative string
-/// from Anthropic's published model catalog.
+/// to an alias (e.g. `claude-sonnet-4-6-20251101`) returns a 404 on
+/// the Anthropic side, and Google's catalog has similar pinning.
+/// Add new models by extending the static constants below or
+/// constructing `CloudModel(rawValue:)` directly with an authoritative
+/// string from the relevant provider's catalog.
 ///
 /// Wrapping `RawRepresentable` instead of a closed enum keeps
-/// forward-compatibility: a future Claude release can be passed
-/// through without a SDK update, while the static constants below
-/// give callers type-safe, mnemonic names for the models we ship
-/// against today.
-public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawRepresentable {
+/// forward-compatibility: a future release on either side can be
+/// passed through without a SDK update, while the static constants
+/// below give callers type-safe, mnemonic names for the models we
+/// ship against today.
+public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentable {
     public let rawValue: String
 
     public init(rawValue: String) {
@@ -24,18 +32,18 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// vision-heavy tasks where ground-truth quality matters: hard-
     /// region OCR (polytonic Greek, Hebrew, mixed scripts) and
     /// table-structure extraction.
-    public static let sonnet4_6 = AnthropicModel(rawValue: "claude-sonnet-4-6")
+    public static let sonnet4_6 = CloudModel(rawValue: "claude-sonnet-4-6")
 
     /// Haiku 4.5 — fastest and most cost-effective. Used for the
     /// text-only Tier 2 features: post-OCR character cleanup,
     /// semantic chapter classification, TOC parsing.
-    public static let haiku4_5 = AnthropicModel(rawValue: "claude-haiku-4-5")
+    public static let haiku4_5 = CloudModel(rawValue: "claude-haiku-4-5")
 
     /// Haiku 4.5 pinned to a dated snapshot — strictest reproducibility
     /// for evaluation pipelines that want byte-for-byte identical
     /// behavior across deploys. Production code typically uses the
     /// alias above.
-    public static let haiku4_5_20251001 = AnthropicModel(rawValue: "claude-haiku-4-5-20251001")
+    public static let haiku4_5_20251001 = CloudModel(rawValue: "claude-haiku-4-5-20251001")
 
     /// Opus 4.7 — highest-capability tier, used by
     /// `ClaudePageOCREngine` in Manuscript mode for handwritten
@@ -43,22 +51,19 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// contemporary informal). Significantly more expensive than
     /// Sonnet for typeset OCR, but the gap in handwriting
     /// recognition justifies the routing.
-    public static let opus4_7 = AnthropicModel(rawValue: "claude-opus-4-7")
+    public static let opus4_7 = CloudModel(rawValue: "claude-opus-4-7")
 
     /// Gemini 2.5 Flash — Google's fast multimodal model, used as the
     /// budget alternative to Sonnet for page-OCR. Same XHTML output
-    /// schema; ~7-10× cheaper per page on typical book content. The
-    /// `AnthropicModel` type name is a slight lie here — this struct
-    /// is the project's generic "LLM model id with pricing" carrier,
-    /// not strictly Anthropic-only. Rename deferred to avoid churn.
-    public static let gemini25Flash = AnthropicModel(rawValue: "gemini-2.5-flash")
+    /// schema; ~7-10× cheaper per page on typical book content.
+    public static let gemini25Flash = CloudModel(rawValue: "gemini-2.5-flash")
 
     /// Gemini 3 Flash preview — Pro-tier reasoning at Flash latency.
     /// Preview status (May 2026); model id carries the `-preview`
     /// suffix and can change shape on short notice. ~25-67% more
     /// expensive than 2.5 Flash; we pin `thinking_level: minimal`
     /// for OCR to keep output tokens bounded.
-    public static let gemini3FlashPreview = AnthropicModel(rawValue: "gemini-3-flash-preview")
+    public static let gemini3FlashPreview = CloudModel(rawValue: "gemini-3-flash-preview")
 
     /// Gemini 3.5 Flash — stable model from Google I/O 2026, released
     /// May 19. Same multimodal contract as 2.5/3 Flash; thinking pinned
@@ -66,14 +71,14 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// per-page cost lands around $0.009 (vs $0.006 for 3 Flash Preview
     /// and $0.04 for Sonnet 4.6). Wired as an opt-in alternative for
     /// users running A/B comparisons against Sonnet at lower cost.
-    public static let gemini35Flash = AnthropicModel(rawValue: "gemini-3.5-flash")
+    public static let gemini35Flash = CloudModel(rawValue: "gemini-3.5-flash")
 
     /// Google Cloud Vision API DOCUMENT_TEXT_DETECTION — classical OCR
     /// (not an LLM). Tracked here so `CloudCallBudget.recordUsage`
     /// can attribute the per-page cost; pricing is fixed per request,
     /// so input/output tokens are repurposed: `inputTokens = 0`,
     /// `outputTokens = 1` per page → multiplied by the per-image rate.
-    public static let googleDocumentOCR = AnthropicModel(rawValue: "google-document-ocr")
+    public static let googleDocumentOCR = CloudModel(rawValue: "google-document-ocr")
 
     /// LandingAI Agentic Document Extraction (`/v1/ade/parse`) — cloud
     /// document-OCR alternative to Cloud Vision. Same encoding trick
@@ -82,7 +87,7 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     /// current LandingAI pricing page before relying on the cost
     /// estimator for billing reconciliation — pricing has moved
     /// since the SDK's first release.
-    public static let landingAIDocumentExtraction = AnthropicModel(rawValue: "landingai-ade-parse")
+    public static let landingAIDocumentExtraction = CloudModel(rawValue: "landingai-ade-parse")
 
     /// Per-million-token pricing in USD. Used by `ConversionStats` to
     /// produce ≈-cost estimates for the post-conversion summary.
