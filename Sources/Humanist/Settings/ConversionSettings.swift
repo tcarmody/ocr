@@ -358,6 +358,99 @@ public enum ConversionOutputResolver {
             .appendingPathExtension("humanist-debug")
     }
 
+    /// Find every conversion sibling that may exist on disk for
+    /// an EPUB the library knows about. Used by the Library's
+    /// "Move to Trash" action so the user doesn't have to chase
+    /// down a dozen related files in a dozen subfolders to clean
+    /// up after a removed book.
+    ///
+    /// Candidate URLs come from three places:
+    ///   * **Output-root subfolders** (`Text Files/`, `Markdown/`,
+    ///     `HTML/`, `Word Documents/`, `Searchable PDFs/`, `PDFs/`,
+    ///     `Logs/`) — derived from the EPUB's grandparent directory
+    ///     when the EPUB sits inside `<root>/Books/`. Works without
+    ///     consulting Settings (the EPUB might have been converted
+    ///     under a different output-root that's since changed).
+    ///   * **Next-to-EPUB siblings** — the pipeline emits these
+    ///     paths when no output root is configured at conversion
+    ///     time.
+    ///   * **Linked source PDF** — `entry.linkedSourcePDFPath`
+    ///     when populated, points at the consolidated source PDF
+    ///     in `<root>/PDFs/`.
+    ///
+    /// Only paths that exist on disk are returned. The result is
+    /// de-duplicated so a file resolved by two routes (e.g., the
+    /// consolidated PDF derived geometrically AND the
+    /// `linkedSourcePDFPath` cached on the entry) only gets
+    /// trashed once.
+    public static func siblingsForEPUB(
+        _ epubURL: URL,
+        linkedSourcePDF: URL? = nil
+    ) -> [URL] {
+        let stem = epubURL.deletingPathExtension().lastPathComponent
+        // EPUB at <root>/Books/<stem>.epub → grandparent is <root>.
+        let booksFolder = epubURL.deletingLastPathComponent()
+        let outputRoot = booksFolder.deletingLastPathComponent()
+
+        var candidates: [URL] = []
+
+        // Output-root-style siblings. These are the conventional
+        // landing spots when `<root>` is configured at conversion
+        // time; they don't depend on the current Settings root —
+        // the EPUB's own grandparent is the source of truth.
+        let subfolderToExt: [(String, String)] = [
+            (ConversionOutputSubfolder.textFiles, "txt"),
+            (ConversionOutputSubfolder.markdown, "md"),
+            (ConversionOutputSubfolder.html, "html"),
+            (ConversionOutputSubfolder.docx, "docx"),
+            (ConversionOutputSubfolder.searchablePDFs, "searchable.pdf"),
+            (ConversionOutputSubfolder.pdfs, "pdf"),
+        ]
+        for (subfolder, ext) in subfolderToExt {
+            candidates.append(
+                outputRoot
+                    .appendingPathComponent(subfolder, isDirectory: true)
+                    .appendingPathComponent("\(stem).\(ext)")
+            )
+        }
+        // Debug staging dir lives in `Logs/<stem>.humanist-debug`.
+        candidates.append(
+            outputRoot
+                .appendingPathComponent(
+                    ConversionOutputSubfolder.logs, isDirectory: true
+                )
+                .appendingPathComponent("\(stem).humanist-debug")
+        )
+
+        // Next-to-EPUB siblings (the path the pipeline uses when
+        // no output root is configured).
+        let epubStemURL = epubURL.deletingPathExtension()
+        for ext in ["txt", "md", "html", "docx"] {
+            candidates.append(epubStemURL.appendingPathExtension(ext))
+        }
+        // Searchable PDF and debug dir use a compound extension —
+        // `URL.appendingPathExtension` accepts dotted-component
+        // names just fine.
+        candidates.append(epubStemURL.appendingPathExtension("searchable.pdf"))
+        candidates.append(epubStemURL.appendingPathExtension("humanist-debug"))
+
+        // Explicit linked source PDF from the entry's metadata —
+        // catches the case where the user moved the EPUB but the
+        // sidecar still tracks the linked PDF's actual location.
+        if let linkedSourcePDF {
+            candidates.append(linkedSourcePDF)
+        }
+
+        // De-dupe + filter to extant paths.
+        var seen = Set<String>()
+        return candidates.filter { url in
+            let p = url.canonicalForFile.path
+            guard !seen.contains(p) else { return false }
+            seen.insert(p)
+            return FileManager.default.fileExists(atPath: url.path)
+        }
+    }
+
     /// `<basename>` or `<basename> <suffix>` depending on whether
     /// `suffix` is empty. Trims and rejects path-traversal inputs.
     private static func stemmedName(

@@ -1030,12 +1030,26 @@ struct LibraryWindowView: View {
         for entry in ctx.entries {
             coverCache.invalidate(entry.epubURL)
             if alsoTrashFiles {
-                do {
-                    try FileManager.default.trashItem(
-                        at: entry.epubURL, resultingItemURL: nil
-                    )
-                } catch {
-                    failures.append((entry.epubURL, error.localizedDescription))
+                // Collect every per-conversion sibling alongside
+                // the EPUB itself — markdown, plain text, HTML,
+                // DOCX, searchable PDF, consolidated source PDF,
+                // debug-staging directory. Trash silently when a
+                // file isn't there (the resolver pre-filters to
+                // extant paths) and aggregate per-URL failures
+                // into the dialog summary so a quota / permission
+                // issue on one sibling doesn't block the rest.
+                let linkedPDF = entry.resolveCachedLinkedPDF()
+                let siblings = ConversionOutputResolver.siblingsForEPUB(
+                    entry.epubURL, linkedSourcePDF: linkedPDF
+                )
+                for url in [entry.epubURL] + siblings {
+                    do {
+                        try FileManager.default.trashItem(
+                            at: url, resultingItemURL: nil
+                        )
+                    } catch {
+                        failures.append((url, error.localizedDescription))
+                    }
                 }
             }
             library.remove(entry.id)
@@ -1075,8 +1089,8 @@ struct LibraryWindowView: View {
                 : ""
             preamble = titles.joined(separator: ", ") + suffix
         }
-        var trailer = "\n\nRemove from Library forgets the book but leaves the EPUB on disk."
-            + " Move to Trash also sends the EPUB file to the Trash."
+        var trailer = "\n\nRemove from Library forgets the book but leaves files on disk."
+            + " Move to Trash sends the EPUB and every per-conversion sibling — Markdown, plain text, HTML, Word, searchable PDF, the consolidated source PDF, and debug logs — to the Trash."
         if ctx.entries.contains(where: { entryHasRejectablePDFSource($0) }) {
             trailer += " Trash & Don\u{2019}t Re-scan Source also tells the Input-folder auto-scanner to skip the source PDF on every Mac sharing this library."
         }
