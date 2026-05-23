@@ -229,7 +229,7 @@ public enum CostEstimator {
     }
 
     /// Compute a coarse pre-flight cost estimate. When
-    /// `useClaudePageOCR` is set, the cascade-based per-region
+    /// `useWholePageOCR` is set, the cascade-based per-region
     /// estimate is replaced with a single per-page Sonnet line item
     /// — the Phase 2 path makes one call per page instead of
     /// selectively escalating regions, so per-region rates don't
@@ -238,7 +238,7 @@ public enum CostEstimator {
         profile: DocumentProfile,
         cloudFeatures: AISettings.CloudFeatures,
         perBookCallCap: Int,
-        useClaudePageOCR: Bool = false,
+        useWholePageOCR: Bool = false,
         pageOCRProvider: PageOCRProvider = .claude
     ) -> Estimate {
         guard profile.pageCount > 0 else { return .empty }
@@ -251,7 +251,7 @@ public enum CostEstimator {
         // Page-OCR mode: one call per page; replaces the
         // hard-region-OCR + post-OCR-cleanup line items entirely.
         // Provider pick changes both per-call cost and the label.
-        if useClaudePageOCR {
+        if useWholePageOCR {
             let calls = profile.pageCount
             let feature: Feature
             let label: String

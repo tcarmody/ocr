@@ -273,7 +273,7 @@ final class JobRunner: ObservableObject {
         // this conversion regardless of global Settings. Empty
         // `CloudFeatures` makes every `make*ClaudeX` factory return
         // nil; the nil-returning key provider is belt-and-suspenders
-        // (factories also gate on a non-empty key). `useClaudePageOCR`
+        // (factories also gate on a non-empty key). `useWholePageOCR`
         // is coerced off since it only fires under Cloud mode + key.
         let privateOn = job.options.privateMode
         var cloudFeatures: AISettings.CloudFeatures =
@@ -294,8 +294,8 @@ final class JobRunner: ObservableObject {
         // cloud features are enabled. The cascade implementation
         // stays in the pipeline for SpikeRunner / dev measurement.
         let claudePageOCR = !privateOn && (
-            job.options.useClaudePageOCR
-            || UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
+            job.options.useWholePageOCR
+            || UserDefaults.standard.bool(forKey: "humanist.useWholePageOCR")
         )
         let cloudEnhancedOCR = false
         let keyProvider: @Sendable () -> String?
@@ -337,7 +337,7 @@ final class JobRunner: ObservableObject {
             // user's Settings → AI default.
             pageOCRProvider: job.options.pageOCRProvider
                 ?? aiSettings.pageOCRProvider,
-            useClaudePageOCR: claudePageOCR,
+            useWholePageOCR: claudePageOCR,
             useManuscriptMode: !job.options.privateMode
                 && job.options.useManuscriptMode,
             manuscriptHand: job.options.manuscriptHand,

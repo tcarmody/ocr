@@ -16,7 +16,7 @@ final class ProfileWarningTests: XCTestCase {
         confidence: Double = 0,
         imageXObjectsPerPage: Double = 0,
         useHighAccuracyOCR: Bool = false,
-        useClaudePageOCR: Bool = false,
+        useWholePageOCR: Bool = false,
         processingMode: ProcessingMode = .privateLocal,
         cloudFeatures: AISettings.CloudFeatures = AISettings.CloudFeatures(
             hardRegionOCR: false, tableExtraction: false,
@@ -37,7 +37,7 @@ final class ProfileWarningTests: XCTestCase {
         return ProfileWarningInputs(
             profile: profile,
             useHighAccuracyOCR: useHighAccuracyOCR,
-            useClaudePageOCR: useClaudePageOCR,
+            useWholePageOCR: useWholePageOCR,
             processingMode: processingMode,
             cloudFeatures: cloudFeatures,
             hasAPIKey: hasAPIKey,
@@ -161,7 +161,7 @@ final class ProfileWarningTests: XCTestCase {
     func test_cloud_page_OCR_already_picked_suppresses_complex_layout_warning() {
         let inputs = make(
             isLikelyScan: true,
-            useClaudePageOCR: true,
+            useWholePageOCR: true,
             processingMode: .cloud,
             cloudFeatures: cloudWithFeatureOn,
             hasAPIKey: true

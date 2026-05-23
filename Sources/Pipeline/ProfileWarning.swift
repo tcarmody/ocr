@@ -97,7 +97,7 @@ public struct ProfileWarningInputs: Sendable {
     /// mutually exclusive at the launcher level (different OCR
     /// engines), but inputs here are plain values so the
     /// evaluator can reason about each independently.
-    public let useClaudePageOCR: Bool
+    public let useWholePageOCR: Bool
     /// AI processing mode for this conversion.
     public let processingMode: ProcessingMode
     /// Cloud-feature toggles. Unused for non-cloud modes.
@@ -124,7 +124,7 @@ public struct ProfileWarningInputs: Sendable {
     public init(
         profile: DocumentProfile,
         useHighAccuracyOCR: Bool,
-        useClaudePageOCR: Bool = false,
+        useWholePageOCR: Bool = false,
         processingMode: ProcessingMode,
         cloudFeatures: AISettings.CloudFeatures,
         hasAPIKey: Bool,
@@ -134,7 +134,7 @@ public struct ProfileWarningInputs: Sendable {
     ) {
         self.profile = profile
         self.useHighAccuracyOCR = useHighAccuracyOCR
-        self.useClaudePageOCR = useClaudePageOCR
+        self.useWholePageOCR = useWholePageOCR
         self.processingMode = processingMode
         self.cloudFeatures = cloudFeatures
         self.hasAPIKey = hasAPIKey
@@ -159,7 +159,7 @@ public enum ProfileWarningEvaluator {
             || inputs.profile.imageXObjectsPerPage
                 >= ProfileWarning.figureDensityThreshold
         let upgradeAlreadyPicked = inputs.useHighAccuracyOCR
-            || inputs.useClaudePageOCR
+            || inputs.useWholePageOCR
         if complexLayout && !upgradeAlreadyPicked {
             // Pick the strongest available upgrade path. Cloud
             // page OCR ranks above Surya because Sonnet / Gemini

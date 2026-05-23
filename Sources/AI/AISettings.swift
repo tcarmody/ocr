@@ -290,7 +290,7 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// `chapterStructurePass` so the candidate set is based on
         /// the refined `epub:type` values.
         public var frontBackMatterSplitting: Bool
-        /// Tier 9 / E-Routing. When `useClaudePageOCR` is on and
+        /// Tier 9 / E-Routing. When `useWholePageOCR` is on and
         /// this flag is on, pages whose embedded text passes the
         /// quality scorer's `.trust` verdict skip the Sonnet call
         /// and emit reflowed embedded text instead. Saves
@@ -298,7 +298,7 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// books. On by default — turning off forces Sonnet on
         /// every page (the original page-OCR behavior).
         public var adaptivePageRouting: Bool
-        /// Tier 9 / E-Batches. When `useClaudePageOCR` is on and
+        /// Tier 9 / E-Batches. When `useWholePageOCR` is on and
         /// this flag is on, all the page-OCR Sonnet calls for one
         /// conversion submit as a single Anthropic Batches API
         /// request. 50% input + output token discount in exchange
@@ -308,7 +308,7 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// the conversion experience from per-page progress to
         /// "submitting batch / waiting / processing".
         public var useBatchAPI: Bool
-        /// Tier 9 / E-Parallel. When `useClaudePageOCR` is on, the
+        /// Tier 9 / E-Parallel. When `useWholePageOCR` is on, the
         /// per-page Sonnet calls run with this much concurrency
         /// (clamped to ≥ 1). Default 1 keeps the existing
         /// per-page rhythm; bumping to 4-8 cuts wall time

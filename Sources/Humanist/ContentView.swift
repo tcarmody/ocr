@@ -414,7 +414,7 @@ struct ContentView: View {
 
     /// Five-way mode the launcher's OCR Engine Picker exposes.
     /// Maps to the existing mutually-exclusive cluster of
-    /// `useClaudePageOCR` / `useEarlyPrintMode` / `useManuscriptMode`
+    /// `useWholePageOCR` / `useEarlyPrintMode` / `useManuscriptMode`
     /// / `useSuryaOCR` bools on QueueViewModel. Going through this
     /// enum guarantees the bools stay coherent — earlier launcher
     /// behavior allowed `useSuryaOCR` to combine with the Cloud
@@ -441,7 +441,7 @@ struct ContentView: View {
             get: {
                 if queue.useManuscriptMode { return .manuscript }
                 if queue.useEarlyPrintMode { return .earlyPrint }
-                if queue.useClaudePageOCR {
+                if queue.useWholePageOCR {
                     // Any Gemini variant lights up the
                     // "Gemini — Typeset" row in the picker; otherwise
                     // it's the Claude path. Goes through
@@ -455,7 +455,7 @@ struct ContentView: View {
                 return .auto
             },
             set: { newValue in
-                queue.useClaudePageOCR = false
+                queue.useWholePageOCR = false
                 queue.useEarlyPrintMode = false
                 queue.useManuscriptMode = false
                 queue.useSuryaOCR = false
@@ -463,9 +463,9 @@ struct ContentView: View {
                 switch newValue {
                 case .auto: break
                 case .surya: queue.useSuryaOCR = true
-                case .claudeTypeset: queue.useClaudePageOCR = true
+                case .claudeTypeset: queue.useWholePageOCR = true
                 case .geminiTypeset:
-                    queue.useClaudePageOCR = true
+                    queue.useWholePageOCR = true
                     queue.pageOCRProvider = .gemini25Flash
                 case .earlyPrint: queue.useEarlyPrintMode = true
                 case .manuscript: queue.useManuscriptMode = true
@@ -876,7 +876,7 @@ private struct JobRow: View {
         case .complexLayoutRecommendCloudPageOCR:
             actionableWarning(
                 warning: warning,
-                isOn: job.options.useClaudePageOCR,
+                isOn: job.options.useWholePageOCR,
                 enableLabel: "Enable Page OCR for this job",
                 disableLabel: "Page OCR enabled · Undo",
                 helpText: """
@@ -887,7 +887,7 @@ private struct JobRow: View {
                     """,
                 mutate: { newValue in
                     store.update(job.id) { mutable in
-                        mutable.options.useClaudePageOCR = newValue
+                        mutable.options.useWholePageOCR = newValue
                     }
                     // Cost shape changes materially when Page OCR
                     // flips — refresh the displayed estimate.

@@ -59,11 +59,11 @@ final class QueueViewModel: ObservableObject {
     /// with a configured API key — the toggle is allowed to be on
     /// in any mode but produces no Sonnet calls when those gates
     /// aren't met.
-    @Published var useClaudePageOCR: Bool = false
+    @Published var useWholePageOCR: Bool = false
     /// E-Vision-Modes / Manuscript track. When true, page OCR
     /// routes to Claude Opus 4.7 with a hand-family-specific
     /// prompt (see `manuscriptHand`). Mutually exclusive with
-    /// `useClaudePageOCR` at the UI layer — the engine factory
+    /// `useWholePageOCR` at the UI layer — the engine factory
     /// also lets manuscript win when both are set, but the
     /// launcher shouldn't let a user check both at once.
     /// Per-session toggle: snapshotted into `Job.options` at
@@ -78,7 +78,7 @@ final class QueueViewModel: ObservableObject {
     /// E-Vision-Modes / Early Print track. Routes per-page OCR
     /// through Sonnet 4.6 with a normalizing-posture prompt for
     /// 15th–18th c. printed material. Mutually exclusive with
-    /// `useClaudePageOCR` + `useManuscriptMode` at the UI layer.
+    /// `useWholePageOCR` + `useManuscriptMode` at the UI layer.
     /// Per-session toggle.
     @Published var useEarlyPrintMode: Bool = false
     /// Typeface selector for early-print mode. Defaults to
@@ -146,7 +146,7 @@ final class QueueViewModel: ObservableObject {
     /// Anthropic Batch API. Seeded from Settings → AI → Throughput
     /// at init; flipping the launcher toggle overrides for the
     /// session but doesn't write back to Settings. Same convention
-    /// as `useSuryaOCR` / `forceOCR` / `useClaudePageOCR`.
+    /// as `useSuryaOCR` / `forceOCR` / `useWholePageOCR`.
     @Published var useBatchAPI: Bool = false
 
     let store: JobStore
@@ -181,7 +181,7 @@ final class QueueViewModel: ObservableObject {
         // mutate their long-term preferences.
         let defaults = ConversionDefaults.current()
         self.useSuryaOCR = defaults.useSuryaOCR
-        self.useClaudePageOCR = defaults.useClaudePageOCR
+        self.useWholePageOCR = defaults.useWholePageOCR
         self.forceOCR = defaults.forceOCR
         self.privateMode = defaults.privateMode
         self.emitDebugLog = defaults.emitDebugLog
@@ -227,16 +227,16 @@ final class QueueViewModel: ObservableObject {
         if useEarlyPrintMode && !anthropic {
             useEarlyPrintMode = false
         }
-        if useClaudePageOCR {
+        if useWholePageOCR {
             switch pageOCRProvider {
             case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
                 if !gemini {
-                    useClaudePageOCR = false
+                    useWholePageOCR = false
                     pageOCRProvider = nil
                 }
             case .claude, nil:
                 if !anthropic {
-                    useClaudePageOCR = false
+                    useWholePageOCR = false
                     pageOCRProvider = nil
                 }
             }
@@ -326,7 +326,7 @@ final class QueueViewModel: ObservableObject {
             options: ConversionOptions(
                 languages: selectedLanguages.map { $0.rawValue },
                 useSuryaOCR: useSuryaOCR,
-                useClaudePageOCR: useClaudePageOCR,
+                useWholePageOCR: useWholePageOCR,
                 useManuscriptMode: useManuscriptMode,
                 manuscriptHand: manuscriptHand,
                 useEarlyPrintMode: useEarlyPrintMode,
@@ -353,8 +353,8 @@ final class QueueViewModel: ObservableObject {
         // estimate. Same gates the runner applies — the user toggle
         // OR the hidden UserDefault dev knob.
         let pageOCROn = !privateOn && (
-            useClaudePageOCR
-            || UserDefaults.standard.bool(forKey: "humanist.useClaudePageOCR")
+            useWholePageOCR
+            || UserDefaults.standard.bool(forKey: "humanist.useWholePageOCR")
         )
         // Strong capture of `runner` (was `weak runner`): the
         // Task isn't retained by anything, so there's no cycle to
@@ -378,7 +378,7 @@ final class QueueViewModel: ObservableObject {
                     profile: profile,
                     cloudFeatures: aiSettings.cloudFeatures,
                     perBookCallCap: aiSettings.perBookCallCap,
-                    useClaudePageOCR: pageOCROn,
+                    useWholePageOCR: pageOCROn,
                     pageOCRProvider: aiSettings.pageOCRProvider
                 )
             } else {
@@ -391,7 +391,7 @@ final class QueueViewModel: ObservableObject {
                 ProfileWarningInputs(
                     profile: profile,
                     useHighAccuracyOCR: suryaOn,
-                    useClaudePageOCR: pageOCROn,
+                    useWholePageOCR: pageOCROn,
                     processingMode: aiSettings.processingMode,
                     cloudFeatures: aiSettings.cloudFeatures,
                     hasAPIKey: hasAPIKey,
@@ -455,7 +455,7 @@ final class QueueViewModel: ObservableObject {
                 profile: profile,
                 cloudFeatures: aiSettings.cloudFeatures,
                 perBookCallCap: aiSettings.perBookCallCap,
-                useClaudePageOCR: job.options.useClaudePageOCR,
+                useWholePageOCR: job.options.useWholePageOCR,
                 pageOCRProvider: job.options.pageOCRProvider
                     ?? aiSettings.pageOCRProvider
             )
@@ -474,7 +474,7 @@ final class QueueViewModel: ObservableObject {
             options: ConversionOptions(
                 languages: selectedLanguages.map { $0.rawValue },
                 useSuryaOCR: false,
-                useClaudePageOCR: false,
+                useWholePageOCR: false,
                 forceOCR: false,
                 privateMode: privateMode,
                 emitDebugLog: false,

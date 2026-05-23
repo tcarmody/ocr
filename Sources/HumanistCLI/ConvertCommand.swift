@@ -226,7 +226,7 @@ struct ConvertCommand: AsyncParsableCommand {
             anthropicAPIKeyProvider: { [apiKeyEnv] in
                 ProcessInfo.processInfo.environment[apiKeyEnv]
             },
-            useClaudePageOCR: claudePageOCR,
+            useWholePageOCR: claudePageOCR,
             emitSiblingTextOutputs: formats.contains(.txt) || formats.contains(.md),
             emitSiblingDocuments: formats.contains(.html) || formats.contains(.docx),
             forceOCRPageRanges: forceOCRPageRanges,

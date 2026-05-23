@@ -41,8 +41,8 @@ struct ConversionSettingsView: View {
     // equivalent flags to `humanist-cli` in headless / cron runs.
     @AppStorage(ConversionSettingsKeys.defaultUseSuryaOCR)
     private var defaultUseSuryaOCR: Bool = false
-    @AppStorage(ConversionSettingsKeys.defaultUseClaudePageOCR)
-    private var defaultUseClaudePageOCR: Bool = false
+    @AppStorage(ConversionSettingsKeys.defaultUseWholePageOCR)
+    private var defaultUseWholePageOCR: Bool = false
     @AppStorage(ConversionSettingsKeys.defaultForceOCR)
     private var defaultForceOCR: Bool = false
     @AppStorage(ConversionSettingsKeys.defaultPrivateMode)
@@ -150,7 +150,7 @@ struct ConversionSettingsView: View {
         Section("Conversion defaults") {
             helpText("These set the initial values of the launcher's toggles each session. Per-conversion changes don't write back here. The page-OCR provider (Claude vs Gemini) is picked in AI Settings, not here — this toggle just controls whether whole-page OCR mode is on by default.")
             Toggle("Surya OCR", isOn: $defaultUseSuryaOCR)
-            Toggle("Whole-page OCR mode", isOn: $defaultUseClaudePageOCR)
+            Toggle("Whole-page OCR mode", isOn: $defaultUseWholePageOCR)
             Toggle("Force OCR (ignore embedded PDF text)", isOn: $defaultForceOCR)
             Toggle("Private mode (disable every Cloud feature)", isOn: $defaultPrivateMode)
             Toggle("Save log (keep debug staging directory)", isOn: $defaultEmitDebugLog)
@@ -227,7 +227,7 @@ struct ConversionSettingsView: View {
     private func resetConversionDefaults() {
         let f = ConversionDefaults.factory
         defaultUseSuryaOCR = f.useSuryaOCR
-        defaultUseClaudePageOCR = f.useClaudePageOCR
+        defaultUseWholePageOCR = f.useWholePageOCR
         defaultForceOCR = f.forceOCR
         defaultPrivateMode = f.privateMode
         defaultEmitDebugLog = f.emitDebugLog

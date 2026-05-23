@@ -58,7 +58,13 @@ public enum ConversionSettingsKeys {
     /// reads the same keys to pass equivalent humanist-cli flags
     /// for headless / cron runs.
     public static let defaultUseSuryaOCR = "humanist.conversion.defaultUseSuryaOCR"
-    public static let defaultUseClaudePageOCR = "humanist.conversion.defaultUseClaudePageOCR"
+    public static let defaultUseWholePageOCR = "humanist.conversion.defaultUseWholePageOCR"
+    /// Legacy key — preserves existing user pref across the
+    /// 2026-05-23 rename of `useClaudePageOCR → useWholePageOCR`.
+    /// `ConversionDefaults.current()` reads the new key first and
+    /// falls back to this one. `ConversionSettingsView` writes the
+    /// new key only.
+    static let legacyDefaultUseClaudePageOCR = "humanist.conversion.defaultUseClaudePageOCR"
     public static let defaultForceOCR = "humanist.conversion.defaultForceOCR"
     public static let defaultPrivateMode = "humanist.conversion.defaultPrivateMode"
     public static let defaultEmitDebugLog = "humanist.conversion.defaultEmitDebugLog"
@@ -79,7 +85,7 @@ public enum ConversionSettingsKeys {
 /// every unset key, breaking the emitSiblingTextOutputs case).
 public struct ConversionDefaults: Sendable, Equatable {
     public var useSuryaOCR: Bool
-    public var useClaudePageOCR: Bool
+    public var useWholePageOCR: Bool
     public var forceOCR: Bool
     public var privateMode: Bool
     public var emitDebugLog: Bool
@@ -89,7 +95,7 @@ public struct ConversionDefaults: Sendable, Equatable {
 
     public static let factory = ConversionDefaults(
         useSuryaOCR: false,
-        useClaudePageOCR: false,
+        useWholePageOCR: false,
         forceOCR: false,
         privateMode: false,
         emitDebugLog: false,
@@ -104,9 +110,17 @@ public struct ConversionDefaults: Sendable, Equatable {
             (d.object(forKey: key) as? Bool) ?? fallback
         }
         let f = factory
+        // Whole-page OCR: new key first, fall back to the legacy
+        // `defaultUseClaudePageOCR` key so a user pref set before
+        // 2026-05-23 isn't lost.
+        let wholePageOCR = (d.object(forKey:
+            ConversionSettingsKeys.defaultUseWholePageOCR) as? Bool)
+            ?? (d.object(forKey:
+                ConversionSettingsKeys.legacyDefaultUseClaudePageOCR) as? Bool)
+            ?? f.useWholePageOCR
         return ConversionDefaults(
             useSuryaOCR: read(ConversionSettingsKeys.defaultUseSuryaOCR, fallback: f.useSuryaOCR),
-            useClaudePageOCR: read(ConversionSettingsKeys.defaultUseClaudePageOCR, fallback: f.useClaudePageOCR),
+            useWholePageOCR: wholePageOCR,
             forceOCR: read(ConversionSettingsKeys.defaultForceOCR, fallback: f.forceOCR),
             privateMode: read(ConversionSettingsKeys.defaultPrivateMode, fallback: f.privateMode),
             emitDebugLog: read(ConversionSettingsKeys.defaultEmitDebugLog, fallback: f.emitDebugLog),

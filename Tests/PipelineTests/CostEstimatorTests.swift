@@ -136,7 +136,7 @@ final class CostEstimatorTests: XCTestCase {
 
     // MARK: - Page-OCR mode (Phase 4c)
 
-    /// When `useClaudePageOCR: true`, the per-region hard-region-OCR
+    /// When `useWholePageOCR: true`, the per-region hard-region-OCR
     /// estimate is replaced with a single per-page Sonnet line item,
     /// and post-OCR cleanup line items are suppressed (the page-OCR
     /// path produces clean output without a separate cleanup pass).
@@ -151,7 +151,7 @@ final class CostEstimatorTests: XCTestCase {
             profile: profile,
             cloudFeatures: features,
             perBookCallCap: 1_000_000,
-            useClaudePageOCR: true
+            useWholePageOCR: true
         )
         XCTAssertEqual(est.estimatedCalls, 400, "one call per page")
         let labels = est.perFeature.map(\.label)
@@ -181,7 +181,7 @@ final class CostEstimatorTests: XCTestCase {
             profile: profile,
             cloudFeatures: features,
             perBookCallCap: 1_000_000,
-            useClaudePageOCR: true
+            useWholePageOCR: true
         )
         let labels = est.perFeature.map(\.label)
         XCTAssertTrue(labels.contains(where: { $0.contains("Page OCR") }))
@@ -197,7 +197,7 @@ final class CostEstimatorTests: XCTestCase {
             profile: profile,
             cloudFeatures: features,
             perBookCallCap: 1_000_000,
-            useClaudePageOCR: true
+            useWholePageOCR: true
         )
         XCTAssertGreaterThan(est.estimatedCostUSD, 5,
             "400 pages at ~$0.04/page should be > $5")

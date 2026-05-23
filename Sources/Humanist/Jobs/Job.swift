@@ -155,7 +155,7 @@ struct ConversionOptions: Codable, Equatable {
     /// otherwise inert (the toggle is allowed to be on regardless).
     /// Persisted under the legacy key `useCloudEnhancedOCR` so
     /// existing queued jobs still load (see `CodingKeys`).
-    var useClaudePageOCR: Bool
+    var useWholePageOCR: Bool
     /// E-Vision-Modes / Manuscript track. Routes per-page OCR
     /// through Claude Opus 4.7 with hand-specific prompts instead
     /// of the Sonnet typeset path. Per-job; the launcher exposes
@@ -169,7 +169,7 @@ struct ConversionOptions: Codable, Equatable {
     /// E-Vision-Modes / Early Print track. Routes per-page OCR
     /// through Sonnet 4.6 with a normalizing-posture prompt for
     /// 15th–18th c. printed material. Per-job; mutually
-    /// exclusive with `useClaudePageOCR` + `useManuscriptMode`
+    /// exclusive with `useWholePageOCR` + `useManuscriptMode`
     /// at the launcher.
     var useEarlyPrintMode: Bool
     /// Typeface selector for early-print mode (auto /
@@ -187,7 +187,7 @@ struct ConversionOptions: Codable, Equatable {
     /// conversion. Forces `cloudFeatures` to all-off and clears the
     /// API-key provider in the runner — no Claude calls happen
     /// regardless of the user's global processing-mode / cloud
-    /// toggles. `useClaudePageOCR` is also coerced off, since it
+    /// toggles. `useWholePageOCR` is also coerced off, since it
     /// only fires on Cloud mode + key. Useful for one-off privacy-
     /// sensitive conversions without flipping global settings.
     var privateMode: Bool
@@ -265,7 +265,7 @@ struct ConversionOptions: Codable, Equatable {
     init(
         languages: [String] = ["en"],
         useSuryaOCR: Bool = false,
-        useClaudePageOCR: Bool = false,
+        useWholePageOCR: Bool = false,
         useManuscriptMode: Bool = false,
         manuscriptHand: ManuscriptHand = .auto,
         useEarlyPrintMode: Bool = false,
@@ -285,7 +285,7 @@ struct ConversionOptions: Codable, Equatable {
     ) {
         self.languages = languages
         self.useSuryaOCR = useSuryaOCR
-        self.useClaudePageOCR = useClaudePageOCR
+        self.useWholePageOCR = useWholePageOCR
         self.useManuscriptMode = useManuscriptMode
         self.manuscriptHand = manuscriptHand
         self.useEarlyPrintMode = useEarlyPrintMode
@@ -304,15 +304,20 @@ struct ConversionOptions: Codable, Equatable {
         self.useBatchAPI = useBatchAPI
     }
 
-    /// Codable: decodes both the new `useSuryaOCR` / `useClaudePageOCR`
-    /// keys and the legacy `useHighAccuracyOCR` / `useCloudEnhancedOCR`
-    /// keys so persisted jobs from pre-rename versions still load.
+    /// Codable: decodes the current `useSuryaOCR` / `useWholePageOCR`
+    /// keys plus their legacy aliases so persisted jobs from any
+    /// previous rename still load. The whole-page-OCR field has been
+    /// through three names: `useCloudEnhancedOCR` (original) →
+    /// `useClaudePageOCR` (2024–2026-05) → `useWholePageOCR`
+    /// (2026-05-23, after Gemini joined). All three keys decode to
+    /// the same Bool.
     private enum CodingKeys: String, CodingKey {
         case languages
         case useSuryaOCR
         case useHighAccuracyOCR  // legacy alias for useSuryaOCR
-        case useClaudePageOCR
-        case useCloudEnhancedOCR  // legacy alias for useClaudePageOCR
+        case useWholePageOCR
+        case useClaudePageOCR    // legacy alias for useWholePageOCR (2024–2026-05)
+        case useCloudEnhancedOCR // legacy alias for useWholePageOCR (original)
         case useManuscriptMode
         case manuscriptHand
         case useEarlyPrintMode
@@ -341,12 +346,19 @@ struct ConversionOptions: Codable, Equatable {
                 Bool.self, forKey: .useHighAccuracyOCR
             ) ?? false
         }
-        if let claude = try c.decodeIfPresent(
+        // Whole-page OCR has three historical key names; try the
+        // current one first, then each legacy alias in order of
+        // recency so the most recently-written blob shape wins.
+        if let v = try c.decodeIfPresent(
+            Bool.self, forKey: .useWholePageOCR
+        ) {
+            self.useWholePageOCR = v
+        } else if let v = try c.decodeIfPresent(
             Bool.self, forKey: .useClaudePageOCR
         ) {
-            self.useClaudePageOCR = claude
+            self.useWholePageOCR = v
         } else {
-            self.useClaudePageOCR = try c.decodeIfPresent(
+            self.useWholePageOCR = try c.decodeIfPresent(
                 Bool.self, forKey: .useCloudEnhancedOCR
             ) ?? false
         }
@@ -430,7 +442,7 @@ struct ConversionOptions: Codable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(languages, forKey: .languages)
         try c.encode(useSuryaOCR, forKey: .useSuryaOCR)
-        try c.encode(useClaudePageOCR, forKey: .useClaudePageOCR)
+        try c.encode(useWholePageOCR, forKey: .useWholePageOCR)
         try c.encode(useManuscriptMode, forKey: .useManuscriptMode)
         try c.encode(manuscriptHand.rawValue, forKey: .manuscriptHand)
         try c.encode(useEarlyPrintMode, forKey: .useEarlyPrintMode)

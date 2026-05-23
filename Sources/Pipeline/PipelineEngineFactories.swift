@@ -393,7 +393,7 @@ extension PDFToEPUBPipeline {
     /// Build the "Claude does the page" engine. Layered on top of the
     /// generic factory: same `.cloud` + key + `hardRegionOCR` gates
     /// (reusing that feature flag for billing/budget purposes), plus
-    /// the user's explicit `useClaudePageOCR` or `useManuscriptMode`
+    /// the user's explicit `useWholePageOCR` or `useManuscriptMode`
     /// opt-in. When non-nil the per-page loop skips Vision / cascade
     /// / region-aware reflow and uses the configured Claude model to
     /// produce structured XHTML directly. `captureSink` receives the
@@ -409,7 +409,7 @@ extension PDFToEPUBPipeline {
         options: Options, budget: CloudCallBudget,
         captureSink: ClaudePageOCREngine.CaptureSink? = nil
     ) -> ClaudePageOCREngine? {
-        guard options.useClaudePageOCR
+        guard options.useWholePageOCR
             || options.useManuscriptMode
             || options.useEarlyPrintMode
         else { return nil }
@@ -444,7 +444,7 @@ extension PDFToEPUBPipeline {
         options: Options, budget: CloudCallBudget,
         captureSink: ClaudePageOCREngine.CaptureSink? = nil
     ) -> (any PageOCREngine)? {
-        guard options.useClaudePageOCR
+        guard options.useWholePageOCR
             || options.useManuscriptMode
             || options.useEarlyPrintMode
         else { return nil }

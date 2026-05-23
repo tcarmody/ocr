@@ -136,18 +136,18 @@ public actor PDFToEPUBPipeline {
         /// Surya OCR / Tesseract / RegionAwareReflow. Surya layout +
         /// figure extraction + downstream chapter-splitting still
         /// run normally. Off by default; toggled by reading the
-        /// `humanist.useClaudePageOCR` UserDefault in `JobRunner` so
+        /// `humanist.useWholePageOCR` UserDefault in `JobRunner` so
         /// we can flip it via `defaults write` without rebuilding.
         /// Phase 3 will wire it into the user-visible "Claude OCR"
         /// toggle as the new default behavior.
-        public var useClaudePageOCR: Bool
+        public var useWholePageOCR: Bool
         /// E-Vision-Modes / Manuscript track. When true (and Cloud
         /// mode + an API key are configured), every page routes
         /// through `ClaudePageOCREngine` in manuscript mode
         /// (Claude Opus 4.7) instead of the typeset Sonnet path.
         /// Per-job; the launcher's "Manuscript mode" toggle is
         /// the only surface that flips this. Mutually exclusive
-        /// with `useClaudePageOCR` at the launcher layer — both
+        /// with `useWholePageOCR` at the launcher layer — both
         /// drive the same engine; manuscript wins when both are on.
         public var useManuscriptMode: Bool
         /// Hand-family selector for manuscript mode. Effective
@@ -160,7 +160,7 @@ public actor PDFToEPUBPipeline {
         /// `ClaudePageOCREngine` in early-print mode (Sonnet 4.6
         /// with normalizing-posture prompt for 15th–18th c.
         /// printed books). Mutually exclusive with
-        /// `useClaudePageOCR` and `useManuscriptMode` at the
+        /// `useWholePageOCR` and `useManuscriptMode` at the
         /// launcher layer; the engine factory falls back to
         /// `.typeset` when nothing is set.
         public var useEarlyPrintMode: Bool
@@ -253,7 +253,7 @@ public actor PDFToEPUBPipeline {
             landingAIAPIKeyProvider: @escaping @Sendable () -> String? = { nil },
             pageOCRProvider: PageOCRProvider = .claude,
             disableLocalCascadeEscalation: Bool = false,
-            useClaudePageOCR: Bool = false,
+            useWholePageOCR: Bool = false,
             useManuscriptMode: Bool = false,
             manuscriptHand: ManuscriptHand = .auto,
             useEarlyPrintMode: Bool = false,
@@ -289,7 +289,7 @@ public actor PDFToEPUBPipeline {
             self.landingAIAPIKeyProvider = landingAIAPIKeyProvider
             self.pageOCRProvider = pageOCRProvider
             self.disableLocalCascadeEscalation = disableLocalCascadeEscalation
-            self.useClaudePageOCR = useClaudePageOCR
+            self.useWholePageOCR = useWholePageOCR
             self.useManuscriptMode = useManuscriptMode
             self.manuscriptHand = manuscriptHand
             self.useEarlyPrintMode = useEarlyPrintMode
@@ -434,7 +434,7 @@ public actor PDFToEPUBPipeline {
             let manager = ResumeManager(stagingDir: directory)
             let sourceFingerprint = ResumeManager.fingerprint(of: pdfURL) ?? ""
             let existing = manager.readManifest()
-            let currentMode: String = options.useClaudePageOCR
+            let currentMode: String = options.useWholePageOCR
                 ? StagingManifest.Mode.pageOCR
                 : StagingManifest.Mode.cascade
             let resumeAvailable: Bool

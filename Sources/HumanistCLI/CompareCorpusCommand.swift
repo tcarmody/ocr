@@ -258,7 +258,7 @@ struct CompareCorpusCommand: AsyncParsableCommand {
             anthropicAPIKeyProvider: { [apiKeyEnv] in
                 ProcessInfo.processInfo.environment[apiKeyEnv]
             },
-            useClaudePageOCR: false,
+            useWholePageOCR: false,
             emitSiblingTextOutputs: false,
             emitSiblingDocuments: false,
             forceOCRPageRanges: [],
