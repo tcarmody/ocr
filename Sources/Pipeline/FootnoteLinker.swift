@@ -81,7 +81,15 @@ enum FootnoteLinker {
         isBold: Bool = false
     ) -> [InlineRun] {
         guard !footnotes.isEmpty, !text.isEmpty else {
-            return [InlineRun(text, isItalic: isItalic, isBold: isBold)]
+            // No footnotes / empty text → no splice work needed, but
+            // still hand to the math splitter so a paragraph with
+            // inline `<math>…</math>` markup but no footnote markers
+            // still gets the markup expanded into rawXHTML runs.
+            // Without this the early-return shortcut bypassed the
+            // splitter on every footnote-free page (i.e. most of them).
+            return InlineMathSplitter.split(
+                [InlineRun(text, isItalic: isItalic, isBold: isBold)]
+            )
         }
         // Match longer markers first so "11" wins over "1" when both
         // exist on a page.

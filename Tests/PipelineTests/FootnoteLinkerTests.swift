@@ -64,6 +64,23 @@ final class FootnoteLinkerTests: XCTestCase {
         XCTAssertNil(runs[0].noterefId)
     }
 
+    func test_splice_no_footnotes_still_expands_inline_math() {
+        // Regression: the early-return shortcut (no footnotes /
+        // empty text) used to bypass the math splitter, leaving
+        // Surya's `<math>…</math>` markup to be XML-escaped at the
+        // writer. Footnote-free pages were the silent majority of
+        // the failure surface — patch lives at the early-return.
+        let runs = FootnoteLinker.splice(
+            text: "for <math>t_m</math>—would exceed <math>w_m</math>.",
+            footnotes: []
+        )
+        XCTAssertTrue(runs.count >= 2)
+        XCTAssertNotNil(
+            runs.first { $0.rawXHTML != nil },
+            "expected at least one rawXHTML run from inline <math> markup"
+        )
+    }
+
     func test_splice_inserts_noteref_after_word_punct() {
         let runs = FootnoteLinker.splice(
             text: "He critiques knowledge.3 Then he moves on.",
