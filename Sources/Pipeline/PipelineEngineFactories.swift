@@ -231,76 +231,103 @@ extension PDFToEPUBPipeline {
     /// when Cloud is selected.
 
     /// Pick a metadata extractor. See gating note above.
+    /// True when AFM is available on the host AND the user hasn't
+    /// turned off Apple Intelligence at the system level. Used by
+    /// every `makeXxx` factory below to decide whether the AFM
+    /// fallback wrapper is worth constructing.
+    static var afmAvailable: Bool {
+        if case .available = AppleFoundationModelClient.availability {
+            return true
+        }
+        return false
+    }
+
     static func makeMetadataExtractor(
         options: Options, budget: CloudCallBudget
     ) -> (any BookMetadataExtractor)? {
-        if let cloud = makeClaudeMetadataExtractor(
+        let cloud = makeClaudeMetadataExtractor(
             options: options, budget: budget
-        ) {
-            return cloud
+        )
+        let afm: (any BookMetadataExtractor)? =
+            (options.localFeatures.localMetadataExtraction && afmAvailable)
+                ? AppleFoundationModelMetadataExtractor()
+                : nil
+        return resolveCloudWithAFM(cloud: cloud, afm: afm) {
+            FallbackBookMetadataExtractor(primary: $0, fallback: $1)
         }
-        guard options.localFeatures.localMetadataExtraction
-        else { return nil }
-        if case .available = AppleFoundationModelClient.availability {
-            return AppleFoundationModelMetadataExtractor()
-        }
-        return nil
     }
 
-    /// Pick a post-OCR cleanup processor. See gating note above.
-    /// The AFM impl is text-only: vision-mode regions still need
-    /// Cloud Haiku, but the AFM path covers the much larger
-    /// passages-mode population.
+    /// Pick a post-OCR cleanup processor. AFM impl is text-only;
+    /// vision-mode regions still need Cloud Haiku — the decorator
+    /// passes that through (AFM returns nil on vision requests, so
+    /// the fallback effectively becomes "Cloud or nothing" for
+    /// vision-mode regions).
     static func makePostProcessor(
         options: Options, budget: CloudCallBudget
     ) -> (any PostOCRProcessor)? {
-        if let cloud = makeClaudePostProcessor(
+        let cloud = makeClaudePostProcessor(
             options: options, budget: budget
-        ) {
-            return cloud
+        )
+        let afm: (any PostOCRProcessor)? =
+            (options.localFeatures.localPostOCRCleanup && afmAvailable)
+                ? AppleFoundationModelPostProcessor()
+                : nil
+        return resolveCloudWithAFM(cloud: cloud, afm: afm) {
+            FallbackPostOCRProcessor(primary: $0, fallback: $1)
         }
-        guard options.localFeatures.localPostOCRCleanup
-        else { return nil }
-        if case .available = AppleFoundationModelClient.availability {
-            return AppleFoundationModelPostProcessor()
-        }
-        return nil
     }
 
-    /// Pick a coherence analyzer. See gating note above.
     static func makeCoherenceAnalyzer(
         options: Options, budget: CloudCallBudget
     ) -> (any BookCoherenceAnalyzer)? {
-        if let cloud = makeClaudeCoherenceAnalyzer(
+        let cloud = makeClaudeCoherenceAnalyzer(
             options: options, budget: budget
-        ) {
-            return cloud
+        )
+        let afm: (any BookCoherenceAnalyzer)? =
+            (options.localFeatures.localCoherencePass && afmAvailable)
+                ? AppleFoundationModelCoherenceAnalyzer()
+                : nil
+        return resolveCloudWithAFM(cloud: cloud, afm: afm) {
+            FallbackBookCoherenceAnalyzer(primary: $0, fallback: $1)
         }
-        guard options.localFeatures.localCoherencePass
-        else { return nil }
-        if case .available = AppleFoundationModelClient.availability {
-            return AppleFoundationModelCoherenceAnalyzer()
-        }
-        return nil
     }
 
-    /// Pick a chapter classifier. See gating note above. Returns
-    /// the protocol type so the per-chapter `classifyChapters`
-    /// pass doesn't branch on which impl is active.
+    /// Pick a chapter classifier. Returns the protocol type so the
+    /// per-chapter `classifyChapters` pass doesn't branch on which
+    /// impl is active.
     static func makeChapterClassifier(
         options: Options, budget: CloudCallBudget
     ) -> (any SemanticChapterClassifier)? {
-        if let cloud = makeClaudeChapterClassifier(
+        let cloud = makeClaudeChapterClassifier(
             options: options, budget: budget
-        ) {
-            return cloud
+        )
+        let afm: (any SemanticChapterClassifier)? =
+            (options.localFeatures.localChapterClassification && afmAvailable)
+                ? AppleFoundationModelClassifier()
+                : nil
+        return resolveCloudWithAFM(cloud: cloud, afm: afm) {
+            FallbackSemanticChapterClassifier(primary: $0, fallback: $1)
         }
-        guard options.localFeatures.localChapterClassification
-        else { return nil }
-        if case .available = AppleFoundationModelClient.availability {
-            return AppleFoundationModelClassifier()
+    }
+
+    /// Shared "pick Cloud, AFM, both, or neither" logic for the four
+    /// factories above. Three-state choice:
+    ///   * Cloud + AFM → return the decorator wrapping both, so a
+    ///     Cloud failure mid-conversion still produces output.
+    ///   * Cloud only  → return Cloud directly (existing posture).
+    ///   * AFM only    → return AFM directly (existing posture).
+    ///   * Neither     → return nil (caller skips the feature).
+    private static func resolveCloudWithAFM<P>(
+        cloud: P?,
+        afm: P?,
+        decorator: (P, P) -> P
+    ) -> P? {
+        switch (cloud, afm) {
+        case let (.some(c), .some(a)): return decorator(c, a)
+        case let (.some(c), .none):    return c
+        case let (.none, .some(a)):    return a
+        case (.none, .none):           return nil
         }
-        return nil
     }
 
     static func makeClaudeTableExtractor(
