@@ -1685,6 +1685,131 @@ subscript / superscript stacks.
     if quality on a hard math book ever forces a choice,
     Mathpix is the obvious default for per-region dispatch.
 
+**P-Math-Region-Detection** (queued 2026-05-23). Surya's layout
+model under-classifies math: the Becker corpus has ZERO
+`.formula` regions despite display equations on dozens of
+pages. Every equation is buried inside a `.text` or `.other`
+region and only surfaces via Surya's inline `<math>…</math>`
+markup in the OCR text. Consequence: `P-Math-Cascade`'s
+`ClaudeMathExtractor` never fires (the loop gate is
+`region.kind == .formula`), so the **clean image-based MathML
+transcription** path is unreachable. Inline-markup expansion
+(`P-Math-Surya-Inline`) catches what Surya already recognized,
+but Surya's per-glyph OCR on dense math regions is lossy —
+partial recognition shows up to the reader as "dropped" /
+"fumbled" equations even though the layout was technically
+detected.
+
+Goal: identify display-equation regions Surya misclassified,
+promote them to `.formula`, and let the existing cascade math
+extractor produce clean MathML from the cropped image (bypassing
+Surya's lossy text OCR for that region).
+
+### Approach — multi-tier promoter, run as a pre-pass on Surya regions
+
+**Tier 1 — Geometric heuristic (deterministic, no model cost).**
+Walk each page's regions; promote a `.text` / `.other` region
+to `.formula` when ALL of:
+  * Width < 70% of the page's dominant body-column width
+    (display equations are typically centered with whitespace
+    on both sides);
+  * Horizontal symmetry: `|leftMargin - rightMargin| / pageWidth
+    < 0.10` (centered, not flush left);
+  * Vertical extent ≤ 3 dominant line heights (display equations
+    fit on 1-3 lines; longer "centered" things tend to be
+    poems / blockquotes);
+  * Vertical gap above ≥ 0.5 line heights from the previous
+    region (display equations sit between paragraphs, not
+    inside them);
+  * Trailing equation-number pattern is a *signal-amplifier* but
+    not required: a region ending in `(1)`, `(3.4)`, `(A.2)`
+    promotes more aggressively (relax centering threshold).
+Cheap, deterministic, runs before OCR — promoted regions skip
+the cascade text-OCR pass entirely and go straight to the math
+extractor.
+
+**Tier 2 — Text-pattern heuristic (deterministic, post-OCR).**
+After Surya text OCR, scan each `.text` / `.other` region's
+recognized text. Promote to `.formula` when ANY of:
+  * `<math>…</math>` markup spans ≥ 60% of the region's total
+    text length (the region is mostly math with prose framing);
+  * Single-line region whose text contains `=` AND ≤ 5 prose
+    words AND ≥ 1 LaTeX-style operator (`\sum`, `\int`, `_{...}`,
+    `^{...}`, `\frac{...}{...}`);
+  * Single-line region whose text ends with `\([0-9]+(\.[0-9]+)?\)`
+    AND contains math symbols (greek letters, integral signs,
+    subscripts).
+On a Tier-2 promotion, **discard the lossy Surya text** for the
+region — the math extractor will re-OCR from the cropped image.
+
+**Tier 3 — Math-density classifier (visual, optional).**
+For ambiguous regions, count math-glyph density in the cropped
+image: ratio of (non-alphabetic, non-space glyph pixels) to
+total text pixels. Above a tuned threshold → math region.
+Catches Surya OCR'd-as-gibberish cases where the text-pattern
+heuristic misses but the rendered image is clearly math.
+Implementation: lightweight, runs on the existing rendered
+page raster; no model call. Validate against a labeled corpus
+before tuning the threshold (defer until corpus exists).
+
+**Tier 4 — Cloud-assisted classifier (opt-in, expensive).**
+Single Sonnet call per page: "list the bbox of every display
+equation on this page as JSON". Catches anything the heuristics
+missed. Cost ~$0.04/page; only worth firing when the user knows
+the book is math-heavy. Off by default; gate behind a per-
+conversion toggle in the launcher (next to "Manuscript hand"
+picker).
+
+### Sequencing
+
+Ship Tiers 1+2 together — they're complementary and cheap.
+Tier 1 catches well-typeset textbook display equations (clean
+geometry); Tier 2 catches anything Surya inline-tagged or
+that has obvious LaTeX-style markup. Both feed into the
+existing `P-Math-Cascade` extractor — no new engines needed.
+
+Tier 3 (visual density) is a defer; needs a labeled corpus
+to tune against. Tier 4 (Cloud classifier) is a defer
+behind opt-in; same cost-justification posture as the
+`chapterMissedBreakDetection` Sonnet pass.
+
+### Plumbing
+
+  * New `FormulaRegionPromoter.swift` static helper in
+    `Sources/Pipeline/`. Two methods: `promoteGeometric(regions:
+    pageBounds:) -> [LayoutRegion]` for Tier 1 (runs after
+    Surya layout, before OCR dispatch), and `promoteByText(regions:
+    observations:) -> [LayoutRegion]` for Tier 2 (runs after
+    Surya OCR, before figure/math extraction).
+  * Insertion points in `PipelineCascadeLoop.processCascadePage`:
+    Tier 1 between layout-detection and figure extraction;
+    Tier 2 between OCR completion and the math-extractor loop.
+  * Promoted regions populate a diagnostic dict so the debug
+    log surfaces "page N region M: promoted .text → .formula
+    by geometric heuristic" — the user audits decisions instead
+    of guessing why a paragraph went missing.
+  * No CloudFeatures flag — heuristic promoters are free and
+    deterministic; on by default whenever cascade mode runs.
+    Tier 4 (when shipped) gets a flag.
+
+### Effort estimate
+
+  * Tier 1 (geometric): ~2 hours including tests.
+  * Tier 2 (text-pattern): ~2 hours including tests.
+  * Diagnostic log integration: ~30 min.
+  * Total for Tiers 1+2 shipped: ~half day.
+
+### Expected impact
+
+For the Becker corpus (zero `.formula` regions today):
+  * Tier 1 should promote ~80% of the centered display equations
+    Surya saw as text (typical textbook geometry).
+  * Tier 2 catches the remaining inline-math-heavy regions
+    that Tier 1 missed because they sit inside wider paragraphs.
+  * Together: ~90-95% of equations route through the math
+    extractor and produce clean MathML, instead of relying on
+    Surya's lossy text OCR + `InlineMathSplitter` rescue path.
+
 ### Goal
 
 Render math content from `.formula` regions as either MathML (best
