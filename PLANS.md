@@ -1624,6 +1624,40 @@ on refusal / empty / non-`<math>` response. Gated by
 [InlineRun(rawXHTML: mathML)])` instead of `Block.figure` when
 MathML is captured. 10 new tests.
 
+**P-Math-LandingAI** (queued). LandingAI ADE (`/v1/ade/parse`) is
+already wired as a Stage 2.5 document-OCR alternative
+(`LandingAIDocumentEngine`) and a table extractor
+(`LandingAITableExtractor`); ADE's markdown response also carries
+MathML for math regions in math-heavy documents (purpose-built
+for "agentic document extraction"). Likely the best quality of
+the three options on dense aligned derivations.
+  * Reuses the existing `LandingAIAPIKeyStore` — no new
+    keychain entry. User already has a single key configured
+    for cascade Stage 2.5 + table extraction.
+  * `LandingAIMathExtractor` would conform to `MathExtractor`
+    and route to the same `/v1/ade/parse` endpoint. Parser
+    pulls the MathML out of the markdown body (look for
+    `<math …>` substrings between paragraph delimiters).
+  * **Cost concern**: LandingAI bills per parse call, not per
+    region (~$0.03/call). At one call per `.formula` region
+    that's ~6× Mathpix and ~10× Claude for sparse math. Likely
+    only worth firing when the page has a high density of
+    math regions; per-region dispatch is wasteful.
+  * Better unlock: **page-level routing** — when a page has
+    ≥ N `.formula` regions, send the WHOLE page through ADE
+    once, parse out all the per-region MathML from the
+    response. Amortizes the per-parse cost across multiple
+    formulas. Without this, LandingAI-for-math is worse than
+    cascade-Sonnet on cost without enough quality lift to
+    justify it on the current corpus.
+  * Defer until: (a) a math-heavy book where cascade-Sonnet's
+    MathML is visibly wrong, AND (b) page-level routing
+    designed so the parse call covers a useful batch of
+    formulas. Until then, the existing LandingAI document-OCR
+    path (cascade Stage 2.5) will surface MathML inline for
+    whole-page LandingAI runs — only `.formula`-region
+    cascade-mode users miss out.
+
 **P-Math-Mathpix** (queued). Optional `MathpixMathExtractor`
 as a higher-quality alternative to `ClaudeMathExtractor` for
 math-heavy books. Mathpix's `/v3/text` endpoint with
@@ -1646,6 +1680,10 @@ subscript / superscript stacks.
   * Defer until: (a) user has real test credentials and (b) a
     math-heavy book in the corpus to validate against. Effort
     estimate ~5-6 files / half-day once those are in place.
+  * Cost-per-formula (~$0.004) sits between cascade-Sonnet
+    (~$0.001-$0.005) and LandingAI per-region (~$0.03);
+    if quality on a hard math book ever forces a choice,
+    Mathpix is the obvious default for per-region dispatch.
 
 ### Goal
 
