@@ -45,6 +45,12 @@ extension PDFToEPUBPipeline {
         /// Per-region table extractions. Caller maps these to
         /// `tableExtractionsByKey[PageRegionKey(pageIndex:i, regionIndex:...)]`.
         let tableEntries: [(regionIndex: Int, rows: [[TableCell]])]
+        /// P-Math-Cascade. Per-region MathML transcriptions for
+        /// `.formula` regions. Caller maps these to
+        /// `mathExtractionsByKey[PageRegionKey(pageIndex:i, regionIndex:...)]`.
+        /// Empty when no math extractor is wired or every region
+        /// declined / failed.
+        let mathEntries: [(regionIndex: Int, mathML: String)]
         let qualityScore: EmbeddedTextQualityScorer.Score
         let extractorDiagnostics: EmbeddedTextExtractor.Diagnostics
         let correctionTrailEntries: [CorrectionTrail.Entry]
@@ -77,7 +83,8 @@ extension PDFToEPUBPipeline {
         cloudOCREngine: (any OCREngine)?,
         claudePostProcessor: (any PostOCRProcessor)?,
         cloudTableExtractor: (any TableExtractor)?,
-        landingAITableExtractor: LandingAITableExtractor?
+        landingAITableExtractor: LandingAITableExtractor?,
+        cloudMathExtractor: (any MathExtractor)?
     ) async throws -> CascadePageOutcome {
         // Sync prep: embedded extraction + quality scoring. Wrap
         // in autoreleasepool so PDFKit/CoreGraphics NSObject
@@ -110,6 +117,7 @@ extension PDFToEPUBPipeline {
         // outer dicts. Caller unpacks these from the outcome.
         var figures: [FigureExtractor.ExtractedFigure] = []
         var tableEntries: [(regionIndex: Int, rows: [[TableCell]])] = []
+        var mathEntries: [(regionIndex: Int, mathML: String)] = []
         var correctionTrail: [CorrectionTrail.Entry] = []
         var layoutError: String? = nil
         var ocrError: String? = nil
@@ -369,6 +377,28 @@ extension PDFToEPUBPipeline {
                     }
                 }
             }
+            // P-Math-Cascade. For each `.formula` region, ask
+            // Sonnet for MathML. Successful results store on
+            // `mathEntries` and downstream reflow emits a math-rich
+            // paragraph instead of the rastered figure. Decline →
+            // figure raster fallback (already extracted above), so
+            // nothing here can regress the existing behavior.
+            if let mathExt = cloudMathExtractor,
+               let regions = layoutForPage, !regions.isEmpty {
+                for (regionIdx, region) in regions.enumerated()
+                where region.kind == .formula {
+                    if let math = await mathExt.extract(
+                        pageImage: image,
+                        regionBox: region.box,
+                        stagingDir: stagingDir,
+                        pageIndex: i,
+                        regionIndex: regionIdx
+                    ), !math.isEmpty {
+                        mathEntries.append((regionIdx, math))
+                    }
+                }
+            }
+
             // No per-page PNG cleanup — the staging dir's lifecycle
             // (temp removed in `defer`, debug folder kept) handles
             // it as a single batch.
@@ -384,6 +414,7 @@ extension PDFToEPUBPipeline {
             verdict: effectiveVerdict,
             figures: figures,
             tableEntries: tableEntries,
+            mathEntries: mathEntries,
             qualityScore: quality,
             extractorDiagnostics: extracted.diagnostics,
             correctionTrailEntries: correctionTrail,

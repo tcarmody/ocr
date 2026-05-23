@@ -1322,6 +1322,14 @@ public actor PDFToEPUBPipeline {
         // `.table` region, reflow falls back to `TableHeuristic`.
         var tableExtractionsByKey: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:]
 
+        // P-Math-Cascade. Per-page-region MathML transcriptions for
+        // `.formula` regions, produced by the cascade loop's math
+        // extractor. Reflow drops these into an InlineRun.rawXHTML
+        // and emits a paragraph in place of the figure raster.
+        // Empty when Cloud-mode is off or no formula regions returned
+        // MathML (always the case for non-STEM books).
+        var mathExtractionsByKey: [CaptionAssociator.PageRegionKey: String] = [:]
+
         // Cloud-mode engines, constructed once per conversion and
         // shared across pages. Each one is independently nil unless
         // `processingMode == .cloud`, its feature flag is on, and an
@@ -1346,6 +1354,7 @@ public actor PDFToEPUBPipeline {
         // posture as `cloudOCREngine`.
         let cloudTableExtractor = cloudEngines.tableExtractor
         let landingAITableExtractor = cloudEngines.landingAITableExtractor
+        let cloudMathExtractor = cloudEngines.mathExtractor
         let activePageEngine = cloudEngines.pageEngine
         let claudeBatchPageEngine = cloudEngines.claudeBatchPageEngine
         let geminiBatchPageEngine = cloudEngines.geminiBatchPageEngine
@@ -1584,7 +1593,8 @@ public actor PDFToEPUBPipeline {
                 cloudOCREngine: cloudOCREngine,
                 claudePostProcessor: claudePostProcessor,
                 cloudTableExtractor: cloudTableExtractor,
-                landingAITableExtractor: landingAITableExtractor
+                landingAITableExtractor: landingAITableExtractor,
+                cloudMathExtractor: cloudMathExtractor
             )
             extractorDiagnostics[i] = outcome.extractorDiagnostics
             qualityScores[i] = outcome.qualityScore
@@ -1597,6 +1607,12 @@ public actor PDFToEPUBPipeline {
                     pageIndex: i, regionIndex: entry.regionIndex
                 )
                 tableExtractionsByKey[key] = entry.rows
+            }
+            for entry in outcome.mathEntries {
+                let key = CaptionAssociator.PageRegionKey(
+                    pageIndex: i, regionIndex: entry.regionIndex
+                )
+                mathExtractionsByKey[key] = entry.mathML
             }
             correctionTrailEntries.append(
                 contentsOf: outcome.correctionTrailEntries
@@ -1698,7 +1714,8 @@ public actor PDFToEPUBPipeline {
                                 cloudOCREngine,
                                 claudePostProcessor,
                                 cloudTableExtractor,
-                                landingAITableExtractor
+                                landingAITableExtractor,
+                                cloudMathExtractor
                             )
                             return (pageIndex, outcome)
                         }
@@ -1724,6 +1741,13 @@ public actor PDFToEPUBPipeline {
                                 regionIndex: entry.regionIndex
                             )
                             tableExtractionsByKey[key] = entry.rows
+                        }
+                        for entry in outcome.mathEntries {
+                            let key = CaptionAssociator.PageRegionKey(
+                                pageIndex: i,
+                                regionIndex: entry.regionIndex
+                            )
+                            mathExtractionsByKey[key] = entry.mathML
                         }
                         correctionTrailEntries.append(
                             contentsOf: outcome.correctionTrailEntries
@@ -2020,6 +2044,7 @@ public actor PDFToEPUBPipeline {
                 pageResults: pageResults,
                 figureExtractions: figureExtractionsByPage,
                 tableExtractions: tableExtractionsByKey,
+                mathExtractions: mathExtractionsByKey,
                 captionAssociations: captionAssociations,
                 debugLogURL: logURL,
                 extractorDiagnostics: extractorDiagnostics,
@@ -2032,6 +2057,7 @@ public actor PDFToEPUBPipeline {
                 pageResults: pageResults,
                 figureExtractions: figureExtractionsByPage,
                 tableExtractions: tableExtractionsByKey,
+                mathExtractions: mathExtractionsByKey,
                 captionAssociations: captionAssociations
             )
         }

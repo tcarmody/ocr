@@ -338,6 +338,21 @@ extension PDFToEPUBPipeline {
         ) { ClaudeTableExtractor(client: $0, budget: $1) }
     }
 
+    /// P-Math-Cascade. Cloud-mode math extractor for `.formula`
+    /// regions. Today Claude-only — Sonnet's vision handles MathML
+    /// transcription well and formulas are rare per book, so a
+    /// Gemini variant is deferred until the cascade-math path
+    /// proves out on the corpus. Nil when Cloud-mode is off, the
+    /// `mathExtraction` feature flag is off, or no Anthropic key is
+    /// configured.
+    static func makeCloudMathExtractor(
+        options: Options, budget: CloudCallBudget
+    ) -> (any MathExtractor)? {
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.mathExtraction
+        ) { ClaudeMathExtractor(client: $0, budget: $1) }
+    }
+
     /// Cloud-mode table-extractor picker. Routes to Claude
     /// (`ClaudeTableExtractor`) or Gemini Flash
     /// (`GeminiTableExtractor`) depending on `pageOCRProvider` —
@@ -557,6 +572,10 @@ extension PDFToEPUBPipeline {
         /// table extractor chain when configured. Nil when the toggle
         /// is off or no LandingAI key is available.
         let landingAITableExtractor: LandingAITableExtractor?
+        /// P-Math-Cascade. Cloud math extractor (Sonnet) for
+        /// `.formula` regions in cascade mode. Nil when Cloud is off,
+        /// the `mathExtraction` flag is off, or no Anthropic key.
+        let mathExtractor: (any MathExtractor)?
         /// Active page-OCR engine. Either `ClaudePageOCREngine` or
         /// `GeminiPageOCREngine` depending on the user's provider
         /// pick. Manuscript mode forces Claude.
@@ -599,6 +618,9 @@ extension PDFToEPUBPipeline {
                 tocParser: makeClaudeTOCParser(options: options, budget: budget),
                 tableExtractor: makeCloudTableExtractor(options: options, budget: budget),
                 landingAITableExtractor: makeLandingAITableExtractor(
+                    options: options, budget: budget
+                ),
+                mathExtractor: makeCloudMathExtractor(
                     options: options, budget: budget
                 ),
                 pageEngine: pageEngine,

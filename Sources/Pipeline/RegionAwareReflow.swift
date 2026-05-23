@@ -149,6 +149,7 @@ enum RegionAwareReflow {
         pageResults: [PageObservations],
         figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
         tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:],
+        mathExtractions: [CaptionAssociator.PageRegionKey: String] = [:],
         captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
             captionByFigure: [:], orientation: .below
         )
@@ -327,6 +328,7 @@ enum RegionAwareReflow {
                 captionByFigure: captionAssociations.captionByFigure,
                 captionsClaimed: captionsClaimed,
                 tableExtractions: tableExtractions,
+                mathExtractions: mathExtractions,
                 diagnostics: &diagnostics
             ))
         }
@@ -419,6 +421,7 @@ enum RegionAwareReflow {
         captionByFigure: [CaptionAssociator.PageRegionKey: CaptionAssociator.PageRegionKey],
         captionsClaimed: Set<CaptionAssociator.PageRegionKey>,
         tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]],
+        mathExtractions: [CaptionAssociator.PageRegionKey: String],
         diagnostics: inout Diagnostics
     ) -> [Block] {
         // Sort by reading order; -1 (unassigned) sorts to the end so
@@ -443,6 +446,18 @@ enum RegionAwareReflow {
             // extracted asset for them. Pre-passes don't modify these
             // regions, so finding the asset key by box+kind match
             // against `originalRegions` is unique.
+            //
+            // P-Math-Cascade. When the cascade math extractor produced
+            // a MathML transcription for a `.formula` region, emit a
+            // paragraph with the raw MathML *in place of* the figure
+            // raster. EPUB 3 readers render MathML natively, and
+            // dropping the rastered image cleans up the chapter
+            // visually (no double-emission of equation-as-image
+            // alongside equation-as-math). The figure asset is still
+            // built upstream (we don't bother filtering it out of
+            // `figureAssets` since unreferenced assets aren't emitted
+            // to disk anyway — chapter splitting drops unreferenced
+            // assets in the manifest step).
             if region.kind == .picture || region.kind == .formula {
                 if let originalIdx = matchOriginalRegionIndex(
                     region: region, in: originalRegions
@@ -450,6 +465,29 @@ enum RegionAwareReflow {
                     let key = CaptionAssociator.PageRegionKey(
                         pageIndex: page.pageIndex, regionIndex: originalIdx
                     )
+                    if region.kind == .formula,
+                       let mathML = mathExtractions[key],
+                       !mathML.isEmpty {
+                        // Plain-text fallback for sibling .txt / .md
+                        // outputs (which don't render MathML): the
+                        // associated caption if any, else "[formula]".
+                        let captionRuns = captionRuns(
+                            for: key,
+                            captionByFigure: captionByFigure,
+                            originalRegions: originalRegions,
+                            observations: page.observations,
+                            pageFootnotes: pageFootnotes
+                        )
+                        let fallback = captionRuns.map(\.text).joined()
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .isEmpty
+                            ? "[formula]"
+                            : captionRuns.map(\.text).joined()
+                        blocks.append(.paragraph(runs: [
+                            InlineRun(fallback, rawXHTML: mathML)
+                        ]))
+                        continue
+                    }
                     if let assetId = assetIdByFigureKey[key] {
                         let captionRuns = captionRuns(
                             for: key,

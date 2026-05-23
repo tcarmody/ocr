@@ -222,6 +222,16 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// Table-structure extraction from cropped table region
         /// images (Sonnet 4.6).
         public var tableExtraction: Bool
+        /// P-Math-Cascade. MathML transcription from cropped
+        /// `.formula` region images (Sonnet 4.6). When on (and a
+        /// key is configured), cascade-mode conversions get real
+        /// MathML markup for display equations instead of just a
+        /// rastered image. Whole-page Cloud OCR already emits
+        /// MathML inline so this flag is a no-op for that path —
+        /// it only fires for the per-region cascade. ~$0.001–$0.005
+        /// per formula; on by default in Cloud mode (most books
+        /// have 0-2 display equations, so the floor is rounding).
+        public var mathExtraction: Bool
         /// Character-level cleanup pass on OCR output that's already
         /// "good enough" but has known mojibake / diacritic issues
         /// (Haiku 4.5).
@@ -323,6 +333,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             landingAIInCascade: Bool = false,
             landingAITableExtraction: Bool = false,
             tableExtraction: Bool = true,
+            mathExtraction: Bool = true,
             postOCRCleanup: Bool = false,
             postOCRCleanupVisionMode: Bool = false,
             semanticClassification: Bool = false,
@@ -341,6 +352,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.landingAIInCascade = landingAIInCascade
             self.landingAITableExtraction = landingAITableExtraction
             self.tableExtraction = tableExtraction
+            self.mathExtraction = mathExtraction
             self.postOCRCleanup = postOCRCleanup
             self.postOCRCleanupVisionMode = postOCRCleanupVisionMode
             self.semanticClassification = semanticClassification
@@ -359,7 +371,7 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// `postOCRCleanupVisionMode` / `metadataExtraction` existed
         /// don't break.
         private enum CodingKeys: String, CodingKey {
-            case hardRegionOCR, tableExtraction, postOCRCleanup
+            case hardRegionOCR, tableExtraction, mathExtraction, postOCRCleanup
             case postOCRCleanupVisionMode
             case semanticClassification, tocParsing
             case metadataExtraction
@@ -396,6 +408,13 @@ public struct AISettings: Sendable, Codable, Equatable {
                 Bool.self, forKey: .landingAITableExtraction
             ) ?? false
             self.tableExtraction = try c.decode(Bool.self, forKey: .tableExtraction)
+            // Default-on for previously-stored settings: P-Math-Cascade
+            // is mostly upside (cheap Sonnet call, MathML in cascade
+            // mode instead of just a rastered figure). Persisted
+            // `false` still round-trips.
+            self.mathExtraction = try c.decodeIfPresent(
+                Bool.self, forKey: .mathExtraction
+            ) ?? true
             self.postOCRCleanup = try c.decode(Bool.self, forKey: .postOCRCleanup)
             self.postOCRCleanupVisionMode = try c.decodeIfPresent(
                 Bool.self, forKey: .postOCRCleanupVisionMode
