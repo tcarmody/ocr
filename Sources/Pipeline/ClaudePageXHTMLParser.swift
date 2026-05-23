@@ -189,6 +189,26 @@ public struct ClaudePageXHTMLParser: Sendable {
         var inVerseDiv: Bool = false
         var pendingVerseLines: [VerseLine] = []
 
+        /// Stream-id stack for `<section data-stream="…">`. Empty
+        /// stack = top level (primary content). When a non-`main`
+        /// section is on top, finalize-block suppresses appends so
+        /// hallucinated "secondary" content (e.g. Gemini emitting a
+        /// `main-2` stream that's actually invented next-page text)
+        /// doesn't double the body into the EPUB. See PLANS
+        /// C-Multi-Stream-EPUB for the future layout-aware path
+        /// that would consume these streams instead of dropping them.
+        var streamStack: [String] = []
+
+        /// True when the parser is currently inside a non-primary
+        /// stream and emitted blocks should be discarded. The
+        /// definition of "primary" is "empty stack" (no section
+        /// wrapper at all — the common shape for typeset prose) OR
+        /// "stack top is exactly `main`" — anything else is dropped.
+        var isInPrimaryStream: Bool {
+            guard let top = streamStack.last else { return true }
+            return top == "main"
+        }
+
         init(pageIndex: Int) {
             self.pageIndex = pageIndex
         }
@@ -286,19 +306,24 @@ public struct ClaudePageXHTMLParser: Sendable {
                 flushTextBuffer()
             case "section":
                 // <section data-stream="…"> wraps a parallel text
-                // stream (multi-column body, sidebar, inset).
-                // Capture the stream ID into the diagnostic and
-                // treat the element as a block-level no-op:
-                // contained <p> / <h2> / etc. still parse into
-                // their own blocks, but the section itself doesn't
-                // push an inline frame (which would corrupt the
-                // block boundaries). The block IR is linearized
-                // for now — see PLANS C-Multi-Stream-EPUB for the
-                // future EPUB output story.
-                if let streamID = attributeDict["data-stream"],
-                   !streamID.isEmpty {
+                // stream (multi-column body, sidebar, inset). Push
+                // onto the stream stack so finalizeBlock can suppress
+                // anything outside the primary stream — Gemini 3.5
+                // Flash in particular emits `main-2` blocks that are
+                // hallucinated next-page content, and concatenating
+                // them into the EPUB doubles the body. Block IR is
+                // linearized for the primary stream only; see PLANS
+                // C-Multi-Stream-EPUB for the future EPUB output story.
+                let streamID = attributeDict["data-stream"] ?? ""
+                if !streamID.isEmpty {
                     detectedStreams.insert(streamID)
                 }
+                // Push even an empty string — the close needs a
+                // matching pop. Treat empty as primary (it would
+                // pass the "main or empty stack" predicate at the
+                // top by reading the stack-top empty string differently
+                // — see `isInPrimaryStream` below).
+                streamStack.append(streamID.isEmpty ? "main" : streamID)
             default:
                 // Unknown tag — push a frame so the closing balances;
                 // text inside is treated as if the tag wasn't there.
@@ -344,10 +369,11 @@ public struct ClaudePageXHTMLParser: Sendable {
             case "br":
                 return
             case "section":
-                // No-op: open didn't push an inline frame, so close
-                // doesn't pop one. Contained <p> / <h2> blocks have
-                // already self-closed via their own end-element
-                // handlers.
+                // Pop the stream stack to mirror the open's push.
+                // The contained block tags have already self-closed
+                // through their own end-element handlers; finalize-
+                // block suppressed any in non-primary streams.
+                if !streamStack.isEmpty { streamStack.removeLast() }
                 return
             default:
                 flushTextBuffer()
@@ -425,6 +451,15 @@ public struct ClaudePageXHTMLParser: Sendable {
             let joined = currentRuns.map(\.text).joined()
             let trimmed = joined.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
+            // Suppress blocks emitted inside a non-primary
+            // `<section data-stream="…">`. Gemini 3.5 Flash in
+            // particular emits a `main-2` stream that's a
+            // hallucinated continuation of the page (often the
+            // next page's content) — concatenating it produces
+            // visibly doubled text in the EPUB. The id is still
+            // recorded in `detectedStreams` for the diagnostic
+            // surface.
+            guard isInPrimaryStream else { return }
             // Trim leading/trailing whitespace from the run text where
             // it's purely whitespace (paragraphs often have whitespace
             // between block tags that XMLParser returns as text).

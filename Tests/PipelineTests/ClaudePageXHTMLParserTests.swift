@@ -195,22 +195,48 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         XCTAssertEqual(result.detectedStreams, ["main", "sidebar"])
     }
 
-    func test_section_content_parses_into_block_stream() {
-        // Section is a structural no-op: blocks inside it should
-        // still land in the flat block stream in document order.
+    func test_section_only_primary_stream_emits_blocks() {
+        // Only blocks inside `data-stream="main"` (or outside any
+        // section) land in the block stream. Non-primary streams
+        // are recorded in `detectedStreams` but their content is
+        // suppressed — Gemini 3.5 Flash emits a hallucinated
+        // `main-2` that doubled body text in the EPUB until this
+        // suppression landed (May 2026 Becker test).
         let xhtml = """
         <section data-stream="main"><p>First.</p><p>Second.</p></section>\
         <section data-stream="sidebar"><p>Third.</p></section>
         """
         let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
-        XCTAssertEqual(result.blocks.count, 3)
         let texts: [String] = result.blocks.compactMap { block in
             if case let .paragraph(runs) = block {
                 return runs.map(\.text).joined()
             }
             return nil
         }
-        XCTAssertEqual(texts, ["First.", "Second.", "Third."])
+        XCTAssertEqual(texts, ["First.", "Second."])
+        XCTAssertEqual(result.detectedStreams, ["main", "sidebar"])
+    }
+
+    func test_section_main_2_stream_is_suppressed() {
+        // Regression: Gemini 3.5 Flash emits two streams per
+        // page (`main` + `main-2`) for typeset single-column
+        // prose, with `main-2` being hallucinated next-page
+        // content. The contents are slight variants of the same
+        // text, producing visibly doubled paragraphs in the EPUB.
+        // Verify the parser keeps only the primary stream's blocks.
+        let xhtml = """
+        <section data-stream="main"><p>Real page content.</p></section>\
+        <section data-stream="main-2"><p>Hallucinated continuation.</p></section>
+        """
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let texts: [String] = result.blocks.compactMap { block in
+            if case let .paragraph(runs) = block {
+                return runs.map(\.text).joined()
+            }
+            return nil
+        }
+        XCTAssertEqual(texts, ["Real page content."])
+        XCTAssertEqual(result.detectedStreams, ["main", "main-2"])
     }
 
     func test_single_column_page_has_no_detected_streams() {
