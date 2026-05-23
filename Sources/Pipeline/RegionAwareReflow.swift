@@ -149,7 +149,7 @@ enum RegionAwareReflow {
         pageResults: [PageObservations],
         figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
         tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:],
-        mathExtractions: [CaptionAssociator.PageRegionKey: String] = [:],
+        mathExtractions: [CaptionAssociator.PageRegionKey: MathExtractionResult] = [:],
         captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
             captionByFigure: [:], orientation: .below
         )
@@ -421,7 +421,7 @@ enum RegionAwareReflow {
         captionByFigure: [CaptionAssociator.PageRegionKey: CaptionAssociator.PageRegionKey],
         captionsClaimed: Set<CaptionAssociator.PageRegionKey>,
         tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]],
-        mathExtractions: [CaptionAssociator.PageRegionKey: String],
+        mathExtractions: [CaptionAssociator.PageRegionKey: MathExtractionResult],
         diagnostics: inout Diagnostics
     ) -> [Block] {
         // Sort by reading order; -1 (unassigned) sorts to the end so
@@ -466,11 +466,15 @@ enum RegionAwareReflow {
                         pageIndex: page.pageIndex, regionIndex: originalIdx
                     )
                     if region.kind == .formula,
-                       let mathML = mathExtractions[key],
-                       !mathML.isEmpty {
+                       let extraction = mathExtractions[key],
+                       !extraction.mathML.isEmpty {
                         // Plain-text fallback for sibling .txt / .md
-                        // outputs (which don't render MathML): the
+                        // outputs when LaTeX is unavailable: the
                         // associated caption if any, else "[formula]".
+                        // When LaTeX is available, sibling writers
+                        // prefer the LaTeX delimiters; this string
+                        // serves accessibility / readers that handle
+                        // neither MathML nor LaTeX.
                         let captionRuns = captionRuns(
                             for: key,
                             captionByFigure: captionByFigure,
@@ -484,7 +488,11 @@ enum RegionAwareReflow {
                             ? "[formula]"
                             : captionRuns.map(\.text).joined()
                         blocks.append(.paragraph(runs: [
-                            InlineRun(fallback, rawXHTML: mathML)
+                            InlineRun(
+                                fallback,
+                                rawXHTML: extraction.mathML,
+                                latexFallback: extraction.latex
+                            )
                         ]))
                         continue
                     }

@@ -88,7 +88,7 @@ final class ClaudeMathExtractorTests: XCTestCase {
     private func runExtract(
         transport: any AnthropicTransport,
         budget: CloudCallBudget = CloudCallBudget(cap: 10)
-    ) async -> String? {
+    ) async -> MathExtractionResult? {
         let client = AnthropicAPIClient(
             config: AnthropicAPIClient.Config(maxRetries: 0),
             transport: transport,
@@ -156,13 +156,43 @@ final class ClaudeMathExtractorTests: XCTestCase {
 
     // MARK: - End-to-end with mock transport
 
-    func test_extract_returns_mathml_on_success() async {
+    func test_extract_returns_mathml_and_latex_on_success() async {
         let mathML = "<math display=\"block\" xmlns=\"http://www.w3.org/1998/Math/MathML\"><mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow></math>"
+        let latex = "E = mc^{2}"
+        let response = "\(mathML)\n---LATEX---\n\(latex)"
+        let transport = MockTransport(steps: [
+            .init(status: 200, body: successBody(text: response)),
+        ])
+        let result = await runExtract(transport: transport)
+        XCTAssertEqual(result?.mathML, mathML)
+        XCTAssertEqual(result?.latex, latex)
+    }
+
+    func test_extract_returns_mathml_without_latex_when_separator_absent() async {
+        // Defensive: if the model omits the separator (older
+        // prompt cache, or a partial response), still surface
+        // the MathML so the EPUB renders. LaTeX comes through
+        // as nil — sibling writers fall back to plain text.
+        let mathML = "<math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mi>x</mi></math>"
         let transport = MockTransport(steps: [
             .init(status: 200, body: successBody(text: mathML)),
         ])
         let result = await runExtract(transport: transport)
-        XCTAssertEqual(result, mathML)
+        XCTAssertEqual(result?.mathML, mathML)
+        XCTAssertNil(result?.latex)
+    }
+
+    func test_extract_returns_nil_when_latex_present_but_mathml_absent() async {
+        // Inverse of the above: a malformed response with only
+        // a LaTeX half (no MathML before the separator) bails
+        // entirely. The EPUB needs MathML to render; LaTeX-only
+        // would leave a broken `<math>` slot.
+        let response = "---LATEX---\nE = mc^{2}"
+        let transport = MockTransport(steps: [
+            .init(status: 200, body: successBody(text: response)),
+        ])
+        let result = await runExtract(transport: transport)
+        XCTAssertNil(result)
     }
 
     func test_extract_returns_nil_on_refusal() async {
@@ -207,5 +237,66 @@ final class ClaudeMathExtractorTests: XCTestCase {
         XCTAssertNil(result)
         let sent = await transport.sentRequests
         XCTAssertEqual(sent.count, 0)
+    }
+
+    // MARK: - parseResponse (pure)
+
+    func test_parse_response_splits_both_halves() {
+        let mathML = #"<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>"#
+        let latex = "x"
+        let raw = "\(mathML)\n---LATEX---\n\(latex)"
+        let result = ClaudeMathExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.mathML, mathML)
+        XCTAssertEqual(result?.latex, latex)
+    }
+
+    func test_parse_response_tolerates_separator_without_newlines() {
+        // The model sometimes drops the newlines around the
+        // separator. Accept both forms — the parser checks
+        // multiple separator shapes in order.
+        let mathML = #"<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>y</mi></math>"#
+        let latex = "y"
+        let raw = "\(mathML)---LATEX---\(latex)"
+        let result = ClaudeMathExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.mathML, mathML)
+        XCTAssertEqual(result?.latex, latex)
+    }
+
+    func test_parse_response_returns_nil_when_mathml_half_empty() {
+        let raw = "\n---LATEX---\nE = mc^{2}"
+        XCTAssertNil(ClaudeMathExtractor.parseResponse(raw))
+    }
+
+    func test_sanitize_latex_rejects_prose_lacking_math_signals() {
+        // A response without backslash commands / operators looks
+        // like prose — reject so sibling writers don't emit
+        // `$I cannot transcribe$`.
+        XCTAssertNil(
+            ClaudeMathExtractor.sanitizeLaTeX("I cannot transcribe this")
+        )
+    }
+
+    func test_sanitize_latex_accepts_common_latex_shapes() {
+        XCTAssertEqual(
+            ClaudeMathExtractor.sanitizeLaTeX("\\frac{a}{b}"), "\\frac{a}{b}"
+        )
+        XCTAssertEqual(
+            ClaudeMathExtractor.sanitizeLaTeX("x = y + z"), "x = y + z"
+        )
+        XCTAssertEqual(
+            ClaudeMathExtractor.sanitizeLaTeX("x_{i}^{2}"), "x_{i}^{2}"
+        )
+    }
+
+    func test_sanitize_latex_strips_outer_code_fence() {
+        let raw = """
+            ```latex
+            E = mc^{2}
+            ```
+            """
+        XCTAssertEqual(
+            ClaudeMathExtractor.sanitizeLaTeX(raw),
+            "E = mc^{2}"
+        )
     }
 }

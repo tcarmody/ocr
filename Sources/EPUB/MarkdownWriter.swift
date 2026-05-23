@@ -179,6 +179,19 @@ public enum MarkdownWriter {
                 out.append("[^\(n)]")
                 continue
             }
+            // P-Math-LaTeX-Siblings. When `ClaudeMathExtractor`
+            // returned LaTeX alongside MathML, emit `$…$` (inline)
+            // or `$$…$$` (display) — Pandoc, Obsidian, Quarto,
+            // LaTeX papers all read this notation. Distinguish
+            // display vs inline by inspecting the companion
+            // `rawXHTML`: a `display="block"` MathML element is
+            // a display equation. Fall back to plain-text emphasis
+            // rendering when `latexFallback` is nil.
+            if let latex = run.latexFallback {
+                let isDisplay = run.rawXHTML?.contains(#"display="block""#) ?? false
+                out.append(isDisplay ? "$$\(latex)$$" : "$\(latex)$")
+                continue
+            }
             out.append(applyEmphasis(run.text, italic: run.isItalic, bold: run.isBold))
         }
         return out

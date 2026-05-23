@@ -159,6 +159,14 @@ public enum HTMLWriter {
     private static func renderRuns(_ runs: [InlineRun]) -> String {
         var out = ""
         for run in runs {
+            // Pass through MathML / other rawXHTML markup verbatim —
+            // every modern browser (Chrome 130+, Firefox, Safari)
+            // renders MathML natively, so emitting it raw beats
+            // escaping it as text.
+            if let raw = run.rawXHTML, !raw.isEmpty {
+                out.append(raw)
+                continue
+            }
             if let id = run.noterefId {
                 out.append("<sup><a href=\"#fn-\(escAttr(id))\">[\(esc(run.text))]</a></sup>")
                 continue

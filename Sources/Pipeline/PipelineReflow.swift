@@ -47,7 +47,7 @@ extension PDFToEPUBPipeline {
         pageResults: [PageObservations],
         figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
         tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:],
-        mathExtractions: [CaptionAssociator.PageRegionKey: String] = [:],
+        mathExtractions: [CaptionAssociator.PageRegionKey: MathExtractionResult] = [:],
         captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
             captionByFigure: [:], orientation: .below
         ),

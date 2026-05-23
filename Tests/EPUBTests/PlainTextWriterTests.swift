@@ -143,4 +143,59 @@ final class PlainTextWriterTests: XCTestCase {
         let twoIdx = out.range(of: "Two")!.lowerBound
         XCTAssertTrue(oneIdx < twoIdx)
     }
+
+    // MARK: - P-Math-LaTeX-Siblings
+
+    func test_inline_math_renders_as_latex_in_plain_text() {
+        let book = Book(title: "X", chapters: [
+            Chapter(title: "C", blocks: [
+                .paragraph(runs: [
+                    InlineRun("see "),
+                    InlineRun(
+                        "x",
+                        rawXHTML: #"<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>"#,
+                        latexFallback: "x"
+                    ),
+                    InlineRun(" here"),
+                ]),
+            ]),
+        ])
+        let out = PlainTextWriter.render(book)
+        XCTAssertTrue(out.contains("see $x$ here"),
+            "expected `$x$` in plain-text output; got:\n\(out)")
+    }
+
+    func test_display_math_renders_as_double_dollar_in_plain_text() {
+        let book = Book(title: "X", chapters: [
+            Chapter(title: "C", blocks: [
+                .paragraph(runs: [
+                    InlineRun(
+                        "E = mc^2",
+                        rawXHTML: #"<math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><mi>E</mi></math>"#,
+                        latexFallback: "E = mc^{2}"
+                    ),
+                ]),
+            ]),
+        ])
+        let out = PlainTextWriter.render(book)
+        XCTAssertTrue(out.contains("$$E = mc^{2}$$"))
+    }
+
+    func test_math_without_latex_falls_back_to_text() {
+        let book = Book(title: "X", chapters: [
+            Chapter(title: "C", blocks: [
+                .paragraph(runs: [
+                    InlineRun("ratio "),
+                    InlineRun(
+                        "w_m/w_f",
+                        rawXHTML: "<math><mi>w_m/w_f</mi></math>",
+                        latexFallback: nil
+                    ),
+                ]),
+            ]),
+        ])
+        let out = PlainTextWriter.render(book)
+        XCTAssertTrue(out.contains("ratio w_m/w_f"))
+        XCTAssertFalse(out.contains("$"))
+    }
 }

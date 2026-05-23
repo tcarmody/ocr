@@ -45,12 +45,13 @@ extension PDFToEPUBPipeline {
         /// Per-region table extractions. Caller maps these to
         /// `tableExtractionsByKey[PageRegionKey(pageIndex:i, regionIndex:...)]`.
         let tableEntries: [(regionIndex: Int, rows: [[TableCell]])]
-        /// P-Math-Cascade. Per-region MathML transcriptions for
-        /// `.formula` regions. Caller maps these to
+        /// P-Math-Cascade. Per-region math transcriptions for
+        /// `.formula` regions: MathML (for the EPUB) + LaTeX (for
+        /// sibling .md / .txt outputs). Caller maps these to
         /// `mathExtractionsByKey[PageRegionKey(pageIndex:i, regionIndex:...)]`.
         /// Empty when no math extractor is wired or every region
         /// declined / failed.
-        let mathEntries: [(regionIndex: Int, mathML: String)]
+        let mathEntries: [(regionIndex: Int, result: MathExtractionResult)]
         let qualityScore: EmbeddedTextQualityScorer.Score
         let extractorDiagnostics: EmbeddedTextExtractor.Diagnostics
         let correctionTrailEntries: [CorrectionTrail.Entry]
@@ -117,7 +118,7 @@ extension PDFToEPUBPipeline {
         // outer dicts. Caller unpacks these from the outcome.
         var figures: [FigureExtractor.ExtractedFigure] = []
         var tableEntries: [(regionIndex: Int, rows: [[TableCell]])] = []
-        var mathEntries: [(regionIndex: Int, mathML: String)] = []
+        var mathEntries: [(regionIndex: Int, result: MathExtractionResult)] = []
         var correctionTrail: [CorrectionTrail.Entry] = []
         var layoutError: String? = nil
         var ocrError: String? = nil
@@ -448,7 +449,7 @@ extension PDFToEPUBPipeline {
                         stagingDir: stagingDir,
                         pageIndex: i,
                         regionIndex: regionIdx
-                    ), !math.isEmpty {
+                    ), !math.mathML.isEmpty {
                         mathEntries.append((regionIdx, math))
                     }
                 }

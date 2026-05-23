@@ -46,13 +46,13 @@ public enum PlainTextWriter {
         for block in chapter.blocks {
             switch block {
             case .heading(_, let runs):
-                let text = runs.map(\.text).joined()
+                let text = renderRuns(runs)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { continue }
                 out.append(text)
                 out.append("\n\n")
             case .paragraph(let runs):
-                let text = runs.map(\.text).joined()
+                let text = renderRuns(runs)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { continue }
                 out.append(text)
@@ -77,7 +77,7 @@ public enum PlainTextWriter {
                 continue
             case .verse(let lines):
                 for line in lines {
-                    let text = line.runs.map(\.text).joined()
+                    let text = renderRuns(line.runs)
                     if text.isEmpty {
                         out.append("\n")
                         continue
@@ -96,11 +96,30 @@ public enum PlainTextWriter {
             out.append(String(repeating: "-", count: 5))
             out.append("\n")
             for fn in chapter.footnotes {
-                let text = fn.runs.map(\.text).joined()
+                let text = renderRuns(fn.runs)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 out.append("\(fn.marker). \(text)\n")
             }
             out.append("\n")
         }
+    }
+
+    /// Render inline runs to plain text. Math runs with a
+    /// `latexFallback` get wrapped in `$…$` / `$$…$$` so the
+    /// .txt output preserves equation semantics — a downstream
+    /// pipeline that ingests .txt (Pandoc, citation tools,
+    /// LLM agents) can read the LaTeX rather than tag-stripped
+    /// variable names. Everything else collapses to `run.text`.
+    private static func renderRuns(_ runs: [InlineRun]) -> String {
+        var out = ""
+        for run in runs {
+            if let latex = run.latexFallback {
+                let isDisplay = run.rawXHTML?.contains(#"display="block""#) ?? false
+                out.append(isDisplay ? "$$\(latex)$$" : "$\(latex)$")
+                continue
+            }
+            out.append(run.text)
+        }
+        return out
     }
 }

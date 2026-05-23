@@ -29,6 +29,17 @@ public struct InlineRun: Sendable, Equatable, Codable {
     /// Markdown / `.txt` outputs and by accessibility text where
     /// MathML isn't supported.
     public var rawXHTML: String?
+    /// LaTeX source for math runs. Sibling outputs (`.md`, `.txt`)
+    /// emit this in `$…$` / `$$…$$` delimiters instead of the
+    /// tag-stripped plain-text fallback — academic toolchains
+    /// (Pandoc, Obsidian, LaTeX papers) all read this notation
+    /// natively. Populated by `ClaudeMathExtractor` (single Cloud
+    /// call returns both MathML and LaTeX); nil for math captured
+    /// from sources without LaTeX output (Surya inline-`<math>`
+    /// rescues via `InlineMathSplitter`, whole-page Cloud OCR's
+    /// inline `<math>` markup). When nil, writers fall back to
+    /// the plain-text `text` field.
+    public var latexFallback: String?
 
     public init(
         _ text: String,
@@ -36,7 +47,8 @@ public struct InlineRun: Sendable, Equatable, Codable {
         noterefId: String? = nil,
         isItalic: Bool = false,
         isBold: Bool = false,
-        rawXHTML: String? = nil
+        rawXHTML: String? = nil,
+        latexFallback: String? = nil
     ) {
         self.text = text
         self.language = language
@@ -44,5 +56,6 @@ public struct InlineRun: Sendable, Equatable, Codable {
         self.isItalic = isItalic
         self.isBold = isBold
         self.rawXHTML = rawXHTML
+        self.latexFallback = latexFallback
     }
 }

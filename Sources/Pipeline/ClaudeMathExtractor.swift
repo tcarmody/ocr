@@ -56,7 +56,7 @@ public struct ClaudeMathExtractor: MathExtractor {
         stagingDir: URL,
         pageIndex: Int,
         regionIndex: Int
-    ) async -> String? {
+    ) async -> MathExtractionResult? {
         guard let cropped = RegionCascade.cropImage(pageImage, to: regionBox) else {
             return nil
         }
@@ -94,49 +94,64 @@ public struct ClaudeMathExtractor: MathExtractor {
 
         if response.didRefuse { return nil }
         guard let raw = response.primaryText, !raw.isEmpty else { return nil }
-        return Self.sanitizeMathML(raw)
+        return Self.parseResponse(raw)
     }
 
     // MARK: - Prompt
 
     /// Stable system prompt — kept byte-stable across requests so
-    /// the prefix is cacheable. Asks for a single `<math>` element
-    /// with no surrounding prose so the caller can drop the result
-    /// directly into the chapter XHTML.
+    /// the prefix is cacheable. Asks for MathML (for the EPUB) and
+    /// LaTeX (for sibling .md / .txt outputs) in a single response,
+    /// separated by a sentinel marker.
     static let systemPrompt = """
         You are transcribing a single mathematical formula from a \
         book page. The image shows ONE formula region cropped from \
         the page (typically a display equation set off on its own \
         line, sometimes an inline expression). Return ONLY the \
-        MathML transcription — no preface, no commentary, no \
-        markdown fences, no surrounding prose.
+        transcription in the format described below — no preface, \
+        no commentary, no markdown fences, no surrounding prose.
 
-        Rules:
-          * Wrap the result in a single `<math display="block" \
+        Output format — two parts separated by a literal `---LATEX---` \
+        line on its own:
+
+        <math …>…</math>
+        ---LATEX---
+        \\frac{…}{…}
+
+        First part (MathML), rules:
+          * Wrap in a single `<math display="block" \
         xmlns="http://www.w3.org/1998/Math/MathML">…</math>` element \
         for display equations (centered standalone formulas, \
         derivations, equations with numbers). Use \
         `<math xmlns="http://www.w3.org/1998/Math/MathML">…</math>` \
         without `display="block"` for clearly inline expressions.
           * Equation numbers (like "(1)", "(3.4)") go OUTSIDE the \
-        `<math>` element if present — append them as plain text \
-        after the closing `</math>` tag.
+        `<math>` element — append them as plain text after the \
+        closing `</math>` tag.
           * Use semantic MathML elements: `<mrow>`, `<mi>`, `<mn>`, \
         `<mo>`, `<msub>`, `<msup>`, `<msubsup>`, `<mfrac>`, `<msqrt>`, \
         `<mroot>`, `<mtable>` / `<mtr>` / `<mtd>` for aligned \
         derivations, `<munder>` / `<mover>` / `<munderover>` for \
         summation / product / integral with limits.
           * Transcribe operators and Greek letters as themselves \
-        (e.g. `<mi>α</mi>`, `<mo>∫</mo>`, `<mo>≤</mo>`). Do NOT \
-        rewrite into LaTeX, MathJax `\\frac{}{}` syntax, or ASCII \
-        approximations.
-          * If the image is NOT a formula (e.g. a chart, photograph, \
-        or just text), return the empty string. The caller treats \
-        empty as "fall back to the raster figure" — never invent \
-        markup for non-math content.
-          * If the formula is too unclear to transcribe reliably, \
-        return the empty string. Original-raster fallback is \
-        always better than a wrong transcription.
+        (e.g. `<mi>α</mi>`, `<mo>∫</mo>`, `<mo>≤</mo>`).
+
+        Second part (LaTeX), rules:
+          * Output the SAME equation in LaTeX source, no \
+        surrounding `$…$` delimiters (the caller adds them).
+          * Use standard LaTeX commands (`\\frac{a}{b}`, `\\sum_{i=1}^{n}`, \
+        `\\int_a^b`, `x_{i}`, `x^{2}`, `\\alpha`, `\\geq`, etc.). \
+        No MathJax-specific extensions; standard amsmath only.
+          * Include equation numbers as a trailing `\\quad (N)` or \
+        `\\tag{N}` so the LaTeX reproduces the same numbering.
+
+        If the image is NOT a formula (chart, photograph, just \
+        text) OR the formula is too unclear to transcribe reliably, \
+        return the empty string for BOTH parts — i.e. just the \
+        `---LATEX---` separator on its own line with no content \
+        before or after. The caller treats empty as "fall back to \
+        the raster figure" — never invent markup for non-math \
+        content.
         """
 
     /// User-turn prompt; minimal so the system prefix stays cacheable.
@@ -155,6 +170,63 @@ public struct ClaudeMathExtractor: MathExtractor {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if stripped.isEmpty { return nil }
         guard stripped.hasPrefix("<math") else { return nil }
+        return stripped
+    }
+
+    /// Split the model's two-part response on the `---LATEX---`
+    /// separator and sanitize each half independently. Returns
+    /// `nil` when the MathML half doesn't parse — the caller
+    /// treats nil as "fall back to the raster figure", so a
+    /// missing or malformed LaTeX half does NOT bail the whole
+    /// extraction (LaTeX is only used by sibling outputs).
+    static func parseResponse(_ raw: String) -> MathExtractionResult? {
+        // Be tolerant of the model's separator formatting: accept
+        // surrounding whitespace, a few common dash variants, and
+        // optional newline before/after.
+        let separators = [
+            "\n---LATEX---\n",
+            "\n---LATEX---",
+            "---LATEX---\n",
+            "---LATEX---",
+        ]
+        var head = raw
+        var tail: String? = nil
+        for sep in separators {
+            if let range = raw.range(of: sep) {
+                head = String(raw[raw.startIndex..<range.lowerBound])
+                tail = String(raw[range.upperBound...])
+                break
+            }
+        }
+        guard let mathML = sanitizeMathML(head) else { return nil }
+        let latex = tail.flatMap { sanitizeLaTeX($0) }
+        return MathExtractionResult(mathML: mathML, latex: latex)
+    }
+
+    /// Strip code fences and surrounding whitespace from the LaTeX
+    /// half of a response. Returns nil on empty input or on a
+    /// response that obviously starts with a refusal phrase
+    /// (defensive, but lenient enough not to reject legitimate
+    /// single-variable LaTeX like `x` or `\alpha`).
+    static func sanitizeLaTeX(_ raw: String) -> String? {
+        let stripped = stripCodeFence(raw)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.isEmpty { return nil }
+        // Defensive: catch the most common refusal-style replies.
+        // The contract with the model says return empty when not
+        // math, but a partial / hedged response sometimes leaks
+        // through. These prefixes are unambiguous markers that
+        // the response is prose rather than LaTeX — wrapping them
+        // in `$…$` would render visibly broken in any reader.
+        let lower = stripped.lowercased()
+        let refusalPrefixes = [
+            "i cannot", "i can't", "i am unable", "i'm unable",
+            "sorry", "the image", "this image", "this appears",
+            "unable to", "cannot transcribe",
+        ]
+        for prefix in refusalPrefixes where lower.hasPrefix(prefix) {
+            return nil
+        }
         return stripped
     }
 

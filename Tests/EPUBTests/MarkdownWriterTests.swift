@@ -171,4 +171,65 @@ final class MarkdownWriterTests: XCTestCase {
         XCTAssertTrue(out.contains("a\\|b"))
         XCTAssertTrue(out.contains("c\\|d"))
     }
+
+    // MARK: - P-Math-LaTeX-Siblings
+
+    func test_inline_math_renders_as_single_dollar_latex() {
+        let book = Book(title: "X", chapters: [
+            Chapter(title: "C", blocks: [
+                .paragraph(runs: [
+                    InlineRun("see "),
+                    InlineRun(
+                        "x",
+                        rawXHTML: #"<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>"#,
+                        latexFallback: "x"
+                    ),
+                    InlineRun(" for the variable"),
+                ]),
+            ]),
+        ])
+        let out = MarkdownWriter.render(book)
+        XCTAssertTrue(out.contains("see $x$ for the variable"),
+            "expected inline LaTeX delimiters; got:\n\(out)")
+    }
+
+    func test_display_math_renders_as_double_dollar_latex() {
+        let book = Book(title: "X", chapters: [
+            Chapter(title: "C", blocks: [
+                .paragraph(runs: [
+                    InlineRun(
+                        "E = mc^2",
+                        rawXHTML: #"<math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow></math>"#,
+                        latexFallback: "E = mc^{2}"
+                    ),
+                ]),
+            ]),
+        ])
+        let out = MarkdownWriter.render(book)
+        XCTAssertTrue(out.contains("$$E = mc^{2}$$"),
+            "expected display-math `$$…$$` delimiters; got:\n\(out)")
+    }
+
+    func test_math_without_latex_falls_back_to_plain_text() {
+        // InlineRun with rawXHTML but no latexFallback (e.g. from
+        // Surya inline-math rescue via InlineMathSplitter) emits
+        // the plain-text `text` field — better than an empty
+        // gap or the raw MathML markup in a .md file.
+        let book = Book(title: "X", chapters: [
+            Chapter(title: "C", blocks: [
+                .paragraph(runs: [
+                    InlineRun("ratio "),
+                    InlineRun(
+                        "w_m/w_f",
+                        rawXHTML: "<math><mi>w_m/w_f</mi></math>",
+                        latexFallback: nil
+                    ),
+                ]),
+            ]),
+        ])
+        let out = MarkdownWriter.render(book)
+        XCTAssertTrue(out.contains("ratio w_m/w_f"))
+        XCTAssertFalse(out.contains("$"),
+            "no LaTeX delimiters should appear when latexFallback is nil")
+    }
 }

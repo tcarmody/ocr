@@ -1328,7 +1328,7 @@ public actor PDFToEPUBPipeline {
         // and emits a paragraph in place of the figure raster.
         // Empty when Cloud-mode is off or no formula regions returned
         // MathML (always the case for non-STEM books).
-        var mathExtractionsByKey: [CaptionAssociator.PageRegionKey: String] = [:]
+        var mathExtractionsByKey: [CaptionAssociator.PageRegionKey: MathExtractionResult] = [:]
 
         // Cloud-mode engines, constructed once per conversion and
         // shared across pages. Each one is independently nil unless
@@ -1612,7 +1612,7 @@ public actor PDFToEPUBPipeline {
                 let key = CaptionAssociator.PageRegionKey(
                     pageIndex: i, regionIndex: entry.regionIndex
                 )
-                mathExtractionsByKey[key] = entry.mathML
+                mathExtractionsByKey[key] = entry.result
             }
             correctionTrailEntries.append(
                 contentsOf: outcome.correctionTrailEntries
@@ -1747,7 +1747,7 @@ public actor PDFToEPUBPipeline {
                                 pageIndex: i,
                                 regionIndex: entry.regionIndex
                             )
-                            mathExtractionsByKey[key] = entry.mathML
+                            mathExtractionsByKey[key] = entry.result
                         }
                         correctionTrailEntries.append(
                             contentsOf: outcome.correctionTrailEntries
