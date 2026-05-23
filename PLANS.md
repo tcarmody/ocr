@@ -1580,11 +1580,32 @@ plumbing patterns.
 
 ## P-Math — Math / formula handling
 
-**Status**: shipped as part of Phase 6 figures (commit `a145dcc`).
-`.formula` regions take the same raster path as `.picture` and
-emit `Block.figure` with `alt="formula"` (or the caption text,
-when a caption is associated). Real MathML / Mathpix / Latex-OCR
-remains deferred — no corpus has demanded it yet.
+**Status**: cheap-path shipped end-to-end (2026-05-22).
+  * `.formula` regions take the raster path from Phase 6
+    (`a145dcc`) — `Block.figure` with `alt="formula"` or caption
+    text. Always works, no math markup needed.
+  * Whole-page Cloud OCR (Claude Sonnet + Gemini Flash, shared
+    `baseSystemPrompt`) emits Unicode for inline math and MathML
+    (`<math display="block" xmlns="…">…</math>`) for display
+    equations (`c83312a`). The page-XHTML parser captures the
+    `<math>` subtree verbatim into `InlineRun.rawXHTML`; the EPUB
+    writer skips XML-escape on `rawXHTML` runs and emits the
+    markup unmodified. Cleanup pass (P-LLM-Pass) operates on
+    per-region text in cascade mode only — never sees whole-page
+    MathML, so no stripping risk.
+  * `book.css` now ships math-aware styles (`2026-05-23`):
+    `math[display="block"]` centered with vertical margin, math
+    font stack hint (STIX Two Math → Cambria Math → Latin Modern
+    Math). WebKit-backed in-app Reader + WYSIWYG editor render
+    MathML natively; external readers (Apple Books, Calibre,
+    Thorium) likewise.
+
+Cascade-mode math (cheap path for non-whole-page-Cloud runs) and a
+real math-OCR backend (Mathpix / Latex-OCR) for high-density math
+corpora are tracked as `P-Math-Cascade` and `P-Math-Mathpix`
+below; today's corpus is dominated by economics / philosophy books
+with light math, so whole-page-Cloud + MathML pass-through covers
+nearly every observed case.
 
 ### Goal
 

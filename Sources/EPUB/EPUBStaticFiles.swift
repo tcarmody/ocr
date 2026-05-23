@@ -43,5 +43,8 @@ enum EPUBStaticFiles {
         .verse .line.indent-6 { padding-left: 6em; }
         .verse .line.indent-7 { padding-left: 7em; }
         .verse .line.indent-8 { padding-left: 8em; }
+        math { font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", "DejaVu Math TeX Gyre", serif; line-height: 1.2; }
+        math[display="block"] { display: block; margin: 0.8em auto; text-align: center; }
+        p math[display="block"] { margin: 0.6em 0; }
         """
 }
