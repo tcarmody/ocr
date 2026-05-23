@@ -110,7 +110,7 @@ public struct SuryaTableExtractor: TableExtractor {
             return rowCells.map { (idx, cell) -> TableCell in
                 let text = cellTexts[idx] ?? ""
                 return TableCell(
-                    runs: text.isEmpty ? [] : [InlineRun(text)],
+                    runs: text.isEmpty ? [] : InlineMathSplitter.split([InlineRun(text)]),
                     isHeader: cell.raw.isHeader,
                     rowspan: max(1, cell.raw.rowspan),
                     colspan: max(1, cell.raw.colspan)

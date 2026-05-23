@@ -87,7 +87,7 @@ public enum TableHeuristic {
         let rows: [[TableCell]] = rowObservations.map { row in
             let sorted = row.sorted { $0.box.minX < $1.box.minX }
             return sorted.map { obs in
-                TableCell(runs: [InlineRun(obs.text)])
+                TableCell(runs: InlineMathSplitter.split([InlineRun(obs.text)]))
             }
         }
         let maxCols = rows.map(\.count).max() ?? 0

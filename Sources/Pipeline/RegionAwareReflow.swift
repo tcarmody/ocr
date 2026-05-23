@@ -674,15 +674,18 @@ enum RegionAwareReflow {
         switch kind {
         // Headings shouldn't carry footnote references — keep them as
         // a single plain run to avoid linker false positives in title
-        // text like a chapter number.
+        // text like a chapter number. Inline `<math>` markup from
+        // math-aware OCR engines still gets expanded so a section
+        // heading like "3. The <math>w_m/w_f</math> Ratio" doesn't
+        // render with escaped angle brackets.
         case .title:
-            return .heading(level: 1, runs: [
+            return .heading(level: 1, runs: InlineMathSplitter.split([
                 InlineRun(text, isItalic: italic, isBold: bold)
-            ])
+            ]))
         case .sectionHeader:
-            return .heading(level: 2, runs: [
+            return .heading(level: 2, runs: InlineMathSplitter.split([
                 InlineRun(text, isItalic: italic, isBold: bold)
-            ])
+            ]))
         // listItem keeps its inline marker ("1.", "2.", "•") because
         // Surya doesn't strip it; the EPUB renders this as a paragraph
         // beginning with the marker — fine for now, real <ol>/<ul>

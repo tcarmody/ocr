@@ -128,15 +128,27 @@ enum FootnoteLinker {
                 isItalic: isItalic, isBold: isBold
             ))
         }
-        return runs.isEmpty
+        let base = runs.isEmpty
             ? [InlineRun(text, isItalic: isItalic, isBold: isBold)]
             : runs
+        // Surya (and any other math-aware OCR engine) embeds inline
+        // `<math>…</math>` markup in its recognized text. Expand any
+        // such spans into proper rawXHTML runs before the writer
+        // ever sees them; otherwise they get XML-escaped and the
+        // reader sees literal `&lt;math&gt;` in place of the math.
+        return InlineMathSplitter.split(base)
     }
 
     /// Build chapter-level Footnote values from per-page Parsed lists.
+    /// Footnote bodies go through the same math-markup splitter as
+    /// body paragraphs — an inline `<math>w_m</math>` in a footnote
+    /// body must round-trip as MathML, not as literal escaped text.
     static func footnotesForChapter(_ parsed: [Parsed]) -> [Footnote] {
         parsed.map { p in
-            Footnote(id: p.id, marker: p.marker, runs: [InlineRun(p.body)])
+            Footnote(
+                id: p.id, marker: p.marker,
+                runs: InlineMathSplitter.split([InlineRun(p.body)])
+            )
         }
     }
 
