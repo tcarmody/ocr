@@ -55,7 +55,7 @@ final class ClaudeCoherenceAnalyzerTests: XCTestCase {
 
     private func makeAnalyzer(
         transport: any AnthropicTransport,
-        budget: ClaudeCallBudget = ClaudeCallBudget(cap: 5)
+        budget: CloudCallBudget = CloudCallBudget(cap: 5)
     ) -> ClaudeCoherenceAnalyzer {
         let client = AnthropicAPIClient(
             config: AnthropicAPIClient.Config(maxRetries: 0),
@@ -403,7 +403,7 @@ final class ClaudeCoherenceAnalyzerTests: XCTestCase {
             .init(status: 200, body: successBody(jsonText:
                 #"{"suggestions":[]}"#))
         ])
-        let budget = ClaudeCallBudget(cap: 5)
+        let budget = CloudCallBudget(cap: 5)
         let chapters = [Chapter(title: "x", blocks: [
             .paragraph(runs: [InlineRun(String(repeating: "filler ", count: 50))])
         ])]

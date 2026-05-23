@@ -59,7 +59,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     }
 
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var mode: Mode
     public var model: AnthropicModel
     public var maxOutputTokens: Int
@@ -81,7 +81,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     /// just `mode:` and let the model follow.
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         mode: Mode = .typeset,
         model: AnthropicModel? = nil,
         maxOutputTokens: Int = 8192,
@@ -214,7 +214,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
             throw PageOCRError.empty
         }
 
-        let parser = ClaudePageXHTMLParser()
+        let parser = PageXHTMLParser()
         let result = parser.parse(xhtml, pageIndex: pageIndex)
         capture(
             pageIndex: pageIndex, raw: xhtml,
@@ -264,7 +264,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
             capture(pageIndex: pageIndex, raw: "[EMPTY]", parseEmpty: true)
             return (nil, .empty)
         }
-        let parser = ClaudePageXHTMLParser()
+        let parser = PageXHTMLParser()
         let result = parser.parse(xhtml, pageIndex: pageIndex)
         capture(
             pageIndex: pageIndex, raw: xhtml,

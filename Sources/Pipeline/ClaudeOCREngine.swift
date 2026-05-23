@@ -15,7 +15,7 @@ import OCR
 /// mixed-script boundaries, ligature-heavy 18th-century reprints.
 ///
 /// Per-call cost is bounded two ways:
-///   * `ClaudeCallBudget` — shared per-book counter that this engine
+///   * `CloudCallBudget` — shared per-book counter that this engine
 ///     decrements on every request. When the budget is exhausted,
 ///     `recognize(...)` throws so the cascade can fall back to the
 ///     prior tier.
@@ -28,7 +28,7 @@ import OCR
 /// Claude transcribed; the cascade decides whether to keep it.
 public struct ClaudeOCREngine: OCREngine {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
 
@@ -39,7 +39,7 @@ public struct ClaudeOCREngine: OCREngine {
     /// headroom and the cost scales with actual output anyway.
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .sonnet4_6,
         maxOutputTokens: Int = 4096
     ) {

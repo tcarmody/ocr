@@ -16,13 +16,13 @@ import Document
 /// derivation).
 public struct ClaudeMetadataExtractor: Sendable {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .haiku4_5,
         maxOutputTokens: Int = 512  // ample for the JSON shape
     ) {

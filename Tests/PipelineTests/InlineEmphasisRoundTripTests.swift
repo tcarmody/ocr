@@ -13,7 +13,7 @@ final class InlineEmphasisRoundTripTests: XCTestCase {
 
     func test_em_tag_sets_isItalic_on_inner_run() {
         let xhtml = "<p>plain <em>italicized</em> after</p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         let runs = paragraphRuns(in: result.blocks)
         XCTAssertEqual(runs.count, 3)
         XCTAssertEqual(runs[0].text, "plain ")
@@ -27,7 +27,7 @@ final class InlineEmphasisRoundTripTests: XCTestCase {
 
     func test_strong_tag_sets_isBold_on_inner_run() {
         let xhtml = "<p>plain <strong>bold</strong> after</p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         let runs = paragraphRuns(in: result.blocks)
         XCTAssertEqual(runs.count, 3)
         XCTAssertTrue(runs[1].isBold)
@@ -36,7 +36,7 @@ final class InlineEmphasisRoundTripTests: XCTestCase {
 
     func test_b_and_i_tags_aliased_to_strong_and_em() {
         let xhtml = "<p><b>bold</b> and <i>italic</i></p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         let runs = paragraphRuns(in: result.blocks)
         XCTAssertTrue(runs.first { $0.text == "bold" }?.isBold ?? false)
         XCTAssertTrue(runs.first { $0.text == "italic" }?.isItalic ?? false)
@@ -44,7 +44,7 @@ final class InlineEmphasisRoundTripTests: XCTestCase {
 
     func test_nested_em_inside_strong_is_both() {
         let xhtml = "<p><strong>bold <em>italic-too</em></strong></p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         let runs = paragraphRuns(in: result.blocks)
         let inner = runs.first { $0.text == "italic-too" }
         XCTAssertNotNil(inner)

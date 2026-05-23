@@ -51,7 +51,7 @@ final class ClaudeChapterClassifierTests: XCTestCase {
 
     private func makeClassifier(
         transport: any AnthropicTransport,
-        budget: ClaudeCallBudget = ClaudeCallBudget(cap: 10)
+        budget: CloudCallBudget = CloudCallBudget(cap: 10)
     ) -> ClaudeChapterClassifier {
         let client = AnthropicAPIClient(
             config: AnthropicAPIClient.Config(maxRetries: 0),
@@ -188,7 +188,7 @@ final class ClaudeChapterClassifierTests: XCTestCase {
         let mock = MockTransport(steps: [
             .init(status: 200, body: successBody(text: "chapter"))
         ])
-        let budget = ClaudeCallBudget(cap: 5)
+        let budget = CloudCallBudget(cap: 5)
         let classifier = makeClassifier(transport: mock, budget: budget)
         _ = await classifier.classify(chapter: Chapter(title: "Test"))
         let consumed = await budget.consumed
@@ -197,7 +197,7 @@ final class ClaudeChapterClassifierTests: XCTestCase {
 
     func test_classify_returns_nil_when_budget_exhausted() async {
         let mock = MockTransport(steps: [])
-        let exhausted = ClaudeCallBudget(cap: 0)
+        let exhausted = CloudCallBudget(cap: 0)
         let classifier = makeClassifier(transport: mock, budget: exhausted)
         let label = await classifier.classify(chapter: Chapter(title: "Test"))
         XCTAssertNil(label)

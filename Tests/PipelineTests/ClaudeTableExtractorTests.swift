@@ -89,7 +89,7 @@ final class ClaudeTableExtractorTests: XCTestCase {
 
     private func makeExtractor(
         transport: any AnthropicTransport,
-        budget: ClaudeCallBudget = ClaudeCallBudget(cap: 10)
+        budget: CloudCallBudget = CloudCallBudget(cap: 10)
     ) -> ClaudeTableExtractor {
         let client = AnthropicAPIClient(
             config: AnthropicAPIClient.Config(maxRetries: 0),
@@ -106,7 +106,7 @@ final class ClaudeTableExtractorTests: XCTestCase {
     /// network requests.
     private func runExtract(
         transport: any AnthropicTransport,
-        budget: ClaudeCallBudget = ClaudeCallBudget(cap: 10),
+        budget: CloudCallBudget = CloudCallBudget(cap: 10),
         stagingDir: URL? = nil
     ) async -> [[TableCell]]? {
         let extractor = makeExtractor(transport: transport, budget: budget)
@@ -299,7 +299,7 @@ final class ClaudeTableExtractorTests: XCTestCase {
         let mock = MockTransport(steps: [
             .init(status: 200, body: successBody(text: Self.basicGridJSON))
         ])
-        let budget = ClaudeCallBudget(cap: 5)
+        let budget = CloudCallBudget(cap: 5)
         _ = await runExtract(transport: mock, budget: budget)
         let consumed = await budget.consumed
         XCTAssertEqual(consumed, 1)
@@ -307,7 +307,7 @@ final class ClaudeTableExtractorTests: XCTestCase {
 
     func test_extract_returns_nil_when_budget_exhausted() async {
         let mock = MockTransport(steps: [])  // any call would error
-        let exhausted = ClaudeCallBudget(cap: 0)
+        let exhausted = CloudCallBudget(cap: 0)
         let rows = await runExtract(transport: mock, budget: exhausted)
         XCTAssertNil(rows)
         let sent = await mock.sentRequests

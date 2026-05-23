@@ -54,7 +54,7 @@ final class ClaudeMetadataExtractorTests: XCTestCase {
 
     private func makeExtractor(
         transport: any AnthropicTransport,
-        budget: ClaudeCallBudget = ClaudeCallBudget(cap: 5)
+        budget: CloudCallBudget = CloudCallBudget(cap: 5)
     ) -> ClaudeMetadataExtractor {
         let client = AnthropicAPIClient(
             config: AnthropicAPIClient.Config(maxRetries: 0),
@@ -236,7 +236,7 @@ final class ClaudeMetadataExtractorTests: XCTestCase {
 
     func test_extract_returns_nil_when_budget_exhausted() async {
         let mock = MockTransport(steps: [])
-        let exhausted = ClaudeCallBudget(cap: 0)
+        let exhausted = CloudCallBudget(cap: 0)
         let r = await makeExtractor(transport: mock, budget: exhausted).extract(
             frontMatterText: String(repeating: "front matter content ", count: 10)
         )
@@ -248,7 +248,7 @@ final class ClaudeMetadataExtractorTests: XCTestCase {
             .init(status: 200, body: successBody(jsonText:
                 #"{"title":"X","author":null,"year":null,"publisher":null,"isbn":null}"#))
         ])
-        let budget = ClaudeCallBudget(cap: 5)
+        let budget = CloudCallBudget(cap: 5)
         _ = await makeExtractor(transport: mock, budget: budget).extract(
             frontMatterText: String(repeating: "front matter content ", count: 10)
         )

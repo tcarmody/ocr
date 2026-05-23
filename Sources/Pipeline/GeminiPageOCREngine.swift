@@ -9,7 +9,7 @@ import OCR
 /// `PageOCREngine` impl backed by Google Gemini 2.5 Flash via the
 /// Generative Language API. Drop-in alternative to `ClaudePageOCREngine`
 /// for the typeset / early-print path; manuscript still routes to Opus.
-/// Same XHTML output contract, parsed by `ClaudePageXHTMLParser`.
+/// Same XHTML output contract, parsed by `PageXHTMLParser`.
 ///
 /// Why Flash rather than Pro: on prose pages quality is effectively a
 /// wash with Sonnet, and per-page cost runs ~$0.005 vs Sonnet's $0.04.
@@ -17,15 +17,15 @@ import OCR
 /// hardest layouts (heavy marginalia, dense multi-column footnotes)
 /// — users with those workloads should keep Claude selected.
 ///
-/// Batch dispatch and prompt caching are Claude-only; selecting Gemini
-/// silently disables `useBatchAPI` at the pipeline layer. Per-book call
-/// budget is shared via `ClaudeCallBudget` (the name is the existing
-/// generic LLM budget; cost cap applies across providers).
+/// Prompt caching is Anthropic-only (the Messages API's
+/// `cache_control` doesn't exist on Gemini). Batch API is now wired
+/// for both providers via separate dispatchers. Per-book call budget
+/// is the provider-agnostic `CloudCallBudget`.
 public struct GeminiPageOCREngine: PageOCREngine, Sendable {
     public var providerId: String { model }
 
     public let apiKeyProvider: @Sendable () -> String?
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: String
     public var maxOutputTokens: Int
     public var captureSink: ClaudePageOCREngine.CaptureSink?
@@ -42,7 +42,7 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
 
     public init(
         apiKeyProvider: @escaping @Sendable () -> String?,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: String = "gemini-2.5-flash",
         maxOutputTokens: Int = 8192,
         captureSink: ClaudePageOCREngine.CaptureSink? = nil,
@@ -256,7 +256,7 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
         // Strip those so the parser sees clean XHTML.
         let xhtml = Self.stripCodeFence(text)
 
-        let parser = ClaudePageXHTMLParser()
+        let parser = PageXHTMLParser()
         let result = parser.parse(xhtml, pageIndex: pageIndex)
         capture(
             pageIndex: pageIndex, raw: xhtml,
@@ -377,7 +377,7 @@ public struct GeminiPageOCREngine: PageOCREngine, Sendable {
             return (nil, .empty)
         }
         let xhtml = Self.stripCodeFence(text)
-        let parser = ClaudePageXHTMLParser()
+        let parser = PageXHTMLParser()
         let result = parser.parse(xhtml, pageIndex: pageIndex)
         capture(
             pageIndex: pageIndex,

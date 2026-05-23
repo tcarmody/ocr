@@ -96,7 +96,7 @@ final class ClaudeOCREngineTests: XCTestCase {
 
     private func makeEngine(
         transport: any AnthropicTransport,
-        budget: ClaudeCallBudget = ClaudeCallBudget(cap: 10)
+        budget: CloudCallBudget = CloudCallBudget(cap: 10)
     ) -> ClaudeOCREngine {
         let client = AnthropicAPIClient(
             config: AnthropicAPIClient.Config(maxRetries: 0),
@@ -181,7 +181,7 @@ final class ClaudeOCREngineTests: XCTestCase {
 
     func test_budget_exhausted_throws_before_network_call() async {
         let mock = MockTransport(steps: [])  // any call would hit "queue exhausted"
-        let exhausted = ClaudeCallBudget(cap: 0)
+        let exhausted = CloudCallBudget(cap: 0)
         let engine = makeEngine(transport: mock, budget: exhausted)
         do {
             _ = try await engine.recognize(image: makeImage(), hints: OCRHints())
@@ -201,7 +201,7 @@ final class ClaudeOCREngineTests: XCTestCase {
             .init(status: 200, body: successBody(text: "a")),
             .init(status: 200, body: successBody(text: "b")),
         ])
-        let budget = ClaudeCallBudget(cap: 5)
+        let budget = CloudCallBudget(cap: 5)
         let engine = makeEngine(transport: mock, budget: budget)
         _ = try await engine.recognize(image: makeImage(), hints: OCRHints())
         _ = try await engine.recognize(image: makeImage(), hints: OCRHints())

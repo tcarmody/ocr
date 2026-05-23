@@ -20,13 +20,13 @@ import Document
 /// Effectively free at Haiku rates.
 public struct ClaudeCoherenceAnalyzer: Sendable {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .haiku4_5,
         maxOutputTokens: Int = 1024
     ) {

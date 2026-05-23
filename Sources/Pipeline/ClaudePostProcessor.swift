@@ -26,7 +26,7 @@ import OCR
 /// original text on `nil` — original always wins on doubt.
 public struct ClaudePostProcessor: Sendable {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
     /// Combined-quality floor below which we send the region to Haiku.
@@ -41,7 +41,7 @@ public struct ClaudePostProcessor: Sendable {
 
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .haiku4_5,
         maxOutputTokens: Int = 2048,
         triggerThreshold: Double = 0.7,

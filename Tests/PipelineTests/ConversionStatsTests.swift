@@ -164,10 +164,10 @@ final class ConversionStatsTests: XCTestCase {
         // Haiku:  500 input + 250 output = 500×1$/MTok + 250×5$/MTok
         //       = 0.0005 + 0.00125 = 0.00175
         // Total: 0.01225
-        let sonnetUsage = ClaudeCallBudget.AggregateUsage(
+        let sonnetUsage = CloudCallBudget.AggregateUsage(
             inputTokens: 1000, outputTokens: 500
         )
-        let haikuUsage = ClaudeCallBudget.AggregateUsage(
+        let haikuUsage = CloudCallBudget.AggregateUsage(
             inputTokens: 500, outputTokens: 250
         )
         let stats = ConversionStats.make(
@@ -185,7 +185,7 @@ final class ConversionStatsTests: XCTestCase {
         // 1k input         = 1k × $3/MTok          = $0.003
         // 100 output       = 100 × $15/MTok        = $0.0015
         // Total ≈ $0.00855
-        let usage = ClaudeCallBudget.AggregateUsage(
+        let usage = CloudCallBudget.AggregateUsage(
             inputTokens: 1000,
             outputTokens: 100,
             cacheCreationInputTokens: 1000,
@@ -212,7 +212,7 @@ final class ConversionStatsTests: XCTestCase {
             pagesReOCRd: 17,
             claudeCallCount: 12,
             claudeUsageByModel: [
-                "claude-sonnet-4-6": ClaudeCallBudget.AggregateUsage(
+                "claude-sonnet-4-6": CloudCallBudget.AggregateUsage(
                     inputTokens: 5000, outputTokens: 1200
                 )
             ],
@@ -245,13 +245,13 @@ final class ConversionStatsTests: XCTestCase {
     }
 }
 
-/// Tests for `ClaudeCallBudget`'s usage-recording extension. The
-/// existing `ClaudeCallBudgetTests` covered the consume/cap logic;
+/// Tests for `CloudCallBudget`'s usage-recording extension. The
+/// existing `CloudCallBudgetTests` covered the consume/cap logic;
 /// these add per-model usage accumulation.
-final class ClaudeCallBudgetUsageTests: XCTestCase {
+final class CloudCallBudgetUsageTests: XCTestCase {
 
     func test_recordUsage_accumulates_across_calls() async {
-        let budget = ClaudeCallBudget(cap: 100)
+        let budget = CloudCallBudget(cap: 100)
         await budget.recordUsage(
             Usage(inputTokens: 100, outputTokens: 50),
             for: .sonnet4_6
@@ -266,7 +266,7 @@ final class ClaudeCallBudgetUsageTests: XCTestCase {
     }
 
     func test_recordUsage_separates_models() async {
-        let budget = ClaudeCallBudget(cap: 100)
+        let budget = CloudCallBudget(cap: 100)
         await budget.recordUsage(
             Usage(inputTokens: 100, outputTokens: 50),
             for: .sonnet4_6
@@ -282,7 +282,7 @@ final class ClaudeCallBudgetUsageTests: XCTestCase {
     }
 
     func test_recordUsage_accumulates_cache_fields() async {
-        let budget = ClaudeCallBudget(cap: 100)
+        let budget = CloudCallBudget(cap: 100)
         await budget.recordUsage(
             Usage(
                 inputTokens: 100,
@@ -299,7 +299,7 @@ final class ClaudeCallBudgetUsageTests: XCTestCase {
     }
 
     func test_aggregate_usage_codable_round_trips() throws {
-        let usage = ClaudeCallBudget.AggregateUsage(
+        let usage = CloudCallBudget.AggregateUsage(
             inputTokens: 1234,
             outputTokens: 567,
             cacheCreationInputTokens: 89,
@@ -307,7 +307,7 @@ final class ClaudeCallBudgetUsageTests: XCTestCase {
         )
         let encoded = try JSONEncoder().encode(usage)
         let decoded = try JSONDecoder().decode(
-            ClaudeCallBudget.AggregateUsage.self, from: encoded
+            CloudCallBudget.AggregateUsage.self, from: encoded
         )
         XCTAssertEqual(usage, decoded)
     }

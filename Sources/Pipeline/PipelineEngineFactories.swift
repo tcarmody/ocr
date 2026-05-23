@@ -13,7 +13,7 @@ import PDFIngest
 // `makeXxx` variant), the AFM-fallback factories
 // (`makeMetadataExtractor` / `makePostProcessor` /
 // `makeCoherenceAnalyzer` / `makeChapterClassifier`), the
-// `CapturedResponseStore` debug-dump sink, and the `ClaudeEngines`
+// `CapturedResponseStore` debug-dump sink, and the `CloudEngines`
 // bundle. Behavior-equivalent to the prior inline shape.
 extension PDFToEPUBPipeline {
 
@@ -25,9 +25,9 @@ extension PDFToEPUBPipeline {
     /// conversion via `anthropicAPIKeyProvider`; a rotation mid-run
     /// lands on the next call to `convert`.
     static func makeClaudeEngine<Engine>(
-        options: Options, budget: ClaudeCallBudget,
+        options: Options, budget: CloudCallBudget,
         feature: KeyPath<AISettings.CloudFeatures, Bool>,
-        construct: (AnthropicAPIClient, ClaudeCallBudget) -> Engine
+        construct: (AnthropicAPIClient, CloudCallBudget) -> Engine
     ) -> Engine? {
         guard options.processingMode == .cloud,
               options.cloudFeatures[keyPath: feature],
@@ -37,7 +37,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeOCREngine(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeOCREngine? {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.hardRegionOCR
@@ -50,7 +50,7 @@ extension PDFToEPUBPipeline {
     /// otherwise — the cascade then jumps from Tesseract straight to
     /// Claude as before.
     static func makeGoogleDocumentOCREngine(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> GoogleDocumentOCREngine? {
         guard options.processingMode == .cloud,
               options.cloudFeatures.googleDocumentOCRInCascade,
@@ -68,7 +68,7 @@ extension PDFToEPUBPipeline {
     /// and the Google engine end up non-nil, the cascade prefers
     /// LandingAI (explicit opt-in beats the default).
     static func makeLandingAIDocumentEngine(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> LandingAIDocumentEngine? {
         guard options.processingMode == .cloud,
               options.cloudFeatures.landingAIInCascade,
@@ -85,7 +85,7 @@ extension PDFToEPUBPipeline {
     /// prepended to the Cloud-mode extractor chain so it runs before
     /// Claude — ADE is purpose-built for tables.
     static func makeLandingAITableExtractor(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> LandingAITableExtractor? {
         guard options.processingMode == .cloud,
               options.cloudFeatures.landingAITableExtraction,
@@ -97,7 +97,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudePostProcessor(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudePostProcessor? {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.postOCRCleanup
@@ -105,7 +105,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeTOCParser(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeTOCParser? {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.tocParsing
@@ -113,7 +113,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeCoherenceAnalyzer(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeCoherenceAnalyzer? {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.coherencePass
@@ -121,7 +121,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeChapterStructureAnalyzer(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeChapterStructureAnalyzer? {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.chapterStructurePass
@@ -129,7 +129,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeChapterBreakDetector(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeChapterBreakDetector? {
         makeClaudeEngine(
             options: options, budget: budget,
@@ -138,7 +138,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeFrontBackMatterSplitter(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeFrontBackMatterSplitter? {
         makeClaudeEngine(
             options: options, budget: budget,
@@ -147,7 +147,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeMetadataExtractor(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeMetadataExtractor? {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.metadataExtraction
@@ -155,7 +155,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeChapterClassifier(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeChapterClassifier? {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.semanticClassification
@@ -184,7 +184,7 @@ extension PDFToEPUBPipeline {
 
     /// Pick a metadata extractor. See gating note above.
     static func makeMetadataExtractor(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> (any BookMetadataExtractor)? {
         if let cloud = makeClaudeMetadataExtractor(
             options: options, budget: budget
@@ -204,7 +204,7 @@ extension PDFToEPUBPipeline {
     /// Cloud Haiku, but the AFM path covers the much larger
     /// passages-mode population.
     static func makePostProcessor(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> (any PostOCRProcessor)? {
         if let cloud = makeClaudePostProcessor(
             options: options, budget: budget
@@ -221,7 +221,7 @@ extension PDFToEPUBPipeline {
 
     /// Pick a coherence analyzer. See gating note above.
     static func makeCoherenceAnalyzer(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> (any BookCoherenceAnalyzer)? {
         if let cloud = makeClaudeCoherenceAnalyzer(
             options: options, budget: budget
@@ -240,7 +240,7 @@ extension PDFToEPUBPipeline {
     /// the protocol type so the per-chapter `classifyChapters`
     /// pass doesn't branch on which impl is active.
     static func makeChapterClassifier(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> (any SemanticChapterClassifier)? {
         if let cloud = makeClaudeChapterClassifier(
             options: options, budget: budget
@@ -256,7 +256,7 @@ extension PDFToEPUBPipeline {
     }
 
     static func makeClaudeTableExtractor(
-        options: Options, budget: ClaudeCallBudget
+        options: Options, budget: CloudCallBudget
     ) -> ClaudeTableExtractor? {
         makeClaudeEngine(
             options: options, budget: budget, feature: \.tableExtraction
@@ -279,7 +279,7 @@ extension PDFToEPUBPipeline {
     /// (handwriting) is the more specific intent than routing to
     /// Sonnet (printed cascade-bypass).
     static func makeClaudePageOCREngine(
-        options: Options, budget: ClaudeCallBudget,
+        options: Options, budget: CloudCallBudget,
         captureSink: ClaudePageOCREngine.CaptureSink? = nil
     ) -> ClaudePageOCREngine? {
         guard options.useClaudePageOCR
@@ -314,7 +314,7 @@ extension PDFToEPUBPipeline {
     /// Returns nil when no page-OCR mode flag is set OR when neither
     /// provider has a usable key.
     static func makeActivePageOCREngine(
-        options: Options, budget: ClaudeCallBudget,
+        options: Options, budget: CloudCallBudget,
         captureSink: ClaudePageOCREngine.CaptureSink? = nil
     ) -> (any PageOCREngine)? {
         guard options.useClaudePageOCR
@@ -396,8 +396,8 @@ extension PDFToEPUBPipeline {
     /// Bundle of every Cloud-mode engine a conversion might need,
     /// each independently nil when its gate fails. Built once per
     /// `convert(...)` and shared across pages + post-loop stages.
-    struct ClaudeEngines {
-        let budget: ClaudeCallBudget
+    struct CloudEngines {
+        let budget: CloudCallBudget
         let ocr: ClaudeOCREngine?
         /// Cascade Stage 2.5 — Google Cloud Vision DOCUMENT_TEXT_DETECTION.
         /// Sits between Tesseract and `ocr` (Claude) in `RegionCascade`.
@@ -440,8 +440,8 @@ extension PDFToEPUBPipeline {
         static func make(
             options: Options,
             captures: CapturedResponseStore?
-        ) -> ClaudeEngines {
-            let budget = ClaudeCallBudget(cap: options.perBookCallCap)
+        ) -> CloudEngines {
+            let budget = CloudCallBudget(cap: options.perBookCallCap)
             let captureSink: ClaudePageOCREngine.CaptureSink? = captures.map { store in
                 { @Sendable entry in store.record(entry) }
             }
@@ -450,7 +450,7 @@ extension PDFToEPUBPipeline {
             )
             let claudeBatch = pageEngine as? ClaudePageOCREngine
             let geminiBatch = pageEngine as? GeminiPageOCREngine
-            return ClaudeEngines(
+            return CloudEngines(
                 budget: budget,
                 ocr: makeClaudeOCREngine(options: options, budget: budget),
                 googleDocumentOCR: makeGoogleDocumentOCREngine(

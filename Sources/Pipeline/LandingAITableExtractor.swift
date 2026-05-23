@@ -27,14 +27,14 @@ import OCR
 ///     separator row), not semantic — matches markdown convention.
 public struct LandingAITableExtractor: TableExtractor {
     public let apiKeyProvider: @Sendable () -> String?
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var baseURL: URL
     public var model: String
     public var requestTimeout: TimeInterval
 
     public init(
         apiKeyProvider: @escaping @Sendable () -> String?,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         baseURL: URL = URL(string: "https://api.va.landing.ai")!,
         model: String = "dpt-2-latest",
         requestTimeout: TimeInterval = 120

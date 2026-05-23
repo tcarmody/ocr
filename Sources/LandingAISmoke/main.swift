@@ -44,7 +44,7 @@ struct LandingAISmoke {
 
         let engine = LandingAIDocumentEngine(
             apiKeyProvider: { key },
-            budget: ClaudeCallBudget(cap: 1)
+            budget: CloudCallBudget(cap: 1)
         )
 
         do {

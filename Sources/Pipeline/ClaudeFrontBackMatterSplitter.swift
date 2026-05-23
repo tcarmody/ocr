@@ -36,7 +36,7 @@ import Document
 /// the data model and split logic stay shared.
 public struct ClaudeFrontBackMatterSplitter: Sendable {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
     /// Per-chapter cap for the digest. Keeps a single very long
@@ -47,7 +47,7 @@ public struct ClaudeFrontBackMatterSplitter: Sendable {
 
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .sonnet4_6,
         maxOutputTokens: Int = 1024,
         maxCharsPerChapter: Int = 10_000

@@ -45,7 +45,7 @@ final class ProcessingModePlumbingTests: XCTestCase {
             processingMode: .privateLocal,
             anthropicAPIKeyProvider: { "sk-ant-real-looking-key" }
         )
-        let budget = ClaudeCallBudget(cap: 10)
+        let budget = CloudCallBudget(cap: 10)
         let engine = PDFToEPUBPipeline.makeClaudeOCREngine(
             options: options, budget: budget
         )
@@ -59,7 +59,7 @@ final class ProcessingModePlumbingTests: XCTestCase {
             processingMode: .cloud,
             anthropicAPIKeyProvider: { nil }
         )
-        let budget = ClaudeCallBudget(cap: 10)
+        let budget = CloudCallBudget(cap: 10)
         let engine = PDFToEPUBPipeline.makeClaudeOCREngine(
             options: options, budget: budget
         )
@@ -75,7 +75,7 @@ final class ProcessingModePlumbingTests: XCTestCase {
             cloudFeatures: features,
             anthropicAPIKeyProvider: { "sk-test" }
         )
-        let budget = ClaudeCallBudget(cap: 10)
+        let budget = CloudCallBudget(cap: 10)
         let engine = PDFToEPUBPipeline.makeClaudeOCREngine(
             options: options, budget: budget
         )
@@ -89,7 +89,7 @@ final class ProcessingModePlumbingTests: XCTestCase {
             cloudFeatures: AISettings.CloudFeatures(),  // hardRegionOCR defaults to true
             anthropicAPIKeyProvider: { "sk-test" }
         )
-        let budget = ClaudeCallBudget(cap: 10)
+        let budget = CloudCallBudget(cap: 10)
         let engine = PDFToEPUBPipeline.makeClaudeOCREngine(
             options: options, budget: budget
         )

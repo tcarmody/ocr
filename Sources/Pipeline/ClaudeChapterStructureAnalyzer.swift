@@ -30,13 +30,13 @@ import Document
 /// posture as `ClaudeCoherenceAnalyzer`.
 public struct ClaudeChapterStructureAnalyzer: Sendable {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .sonnet4_6,
         maxOutputTokens: Int = 2048
     ) {

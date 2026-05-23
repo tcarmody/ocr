@@ -28,13 +28,13 @@ import OCR
 /// tier — same flow as the Claude stage.
 public struct GoogleDocumentOCREngine: OCREngine, Sendable {
     public let apiKeyProvider: @Sendable () -> String?
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var baseURL: URL
     public var requestTimeout: TimeInterval
 
     public init(
         apiKeyProvider: @escaping @Sendable () -> String?,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         baseURL: URL = URL(string: "https://vision.googleapis.com")!,
         requestTimeout: TimeInterval = 60
     ) {

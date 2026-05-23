@@ -37,7 +37,7 @@ import Document
 /// turned out to look like a section break in retrospect.
 public struct ClaudeChapterBreakDetector: Sendable {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
     /// Hard cap on the input digest size, measured in approximate
@@ -47,7 +47,7 @@ public struct ClaudeChapterBreakDetector: Sendable {
 
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .sonnet4_6,
         maxOutputTokens: Int = 2048,
         maxInputTokens: Int = 80_000

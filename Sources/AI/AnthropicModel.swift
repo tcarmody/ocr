@@ -69,7 +69,7 @@ public struct AnthropicModel: Sendable, Codable, Equatable, Hashable, RawReprese
     public static let gemini35Flash = AnthropicModel(rawValue: "gemini-3.5-flash")
 
     /// Google Cloud Vision API DOCUMENT_TEXT_DETECTION — classical OCR
-    /// (not an LLM). Tracked here so `ClaudeCallBudget.recordUsage`
+    /// (not an LLM). Tracked here so `CloudCallBudget.recordUsage`
     /// can attribute the per-page cost; pricing is fixed per request,
     /// so input/output tokens are repurposed: `inputTokens = 0`,
     /// `outputTokens = 1` per page → multiplied by the per-image rate.

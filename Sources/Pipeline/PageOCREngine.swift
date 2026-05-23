@@ -8,7 +8,7 @@ import Document
 /// so the per-page serial dispatch is unified across providers.
 ///
 /// The XHTML output schema is shared — both providers prompt the model
-/// to return the same fragment shape, and `ClaudePageXHTMLParser` parses
+/// to return the same fragment shape, and `PageXHTMLParser` parses
 /// either one into `ClaudePageResult`. The batch-API and prompt-cache
 /// paths remain Claude-specific (Anthropic-only features); callers that
 /// need those check for `ClaudePageOCREngine` concretely.

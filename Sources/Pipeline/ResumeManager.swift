@@ -31,7 +31,7 @@ public struct PageCheckpoint: Sendable, Codable {
     /// off or no regions tripped the trigger gate.
     public let correctionTrailEntries: [CorrectionTrail.Entry]
     /// Page-OCR path output: structured blocks Sonnet produced for
-    /// this page, parsed via `ClaudePageXHTMLParser`. Nil for pages
+    /// this page, parsed via `PageXHTMLParser`. Nil for pages
     /// processed by the cascade path. Decoded as nil for old
     /// checkpoints written before this field existed (Codable
     /// optionality is back-compat by default).

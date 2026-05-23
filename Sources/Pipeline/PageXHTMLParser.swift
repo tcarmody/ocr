@@ -1,8 +1,13 @@
 import Foundation
 import Document
 
-/// Parses the XHTML fragment Sonnet returns from `ClaudePageOCREngine`
-/// into a `[Block]` + `[Footnote]` slice.
+/// Parses the XHTML fragment a page-OCR cloud model returns into a
+/// `[Block]` + `[Footnote]` slice. Shared by `ClaudePageOCREngine`
+/// (Sonnet 4.6 / Opus 4.7) and `GeminiPageOCREngine` (Gemini 2.5 /
+/// 3 Flash Preview / 3.5 Flash) — both engines emit the same
+/// XHTML output contract from the shared base system prompt.
+/// Previously named `ClaudePageXHTMLParser` from the era when only
+/// Sonnet existed; renamed when Gemini joined.
 ///
 /// XML-strict parser via `XMLParser`. The fragment is wrapped in a
 /// synthetic `<doc>` root so single-paragraph pages parse, and a small
@@ -29,7 +34,7 @@ import Document
 /// Invalid XHTML degrades to one paragraph containing the
 /// tag-stripped raw text, so a malformed Sonnet response doesn't
 /// erase a page — it just loses structure.
-public struct ClaudePageXHTMLParser: Sendable {
+public struct PageXHTMLParser: Sendable {
     public init() {}
 
     /// P-Verse-Layout. Parse a `class="line indent-3"` style
@@ -88,12 +93,13 @@ public struct ClaudePageXHTMLParser: Sendable {
 
     // MARK: - Preprocessing
 
-    /// Replace the named entities Sonnet sometimes emits with their
-    /// Unicode characters. `XMLParser` only knows the five built-in
-    /// XML entities (`&lt;`, `&gt;`, `&amp;`, `&apos;`, `&quot;`); any
-    /// other named entity throws `NSXMLParserUndeclaredEntityError`.
-    /// The prompt asks Sonnet to use Unicode directly, but Sonnet
-    /// occasionally slips and emits HTML entities anyway.
+    /// Replace the named entities the cloud OCR models sometimes
+    /// emit with their Unicode characters. `XMLParser` only knows the
+    /// five built-in XML entities (`&lt;`, `&gt;`, `&amp;`, `&apos;`,
+    /// `&quot;`); any other named entity throws
+    /// `NSXMLParserUndeclaredEntityError`. The shared system prompt
+    /// tells the model to use Unicode directly, but Sonnet and
+    /// Gemini both occasionally slip and emit HTML entities anyway.
     static func preprocess(_ s: String) -> String {
         var out = s
         let replacements: [(String, String)] = [
@@ -345,7 +351,7 @@ public struct ClaudePageXHTMLParser: Sendable {
                     // class tokens (right-align in v2) are ignored
                     // for v1-narrow — that part lands later.
                     let cls = attributeDict["class"] ?? ""
-                    let indent = ClaudePageXHTMLParser
+                    let indent = PageXHTMLParser
                         .parseIndentBucket(from: cls)
                     startBlock(.verseLine(indent: indent))
                 } else {

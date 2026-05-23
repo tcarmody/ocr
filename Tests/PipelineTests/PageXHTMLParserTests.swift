@@ -2,13 +2,13 @@ import XCTest
 import Document
 @testable import Pipeline
 
-final class ClaudePageXHTMLParserTests: XCTestCase {
+final class PageXHTMLParserTests: XCTestCase {
 
     // MARK: - basic structure
 
     func test_single_paragraph() {
         let xhtml = "<p>Hello world.</p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 5)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 5)
         XCTAssertEqual(result.blocks.count, 1)
         if case let .paragraph(runs) = result.blocks[0] {
             XCTAssertEqual(runs.map(\.text).joined(), "Hello world.")
@@ -27,7 +27,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <h3>Section</h3>
         <p>Body.</p>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 4)
         if case let .heading(level: l1, _) = result.blocks[0] { XCTAssertEqual(l1, 1) }
         if case let .heading(level: l2, _) = result.blocks[1] { XCTAssertEqual(l2, 2) }
@@ -41,7 +41,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <p>Second.</p>
         <p>Third.</p>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         let texts = result.blocks.compactMap { block -> String? in
             if case let .paragraph(runs) = block { return runs.map(\.text).joined() }
             return nil
@@ -55,7 +55,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         // We don't model bold/italic on InlineRun yet; the parser
         // should keep the wrapped text in the run, not drop it.
         let xhtml = "<p>Plain <em>emphasis</em> and <strong>bold</strong>.</p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 1)
         if case let .paragraph(runs) = result.blocks[0] {
             let joined = runs.map(\.text).joined()
@@ -65,7 +65,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
 
     func test_span_lang_attribute_sets_run_language() {
         let xhtml = #"<p>Latin: <span lang="la">veni vidi vici</span> end.</p>"#
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 1)
         guard case let .paragraph(runs) = result.blocks[0] else {
             return XCTFail("Expected paragraph")
@@ -81,7 +81,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
 
     func test_xml_lang_attribute_also_recognized() {
         let xhtml = #"<p><span xml:lang="grc">λόγος</span></p>"#
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         guard case let .paragraph(runs) = result.blocks[0] else {
             return XCTFail("Expected paragraph")
         }
@@ -95,7 +95,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <p>Body text<a class="noteref" href="#fn-1">1</a> continues.</p>
         <aside class="footnote" id="fn-1">1 footnote body text.</aside>
         """#
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 7)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 7)
         XCTAssertEqual(result.blocks.count, 1)
         XCTAssertEqual(result.footnotes.count, 1)
         // Namespaced id includes the page index.
@@ -118,7 +118,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <p>Text<a class="noteref" href="#fn-1">*</a>.</p>
         <aside class="footnote" id="fn-1">* This is the asterisked note.</aside>
         """#
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.footnotes.count, 1)
         XCTAssertEqual(result.footnotes[0].marker, "*")
         XCTAssertEqual(result.footnotes[0].runs.map(\.text).joined(),
@@ -131,7 +131,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <aside class="footnote" id="fn-1">1 first note.</aside>
         <aside class="footnote" id="fn-2">2 second note.</aside>
         """#
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 12)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 12)
         XCTAssertEqual(result.footnotes.count, 2)
         XCTAssertEqual(result.footnotes[0].id, "fn-p12-1")
         XCTAssertEqual(result.footnotes[1].id, "fn-p12-2")
@@ -147,7 +147,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
 
     func test_html_named_entities_are_decoded() {
         let xhtml = "<p>Foo&nbsp;bar&mdash;baz.</p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         if case let .paragraph(runs) = result.blocks[0] {
             XCTAssertEqual(runs.map(\.text).joined(), "Foo\u{00A0}bar\u{2014}baz.")
         } else {
@@ -158,7 +158,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
     // MARK: - robustness
 
     func test_empty_input_returns_empty_result() {
-        let result = ClaudePageXHTMLParser().parse("", pageIndex: 0)
+        let result = PageXHTMLParser().parse("", pageIndex: 0)
         XCTAssertTrue(result.blocks.isEmpty)
         XCTAssertTrue(result.footnotes.isEmpty)
     }
@@ -167,7 +167,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         // Unclosed tag — XMLParser will reject the whole document,
         // we should still return a paragraph with the body text.
         let xhtml = "<p>Some text without a closing tag"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 1)
         if case let .paragraph(runs) = result.blocks[0] {
             XCTAssertEqual(runs.map(\.text).joined(),
@@ -177,7 +177,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
 
     func test_whitespace_only_blocks_are_dropped() {
         let xhtml = "<p>   </p><p>Real content.</p><p></p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 1)
         if case let .paragraph(runs) = result.blocks[0] {
             XCTAssertEqual(runs.map(\.text).joined(), "Real content.")
@@ -191,7 +191,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <section data-stream="main"><p>Main column.</p></section>\
         <section data-stream="sidebar"><p>Glossary entry.</p></section>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.detectedStreams, ["main", "sidebar"])
     }
 
@@ -206,7 +206,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <section data-stream="main"><p>First.</p><p>Second.</p></section>\
         <section data-stream="sidebar"><p>Third.</p></section>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         let texts: [String] = result.blocks.compactMap { block in
             if case let .paragraph(runs) = block {
                 return runs.map(\.text).joined()
@@ -226,7 +226,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         let xhtml = """
         <p>Define <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi><msub><mi>m</mi><mn>1</mn></msub></math> as the first.</p>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 1)
         guard case let .paragraph(runs) = result.blocks[0] else {
             XCTFail("expected paragraph block")
@@ -248,7 +248,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         let xhtml = #"""
         <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mi>Z</mi><mo>=</mo><mi>f</mi></math>
         """#
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 1)
         guard case let .paragraph(runs) = result.blocks[0] else {
             XCTFail("expected paragraph block")
@@ -267,7 +267,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         let xhtml = """
         <p>Therefore <math><mi>a</mi><mo>+</mo><mi>b</mi></math> follows.</p>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         guard case let .paragraph(runs) = result.blocks[0] else {
             XCTFail("expected paragraph"); return
         }
@@ -286,7 +286,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <section data-stream="main"><p>Real page content.</p></section>\
         <section data-stream="main-2"><p>Hallucinated continuation.</p></section>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         let texts: [String] = result.blocks.compactMap { block in
             if case let .paragraph(runs) = block {
                 return runs.map(\.text).joined()
@@ -299,7 +299,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
 
     func test_single_column_page_has_no_detected_streams() {
         let xhtml = "<p>Just a normal paragraph.</p><p>And another.</p>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertTrue(result.detectedStreams.isEmpty)
     }
 
@@ -308,7 +308,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         // shouldn't pollute the diagnostic. Blocks inside still
         // parse normally.
         let xhtml = "<section><p>Body.</p></section>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertTrue(result.detectedStreams.isEmpty)
         XCTAssertEqual(result.blocks.count, 1)
     }
@@ -323,7 +323,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <p class="line indent-3">But Varchi of Florence,</p>
         </div>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 1)
         guard case let .verse(lines) = result.blocks[0] else {
             XCTFail("Expected Block.verse")
@@ -352,7 +352,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         <p class="line">Then "<i lang="grc">Σίγα μαλ' αὖθις δευτέραν</i>!</p>
         </div>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 1)
         guard case let .verse(lines) = result.blocks[0] else {
             XCTFail("Expected Block.verse")
@@ -369,7 +369,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
 
     func test_verse_div_emits_nothing_when_empty() {
         let xhtml = "<div class=\"verse\"></div>"
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertTrue(result.blocks.isEmpty)
     }
 
@@ -383,7 +383,7 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         </div>
         <p>After the poem.</p>
         """
-        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        let result = PageXHTMLParser().parse(xhtml, pageIndex: 0)
         XCTAssertEqual(result.blocks.count, 3)
         guard case .paragraph = result.blocks[0] else {
             XCTFail("Expected leading paragraph")
@@ -405,19 +405,19 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         // accepts indent-N tokens in any position; ignores other
         // classes; defaults to 0 when absent.
         XCTAssertEqual(
-            ClaudePageXHTMLParser.parseIndentBucket(from: "line indent-5"),
+            PageXHTMLParser.parseIndentBucket(from: "line indent-5"),
             5
         )
         XCTAssertEqual(
-            ClaudePageXHTMLParser.parseIndentBucket(from: "indent-2 line"),
+            PageXHTMLParser.parseIndentBucket(from: "indent-2 line"),
             2
         )
         XCTAssertEqual(
-            ClaudePageXHTMLParser.parseIndentBucket(from: "line"),
+            PageXHTMLParser.parseIndentBucket(from: "line"),
             0
         )
         XCTAssertEqual(
-            ClaudePageXHTMLParser.parseIndentBucket(from: ""),
+            PageXHTMLParser.parseIndentBucket(from: ""),
             0
         )
     }

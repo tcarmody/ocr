@@ -28,7 +28,7 @@ import OCR
 /// prototype is the engine itself; wiring follows in a separate change.
 public struct LandingAIDocumentEngine: OCREngine, Sendable {
     public let apiKeyProvider: @Sendable () -> String?
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var baseURL: URL
     public var model: String
     public var requestTimeout: TimeInterval
@@ -40,7 +40,7 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
     /// here if regression-testing against a known version.
     public init(
         apiKeyProvider: @escaping @Sendable () -> String?,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         baseURL: URL = URL(string: "https://api.va.landing.ai")!,
         model: String = "dpt-2-latest",
         requestTimeout: TimeInterval = 120

@@ -29,13 +29,13 @@ import OCR
 /// in the cents range even with this path enabled.
 public struct ClaudeTableExtractor: TableExtractor {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .sonnet4_6,
         // Tables can carry a lot of cell text; budget output tokens
         // generously. A 10×6 academic table at ~30 chars/cell still

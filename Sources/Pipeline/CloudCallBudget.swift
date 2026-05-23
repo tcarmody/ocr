@@ -1,9 +1,15 @@
 import Foundation
 import AI
 
-/// Per-book ceiling on Claude API calls, shared across every Cloud-mode
-/// feature that consumes the API (OCR, table extraction, post-OCR
-/// cleanup, semantic classification, TOC parsing).
+/// Per-book ceiling on Cloud-LLM API calls, shared across every
+/// Cloud-mode feature that consumes a remote model (OCR, table
+/// extraction, post-OCR cleanup, semantic classification, TOC
+/// parsing). Provider-agnostic: counts calls to Anthropic
+/// (Sonnet / Haiku / Opus), Google (Gemini Flash variants),
+/// Cloud Vision, and LandingAI ADE against the same per-book
+/// reservoir. Previously named `ClaudeCallBudget` from the days
+/// when only Sonnet talked to a network model — renamed when
+/// Gemini joined the page-OCR roster.
 ///
 /// Why one shared budget rather than one per feature: the user sets a
 /// single "max calls per book" in Settings and expects that to bound
@@ -11,17 +17,17 @@ import AI
 /// a book with many tables blow past the user's intended ceiling
 /// because each feature has its own reservoir.
 ///
-/// Construct one per `convert(...)` call; pass to every Claude-backed
+/// Construct one per `convert(...)` call; pass to every cloud-backed
 /// engine the conversion uses. When the budget is exhausted, callers
 /// see `tryConsume()` return `false` and should fall back to the prior
 /// tier (the cascade does this for OCR; future phases follow the same
 /// pattern).
 ///
 /// Also accumulates per-model token usage via `recordUsage(_:for:)` so
-/// the post-conversion stats panel can report Claude calls + estimated
+/// the post-conversion stats panel can report cloud calls + estimated
 /// cost. Engines should call `recordUsage` after every successful
 /// API call.
-public actor ClaudeCallBudget {
+public actor CloudCallBudget {
     /// Initial cap (i.e., `AISettings.perBookCallCap`). `nonisolated`
     /// because it's set once at init and never mutates — callers can
     /// read it without a hop into the actor.

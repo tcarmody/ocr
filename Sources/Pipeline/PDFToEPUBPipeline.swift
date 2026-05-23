@@ -87,7 +87,7 @@ public actor PDFToEPUBPipeline {
         public var localFeatures: AISettings.LocalFeatures
         /// Hard ceiling on Claude calls per book, shared across all
         /// Cloud-mode features. Pipeline constructs one
-        /// `ClaudeCallBudget` per `convert(...)` from this value and
+        /// `CloudCallBudget` per `convert(...)` from this value and
         /// passes it to every Claude engine the conversion uses.
         public var perBookCallCap: Int
         /// API key resolver. Held as a closure so the keychain-backed
@@ -675,7 +675,7 @@ public actor PDFToEPUBPipeline {
     /// Run the chapter classifier across `chapters`, with a small
     /// concurrency cap so a 30-chapter book doesn't issue 30
     /// simultaneous calls. Each `classify` call internally gates
-    /// on its own runtime budget (`ClaudeCallBudget` for Cloud;
+    /// on its own runtime budget (`CloudCallBudget` for Cloud;
     /// implicit per-call session for AFM), so the cap is also a
     /// backstop. Returns a chapter list in the same order with
     /// `epubType` populated where the classifier produced a valid
@@ -1327,20 +1327,20 @@ public actor PDFToEPUBPipeline {
         // `processingMode == .cloud`, its feature flag is on, and an
         // API key is configured. The cascade + post-loop stages fall
         // back to local-only when any of those conditions fail.
-        let claudeEngines = ClaudeEngines.make(
+        let cloudEngines = CloudEngines.make(
             options: options, captures: claudePageCaptures
         )
-        let claudeBudget = claudeEngines.budget
-        let claudeOCREngine = claudeEngines.ocr
-        let googleDocumentOCREngine = claudeEngines.googleDocumentOCR
-        let landingAIDocumentEngine = claudeEngines.landingAIDocument
-        let claudePostProcessor = claudeEngines.postProcessor
-        let claudeTOCParser = claudeEngines.tocParser
-        let claudeTableExtractor = claudeEngines.tableExtractor
-        let landingAITableExtractor = claudeEngines.landingAITableExtractor
-        let activePageEngine = claudeEngines.pageEngine
-        let claudeBatchPageEngine = claudeEngines.claudeBatchPageEngine
-        let geminiBatchPageEngine = claudeEngines.geminiBatchPageEngine
+        let claudeBudget = cloudEngines.budget
+        let claudeOCREngine = cloudEngines.ocr
+        let googleDocumentOCREngine = cloudEngines.googleDocumentOCR
+        let landingAIDocumentEngine = cloudEngines.landingAIDocument
+        let claudePostProcessor = cloudEngines.postProcessor
+        let claudeTOCParser = cloudEngines.tocParser
+        let claudeTableExtractor = cloudEngines.tableExtractor
+        let landingAITableExtractor = cloudEngines.landingAITableExtractor
+        let activePageEngine = cloudEngines.pageEngine
+        let claudeBatchPageEngine = cloudEngines.claudeBatchPageEngine
+        let geminiBatchPageEngine = cloudEngines.geminiBatchPageEngine
 
         // Dictionary-match cleanup. Built unconditionally so we
         // can hand it to `assembleBook`, but the assembly step

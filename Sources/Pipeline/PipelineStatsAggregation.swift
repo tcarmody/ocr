@@ -19,7 +19,7 @@ extension PDFToEPUBPipeline {
         pageResults: [PageObservations],
         verdictsByPage: [Int: EmbeddedTextQualityScorer.Verdict],
         pageOCRPendingByIndex: [Int: PendingPageOCR],
-        claudeBudget: ClaudeCallBudget,
+        claudeBudget: CloudCallBudget,
         conversionStart: Date
     ) async -> ConversionStats {
         // Tally observations by source across every page. This walks

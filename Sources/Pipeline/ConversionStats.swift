@@ -80,7 +80,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
     /// Per-model token usage. Sonnet (OCR + tables) and Haiku
     /// (cleanup features) sum independently — preserved separately
     /// so the cost estimate is accurate at different rates.
-    public var claudeUsageByModel: [String: ClaudeCallBudget.AggregateUsage]
+    public var claudeUsageByModel: [String: CloudCallBudget.AggregateUsage]
     /// Estimated USD cost across all Claude calls. Computed from
     /// per-model usage and the rate table on `AnthropicModel`.
     /// Estimate, not invoice — Anthropic's billing is authoritative.
@@ -100,7 +100,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         refusedPageIndices: [Int] = [],
         pageOCRProviderId: String = "",
         claudeCallCount: Int = 0,
-        claudeUsageByModel: [String: ClaudeCallBudget.AggregateUsage] = [:],
+        claudeUsageByModel: [String: CloudCallBudget.AggregateUsage] = [:],
         estimatedCostUSD: Double = 0
     ) {
         self.elapsed = elapsed
@@ -155,7 +155,7 @@ public struct ConversionStats: Sendable, Codable, Equatable {
         self.refusedPageIndices = try c.decodeIfPresent([Int].self, forKey: .refusedPageIndices) ?? []
         self.pageOCRProviderId = try c.decodeIfPresent(String.self, forKey: .pageOCRProviderId) ?? ""
         self.claudeCallCount = try c.decode(Int.self, forKey: .claudeCallCount)
-        self.claudeUsageByModel = try c.decode([String: ClaudeCallBudget.AggregateUsage].self, forKey: .claudeUsageByModel)
+        self.claudeUsageByModel = try c.decode([String: CloudCallBudget.AggregateUsage].self, forKey: .claudeUsageByModel)
         self.estimatedCostUSD = try c.decode(Double.self, forKey: .estimatedCostUSD)
     }
 
@@ -253,7 +253,7 @@ extension ConversionStats {
         refusedPageIndices: [Int] = [],
         pageOCRProviderId: String = "",
         claudeCallCount: Int,
-        claudeUsageByModel: [AnthropicModel: ClaudeCallBudget.AggregateUsage]
+        claudeUsageByModel: [AnthropicModel: CloudCallBudget.AggregateUsage]
     ) -> ConversionStats {
         // Stringify keys for JSON stability.
         let sources: [String: Int] = Dictionary(
@@ -261,7 +261,7 @@ extension ConversionStats {
                 (Self.sourceKey($0.key), $0.value)
             }
         )
-        let usage: [String: ClaudeCallBudget.AggregateUsage] = Dictionary(
+        let usage: [String: CloudCallBudget.AggregateUsage] = Dictionary(
             uniqueKeysWithValues: claudeUsageByModel.map { ($0.key.rawValue, $0.value) }
         )
         // Cost = sum over models of (model's pricing × accumulated usage).

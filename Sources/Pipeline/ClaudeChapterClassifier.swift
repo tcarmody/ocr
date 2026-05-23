@@ -20,13 +20,13 @@ import Document
 /// the chapter goes unlabeled.
 public struct ClaudeChapterClassifier: Sendable {
     public let client: AnthropicAPIClient
-    public let budget: ClaudeCallBudget
+    public let budget: CloudCallBudget
     public var model: AnthropicModel
     public var maxOutputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         model: AnthropicModel = .haiku4_5,
         maxOutputTokens: Int = 32  // ample for a single label string
     ) {

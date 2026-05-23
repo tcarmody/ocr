@@ -71,7 +71,7 @@ extension PDFToEPUBPipeline {
         pdfOutline: [OutlineEntry] = [],
         dictionaryCorrector: DictionaryCorrector,
         options: Options,
-        budget: ClaudeCallBudget,
+        budget: CloudCallBudget,
         title: String,
         language: BCP47,
         sourceURL: URL? = nil,

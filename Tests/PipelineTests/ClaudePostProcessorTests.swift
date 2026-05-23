@@ -77,7 +77,7 @@ final class ClaudePostProcessorTests: XCTestCase {
 
     private func makeProcessor(
         transport: any AnthropicTransport,
-        budget: ClaudeCallBudget = ClaudeCallBudget(cap: 10),
+        budget: CloudCallBudget = CloudCallBudget(cap: 10),
         triggerThreshold: Double = 0.6,
         minCharsToProcess: Int = 30
     ) -> ClaudePostProcessor {
@@ -147,7 +147,7 @@ final class ClaudePostProcessorTests: XCTestCase {
 
     func test_budget_exhausted_returns_nil_without_api_call() async {
         let mock = MockTransport(steps: [])
-        let exhausted = ClaudeCallBudget(cap: 0)
+        let exhausted = CloudCallBudget(cap: 0)
         let p = makeProcessor(transport: mock, budget: exhausted)
         let result = await p.correct(text: lowQualityText, languages: [.en])
         XCTAssertNil(result)
@@ -159,7 +159,7 @@ final class ClaudePostProcessorTests: XCTestCase {
         let mock = MockTransport(steps: [
             .init(status: 200, body: successBody(text: lowQualityText))
         ])
-        let budget = ClaudeCallBudget(cap: 5)
+        let budget = CloudCallBudget(cap: 5)
         let p = makeProcessor(transport: mock, budget: budget)
         _ = await p.correct(text: lowQualityText, languages: [.en])
         let consumed = await budget.consumed
@@ -170,7 +170,7 @@ final class ClaudePostProcessorTests: XCTestCase {
         let mock = MockTransport(steps: [
             .init(status: 200, body: successBody(text: lowQualityText))
         ])
-        let budget = ClaudeCallBudget(cap: 5)
+        let budget = CloudCallBudget(cap: 5)
         let p = makeProcessor(transport: mock, budget: budget)
         _ = await p.correct(text: lowQualityText, languages: [.en])
         let usage = await budget.modelUsage[.haiku4_5]
