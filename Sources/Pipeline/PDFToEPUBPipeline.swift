@@ -1331,12 +1331,20 @@ public actor PDFToEPUBPipeline {
             options: options, captures: claudePageCaptures
         )
         let claudeBudget = cloudEngines.budget
-        let claudeOCREngine = cloudEngines.ocr
+        // Cascade hard-region OCR engine — Claude or Gemini Flash
+        // depending on `pageOCRProvider`. Name kept as
+        // `cloudOCREngine` since the cascade no longer requires the
+        // engine be Claude-specific; downstream code uses the
+        // `(any OCREngine)?` protocol type.
+        let cloudOCREngine = cloudEngines.ocr
         let googleDocumentOCREngine = cloudEngines.googleDocumentOCR
         let landingAIDocumentEngine = cloudEngines.landingAIDocument
         let claudePostProcessor = cloudEngines.postProcessor
         let claudeTOCParser = cloudEngines.tocParser
-        let claudeTableExtractor = cloudEngines.tableExtractor
+        // Cloud-mode table extractor — Claude or Gemini Flash
+        // depending on `pageOCRProvider`. Same protocol-typed
+        // posture as `cloudOCREngine`.
+        let cloudTableExtractor = cloudEngines.tableExtractor
         let landingAITableExtractor = cloudEngines.landingAITableExtractor
         let activePageEngine = cloudEngines.pageEngine
         let claudeBatchPageEngine = cloudEngines.claudeBatchPageEngine
@@ -1573,9 +1581,9 @@ public actor PDFToEPUBPipeline {
                 figureExtractor: figureExtractor,
                 googleDocumentOCREngine: googleDocumentOCREngine,
                 landingAIDocumentEngine: landingAIDocumentEngine,
-                claudeOCREngine: claudeOCREngine,
+                cloudOCREngine: cloudOCREngine,
                 claudePostProcessor: claudePostProcessor,
-                claudeTableExtractor: claudeTableExtractor,
+                cloudTableExtractor: cloudTableExtractor,
                 landingAITableExtractor: landingAITableExtractor
             )
             extractorDiagnostics[i] = outcome.extractorDiagnostics
@@ -1687,9 +1695,9 @@ public actor PDFToEPUBPipeline {
                                 figureExtractor,
                                 googleDocumentOCREngine,
                                 landingAIDocumentEngine,
-                                claudeOCREngine,
+                                cloudOCREngine,
                                 claudePostProcessor,
-                                claudeTableExtractor,
+                                cloudTableExtractor,
                                 landingAITableExtractor
                             )
                             return (pageIndex, outcome)

@@ -44,6 +44,54 @@ extension PDFToEPUBPipeline {
         ) { ClaudeOCREngine(client: $0, budget: $1) }
     }
 
+    /// Cascade hard-region OCR engine picker. Routes to Claude
+    /// (`ClaudeOCREngine`) or Gemini (`GeminiOCREngine`) depending
+    /// on `pageOCRProvider` — the same Settings choice that drives
+    /// page-OCR. Both engines conform to `OCREngine` and slot into
+    /// the same cascade tier; the protocol-typed return keeps the
+    /// caller agnostic. Returns nil when (1) Cloud-mode is off,
+    /// (2) the hard-region-OCR feature flag is off, or (3) the
+    /// provider's API key is missing — in which case the cascade
+    /// stops at Tesseract / Surya / Google Doc OCR.
+    static func makeHardRegionOCREngine(
+        options: Options, budget: CloudCallBudget
+    ) -> (any OCREngine)? {
+        guard options.processingMode == .cloud,
+              options.cloudFeatures.hardRegionOCR
+        else { return nil }
+        switch options.pageOCRProvider {
+        case .claude:
+            return makeClaudeOCREngine(options: options, budget: budget)
+        case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
+            guard let key = options.geminiAPIKeyProvider(),
+                  !key.isEmpty else {
+                // Gemini selected but no key — fall back to Claude
+                // so the cascade still has a final tier. Mirrors
+                // makeActivePageOCREngine's posture.
+                return makeClaudeOCREngine(options: options, budget: budget)
+            }
+            let modelId: String
+            let thinking: String?
+            switch options.pageOCRProvider {
+            case .gemini3FlashPreview:
+                modelId = "gemini-3-flash-preview"
+                thinking = "minimal"
+            case .gemini35Flash:
+                modelId = "gemini-3.5-flash"
+                thinking = "minimal"
+            default:
+                modelId = "gemini-2.5-flash"
+                thinking = nil
+            }
+            return GeminiOCREngine(
+                apiKeyProvider: { key },
+                budget: budget,
+                model: modelId,
+                thinkingLevel: thinking
+            )
+        }
+    }
+
     /// Build the Google Cloud Vision Stage-2.5 cascade engine. Gates
     /// on `processingMode == .cloud`, the `googleDocumentOCRInCascade`
     /// feature flag, and a configured Cloud Vision key. Returns nil
@@ -263,6 +311,58 @@ extension PDFToEPUBPipeline {
         ) { ClaudeTableExtractor(client: $0, budget: $1) }
     }
 
+    /// Cloud-mode table-extractor picker. Routes to Claude
+    /// (`ClaudeTableExtractor`) or Gemini Flash
+    /// (`GeminiTableExtractor`) depending on `pageOCRProvider` —
+    /// same lever that drives the page-OCR and hard-region engines.
+    /// Both conform to `TableExtractor` and slot into the
+    /// `RegionCascade` extractor chain at the same position.
+    /// Returns nil when (1) Cloud-mode is off, (2) the table-
+    /// extraction feature flag is off, or (3) the provider's API
+    /// key is missing — in which case the heuristic / Surya
+    /// extractor takes over.
+    static func makeCloudTableExtractor(
+        options: Options, budget: CloudCallBudget
+    ) -> (any TableExtractor)? {
+        guard options.processingMode == .cloud,
+              options.cloudFeatures.tableExtraction
+        else { return nil }
+        switch options.pageOCRProvider {
+        case .claude:
+            return makeClaudeTableExtractor(
+                options: options, budget: budget
+            )
+        case .gemini25Flash, .gemini3FlashPreview, .gemini35Flash:
+            guard let key = options.geminiAPIKeyProvider(),
+                  !key.isEmpty else {
+                // Gemini selected but no key — fall back to Claude
+                // so table extraction still has a cloud tier.
+                return makeClaudeTableExtractor(
+                    options: options, budget: budget
+                )
+            }
+            let modelId: String
+            let thinking: String?
+            switch options.pageOCRProvider {
+            case .gemini3FlashPreview:
+                modelId = "gemini-3-flash-preview"
+                thinking = "minimal"
+            case .gemini35Flash:
+                modelId = "gemini-3.5-flash"
+                thinking = "minimal"
+            default:
+                modelId = "gemini-2.5-flash"
+                thinking = nil
+            }
+            return GeminiTableExtractor(
+                apiKeyProvider: { key },
+                budget: budget,
+                model: modelId,
+                thinkingLevel: thinking
+            )
+        }
+    }
+
     /// Build the "Claude does the page" engine. Layered on top of the
     /// generic factory: same `.cloud` + key + `hardRegionOCR` gates
     /// (reusing that feature flag for billing/budget purposes), plus
@@ -398,7 +498,13 @@ extension PDFToEPUBPipeline {
     /// `convert(...)` and shared across pages + post-loop stages.
     struct CloudEngines {
         let budget: CloudCallBudget
-        let ocr: ClaudeOCREngine?
+        /// Cascade hard-region OCR engine — Claude or Gemini Flash
+        /// depending on `pageOCRProvider`. Protocol-typed so callers
+        /// (`processCascadePage` etc.) stay provider-agnostic. Nil
+        /// when Cloud-mode is off, the hard-region-OCR feature flag
+        /// is off, or no API key is configured for the active
+        /// provider.
+        let ocr: (any OCREngine)?
         /// Cascade Stage 2.5 — Google Cloud Vision DOCUMENT_TEXT_DETECTION.
         /// Sits between Tesseract and `ocr` (Claude) in `RegionCascade`.
         /// Nil when not in `.cloud` mode or no Cloud Vision key.
@@ -416,7 +522,10 @@ extension PDFToEPUBPipeline {
         /// on which impl is active.
         let postProcessor: (any PostOCRProcessor)?
         let tocParser: ClaudeTOCParser?
-        let tableExtractor: ClaudeTableExtractor?
+        /// Cloud-mode table extractor — Claude or Gemini Flash
+        /// depending on `pageOCRProvider`. Protocol-typed so the
+        /// cascade's extractor chain stays provider-agnostic.
+        let tableExtractor: (any TableExtractor)?
         /// LandingAI ADE table extractor, prepended to the Cloud-mode
         /// table extractor chain when configured. Nil when the toggle
         /// is off or no LandingAI key is available.
@@ -452,7 +561,7 @@ extension PDFToEPUBPipeline {
             let geminiBatch = pageEngine as? GeminiPageOCREngine
             return CloudEngines(
                 budget: budget,
-                ocr: makeClaudeOCREngine(options: options, budget: budget),
+                ocr: makeHardRegionOCREngine(options: options, budget: budget),
                 googleDocumentOCR: makeGoogleDocumentOCREngine(
                     options: options, budget: budget
                 ),
@@ -461,7 +570,7 @@ extension PDFToEPUBPipeline {
                 ),
                 postProcessor: makePostProcessor(options: options, budget: budget),
                 tocParser: makeClaudeTOCParser(options: options, budget: budget),
-                tableExtractor: makeClaudeTableExtractor(options: options, budget: budget),
+                tableExtractor: makeCloudTableExtractor(options: options, budget: budget),
                 landingAITableExtractor: makeLandingAITableExtractor(
                     options: options, budget: budget
                 ),

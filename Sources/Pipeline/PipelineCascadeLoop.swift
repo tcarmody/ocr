@@ -74,9 +74,9 @@ extension PDFToEPUBPipeline {
         figureExtractor: FigureExtractor,
         googleDocumentOCREngine: GoogleDocumentOCREngine?,
         landingAIDocumentEngine: LandingAIDocumentEngine?,
-        claudeOCREngine: ClaudeOCREngine?,
+        cloudOCREngine: (any OCREngine)?,
         claudePostProcessor: (any PostOCRProcessor)?,
-        claudeTableExtractor: ClaudeTableExtractor?,
+        cloudTableExtractor: (any TableExtractor)?,
         landingAITableExtractor: LandingAITableExtractor?
     ) async throws -> CascadePageOutcome {
         // Sync prep: embedded extraction + quality scoring. Wrap
@@ -270,7 +270,7 @@ extension PDFToEPUBPipeline {
                         suryaEngine: cascadeSurya,
                         tesseractEngine: cascadeTess,
                         documentAIEngine: documentAIEngine,
-                        claudeEngine: claudeOCREngine,
+                        claudeEngine: cloudOCREngine,
                         forceClaudeOnAllRegions: options.disableLocalCascadeEscalation
                     )
                 }
@@ -345,7 +345,7 @@ extension PDFToEPUBPipeline {
                         // returned no parseable table.
                         return [
                             landingAITableExtractor as (any TableExtractor)?,
-                            claudeTableExtractor as (any TableExtractor)?,
+                            cloudTableExtractor,
                             tableExtractor as (any TableExtractor)?,
                         ].compactMap { $0 }
                     }
