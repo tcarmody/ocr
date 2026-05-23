@@ -14,10 +14,17 @@
 # This script is independent of `Scripts/run-app.sh` — that one
 # only builds + launches the SwiftUI bundle. CLI users have to
 # re-run this after any pull that touches HumanistCLI/.
-source "$(dirname "$0")/_lib.sh"
+SCRIPT_DIR_RAW="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR_RAW/_lib.sh"
+
+# Run from the repo root so `swift build` finds Package.swift no
+# matter where the user invoked the script from. `_lib.sh` already
+# resolves $REPO_ROOT relative to its own location.
+cd "$REPO_ROOT"
 
 INSTALL_DIR="${1:-${HUMANIST_CLI_INSTALL_DIR:-$HOME/.local/bin}}"
 mkdir -p "$INSTALL_DIR"
+mkdir -p "$BUILD_DIR"
 
 log "Building humanist-cli (release, arm64)"
 # Match Scripts/build-app.sh's arch so we hit the same SwiftPM build
@@ -35,6 +42,15 @@ DEST="$INSTALL_DIR/humanist-cli"
 cp "$BIN_PATH" "$DEST"
 chmod +x "$DEST"
 log "Installed $DEST"
+
+# Also drop a copy in the repo's `build/` directory alongside
+# `Humanist.app`. Useful for archiving (`humanist-cli YYYY-MM-DD.zip`
+# next to the .app bundle) and for sanity-checking the freshly-built
+# binary without polluting whatever $PATH location the user picked.
+BUILD_COPY="$BUILD_DIR/humanist-cli"
+cp "$BIN_PATH" "$BUILD_COPY"
+chmod +x "$BUILD_COPY"
+log "Copied to $BUILD_COPY"
 
 # Sanity check: a `command -v` resolves through $PATH the same way
 # the user's shell does, so a successful match means the install
