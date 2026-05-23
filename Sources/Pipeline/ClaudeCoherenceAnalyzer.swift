@@ -340,6 +340,12 @@ public struct ClaudeCoherenceAnalyzer: Sendable {
         _ runs: [InlineRun], accepted: [Suggestion]
     ) -> [InlineRun] {
         runs.map { run in
+            // Don't touch math runs — their `text` is a plain-text
+            // fallback like "[formula]" or the LaTeX inner, never
+            // prose the OCR-fix dictionary applies to. Rewriting
+            // it would also strand the `rawXHTML` / `latexFallback`
+            // markup if a substitution happened to match.
+            if run.rawXHTML != nil { return run }
             var t = run.text
             for sug in accepted {
                 t = t.replacingOccurrences(of: sug.wrong, with: sug.right)
@@ -349,7 +355,9 @@ public struct ClaudeCoherenceAnalyzer: Sendable {
                 language: run.language,
                 noterefId: run.noterefId,
                 isItalic: run.isItalic,
-                isBold: run.isBold
+                isBold: run.isBold,
+                rawXHTML: run.rawXHTML,
+                latexFallback: run.latexFallback
             )
         }
     }

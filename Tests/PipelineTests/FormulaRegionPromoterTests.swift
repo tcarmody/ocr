@@ -152,6 +152,38 @@ final class FormulaRegionPromoterTests: XCTestCase {
         XCTAssertTrue(sigs.contains("eq#"))
     }
 
+    func test_geometric_rejects_centered_title_when_text_has_no_math_signal() {
+        // Regression: title pages share the geometric profile of
+        // display equations (narrow + centered + short + isolated).
+        // Without the math-evidence gate, a chapter-opening
+        // "by Gary S. Becker" / "A Theory of Marriage" region
+        // promoted to .formula, the math extractor refused, and
+        // reflow fell through to the figure-raster path — so the
+        // title rendered as an embedded image of itself instead
+        // of as text. The text-signal gate keeps geometric tier
+        // honest when observations are populated.
+        let regions = [
+            bodyText(y: 0.70, h: 0.10, order: 1),
+            LayoutRegion(
+                kind: .text,
+                box: CGRect(x: 0.30, y: 0.55, width: 0.40, height: 0.025),
+                readingOrder: 2, confidence: 0.95
+            ),
+            bodyText(y: 0.30, h: 0.20, order: 3),
+        ]
+        let observations = [
+            obs(
+                "A Theory of Marriage",
+                x: 0.30, y: 0.56, w: 0.40, h: 0.02
+            ),
+        ]
+        let (out, _) = FormulaRegionPromoter.promoteGeometric(
+            regions: regions, observations: observations
+        )
+        XCTAssertEqual(out[1].kind, .text,
+            "title-page region with no math signal must not promote")
+    }
+
     func test_geometric_only_promotes_text_and_other_kinds() {
         // A `.sectionHeader` with display-equation geometry must
         // NOT promote — section headers carry real structural

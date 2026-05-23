@@ -184,6 +184,28 @@ public enum FormulaRegionPromoter {
                 continue
             }
 
+            // Test 5 (when observations are populated): reject
+            // promotion when the region's text shows no math
+            // signals — title pages and centered chapter headers
+            // share the geometric profile of display equations
+            // (narrow + centered + short + isolated), and the
+            // earlier tests can't tell them apart without text.
+            // A region whose Vision-OCR'd text has no `=`, no
+            // math symbols, no LaTeX operators, and no equation
+            // number is almost certainly NOT math; geometry alone
+            // is insufficient evidence to ship it through the
+            // math extractor.
+            if !regionText.isEmpty {
+                let mathSignal = hasEqNumber
+                    || containsMathSymbols(regionText)
+                    || containsLaTeXOperator(regionText)
+                    || regionText.contains("<math")
+                if !mathSignal {
+                    continue
+                }
+                signals.append("textHasMathSignal")
+            }
+
             // All tests passed → promote.
             out[idx].kind = .formula
             diag.promotions.append(.init(

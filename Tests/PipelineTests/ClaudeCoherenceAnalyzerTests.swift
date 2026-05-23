@@ -103,6 +103,52 @@ final class ClaudeCoherenceAnalyzerTests: XCTestCase {
         XCTAssertEqual(ClaudeCoherenceAnalyzer.parse(""), [])
     }
 
+    func test_apply_preserves_rawXHTML_and_latexFallback_on_math_runs() {
+        // Regression: the coherence-apply path previously rebuilt
+        // every InlineRun from scratch and dropped `rawXHTML` /
+        // `latexFallback`. MathML for a formula region was stripped,
+        // leaving "[formula]" placeholders in the EPUB. The shortcut
+        // in `applyToRuns` skips runs that already carry rawXHTML —
+        // those texts are placeholders (`"[formula]"`), not prose.
+        let mathML = #"<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>"#
+        // Build enough prose paragraphs that the doc-occurrence
+        // guardrail accepts the suggestion — proves the apply path
+        // ran end-to-end while the math run was skipped intentionally.
+        var blocks: [Block] = [
+            .paragraph(runs: [
+                InlineRun(
+                    "[formula]",
+                    rawXHTML: mathML,
+                    latexFallback: "x"
+                ),
+            ]),
+        ]
+        for _ in 0..<10 {
+            blocks.append(.paragraph(runs: [InlineRun("the worng word")]))
+        }
+        let chapters = [Chapter(title: "C", blocks: blocks)]
+        let suggestion = ClaudeCoherenceAnalyzer.Suggestion(
+            wrong: "worng", right: "wrong"
+        )
+        let out = ClaudeCoherenceAnalyzer.applyWithGuardrails(
+            suggestions: [suggestion], to: chapters
+        )
+        // Math run untouched.
+        guard case let .paragraph(runs) = out[0].blocks[0],
+              let mathRun = runs.first else {
+            return XCTFail("expected first block to remain a paragraph")
+        }
+        XCTAssertEqual(mathRun.rawXHTML, mathML)
+        XCTAssertEqual(mathRun.latexFallback, "x")
+        XCTAssertEqual(mathRun.text, "[formula]")
+        // Control paragraph DID get the correction applied —
+        // the apply pass ran; the math skip is targeted.
+        guard case let .paragraph(controlRuns) = out[0].blocks[1] else {
+            return XCTFail("expected second block to remain a paragraph")
+        }
+        XCTAssertEqual(controlRuns.first?.text, "the wrong word")
+    }
+
     // MARK: - shouldApply guardrails
 
     private let docWithThreeSchafers = """
