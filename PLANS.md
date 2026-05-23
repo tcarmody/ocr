@@ -7923,6 +7923,31 @@ use; distribution is lower priority than correctness.
   Voyage + Gemini key types was a 30-line shim each. 13 new
   tests pin the cosine math, paragraph extractor, sidecar
   round-trip, and RRF fusion.
+- **Pipelined batch processing** (`P-Pipeline-Batch-Pipelining`,
+  2026-05-23): JobRunner was strictly serial — for an overnight
+  queue of 5 books with the Anthropic / Gemini Batch API on,
+  every book's 30-minute poll wait blocked the next book's
+  Phase A even though Surya layout + figure extraction + batch
+  submit are all things we could be doing in the meantime.
+  Refactored `currentJobTask` / `currentJobID` → `inFlightJobs:
+  [UUID: Task<Void, Never>]` and split the run loop's wait into
+  two signals: the per-job task either completes outright
+  (non-batch, errors, cancels, tiny books) or surfaces
+  `.batchWaiting` in its progress (Phase A done, remote provider
+  owns the work). Either signal releases the run loop to start
+  book N+1, whose Phase A naturally serializes against book N's
+  on the Surya sidecar (single-process). Poll wait + Phase C
+  decode + assembly continue in the background; `inFlightJobs`
+  tracks them so cancel/cancelAll still route correctly and a
+  final `drainInFlightJobs()` step makes `isRunning == false`
+  truthful. For a 5-book overnight run with batch on, this turns
+  ~2.5 h of wall time (serial polling) into ~30–40 min (Phase A
+  pipelined, polls overlap on the provider side). Wait helper
+  uses 200ms polling rather than a TaskGroup race because
+  `Task<Void, Never>.value` has no cancellation throw point so
+  `group.cancelAll()` can't abort branch A — simpler to poll
+  both signals on the main actor. Full 1,456-test suite still
+  passes.
 
 **Next, in roughly this order:**
 

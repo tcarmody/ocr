@@ -4,15 +4,30 @@ import Document
 import EPUB
 import Pipeline
 
-/// Serial job processor. Picks the next `.queued` job from the store
-/// and runs it through `PDFToEPUBPipeline`, surfacing per-page progress
-/// back into the store so the queue UI updates live.
+/// Pipelined job processor. Picks the next `.queued` job from the
+/// store and runs it through `PDFToEPUBPipeline`, surfacing per-page
+/// progress back into the store so the queue UI updates live.
 ///
-/// Concurrency: one job at a time. Surya is the bottleneck, lives in a
-/// single Python process, and is the most likely engine to be invoked
-/// in bulk runs — running multiple jobs in parallel against the same
-/// sidecar would just contend on it. Configurable later if there's
-/// demand.
+/// **Concurrency** (P-Pipeline-Batch-Pipelining, 2026-05-23):
+///   * Non-batch jobs are still serial — local Surya work + Cloud
+///     calls all block the run loop.
+///   * Batch-mode jobs (`useBatchAPI` on) overlap: the run loop
+///     waits only for the *local stage* (Phase A render + Surya
+///     layout + figure extraction + batch submit) to finish before
+///     starting the next book. The poll wait + Phase C decode +
+///     assembly continue in a background task.
+///
+///   Mechanism: each job runs in its own `Task` tracked in
+///   `inFlightJobs`. The run loop awaits a helper that races
+///   "task complete" against "progress phase reached `.batchWaiting`"
+///   — whichever fires first signals "safe to start the next book."
+///   Surya still serializes naturally because Phase A of book N+1
+///   only begins after book N's Phase A has handed off to the
+///   provider.
+///
+///   For a 5-book overnight run with batch on, this turns ~2.5 h
+///   of wall time (serial polling) into ~30–40 min (Phase A
+///   pipelined, polls overlap on the provider side).
 @MainActor
 final class JobRunner: ObservableObject {
     let store: JobStore
@@ -38,11 +53,11 @@ final class JobRunner: ObservableObject {
     @Published private(set) var cancellingJobIDs: Set<UUID> = []
 
     private var loopTask: Task<Void, Never>?
-    /// Pipeline task for the currently-running job. Holding it here
-    /// lets per-job cancel reach into the pipeline via cooperative
-    /// cancellation.
-    private var currentJobTask: Task<Void, Never>?
-    private var currentJobID: UUID?
+    /// Tasks for jobs the runner has started but not yet finished.
+    /// Each job runs in its own Task so the runner can spawn book N+1
+    /// while book N's batch-poll + Phase C decode + assembly run in
+    /// the background. Cancel routes through this dict.
+    private var inFlightJobs: [UUID: Task<Void, Never>] = [:]
     /// `UserDefaults` instance backing the persisted-pause flag. Test
     /// seam — production passes `.standard`; tests pass an isolated
     /// suite so they can assert on persistence without polluting the
@@ -99,9 +114,13 @@ final class JobRunner: ObservableObject {
                 // run finish gracefully rather than mid-page-cancel,
                 // then exits the loop until `resume()`.
                 if isPaused { break }
-                await processJob(job)
+                await startJob(job)
                 if Task.isCancelled { break }
             }
+            // Drain any background-stage tasks that are still
+            // chewing through batch polls / Phase C so callers
+            // awaiting "queue idle" get a truthful signal.
+            await drainInFlightJobs()
         }
     }
 
@@ -124,15 +143,16 @@ final class JobRunner: ObservableObject {
         start()
     }
 
-    /// Cancel a specific job. Running → propagates Task.cancel into the
-    /// pipeline; queued → just marks as cancelled and the runner skips
-    /// it on the next pass.
+    /// Cancel a specific job. In-flight (running locally or waiting on
+    /// a remote batch) → propagates Task.cancel into the pipeline;
+    /// queued → just marks as cancelled and the runner skips it on
+    /// the next pass.
     func cancel(jobID: UUID) {
-        if currentJobID == jobID {
+        if let task = inFlightJobs[jobID] {
             // Immediate UI feedback — pipeline may take seconds to
-            // catch up. Cleared in `processJob` when the task ends.
+            // catch up. Cleared in `startJob` when the task ends.
             cancellingJobIDs.insert(jobID)
-            currentJobTask?.cancel()
+            task.cancel()
         } else {
             store.update(jobID) { job in
                 if job.status == .queued {
@@ -145,10 +165,10 @@ final class JobRunner: ObservableObject {
 
     /// Bulk cancel — used by Cancel All / Pause Queue actions.
     func cancelAll() {
-        if let id = currentJobID {
+        for (id, task) in inFlightJobs {
             cancellingJobIDs.insert(id)
+            task.cancel()
         }
-        currentJobTask?.cancel()
         for job in store.jobs where job.status == .queued {
             store.update(job.id) { mutable in
                 mutable.status = .cancelled
@@ -172,9 +192,19 @@ final class JobRunner: ObservableObject {
 
     // MARK: - job execution
 
-    private func processJob(_ job: Job) async {
-        currentJobID = job.id
-        store.update(job.id) { mutable in
+    /// Spawn the per-job pipeline task and return once it's safe to
+    /// start the *next* book — either because the task completed
+    /// outright (non-batch or fast-fail) or because progress reached
+    /// `.batchWaiting`, meaning Phase A (render + Surya layout +
+    /// figure extraction + batch submit) is done and the remote
+    /// provider now owns the work.
+    ///
+    /// The pipeline task continues to run in `inFlightJobs` until the
+    /// final EPUB is written; later cancels and the loop's final
+    /// drain step still see it.
+    private func startJob(_ job: Job) async {
+        let jobID = job.id
+        store.update(jobID) { mutable in
             mutable.status = .running
             mutable.startedAt = Date()
             mutable.error = nil
@@ -184,12 +214,55 @@ final class JobRunner: ObservableObject {
         let task: Task<Void, Never> = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.runPipeline(for: job)
+            self.inFlightJobs.removeValue(forKey: jobID)
+            self.cancellingJobIDs.remove(jobID)
         }
-        currentJobTask = task
-        await task.value
-        currentJobTask = nil
-        currentJobID = nil
-        cancellingJobIDs.remove(job.id)
+        inFlightJobs[jobID] = task
+        await waitForLocalStageComplete(jobID: jobID)
+    }
+
+    /// Returns when the job either:
+    ///   * completes (the per-job task removes itself from
+    ///     `inFlightJobs` — covers non-batch jobs, errors, cancels,
+    ///     and very small books), or
+    ///   * surfaces `.batchWaiting` in its progress — meaning Phase A
+    ///     handed off to the cloud provider and the queue is free to
+    ///     start book N+1's Phase A.
+    ///
+    /// Either way, the per-job Task keeps running in the background
+    /// until the EPUB is written.
+    ///
+    /// Polls every 200ms — both checks are in-process main-actor
+    /// reads (no disk, no network), so the wake cost is negligible
+    /// and the latency penalty (handing off to book N+1 a fraction
+    /// of a second after Phase A completes) is invisible against
+    /// the minutes-to-hours batch wait we're trying to amortize.
+    /// Awaiting `Task<Void, Never>.value` inside a TaskGroup branch
+    /// can't be aborted by `group.cancelAll()` (no cancellation
+    /// throw point), so a polling design is simpler than racing.
+    private func waitForLocalStageComplete(jobID: UUID) async {
+        while true {
+            if inFlightJobs[jobID] == nil { return }
+            if let progress = store.jobs.first(where: { $0.id == jobID })?
+                .progress,
+               progress.phase == .batchWaiting {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    /// Wait for every still-in-flight job to finish so callers who
+    /// observe `isRunning == false` can trust it. Called once when
+    /// the run loop exits (queue drained or paused) — pipelined
+    /// background tasks may still be polling a batch provider here.
+    private func drainInFlightJobs() async {
+        while !inFlightJobs.isEmpty {
+            let snapshot = Array(inFlightJobs.values)
+            for task in snapshot {
+                await task.value
+            }
+        }
     }
 
     private func runPipeline(for job: Job) async {
