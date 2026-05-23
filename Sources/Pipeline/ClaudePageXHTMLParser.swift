@@ -120,6 +120,39 @@ public struct ClaudePageXHTMLParser: Sendable {
         for (k, v) in replacements {
             out = out.replacingOccurrences(of: k, with: v)
         }
+        // P-Math: XMLParser with shouldProcessNamespaces=false
+        // refuses default-namespace declarations on nested elements
+        // (`<doc><math xmlns="…">` fails the whole parse). Strip the
+        // xmlns attribute from any `<math …>` open tag; the writer
+        // re-adds the canonical MathML namespace when it emits.
+        out = stripMathXmlns(out)
+        return out
+    }
+
+    /// Remove `xmlns="…"` attributes on `<math>` open tags. Other
+    /// elements are untouched. The writer re-adds the canonical
+    /// MathML namespace when emitting, so dropping it here is
+    /// lossless on the round-trip — and XMLParser stops choking on
+    /// the default-namespace declaration inside the `<doc>` wrapper.
+    private static func stripMathXmlns(_ s: String) -> String {
+        guard let re = try? NSRegularExpression(
+            pattern: #"(<math\b[^>]*?)\s+xmlns\s*=\s*"[^"]*"([^>]*>)"#,
+            options: [.caseInsensitive]
+        ) else { return s }
+        var out = s
+        // A `<math>` element could have xmlns plus other attributes
+        // (e.g. `display="block"`). Repeated apply handles the rare
+        // case of two xmlns declarations on the same tag.
+        for _ in 0..<3 {
+            let ns = out as NSString
+            let replaced = re.stringByReplacingMatches(
+                in: out, options: [],
+                range: NSRange(location: 0, length: ns.length),
+                withTemplate: "$1$2"
+            )
+            if replaced == out { break }
+            out = replaced
+        }
         return out
     }
 
@@ -199,6 +232,23 @@ public struct ClaudePageXHTMLParser: Sendable {
         /// that would consume these streams instead of dropping them.
         var streamStack: [String] = []
 
+        /// `<math>` capture state. P-Math (cheap path): when the
+        /// model emits MathML, we capture the entire subtree as a
+        /// string and emit it verbatim through an `InlineRun.rawXHTML`
+        /// so the XHTML writer can pass it to the EPUB without
+        /// flattening into `<sub>`/`<sup>` plain-text runs.
+        ///   * `mathDepth > 0` ⇒ we're inside a `<math>` element;
+        ///     subsequent start/end/character callbacks accumulate
+        ///     into `mathBuffer` instead of touching the inline
+        ///     stack or text buffer.
+        ///   * `mathBuffer` builds the raw markup (open + inner + close).
+        ///   * `mathPlainText` accumulates the visible text content
+        ///     so downstream writers that don't render MathML
+        ///     (Markdown, plain-text) have something to fall back on.
+        var mathDepth: Int = 0
+        var mathBuffer: String = ""
+        var mathPlainText: String = ""
+
         /// True when the parser is currently inside a non-primary
         /// stream and emitted blocks should be discarded. The
         /// definition of "primary" is "empty stack" (no section
@@ -215,6 +265,26 @@ public struct ClaudePageXHTMLParser: Sendable {
 
         // MARK: XMLParserDelegate
 
+        /// Serialize a tag open into its raw XML form, preserving
+        /// attributes. Used by the `<math>` capture path to reassemble
+        /// the model's emitted MathML verbatim.
+        private func serializeOpenTag(
+            _ tag: String, attributes: [String: String]
+        ) -> String {
+            if attributes.isEmpty { return "<\(tag)>" }
+            // Sort attributes for stable output (helps tests + cache
+            // hashing). Attribute values get XML-escaped.
+            let attrs = attributes.keys.sorted().map { k -> String in
+                let v = attributes[k] ?? ""
+                let escaped = v
+                    .replacingOccurrences(of: "&", with: "&amp;")
+                    .replacingOccurrences(of: "\"", with: "&quot;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                return "\(k)=\"\(escaped)\""
+            }
+            return "<\(tag) \(attrs.joined(separator: " "))>"
+        }
+
         func parser(
             _ parser: XMLParser,
             didStartElement elementName: String,
@@ -223,6 +293,34 @@ public struct ClaudePageXHTMLParser: Sendable {
             attributes attributeDict: [String: String] = [:]
         ) {
             let tag = elementName.lowercased()
+            // P-Math: any tag inside an open <math> gets appended to
+            // the capture buffer verbatim, bypassing the inline-frame
+            // state machine. The `mathDepth > 0` check fires for
+            // nested children (mrow, mi, mo, mfrac, msup, msub, …);
+            // the explicit `tag == "math"` case handles the outer
+            // entry.
+            if tag == "math" {
+                // Flush any pending paragraph text before capturing
+                // so the math run inserts at the right position.
+                flushTextBuffer()
+                mathDepth = 1
+                // Re-add the canonical MathML namespace that
+                // `preprocess` stripped to keep XMLParser happy.
+                // The model often emits it, but we strip + re-add
+                // it deterministically so the EPUB output always
+                // carries the proper namespace regardless of what
+                // the model chose to include.
+                var attrs = attributeDict
+                attrs["xmlns"] = "http://www.w3.org/1998/Math/MathML"
+                mathBuffer = serializeOpenTag(tag, attributes: attrs)
+                mathPlainText = ""
+                return
+            }
+            if mathDepth > 0 {
+                mathBuffer += serializeOpenTag(tag, attributes: attributeDict)
+                mathDepth += 1
+                return
+            }
             switch tag {
             case "doc":
                 return
@@ -338,6 +436,29 @@ public struct ClaudePageXHTMLParser: Sendable {
             qualifiedName qName: String?
         ) {
             let tag = elementName.lowercased()
+            // P-Math close path. If we're inside a `<math>` subtree
+            // append the close tag; when depth returns to 0, emit the
+            // captured MathML as a single rawXHTML InlineRun and
+            // reset state. If we're at the top of a block (no current
+            // block kind) — i.e. the `<math>` appeared standalone
+            // outside any `<p>`/`<h*>` — start a paragraph implicitly
+            // so the run has a block to land in.
+            if mathDepth > 0 {
+                mathBuffer += "</\(tag)>"
+                mathDepth -= 1
+                if mathDepth == 0 {
+                    if currentBlockKind == nil {
+                        startBlock(.paragraph)
+                    }
+                    currentRuns.append(InlineRun(
+                        mathPlainText,
+                        rawXHTML: mathBuffer
+                    ))
+                    mathBuffer = ""
+                    mathPlainText = ""
+                }
+                return
+            }
             switch tag {
             case "doc":
                 return
@@ -382,6 +503,21 @@ public struct ClaudePageXHTMLParser: Sendable {
         }
 
         func parser(_ parser: XMLParser, foundCharacters string: String) {
+            // P-Math capture: characters inside `<math>` accumulate
+            // into both the raw markup buffer (XML-escaped — they're
+            // attribute-free text content within the math markup)
+            // and the plain-text fallback string. Done before the
+            // currentBlockKind guard so math content inside a bare
+            // `<math>` (no surrounding `<p>`) still gets captured.
+            if mathDepth > 0 {
+                let escaped = string
+                    .replacingOccurrences(of: "&", with: "&amp;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                    .replacingOccurrences(of: ">", with: "&gt;")
+                mathBuffer += escaped
+                mathPlainText += string
+                return
+            }
             // Drop characters that fall outside any block context —
             // those are usually whitespace between block elements.
             guard currentBlockKind != nil else { return }
@@ -517,8 +653,16 @@ public struct ClaudePageXHTMLParser: Sendable {
         private func compactRuns(_ runs: [InlineRun]) -> [InlineRun] {
             var out: [InlineRun] = []
             for run in runs {
-                if run.text.isEmpty { continue }
+                // A rawXHTML run carries opaque markup (e.g.
+                // captured MathML); keep it even when `text` is
+                // empty so the markup makes it into the EPUB.
+                if run.text.isEmpty && run.rawXHTML == nil { continue }
                 if let last = out.last,
+                   // rawXHTML runs are opaque — never merge them
+                   // with neighbours (the merge would drop the
+                   // markup) and never merge anything into them.
+                   last.rawXHTML == nil,
+                   run.rawXHTML == nil,
                    last.language == run.language,
                    last.noterefId == run.noterefId,
                    last.isItalic == run.isItalic,

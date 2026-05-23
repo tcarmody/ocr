@@ -392,6 +392,27 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         - If text is unclear, transcribe what you can read; do NOT insert \
         markers like [unclear] or [illegible].
 
+        MATH AND EQUATIONS:
+        - For inline math fragments (single variables, subscripted symbols, \
+        simple in-line expressions like x₁ + x₂ = y³): use plain Unicode \
+        characters. Subscript digits: ₀₁₂₃₄₅₆₇₈₉. Superscript digits: \
+        ⁰¹²³⁴⁵⁶⁷⁸⁹. Greek letters as Unicode (α β γ Σ Π ∫ ∂). Common math \
+        symbols as Unicode (≤ ≥ ≠ ≈ ∈ ∉ ∑ ∏ ∫ √ ∞ ∂ ∇ × ÷ ± · ⋅ → ↔). Do \
+        NOT use `<sub>`, `<sup>`, `<span class="math">`, `$…$`, `\\(…\\)`, \
+        or any other markup for inline math — just Unicode characters.
+        - For display equations (numbered standalone equations, multi-line \
+        derivations, equations centered on their own line — like \
+        `Z = f(x₁, …, xₘ; t₁, …, tₖ; E),  (1)`): emit MathML, wrapped in \
+        `<math display="block" xmlns="http://www.w3.org/1998/Math/MathML">…</math>`. \
+        Equation numbers (like the `(1)` above) go OUTSIDE the `<math>` \
+        element, in the surrounding paragraph text.
+        - For inline expressions too complex for Unicode (fractions, integrals \
+        with explicit bounds, matrices, anything multi-row): use inline \
+        MathML, wrapped in `<math xmlns="http://www.w3.org/1998/Math/MathML">…</math>` \
+        (no `display="block"` attribute).
+        - Never emit LaTeX delimiters (`$`, `$$`, `\\(`, `\\[`). They render \
+        as plain text in EPUB readers and produce visibly broken output.
+
         COMPLEX-LAYOUT RULES (apply ONLY when a page has clearly parallel \
         text streams running side by side — books like Derrida's *Glas*, \
         bilingual editions with verso/recto streams, Talmud-style commentaries \

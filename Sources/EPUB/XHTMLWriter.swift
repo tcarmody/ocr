@@ -216,6 +216,16 @@ struct XHTMLWriter {
 
     private func renderRuns(_ runs: [InlineRun], parentLanguage: BCP47) -> String {
         runs.map { run in
+            // Opaque pass-through (currently used for MathML the
+            // page-OCR parser captured verbatim). Skip escaping,
+            // emphasis wrapping, and language attribute — the
+            // markup is whatever the model emitted and the
+            // structure is its own concern. Falls back to
+            // text-based rendering when rawXHTML is nil (the
+            // normal case).
+            if let raw = run.rawXHTML, !raw.isEmpty {
+                return raw
+            }
             let escaped = XMLEscape.text(run.text)
             // Noteref runs render as a superscript link to the matching
             // <aside> at the end of the chapter. Language attrs still

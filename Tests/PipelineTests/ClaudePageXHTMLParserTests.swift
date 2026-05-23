@@ -217,6 +217,64 @@ final class ClaudePageXHTMLParserTests: XCTestCase {
         XCTAssertEqual(result.detectedStreams, ["main", "sidebar"])
     }
 
+    // MARK: - P-Math (MathML pass-through)
+
+    func test_math_inline_in_paragraph_is_captured_verbatim() {
+        // The parser should NOT flatten `<math>` into sub/sup runs.
+        // It should capture the whole subtree as a rawXHTML run so
+        // the XHTML writer can emit it unmodified.
+        let xhtml = """
+        <p>Define <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi><msub><mi>m</mi><mn>1</mn></msub></math> as the first.</p>
+        """
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertEqual(result.blocks.count, 1)
+        guard case let .paragraph(runs) = result.blocks[0] else {
+            XCTFail("expected paragraph block")
+            return
+        }
+        // Should have at least one run with rawXHTML set.
+        let mathRuns = runs.filter { $0.rawXHTML != nil }
+        XCTAssertEqual(mathRuns.count, 1)
+        let raw = mathRuns[0].rawXHTML ?? ""
+        XCTAssertTrue(raw.hasPrefix("<math"))
+        XCTAssertTrue(raw.contains("<mi>x</mi>"))
+        XCTAssertTrue(raw.contains("<msub>"))
+        XCTAssertTrue(raw.hasSuffix("</math>"))
+    }
+
+    func test_math_display_block_emits_paragraph_with_raw_run() {
+        // A standalone `<math display="block">` should start a
+        // paragraph implicitly and emit a single rawXHTML run.
+        let xhtml = #"""
+        <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mi>Z</mi><mo>=</mo><mi>f</mi></math>
+        """#
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        XCTAssertEqual(result.blocks.count, 1)
+        guard case let .paragraph(runs) = result.blocks[0] else {
+            XCTFail("expected paragraph block")
+            return
+        }
+        XCTAssertEqual(runs.count, 1)
+        let raw = runs[0].rawXHTML ?? ""
+        XCTAssertTrue(raw.contains("display=\"block\""))
+        XCTAssertTrue(raw.contains("<mi>Z</mi>"))
+    }
+
+    func test_math_plain_text_fallback_is_populated() {
+        // The InlineRun's `text` field should hold the math's
+        // visible text content so Markdown / .txt outputs have
+        // something to fall back on.
+        let xhtml = """
+        <p>Therefore <math><mi>a</mi><mo>+</mo><mi>b</mi></math> follows.</p>
+        """
+        let result = ClaudePageXHTMLParser().parse(xhtml, pageIndex: 0)
+        guard case let .paragraph(runs) = result.blocks[0] else {
+            XCTFail("expected paragraph"); return
+        }
+        let mathRun = runs.first { $0.rawXHTML != nil }
+        XCTAssertEqual(mathRun?.text, "a+b")
+    }
+
     func test_section_main_2_stream_is_suppressed() {
         // Regression: Gemini 3.5 Flash emits two streams per
         // page (`main` + `main-2`) for typeset single-column
