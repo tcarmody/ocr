@@ -1600,12 +1600,52 @@ plumbing patterns.
     MathML natively; external readers (Apple Books, Calibre,
     Thorium) likewise.
 
-Cascade-mode math (cheap path for non-whole-page-Cloud runs) and a
-real math-OCR backend (Mathpix / Latex-OCR) for high-density math
-corpora are tracked as `P-Math-Cascade` and `P-Math-Mathpix`
-below; today's corpus is dominated by economics / philosophy books
-with light math, so whole-page-Cloud + MathML pass-through covers
-nearly every observed case.
+Cascade-mode math shipped 2026-05-23 (`P-Math-Cascade`, commit
+`7c5f30d`). A real math-OCR backend (Mathpix / Latex-OCR) for
+high-density math corpora is queued as `P-Math-Mathpix` below;
+today's corpus is dominated by economics / philosophy books
+with light math, so whole-page-Cloud + MathML pass-through and
+the cascade Sonnet path together cover nearly every observed
+case. Mathpix lifts only the long tail (dense STEM textbooks
+with complex display equations that exceed Sonnet's vision
+fidelity).
+
+### Sub-plans
+
+**P-Math-Cascade** (shipped 2026-05-23). Per-region cascade
+extractor that runs each `.formula` region through Sonnet 4.6
+asking for MathML, falling back to the existing figure raster
+on refusal / empty / non-`<math>` response. Gated by
+`CloudFeatures.mathExtraction` (default on in Cloud mode).
+`MathExtractor` protocol introduced alongside `TableExtractor`;
+`ClaudeMathExtractor` is the first impl. Plumbed through
+`CascadePageOutcome` → `PDFToEPUBPipeline` → `PipelineReflow`
+→ `RegionAwareReflow`; reflow emits a `Block.paragraph(runs:
+[InlineRun(rawXHTML: mathML)])` instead of `Block.figure` when
+MathML is captured. 10 new tests.
+
+**P-Math-Mathpix** (queued). Optional `MathpixMathExtractor`
+as a higher-quality alternative to `ClaudeMathExtractor` for
+math-heavy books. Mathpix's `/v3/text` endpoint with
+`formats: ["data"], data_options: { include_mathml: true }`
+returns purpose-built MathML — measured better than Sonnet's
+vision-prompt path on complex aligned derivations,
+`\\begin{cases}` style multi-branch definitions, and dense
+subscript / superscript stacks.
+  * Keychain stores two-secret credentials (app_id + app_key);
+    JSON-encoded into a single `KeychainAPIKeyStore` slot to
+    keep the parallel with existing single-secret stores.
+  * `MathpixAPIClient` is a minimal HTTP client (one endpoint,
+    no shared retry plumbing — single-call latency budget per
+    formula, error → caller falls back to Claude).
+  * Factory wins over `ClaudeMathExtractor` when configured;
+    on Mathpix decline / failure, falls through to Claude.
+  * Settings UI: secure-fields for both credentials + Test
+    Connection button mirroring the LandingAI / Google Cloud
+    Vision panes.
+  * Defer until: (a) user has real test credentials and (b) a
+    math-heavy book in the corpus to validate against. Effort
+    estimate ~5-6 files / half-day once those are in place.
 
 ### Goal
 
