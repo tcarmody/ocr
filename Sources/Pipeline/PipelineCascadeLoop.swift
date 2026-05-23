@@ -220,6 +220,33 @@ extension PDFToEPUBPipeline {
                 layoutError = err
             }
 
+            // P-Math-Region-Detection Tier 1. Surya under-classifies
+            // display equations — every region on a math-heavy book
+            // can come through as `.text` / `.other` despite obvious
+            // display-equation geometry. Walk regions and promote
+            // narrow + centered + isolated + short ones to `.formula`
+            // BEFORE the per-region cascade fires so promoted regions
+            // skip the lossy text-OCR path entirely and route into
+            // the math extractor (Phase 6) instead. NSLog each
+            // promotion so the Console (and emitDebugLog dumps when
+            // `claude-pages.txt` is on) audit the decisions —
+            // misclassification was the hardest thing to debug.
+            if let regions = layoutForPage, !regions.isEmpty {
+                let outcome = FormulaRegionPromoter.promoteGeometric(
+                    regions: regions,
+                    observations: observations
+                )
+                layoutForPage = outcome.regions
+                for d in outcome.diagnostics.promotions {
+                    NSLog(
+                        "Humanist: P-Math-Region tier=%d page=%d region=%d %@→formula signals=%@",
+                        d.tier, i, d.regionIndex,
+                        String(describing: d.fromKind),
+                        d.signals.joined(separator: ",")
+                    )
+                }
+            }
+
             // No-Surya figure fallback. Routes around the
             // layout array entirely — picks up born-digital
             // XObjects first, then Vision saliency, and
@@ -312,6 +339,34 @@ extension PDFToEPUBPipeline {
                 )
                 observations = outcome.observations
                 correctionTrail.append(contentsOf: outcome.trailEntries)
+            }
+
+            // P-Math-Region-Detection Tier 2. Post-OCR text-pattern
+            // promotion. Runs against the cleanest available text
+            // (cascade-escalated + Haiku-cleaned where applicable)
+            // so a region whose Surya inline-`<math>` density is
+            // ≥ 60%, OR whose single-line text matches a display-
+            // equation shape (`=` + LaTeX operator + sparse prose),
+            // OR which ends with `(N)` AND contains math symbols,
+            // gets promoted. Tier 1 (geometric) already ran above;
+            // this catches the regions Tier 1 missed because their
+            // geometry didn't quite fit (e.g. left-flush numbered
+            // equations, or inline-math-heavy paragraphs that look
+            // textual at a glance).
+            if let regions = layoutForPage, !regions.isEmpty {
+                let outcome = FormulaRegionPromoter.promoteByText(
+                    regions: regions,
+                    observations: observations
+                )
+                layoutForPage = outcome.regions
+                for d in outcome.diagnostics.promotions {
+                    NSLog(
+                        "Humanist: P-Math-Region tier=%d page=%d region=%d %@→formula signals=%@",
+                        d.tier, i, d.regionIndex,
+                        String(describing: d.fromKind),
+                        d.signals.joined(separator: ",")
+                    )
+                }
             }
 
             // Phase 6: extract figures (.picture, .formula) from
