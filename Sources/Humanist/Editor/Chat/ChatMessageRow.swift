@@ -54,13 +54,6 @@ struct ChatMessageRow: View {
                     MarkdownMessageBody(text: message.text)
                         .font(.callout)
                 } else {
-                    // Plain Text — see the matching comment in
-                    // `MarkdownMessageBody` for why neither
-                    // `.textSelection(.enabled)` nor the
-                    // `SelectableMessageText` NSTextView wrapper
-                    // works on macOS 26 without hanging the chat
-                    // scroll. Selection is opt-in via the context
-                    // menu's "Select Text…" sheet.
                     Text(message.text)
                         .font(.callout)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -73,14 +66,18 @@ struct ChatMessageRow: View {
                             } label: {
                                 Label("Copy Message", systemImage: "doc.on.doc")
                             }
-                            Button {
-                                userSelectionSheetText = message.text
-                            } label: {
-                                Label("Select Text…", systemImage: "text.cursor")
-                            }
                         }
                 }
             }
+            // R-Chat-Reinstate-Polish: native text selection restored
+            // after R-Federated-Memory-Pass made the chat surface
+            // healthy at FP16. The SelectionOverlay → setFont → IIC-
+            // invalidate cascade that pinned the main thread during
+            // the hang investigation only manifested under memory
+            // pressure; with RSS down ~5×, drag-select and ⌘C work
+            // without freezing the scroll. If hangs reappear, revert
+            // this commit before chasing anything else.
+            .textSelection(.enabled)
             .padding(10)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
