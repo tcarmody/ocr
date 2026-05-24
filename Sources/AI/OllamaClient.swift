@@ -201,6 +201,165 @@ public actor OllamaClient {
         }
     }
 
+    // MARK: - Tool use (agentic loop)
+
+    /// Tool the model can call mid-turn. Mirrors the Anthropic
+    /// `Tool` shape but with Ollama's wire format
+    /// (`type: function, function: { name, description, parameters }`).
+    /// `parametersJSON` is the raw JSON Schema bytes the caller
+    /// already has — the same shape `LibraryChatTools` produces for
+    /// the cloud path, reused verbatim.
+    public struct ToolDescriptor: Sendable {
+        public let name: String
+        public let description: String
+        public let parametersJSON: Data
+
+        public init(name: String, description: String, parametersJSON: Data) {
+            self.name = name
+            self.description = description
+            self.parametersJSON = parametersJSON
+        }
+    }
+
+    /// One tool invocation the model requested. `id` is synthesized
+    /// (UUID) because Ollama doesn't always include one — the
+    /// agentic loop carries the id back as a key for the matching
+    /// tool result message even though Ollama's wire shape doesn't
+    /// require it (no `tool_use_id` round-trip like Anthropic).
+    public struct ToolCall: Sendable, Identifiable {
+        public let id: String
+        public let name: String
+        public let argumentsJSON: Data
+    }
+
+    /// One message in the agentic conversation. Richer than
+    /// `ChatHistoryMessage` because the tool path needs assistant
+    /// turns that carry `tool_calls` and dedicated tool-result
+    /// turns (Ollama role: "tool").
+    public enum AgenticMessage: Sendable {
+        case system(String)
+        case user(String)
+        case assistant(text: String, toolCalls: [ToolCall])
+        case toolResult(name: String, content: String)
+    }
+
+    /// One assistant turn parsed from `/api/chat`. When `toolCalls`
+    /// is empty, `text` is the final answer (or partial answer the
+    /// loop should append). When non-empty, the caller dispatches
+    /// the calls, appends their results as `.toolResult` messages,
+    /// and re-sends.
+    public struct AssistantResponse: Sendable {
+        public let text: String
+        public let toolCalls: [ToolCall]
+    }
+
+    /// One round-trip of the agentic chat loop. Non-streaming —
+    /// each round is a full request/response cycle. Streaming the
+    /// final-answer round is a follow-up; for v1 we mirror the
+    /// cloud agentic path's non-streaming shape.
+    ///
+    /// Models that don't support tool use (Gemma family, smaller
+    /// models without function-calling templates) will simply
+    /// respond with text and no `tool_calls` — the loop exits as if
+    /// the model had everything it needed. No capability detection
+    /// or graceful-fallback machinery is required for that case;
+    /// the absence of `tool_calls` IS the signal.
+    public func chatAgentic(
+        model: String,
+        messages: [AgenticMessage],
+        tools: [ToolDescriptor]
+    ) async throws -> AssistantResponse {
+        let wireTools = try tools.map { tool in
+            AgenticChatRequestBody.ToolWire(
+                type: "function",
+                function: AgenticChatRequestBody.ToolWire.Function(
+                    name: tool.name,
+                    description: tool.description,
+                    // Hand the JSON-Schema bytes through as a generic
+                    // JSON value so we don't have to re-encode them.
+                    parameters: try AnyCodable(jsonBytes: tool.parametersJSON)
+                )
+            )
+        }
+        let body = AgenticChatRequestBody(
+            model: model,
+            messages: messages.map(Self.wireMessage(_:)),
+            tools: wireTools,
+            stream: false
+        )
+        let request = try buildRequest(path: "/api/chat", body: body)
+        let (data, _) = try await sendOnce(request, modelHint: model)
+        let envelope: AgenticChatResponseBody
+        do {
+            envelope = try Self.decoder.decode(
+                AgenticChatResponseBody.self, from: data
+            )
+        } catch {
+            throw OllamaError.decode(String(describing: error))
+        }
+        let calls: [ToolCall] = (envelope.message.tool_calls ?? []).map { wire in
+            let argsData = (try? Self.encoder.encode(wire.function.arguments))
+                ?? Data("{}".utf8)
+            return ToolCall(
+                id: UUID().uuidString,
+                name: wire.function.name,
+                argumentsJSON: argsData
+            )
+        }
+        return AssistantResponse(
+            text: envelope.message.content ?? "",
+            toolCalls: calls
+        )
+    }
+
+    /// Translate the AgenticMessage enum into wire-level messages.
+    /// Tool results use Ollama's `{role: "tool", content: ...,
+    /// name: ...}` shape; assistant turns with tool calls inline
+    /// the calls under `tool_calls`.
+    nonisolated private static func wireMessage(
+        _ msg: AgenticMessage
+    ) -> AgenticChatRequestBody.MessageWire {
+        switch msg {
+        case .system(let s):
+            return AgenticChatRequestBody.MessageWire(
+                role: "system", content: s, name: nil, tool_calls: nil
+            )
+        case .user(let s):
+            return AgenticChatRequestBody.MessageWire(
+                role: "user", content: s, name: nil, tool_calls: nil
+            )
+        case .assistant(let text, let calls):
+            let wireCalls: [AgenticChatRequestBody.ToolCallWire]?
+            if calls.isEmpty {
+                wireCalls = nil
+            } else {
+                wireCalls = calls.map { call in
+                    let args = (try? Self.decoder.decode(
+                        AnyCodable.self, from: call.argumentsJSON
+                    )) ?? AnyCodable(.object([:]))
+                    return AgenticChatRequestBody.ToolCallWire(
+                        function: AgenticChatRequestBody.ToolCallWire.FunctionWire(
+                            name: call.name, arguments: args
+                        )
+                    )
+                }
+            }
+            return AgenticChatRequestBody.MessageWire(
+                role: "assistant",
+                content: text,
+                name: nil,
+                tool_calls: wireCalls
+            )
+        case .toolResult(let name, let content):
+            return AgenticChatRequestBody.MessageWire(
+                role: "tool",
+                content: content,
+                name: name,
+                tool_calls: nil
+            )
+        }
+    }
+
     /// True when the daemon is reachable. Cheap probe — used by the
     /// setup wizard and the chat pane's "is Ollama up?" banner.
     public func ping() async -> Bool {
@@ -371,6 +530,162 @@ public actor OllamaClient {
             let size: Int?
         }
         let models: [Model]
+    }
+
+    // MARK: - Agentic wire types
+
+    fileprivate struct AgenticChatRequestBody: Encodable {
+        let model: String
+        let messages: [MessageWire]
+        let tools: [ToolWire]
+        let stream: Bool
+
+        struct MessageWire: Encodable {
+            let role: String
+            let content: String
+            let name: String?
+            // Ollama key is `tool_calls`; Encodable maps `tool_calls`
+            // directly via `CodingKeys.snakeCase` would be wrong
+            // (the rest of the body uses camel-equivalent names).
+            // Use a manual CodingKey instead.
+            let tool_calls: [ToolCallWire]?
+
+            private enum CodingKeys: String, CodingKey {
+                case role, content, name
+                case tool_calls
+            }
+        }
+
+        struct ToolCallWire: Codable {
+            let function: FunctionWire
+
+            struct FunctionWire: Codable {
+                let name: String
+                let arguments: AnyCodable
+            }
+        }
+
+        struct ToolWire: Encodable {
+            let type: String
+            let function: Function
+
+            struct Function: Encodable {
+                let name: String
+                let description: String
+                let parameters: AnyCodable
+            }
+        }
+    }
+
+    fileprivate struct AgenticChatResponseBody: Decodable {
+        let model: String
+        let message: AssistantMessage
+        let done: Bool
+
+        struct AssistantMessage: Decodable {
+            let role: String
+            let content: String?
+            let tool_calls: [ToolCallWire]?
+
+            private enum CodingKeys: String, CodingKey {
+                case role, content, tool_calls
+            }
+        }
+
+        struct ToolCallWire: Decodable {
+            let function: FunctionWire
+
+            struct FunctionWire: Decodable {
+                let name: String
+                let arguments: AnyCodable
+            }
+        }
+    }
+
+    /// Minimal "anything JSON" Codable so the agentic request/response
+    /// can shuttle the model's `arguments` payload (and the tools'
+    /// `parameters` JSON Schema) through without us having to model
+    /// every shape. Encoder/decoder both pass through arbitrary
+    /// nested object / array / scalar trees.
+    fileprivate struct AnyCodable: Codable {
+        let value: Value
+
+        enum Value {
+            case object([String: AnyCodable])
+            case array([AnyCodable])
+            case string(String)
+            case number(Double)
+            case bool(Bool)
+            case null
+        }
+
+        init(_ value: Value) { self.value = value }
+
+        /// Construct from raw JSON bytes — used when threading a
+        /// JSON-Schema (`Tool.parametersJSON`) through.
+        init(jsonBytes: Data) throws {
+            let raw = try JSONSerialization.jsonObject(with: jsonBytes)
+            self.value = AnyCodable.lift(raw)
+        }
+
+        private static func lift(_ raw: Any) -> Value {
+            if let dict = raw as? [String: Any] {
+                var out: [String: AnyCodable] = [:]
+                for (k, v) in dict {
+                    out[k] = AnyCodable(AnyCodable.lift(v))
+                }
+                return .object(out)
+            }
+            if let arr = raw as? [Any] {
+                return .array(arr.map { AnyCodable(AnyCodable.lift($0)) })
+            }
+            if let s = raw as? String { return .string(s) }
+            if let b = raw as? Bool { return .bool(b) }
+            if let n = raw as? NSNumber {
+                // NSNumber is what JSONSerialization hands back for
+                // numeric literals; check if it's actually a Bool
+                // (CFBoolean bridges) before treating as double.
+                if CFGetTypeID(n) == CFBooleanGetTypeID() {
+                    return .bool(n.boolValue)
+                }
+                return .number(n.doubleValue)
+            }
+            return .null
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            if c.decodeNil() { value = .null; return }
+            if let b = try? c.decode(Bool.self) { value = .bool(b); return }
+            if let d = try? c.decode(Double.self) { value = .number(d); return }
+            if let s = try? c.decode(String.self) { value = .string(s); return }
+            if let a = try? c.decode([AnyCodable].self) { value = .array(a); return }
+            if let o = try? c.decode([String: AnyCodable].self) {
+                value = .object(o); return
+            }
+            value = .null
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.singleValueContainer()
+            switch value {
+            case .null:           try c.encodeNil()
+            case .bool(let b):    try c.encode(b)
+            case .number(let n):
+                // Preserve integer shape when the model passed an
+                // integer (Ollama's arguments often have integer
+                // fields like top_k / book_limit).
+                if n.rounded() == n,
+                   n >= Double(Int.min), n <= Double(Int.max) {
+                    try c.encode(Int(n))
+                } else {
+                    try c.encode(n)
+                }
+            case .string(let s):  try c.encode(s)
+            case .array(let a):   try c.encode(a)
+            case .object(let o):  try c.encode(o)
+            }
+        }
     }
 
     // MARK: - JSON

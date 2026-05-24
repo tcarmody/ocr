@@ -470,7 +470,13 @@ final class LibraryChatViewModel: ObservableObject {
                     model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
                 )
             case .localOllama:
-                await self.runOllamaSend(userPrompt: userPrompt, allowedHits: resolvedHits)
+                await self.runOllamaSendAgentic(
+                    userPrompt: userPrompt,
+                    initialHits: resolvedHits,
+                    registry: registry,
+                    library: library,
+                    backend: backend
+                )
             }
         }
         streamTask?.cancel()
@@ -1194,58 +1200,178 @@ final class LibraryChatViewModel: ObservableObject {
         persistTranscript()
     }
 
-    private func runOllamaSend(
+    /// Ollama agentic loop — local-model equivalent of
+    /// `runCloudSendAgentic`. Same dispatcher reuse (search_library
+    /// + search_concept), same per-turn registry, same iteration
+    /// cap. Non-streaming for v1 — the tool round-trips need
+    /// the full assistant turn (text + tool_calls) before the loop
+    /// can decide whether to dispatch or finalize, so streaming
+    /// would only buy us partial display of the final round.
+    /// Streaming the final answer is a separate follow-up.
+    ///
+    /// Models without tool support (Gemma family, smaller models)
+    /// will simply respond with text and no `tool_calls` — the loop
+    /// exits after round 1 and renders the final answer as if no
+    /// tools existed. No capability-detection machinery needed;
+    /// the absence of `tool_calls` IS the signal.
+    private func runOllamaSendAgentic(
         userPrompt: String,
-        allowedHits: [LibraryEmbeddingIndex.Hit]
+        initialHits: [LibraryEmbeddingIndex.Hit],
+        registry: LibraryChatTools.TurnBookRegistry,
+        library: LibraryEmbeddingIndex,
+        backend: any EmbeddingBackend
     ) async {
         defer {
             isThinking = false
             streamTask = nil
         }
-        // History: see the matching comment in `runCloudSend`. Same
-        // capture-before-draft ordering. Trimmed to the same per-VM
-        // `maxHistoryTurns` cap as the cloud path so local-model
-        // context doesn't grow without bound either.
+        // Snapshot state the agentic loop's tool dispatchers will
+        // need — same shape as runCloudSendAgentic.
+        let useEntity = self.useEntityRetrieval
+        let entityIndex = self.libraryEntityIndex
+        let keywordIndex = self.libraryKeywordIndex
+        let topKDefault = self.maxRetrievedParagraphs
+        let rrfK = self.rrfK
+        let scope = self.scopedURLs
+        let excluded = self.excludedBookURLs
+        let maxParaChars = self.maxParagraphChars
+
+        var accumulatedHits: [LibraryEmbeddingIndex.Hit] = initialHits
+
+        // Build conversation. Each prior message becomes a plain
+        // text turn — we don't carry tool_calls / results across
+        // turns because the model's reasoning about earlier
+        // retrieval results is encoded in the answer text already.
         let trimmed = trimChatHistory(
             Array(messages.dropLast()), maxTurns: maxHistoryTurns
         )
-        var history: [OllamaClient.ChatHistoryMessage] = []
+        var convo: [OllamaClient.AgenticMessage] = [
+            .system(systemPrompt)
+        ]
         for prior in trimmed {
-            history.append(.init(
-                role: prior.role == .user ? .user : .assistant,
-                content: prior.text
-            ))
+            switch prior.role {
+            case .user:
+                convo.append(.user(prior.text))
+            case .assistant:
+                convo.append(.assistant(text: prior.text, toolCalls: []))
+            }
         }
+        convo.append(.user(userPrompt))
+
+        let toolDescriptors: [OllamaClient.ToolDescriptor] = [
+            Self.ollamaTool(from: LibraryChatTools.searchLibraryTool),
+            Self.ollamaTool(from: LibraryChatTools.searchConceptTool),
+        ]
+        let maxIterations = agenticMaxIterations
+
         let draftId = appendDraftAssistant()
-        var sawFirstDelta = false
+        var iteration = 0
+
         do {
-            let stream = ollama.chatStream(
-                model: ollamaModel,
-                system: systemPrompt,
-                history: history,
-                userMessage: userPrompt
-            )
-            for try await delta in stream {
+            while true {
+                let response = try await ollama.chatAgentic(
+                    model: ollamaModel,
+                    messages: convo,
+                    tools: maxIterations > 0 ? toolDescriptors : []
+                )
                 try Task.checkCancellation()
-                if !sawFirstDelta {
-                    sawFirstDelta = true
+
+                if !response.text.isEmpty {
+                    appendToDraft(id: draftId, text: response.text)
                     isThinking = false
                 }
-                appendToDraft(id: draftId, text: delta)
+
+                if response.toolCalls.isEmpty || iteration >= maxIterations {
+                    finalizeAgenticDraft(
+                        id: draftId,
+                        registry: registry,
+                        accumulatedHits: accumulatedHits
+                    )
+                    return
+                }
+
+                // Echo assistant turn back into the running thread —
+                // Ollama (like Anthropic) expects the prior turn's
+                // tool_calls in the message history before the
+                // matching tool results.
+                convo.append(.assistant(
+                    text: response.text, toolCalls: response.toolCalls
+                ))
+
+                for call in response.toolCalls {
+                    let triple: (id: String, name: String, inputJSON: Data) = (
+                        call.id, call.name, call.argumentsJSON
+                    )
+                    let peekQuery = Self.previewQuery(for: call.argumentsJSON)
+                    toolStatus = call.name == "search_concept"
+                        ? "Looking up concept: \"\(peekQuery)\"…"
+                        : "Searching: \"\(peekQuery)\"…"
+                    let resultText: String
+                    do {
+                        switch call.name {
+                        case "search_library":
+                            let (text, hits) = try await dispatchSearchLibrary(
+                                call: triple,
+                                library: library,
+                                backend: backend,
+                                registry: registry,
+                                useEntity: useEntity,
+                                entityIndex: entityIndex,
+                                keywordIndex: keywordIndex,
+                                topKDefault: topKDefault,
+                                rrfK: rrfK,
+                                scope: scope,
+                                excluded: excluded,
+                                maxParaChars: maxParaChars
+                            )
+                            accumulatedHits.append(contentsOf: hits)
+                            resultText = text
+                        case "search_concept":
+                            resultText = try await dispatchSearchConcept(
+                                call: triple,
+                                registry: registry,
+                                backend: backend
+                            )
+                        default:
+                            resultText = "Unknown tool: \(call.name)"
+                        }
+                    } catch {
+                        resultText = "\(call.name) failed: \(error.localizedDescription)"
+                    }
+                    toolStatus = nil
+                    convo.append(.toolResult(
+                        name: call.name, content: resultText
+                    ))
+                }
+
+                iteration += 1
             }
-            finalizeDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
+            toolStatus = nil
             removeDraft(id: draftId)
             return
         } catch let error as OllamaError {
+            toolStatus = nil
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
         } catch {
+            toolStatus = nil
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
         }
+    }
+
+    /// Translate an Anthropic `Tool` descriptor into the Ollama
+    /// shape. Both carry name + description + JSON-Schema bytes;
+    /// `cacheControl` is Anthropic-only and dropped.
+    private static func ollamaTool(from tool: Tool) -> OllamaClient.ToolDescriptor {
+        OllamaClient.ToolDescriptor(
+            name: tool.name,
+            description: tool.description,
+            parametersJSON: tool.inputSchema
+        )
     }
 
     // MARK: - Streaming draft helpers

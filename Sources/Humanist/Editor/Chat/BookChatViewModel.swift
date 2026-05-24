@@ -846,8 +846,12 @@ final class BookChatViewModel: ObservableObject {
                     model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
                 )
             case .localOllama:
-                await self.runLibraryOllamaSend(
-                    userPrompt: userPrompt, allowedHits: resolved
+                await self.runLibraryOllamaSendAgentic(
+                    userPrompt: userPrompt,
+                    initialResolvedHits: resolved,
+                    registry: registry,
+                    library: library,
+                    backend: backend
                 )
             }
         }
@@ -1982,59 +1986,156 @@ final class BookChatViewModel: ObservableObject {
         persist()
     }
 
-    private func runLibraryOllamaSend(
+    /// Per-book chat's library-scope Ollama agentic loop. Mirrors
+    /// `runLibraryCloudSendAgentic` but uses Ollama's tool-call
+    /// shape via `OllamaClient.chatAgentic`. See the matching
+    /// notes in `LibraryChatViewModel.runOllamaSendAgentic` for
+    /// the non-streaming choice and the "no tool support means no
+    /// tool_calls means loop exits cleanly" design.
+    private func runLibraryOllamaSendAgentic(
         userPrompt: String,
-        allowedHits: [ResolvedLibraryHit]
+        initialResolvedHits: [ResolvedLibraryHit],
+        registry: LibraryChatTools.TurnBookRegistry,
+        library: LibraryEmbeddingIndex,
+        backend: any EmbeddingBackend
     ) async {
         defer {
             isThinking = false
             streamTask = nil
         }
-        let model = ollamaModel
-        // History captured BEFORE appendDraftAssistant so the empty
-        // draft doesn't leak into the conversation we send.
+        var accumulatedHits: [ResolvedLibraryHit] = initialResolvedHits
+        let useEntity = self.useEntityRetrieval
+        let entityIndex = self.libraryEntityIndex
+        let keywordIndex = self.libraryKeywordIndex
+        let topKDefault = self.maxRetrievedParagraphs
+        let rrfK = self.rrfK
+        let excluded = self.excludedLibraryBookURLs
+        let maxParaChars = self.maxParagraphChars
+
         let trimmed = trimChatHistory(
             Array(messages.dropLast()), maxTurns: maxHistoryTurns
         )
-        var history: [OllamaClient.ChatHistoryMessage] = []
+        var convo: [OllamaClient.AgenticMessage] = [
+            .system(libraryScopeSystemPrompt)
+        ]
         for prior in trimmed {
-            history.append(.init(
-                role: prior.role == .user ? .user : .assistant,
-                content: prior.text
-            ))
+            switch prior.role {
+            case .user:
+                convo.append(.user(prior.text))
+            case .assistant:
+                convo.append(.assistant(text: prior.text, toolCalls: []))
+            }
         }
-        // Streaming for the same reason as `runLibraryCloudSend` —
-        // local 26B models take 30-90s for a multi-paragraph reply.
+        convo.append(.user(userPrompt))
+
+        let toolDescriptors: [OllamaClient.ToolDescriptor] = [
+            Self.ollamaTool(from: LibraryChatTools.searchLibraryTool),
+            Self.ollamaTool(from: LibraryChatTools.searchConceptTool),
+        ]
+        let maxIterations = agenticMaxIterations
         let draftId = appendDraftAssistant()
-        var sawFirstDelta = false
+        var iteration = 0
+
         do {
-            let stream = ollama.chatStream(
-                model: model,
-                system: libraryScopeSystemPrompt,
-                history: history,
-                userMessage: userPrompt
-            )
-            for try await delta in stream {
+            while true {
+                let response = try await ollama.chatAgentic(
+                    model: ollamaModel,
+                    messages: convo,
+                    tools: maxIterations > 0 ? toolDescriptors : []
+                )
                 try Task.checkCancellation()
-                if !sawFirstDelta {
-                    sawFirstDelta = true
+
+                if !response.text.isEmpty {
+                    appendToDraft(id: draftId, text: response.text)
                     isThinking = false
                 }
-                appendToDraft(id: draftId, text: delta)
+
+                if response.toolCalls.isEmpty || iteration >= maxIterations {
+                    finalizeAgenticLibraryDraft(
+                        id: draftId,
+                        registry: registry,
+                        accumulatedHits: accumulatedHits
+                    )
+                    return
+                }
+
+                convo.append(.assistant(
+                    text: response.text, toolCalls: response.toolCalls
+                ))
+
+                for call in response.toolCalls {
+                    let triple: (id: String, name: String, inputJSON: Data) = (
+                        call.id, call.name, call.argumentsJSON
+                    )
+                    let peekQuery = Self.previewToolQuery(for: call.argumentsJSON)
+                    toolStatus = call.name == "search_concept"
+                        ? "Looking up concept: \"\(peekQuery)\"…"
+                        : "Searching: \"\(peekQuery)\"…"
+                    let resultText: String
+                    do {
+                        switch call.name {
+                        case "search_library":
+                            let (text, hits) = try await dispatchLibrarySearch(
+                                call: triple,
+                                library: library,
+                                backend: backend,
+                                registry: registry,
+                                useEntity: useEntity,
+                                entityIndex: entityIndex,
+                                keywordIndex: keywordIndex,
+                                topKDefault: topKDefault,
+                                rrfK: rrfK,
+                                excluded: excluded,
+                                maxParaChars: maxParaChars
+                            )
+                            accumulatedHits.append(contentsOf: hits)
+                            resultText = text
+                        case "search_concept":
+                            resultText = try await dispatchLibraryConceptSearch(
+                                call: triple,
+                                registry: registry,
+                                backend: backend
+                            )
+                        default:
+                            resultText = "Unknown tool: \(call.name)"
+                        }
+                    } catch {
+                        resultText = "\(call.name) failed: \(error.localizedDescription)"
+                    }
+                    toolStatus = nil
+                    convo.append(.toolResult(
+                        name: call.name, content: resultText
+                    ))
+                }
+
+                iteration += 1
             }
-            finalizeLibraryDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
+            toolStatus = nil
             removeDraft(id: draftId)
             return
         } catch let error as OllamaError {
+            toolStatus = nil
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
         } catch {
+            toolStatus = nil
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
         }
+    }
+
+    /// Translate an Anthropic `Tool` descriptor into the Ollama
+    /// shape. Both carry name + description + JSON-Schema bytes;
+    /// `cacheControl` is Anthropic-only and dropped.
+    private static func ollamaTool(from tool: Tool) -> OllamaClient.ToolDescriptor {
+        OllamaClient.ToolDescriptor(
+            name: tool.name,
+            description: tool.description,
+            parametersJSON: tool.inputSchema
+        )
     }
 
     /// Hit-ordered overload used by the Ollama path. Mirrors the
