@@ -4536,17 +4536,34 @@ of work; the order below was the user's pick. Don't treat as a
 hard schedule — sequence around whatever specific friction is
 biting on the days the work happens.
 
-- **Chapter 2 — Discovery** (#11 + #13):
-  - **Surface me something** — single button that picks a paragraph
-    from somewhere in the library the user probably hasn't seen,
-    flagged as "worth re-reading." Recency-decayed entropy score
-    so the same passages don't keep coming up. Daily-quote shape
-    but biased toward genuinely useful re-encounters.
-  - **Pre-reading briefing** — open a book the user hasn't read →
-    "give me what I need to know before I start this." Pulls from
-    the book's own front-matter + the library's other books that
-    engage with this one. Especially useful for translated / dense
-    texts where the introduction is itself a wall.
+- ~~**Chapter 2 — Discovery**~~ shipped (commits `dde9f87`, `4d4c840`):
+  - ~~**Surface me something**~~ shipped. `SurfaceParagraphSelector`
+    rejection-samples per-book sidecars against a "worth
+    re-reading" rubric (length 200–1500, ≥2 sentences, ≥30 word
+    tokens, type-token ratio ≥ 0.4, no heading-prefix). Weighted-
+    random within a book so dense passages surface more often.
+    `SurfaceHistoryStore` persists last 200 entries to Application
+    Support with a 60-day recency window. Library window toolbar
+    sparkles button drives the flow off-main via `Task.detached`;
+    `SurfacedParagraphSheet` shows the result with Try Another /
+    Open Book / Done. 6 unit tests pin the scoring rubric at
+    rubric boundaries. Follow-up: jump to the surfaced paragraph
+    in the editor (needs the chapter+paragraph anchor-scroll the
+    chat-citation flow uses).
+  - ~~**Pre-reading briefing**~~ shipped. `BookBriefingService`
+    extracts the open book's first 3 spine chapters (capped at
+    30 KB), renders the user's library catalog as a titles+authors
+    list, runs one streaming Sonnet send with a briefing-flavored
+    system prompt. `BookBriefingSheet` renders the streaming
+    Markdown incrementally (inline-bold headers parse cleanly via
+    `AttributedString(markdown:)`). Button in the per-book chat
+    pane chrome (`text.book.closed` icon). V1 is single-shot
+    streaming, no tool use — the catalog alone gives the model
+    enough signal to name specific cross-references from the user's
+    actual library. Follow-up: agentic version that calls
+    `search_library` for paragraph-level cross-reference quotes
+    if real use shows the catalog-only briefing misses material
+    the user has but the model doesn't know from training.
 - **Chapter 3 — Cross-corpus** (#8 + #10):
   - **Knowledge-graph layer** — explicit "this book mentions this
     concept N times, peaks in chapter M" overlay on top of the
