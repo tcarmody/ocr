@@ -1,4 +1,5 @@
 import Foundation
+import AI
 
 /// One turn in a chat-with-the-book conversation. Persisted via
 /// `ChatTranscriptStore` keyed by EPUB source URL — survives
@@ -72,6 +73,46 @@ struct BookChatMessage: Identifiable, Equatable, Codable {
         )
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
     }
+}
+
+/// Build the `messages:` array for an Anthropic chat request from a
+/// transcript history plus the current user prompt (which carries
+/// the freshly-retrieved context). Places a 5-minute ephemeral
+/// `cache_control` marker on the most-recent assistant turn so
+/// Anthropic's prompt cache covers the conversation prefix through
+/// that point — multi-turn sessions then pay roughly only for the
+/// new user turn instead of re-tokenizing the full transcript every
+/// send. System-prompt caching (set elsewhere) handles the prefix
+/// before the first user turn.
+///
+/// Free function rather than a method on either chat VM so the
+/// per-book / library / library-window paths share one
+/// implementation; each just feeds in its own `messages.dropLast()`
+/// (history) and the rendered `userPrompt` (current).
+func buildAnthropicMessages(
+    history: [BookChatMessage],
+    currentUserPrompt: String
+) -> [Message] {
+    var out: [Message] = []
+    let lastAssistantIdx = history.lastIndex(where: { $0.role == .assistant })
+    for (i, m) in history.enumerated() {
+        let role: Message.Role = m.role == .user ? .user : .assistant
+        if i == lastAssistantIdx {
+            // Mark this assistant turn as the cache breakpoint —
+            // every turn's prefix through here is cached for the
+            // 5-minute TTL window; the next send extends the cache
+            // by moving the marker to its own most-recent assistant
+            // turn. Wrapped in `.blocks(...)` because `cache_control`
+            // attaches per content block, not on plain-string content.
+            out.append(Message(role: role, content: .blocks([
+                .text(m.text, cacheControl: CacheControl(type: .ephemeral))
+            ])))
+        } else {
+            out.append(Message(role: role, content: .plain(m.text)))
+        }
+    }
+    out.append(Message(role: .user, content: .plain(currentUserPrompt)))
+    return out
 }
 
 /// Per-hit score + rank breakdown surfaced by the chat pane's

@@ -807,16 +807,16 @@ final class BookChatViewModel: ObservableObject {
         // current-user message that `send()` already appended; we
         // replace it with `userPrompt` (query + retrieved context)
         // so the API has both context and conversation memory.
+        // The shared helper also drops a `cache_control` marker on
+        // the most-recent assistant turn so multi-turn sessions
+        // hit Anthropic's prompt cache rather than re-tokenizing
+        // the full transcript every send.
         // Critical that this runs BEFORE `appendDraftAssistant`
         // below — otherwise the empty draft would land in history.
-        var apiMessages: [Message] = []
-        for prior in messages.dropLast() {
-            apiMessages.append(Message(
-                role: prior.role == .user ? .user : .assistant,
-                content: .plain(prior.text)
-            ))
-        }
-        apiMessages.append(Message(role: .user, content: .plain(userPrompt)))
+        let apiMessages = buildAnthropicMessages(
+            history: Array(messages.dropLast()),
+            currentUserPrompt: userPrompt
+        )
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: useLongFormSynthesis ? 2500 : 1500,
@@ -1575,17 +1575,11 @@ final class BookChatViewModel: ObservableObject {
         }
         // Build API messages from prior turns + the context-laden
         // current user prompt. See `runCloudSend` for the full
-        // rationale; same shape, different system prompt. Captured
-        // BEFORE `appendDraftAssistant` so the empty draft doesn't
-        // leak into the wire history.
-        var apiMessages: [Message] = []
-        for prior in messages.dropLast() {
-            apiMessages.append(Message(
-                role: prior.role == .user ? .user : .assistant,
-                content: .plain(prior.text)
-            ))
-        }
-        apiMessages.append(Message(role: .user, content: .plain(userPrompt)))
+        // rationale; same shape, different system prompt.
+        let apiMessages = buildAnthropicMessages(
+            history: Array(messages.dropLast()),
+            currentUserPrompt: userPrompt
+        )
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: useLongFormSynthesis ? 2500 : 1500,

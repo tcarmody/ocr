@@ -752,16 +752,16 @@ final class LibraryChatViewModel: ObservableObject {
         // appended; we replace it with the context-laden version
         // below so the conversation history stays clean (older
         // user turns carry their bare queries, not stale contexts).
+        // The shared helper also drops a `cache_control` marker on
+        // the most-recent assistant turn so multi-turn sessions
+        // hit Anthropic's prompt cache instead of re-tokenizing
+        // the full transcript every send.
         // Captured BEFORE `appendDraftAssistant` so the empty draft
         // doesn't leak into the wire history.
-        var apiMessages: [Message] = []
-        for prior in messages.dropLast() {
-            apiMessages.append(Message(
-                role: prior.role == .user ? .user : .assistant,
-                content: .plain(prior.text)
-            ))
-        }
-        apiMessages.append(Message(role: .user, content: .plain(userPrompt)))
+        let apiMessages = buildAnthropicMessages(
+            history: Array(messages.dropLast()),
+            currentUserPrompt: userPrompt
+        )
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: useLongFormSynthesis ? 2500 : 1500,
