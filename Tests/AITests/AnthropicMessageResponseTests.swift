@@ -69,8 +69,10 @@ final class AnthropicMessageResponseTests: XCTestCase {
     }
 
     func test_unknown_block_type_decodes_as_unknown_variant() throws {
-        // A future API addition (e.g. tool_use) shouldn't break
-        // decoding for callers that only care about text.
+        // Future API additions should fall through to `.unknown`
+        // rather than break decoding. `tool_use` used to live here
+        // and now has its own case (see `test_tool_use_block_…`);
+        // pick a placeholder type the layer doesn't model yet.
         let body = #"""
         {
           "id": "msg_x",
@@ -79,9 +81,9 @@ final class AnthropicMessageResponseTests: XCTestCase {
           "model": "claude-sonnet-4-6",
           "content": [
             {"type": "text", "text": "hello"},
-            {"type": "tool_use", "id": "toolu_x", "name": "noop", "input": {}}
+            {"type": "future_block_kind", "data": "whatever"}
           ],
-          "stop_reason": "tool_use",
+          "stop_reason": "end_turn",
           "usage": {"input_tokens": 1, "output_tokens": 1}
         }
         """#
@@ -89,11 +91,10 @@ final class AnthropicMessageResponseTests: XCTestCase {
         XCTAssertEqual(r.content.count, 2)
         if case .text = r.content[0] {} else { XCTFail("expected text") }
         if case .unknown(let type) = r.content[1] {
-            XCTAssertEqual(type, "tool_use")
+            XCTAssertEqual(type, "future_block_kind")
         } else {
             XCTFail("expected unknown")
         }
-        XCTAssertEqual(r.stopReason, .toolUse)
     }
 
     func test_stop_reason_max_tokens_marks_truncation() throws {
@@ -144,5 +145,37 @@ final class AnthropicMessageResponseTests: XCTestCase {
         """#
         let r = try decode(body)
         XCTAssertEqual(r.primaryText, "First.Second.")
+    }
+
+    func test_tool_use_block_decodes_with_id_name_and_raw_input_json() throws {
+        // Anthropic tool-use response shape: `id` is opaque, `input`
+        // is a nested JSON object matching the advertised tool
+        // schema. ResponseBlock re-serializes `input` to opaque
+        // bytes so the chat-VM dispatcher can decode it against
+        // its own argument struct without this layer modeling any
+        // schema.
+        let body = #"""
+        {
+          "id":"msg_y","type":"message","role":"assistant","model":"claude-haiku-4-5",
+          "content":[
+            {"type":"tool_use","id":"toolu_42","name":"search_library",
+             "input":{"query":"mirror stage","top_k":12}}
+          ],
+          "stop_reason":"tool_use",
+          "usage":{"input_tokens":120,"output_tokens":35}
+        }
+        """#
+        let r = try decode(body)
+        XCTAssertEqual(r.stopReason, .toolUse)
+        guard case .toolUse(let id, let name, let inputJSON)
+                = r.content.first else {
+            XCTFail("expected tool_use block, got \(r.content)")
+            return
+        }
+        XCTAssertEqual(id, "toolu_42")
+        XCTAssertEqual(name, "search_library")
+        let obj = try JSONSerialization.jsonObject(with: inputJSON) as? [String: Any]
+        XCTAssertEqual(obj?["query"] as? String, "mirror stage")
+        XCTAssertEqual(obj?["top_k"] as? Int, 12)
     }
 }

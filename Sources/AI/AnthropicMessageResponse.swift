@@ -40,16 +40,22 @@ public struct AnthropicMessageResponse: Sendable, Decodable, Equatable {
 
 // MARK: - Response blocks
 
-/// One output block. Phase 1 surfaces text only — that's all our
-/// planned features need. Unknown block types decode to `.unknown`
-/// so a future API addition (a new block kind we don't yet model)
-/// won't break decoding for callers that don't care about it.
+/// One output block. `text` is the conversational reply; `toolUse`
+/// carries a tool call the model wants the caller to dispatch
+/// (introduced when the library chat went agentic). Unknown block
+/// types decode to `.unknown` so a future API addition won't break
+/// callers that don't care about it.
 public enum ResponseBlock: Sendable, Decodable, Equatable {
     case text(String)
+    /// `id` is opaque; pass it back unchanged in the matching
+    /// `tool_result` block on the next user turn. `inputJSON` is the
+    /// raw JSON object the model emitted — the chat VM parses it
+    /// against its known tool schemas.
+    case toolUse(id: String, name: String, inputJSON: Data)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
-        case type, text
+        case type, text, id, name, input
     }
 
     public init(from decoder: Decoder) throws {
@@ -59,8 +65,59 @@ public enum ResponseBlock: Sendable, Decodable, Equatable {
         case "text":
             let text = try c.decode(String.self, forKey: .text)
             self = .text(text)
+        case "tool_use":
+            let id = try c.decode(String.self, forKey: .id)
+            let name = try c.decode(String.self, forKey: .name)
+            // Re-serialize the nested `input` object back to raw
+            // JSON bytes so the chat-VM dispatcher can decode it
+            // against its own tool-specific argument struct without
+            // this layer needing to know the schemas.
+            let inputObj = try c.decode(JSONValue.self, forKey: .input)
+            let inputJSON = try JSONEncoder().encode(inputObj)
+            self = .toolUse(id: id, name: name, inputJSON: inputJSON)
         default:
             self = .unknown(type: kind)
+        }
+    }
+}
+
+/// Opaque JSON value used to decode `tool_use.input` without
+/// modeling each tool's schema in this layer.
+private enum JSONValue: Codable {
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case string(String)
+    case number(Double)
+    case integer(Int)
+    case bool(Bool)
+    case null
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null; return }
+        if let b = try? c.decode(Bool.self) { self = .bool(b); return }
+        if let i = try? c.decode(Int.self) { self = .integer(i); return }
+        if let d = try? c.decode(Double.self) { self = .number(d); return }
+        if let s = try? c.decode(String.self) { self = .string(s); return }
+        if let arr = try? c.decode([JSONValue].self) { self = .array(arr); return }
+        if let obj = try? c.decode([String: JSONValue].self) {
+            self = .object(obj); return
+        }
+        throw DecodingError.dataCorruptedError(
+            in: c, debugDescription: "Unrecognized JSON value"
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .object(let v): try c.encode(v)
+        case .array(let v): try c.encode(v)
+        case .string(let v): try c.encode(v)
+        case .integer(let v): try c.encode(v)
+        case .number(let v): try c.encode(v)
+        case .bool(let v): try c.encode(v)
+        case .null: try c.encodeNil()
         }
     }
 }

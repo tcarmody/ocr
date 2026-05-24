@@ -177,6 +177,10 @@ public actor AnthropicAPIClient {
                         chars += s.count
                     case .image:
                         images += 1
+                    case .toolUse(_, let name, let json):
+                        chars += name.count + json.count
+                    case .toolResult(_, let content, _):
+                        chars += content.count
                     }
                 }
             }

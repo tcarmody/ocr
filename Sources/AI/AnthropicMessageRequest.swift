@@ -18,6 +18,12 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
     public var stopSequences: [String]?
     public var cacheControl: CacheControl?
     public var outputConfig: OutputConfig?
+    /// Tool surface advertised to the model. When non-nil, Claude
+    /// may emit `tool_use` content blocks instead of (or alongside)
+    /// text; the caller is expected to dispatch the tools, append
+    /// `tool_result` blocks in a follow-up user message, and re-send.
+    /// Nil = no tools, classic single-shot prompting.
+    public var tools: [Tool]?
     /// Set true on streaming endpoints (`stream: true` triggers SSE
     /// response framing). The synchronous `send(_:)` path leaves this
     /// nil; `sendStream(_:)` flips it to true before encoding.
@@ -32,6 +38,7 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         stopSequences: [String]? = nil,
         cacheControl: CacheControl? = nil,
         outputConfig: OutputConfig? = nil,
+        tools: [Tool]? = nil,
         stream: Bool? = nil
     ) {
         self.model = model
@@ -42,6 +49,7 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         self.stopSequences = stopSequences
         self.cacheControl = cacheControl
         self.outputConfig = outputConfig
+        self.tools = tools
         self.stream = stream
     }
 
@@ -54,7 +62,63 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         case stopSequences = "stop_sequences"
         case cacheControl = "cache_control"
         case outputConfig = "output_config"
+        case tools
         case stream
+    }
+}
+
+// MARK: - Tools
+
+/// One tool advertised to the model. `inputSchema` is a free-form
+/// JSON Schema object; we accept opaque `Data` so callers can build
+/// it however they like (string literal, manual encoder, codegen)
+/// without forcing this layer to model the whole JSON Schema spec.
+///
+/// `cacheControl` lets the caller mark the tools block as a cache
+/// breakpoint — useful when the tool list is stable across many
+/// requests (always the case for our chat use): Anthropic caches
+/// `tools` → `system` → `messages`, so a marker on the last tool
+/// caches the whole prefix through the tool list. Default is nil
+/// to keep simple callers from accidentally paying cache-write
+/// premiums on tools they only use once.
+public struct Tool: Sendable, Encodable, Equatable {
+    public var name: String
+    public var description: String
+    public var inputSchema: Data
+    public var cacheControl: CacheControl?
+
+    public init(
+        name: String,
+        description: String,
+        inputSchema: Data,
+        cacheControl: CacheControl? = nil
+    ) {
+        self.name = name
+        self.description = description
+        self.inputSchema = inputSchema
+        self.cacheControl = cacheControl
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, description
+        case inputSchema = "input_schema"
+        case cacheControl = "cache_control"
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(description, forKey: .description)
+        // Re-emit the schema bytes as nested JSON, not as a string.
+        // Round-trip via JSONSerialization → AnyJSON so the wire
+        // form is a typed object, matching the rest of the request.
+        let schemaObj = try JSONSerialization.jsonObject(
+            with: inputSchema, options: []
+        )
+        try c.encode(AnyJSON(schemaObj), forKey: .inputSchema)
+        if let cacheControl {
+            try c.encode(cacheControl, forKey: .cacheControl)
+        }
     }
 }
 
@@ -127,9 +191,12 @@ extension MessageContent: Encodable {
 // MARK: - Content blocks
 
 /// One block inside a `Message.content` array. Phase 1 covers
-/// `text` and `image` — the two block kinds every planned feature
-/// needs. Tool-use / tool-result blocks are intentionally absent
-/// because none of our planned features use Claude's tool API.
+/// `text` / `image` / `tool_use` / `tool_result` — covers the block
+/// kinds the chat path uses. `tool_use` carries a tool call the model
+/// emitted; `tool_result` is how the caller replies in the next user
+/// message. The legacy intent ("no tools needed") changed with the
+/// library-chat agentic loop — see `BookChatMessage` and the chat
+/// VMs for the dispatch side.
 public enum ContentBlock: Sendable, Equatable {
     /// Plain text, optionally tagged with a cache breakpoint.
     case text(String, cacheControl: CacheControl? = nil)
@@ -137,11 +204,28 @@ public enum ContentBlock: Sendable, Equatable {
     /// (rare in our pipeline — the image bytes themselves vary per
     /// page, so the cache hit comes from the system prompt above).
     case image(mediaType: ImageMediaType, base64Data: String, cacheControl: CacheControl? = nil)
+    /// A tool call emitted by the assistant. `id` is opaque; the
+    /// follow-up user message must include a `tool_result` with the
+    /// same `id`. `inputJSON` is the raw JSON object the model
+    /// produced — opaque to this layer; the dispatcher in the chat
+    /// VM parses it against its known tool schemas.
+    case toolUse(id: String, name: String, inputJSON: Data)
+    /// Result of dispatching a `tool_use` from a prior assistant
+    /// turn. `toolUseID` matches the `id` of the originating
+    /// `toolUse` block; `content` is the rendered tool output that
+    /// the model will read on the next turn. `isError` flags
+    /// runtime failures (the model can recover by trying a
+    /// different tool or asking the user).
+    case toolResult(toolUseID: String, content: String, isError: Bool = false)
 }
 
 extension ContentBlock: Encodable {
     private enum BlockKey: String, CodingKey {
         case type, text, source, cacheControl = "cache_control"
+        case id, name, input
+        case toolUseID = "tool_use_id"
+        case content
+        case isError = "is_error"
     }
     private enum SourceKey: String, CodingKey {
         case type, mediaType = "media_type", data
@@ -161,6 +245,21 @@ extension ContentBlock: Encodable {
             try src.encode(media.rawValue, forKey: .mediaType)
             try src.encode(data, forKey: .data)
             if let cache { try c.encode(cache, forKey: .cacheControl) }
+        case .toolUse(let id, let name, let inputJSON):
+            try c.encode("tool_use", forKey: .type)
+            try c.encode(id, forKey: .id)
+            try c.encode(name, forKey: .name)
+            // Round-trip through Foundation so the input appears as
+            // a JSON object on the wire, not a string blob.
+            let obj = try JSONSerialization.jsonObject(with: inputJSON, options: [])
+            try c.encode(AnyJSON(obj), forKey: .input)
+        case .toolResult(let id, let content, let isError):
+            try c.encode("tool_result", forKey: .type)
+            try c.encode(id, forKey: .toolUseID)
+            try c.encode(content, forKey: .content)
+            if isError {
+                try c.encode(true, forKey: .isError)
+            }
         }
     }
 }

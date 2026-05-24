@@ -181,6 +181,82 @@ final class AnthropicMessageRequestTests: XCTestCase {
         XCTAssertEqual(required, ["label"])
     }
 
+    // MARK: - Tools
+
+    func test_tool_encodes_with_nested_input_schema_object() throws {
+        let schema = Data("""
+        {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string", "description": "Search query" },
+            "top_k": { "type": "integer" }
+          },
+          "required": ["query"]
+        }
+        """.utf8)
+        let tool = Tool(
+            name: "search_library",
+            description: "Search the user's library.",
+            inputSchema: schema
+        )
+        let r = AnthropicMessageRequest(
+            model: .haiku4_5,
+            maxTokens: 256,
+            messages: [Message(role: .user, content: .plain("Hi"))],
+            tools: [tool]
+        )
+        let json = try encode(r)
+        let tools = json["tools"] as? [[String: Any]]
+        XCTAssertEqual(tools?.count, 1)
+        XCTAssertEqual(tools?[0]["name"] as? String, "search_library")
+        XCTAssertEqual(tools?[0]["description"] as? String,
+                       "Search the user's library.")
+        let inputSchema = tools?[0]["input_schema"] as? [String: Any]
+        XCTAssertEqual(inputSchema?["type"] as? String, "object")
+        let props = inputSchema?["properties"] as? [String: Any]
+        let queryProp = props?["query"] as? [String: Any]
+        XCTAssertEqual(queryProp?["type"] as? String, "string")
+        let required = inputSchema?["required"] as? [String]
+        XCTAssertEqual(required, ["query"])
+    }
+
+    func test_tool_result_block_serializes_with_snake_case_tool_use_id() throws {
+        let r = AnthropicMessageRequest(
+            model: .haiku4_5,
+            maxTokens: 256,
+            messages: [Message(role: .user, content: .blocks([
+                .toolResult(toolUseID: "toolu_abc", content: "[book:0] Foo")
+            ]))]
+        )
+        let json = try encode(r)
+        let messages = json["messages"] as? [[String: Any]]
+        let blocks = messages?[0]["content"] as? [[String: Any]]
+        XCTAssertEqual(blocks?[0]["type"] as? String, "tool_result")
+        XCTAssertEqual(blocks?[0]["tool_use_id"] as? String, "toolu_abc")
+        XCTAssertEqual(blocks?[0]["content"] as? String, "[book:0] Foo")
+        // `is_error: false` is omitted to keep the wire payload small
+        // and match what Anthropic's docs show.
+        XCTAssertNil(blocks?[0]["is_error"])
+    }
+
+    func test_tool_result_block_with_error_flag_emits_is_error_true() throws {
+        let r = AnthropicMessageRequest(
+            model: .haiku4_5,
+            maxTokens: 256,
+            messages: [Message(role: .user, content: .blocks([
+                .toolResult(
+                    toolUseID: "toolu_abc",
+                    content: "Search failed: API rate limit",
+                    isError: true
+                )
+            ]))]
+        )
+        let json = try encode(r)
+        let messages = json["messages"] as? [[String: Any]]
+        let blocks = messages?[0]["content"] as? [[String: Any]]
+        XCTAssertEqual(blocks?[0]["is_error"] as? Bool, true)
+    }
+
     // MARK: - Byte stability (cache hygiene)
 
     func test_two_identical_requests_produce_byte_identical_JSON() throws {
