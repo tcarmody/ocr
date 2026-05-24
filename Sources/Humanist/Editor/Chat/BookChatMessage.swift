@@ -75,6 +75,32 @@ struct BookChatMessage: Identifiable, Equatable, Codable {
     }
 }
 
+/// Trim `history` to at most `maxTurns` most-recent turns. Passing
+/// `maxTurns <= 0` leaves the history untouched (escape hatch for
+/// power users via the `humanist.chat.maxHistoryTurns` default).
+///
+/// Adjusts the start index forward to the first `user` turn within
+/// the kept window — Anthropic requires the first message in the
+/// `messages` array to be a user message, and the same shape keeps
+/// Ollama happy. Without this adjustment a trim that lands on an
+/// assistant turn would leave the cloud API rejecting the request.
+///
+/// Caps prevent two failure modes the unbounded path eventually
+/// hits: token-cost blowup (every send re-pays for the whole
+/// transcript above the cache breakpoint) and context-window
+/// exhaustion (a 50-turn session can swallow 100k+ tokens before
+/// retrieval even lands).
+func trimChatHistory(
+    _ history: [BookChatMessage], maxTurns: Int
+) -> [BookChatMessage] {
+    guard maxTurns > 0, history.count > maxTurns else { return history }
+    var start = history.count - maxTurns
+    while start < history.count, history[start].role != .user {
+        start += 1
+    }
+    return Array(history[start...])
+}
+
 /// Build the `messages:` array for an Anthropic chat request from a
 /// transcript history plus the current user prompt (which carries
 /// the freshly-retrieved context). Places a 5-minute ephemeral

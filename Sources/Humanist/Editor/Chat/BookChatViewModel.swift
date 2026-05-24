@@ -329,6 +329,16 @@ final class BookChatViewModel: ObservableObject {
         let raw = UserDefaults.standard.integer(forKey: "humanist.chat.rrfK")
         return raw > 0 ? Double(raw) : HybridRetriever.defaultRRFK
     }
+    /// Max turns of history forwarded to the model. User-tunable;
+    /// default 10. Set to 0 for unbounded (escape hatch). See
+    /// `trimChatHistory` for why bounded history matters even with
+    /// prompt caching — caching trims tokens above the breakpoint
+    /// but doesn't shrink the context window itself.
+    private var maxHistoryTurns: Int {
+        let stored = UserDefaults.standard
+            .object(forKey: "humanist.chat.maxHistoryTurns") as? Int
+        return stored ?? 10
+    }
     /// Hit count above which the renderer switches a chapter from
     /// per-paragraph bullets to whole-chapter expansion. 2 hits is
     /// the new bar — was 4 originally. Lowering the threshold means
@@ -813,8 +823,11 @@ final class BookChatViewModel: ObservableObject {
         // the full transcript every send.
         // Critical that this runs BEFORE `appendDraftAssistant`
         // below — otherwise the empty draft would land in history.
+        let trimmed = trimChatHistory(
+            Array(messages.dropLast()), maxTurns: maxHistoryTurns
+        )
         let apiMessages = buildAnthropicMessages(
-            history: Array(messages.dropLast()),
+            history: trimmed,
             currentUserPrompt: userPrompt
         )
         let request = AnthropicMessageRequest(
@@ -874,8 +887,13 @@ final class BookChatViewModel: ObservableObject {
         let model = ollamaModel
         // History captured BEFORE appendDraftAssistant so the
         // empty draft doesn't leak into the conversation we send.
+        // Trimmed to the same `maxHistoryTurns` cap as cloud so
+        // local-model context doesn't grow without bound.
+        let trimmed = trimChatHistory(
+            Array(messages.dropLast()), maxTurns: maxHistoryTurns
+        )
         var history: [OllamaClient.ChatHistoryMessage] = []
-        for prior in messages.dropLast() {
+        for prior in trimmed {
             history.append(.init(
                 role: prior.role == .user ? .user : .assistant,
                 content: prior.text
@@ -1576,8 +1594,11 @@ final class BookChatViewModel: ObservableObject {
         // Build API messages from prior turns + the context-laden
         // current user prompt. See `runCloudSend` for the full
         // rationale; same shape, different system prompt.
+        let trimmed = trimChatHistory(
+            Array(messages.dropLast()), maxTurns: maxHistoryTurns
+        )
         let apiMessages = buildAnthropicMessages(
-            history: Array(messages.dropLast()),
+            history: trimmed,
             currentUserPrompt: userPrompt
         )
         let request = AnthropicMessageRequest(
@@ -1635,8 +1656,11 @@ final class BookChatViewModel: ObservableObject {
         let model = ollamaModel
         // History captured BEFORE appendDraftAssistant so the empty
         // draft doesn't leak into the conversation we send.
+        let trimmed = trimChatHistory(
+            Array(messages.dropLast()), maxTurns: maxHistoryTurns
+        )
         var history: [OllamaClient.ChatHistoryMessage] = []
-        for prior in messages.dropLast() {
+        for prior in trimmed {
             history.append(.init(
                 role: prior.role == .user ? .user : .assistant,
                 content: prior.text

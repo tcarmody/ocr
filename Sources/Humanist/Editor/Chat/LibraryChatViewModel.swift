@@ -167,6 +167,16 @@ final class LibraryChatViewModel: ObservableObject {
         let raw = UserDefaults.standard.integer(forKey: "humanist.chat.rrfK")
         return raw > 0 ? Double(raw) : HybridRetriever.defaultRRFK
     }
+    /// Max turns of history forwarded to the model. User-tunable;
+    /// default 10. Set to 0 for unbounded (escape hatch). The cap
+    /// keeps both cloud token cost and context-window pressure in
+    /// check on long-running sessions — see `trimChatHistory` for
+    /// the full rationale.
+    private var maxHistoryTurns: Int {
+        let stored = UserDefaults.standard
+            .object(forKey: "humanist.chat.maxHistoryTurns") as? Int
+        return stored ?? 10
+    }
 
     init(transcriptURL: URL? = nil) {
         let keyStore = AnthropicAPIKeyStore()
@@ -758,8 +768,11 @@ final class LibraryChatViewModel: ObservableObject {
         // the full transcript every send.
         // Captured BEFORE `appendDraftAssistant` so the empty draft
         // doesn't leak into the wire history.
+        let trimmed = trimChatHistory(
+            Array(messages.dropLast()), maxTurns: maxHistoryTurns
+        )
         let apiMessages = buildAnthropicMessages(
-            history: Array(messages.dropLast()),
+            history: trimmed,
             currentUserPrompt: userPrompt
         )
         let request = AnthropicMessageRequest(
@@ -813,9 +826,14 @@ final class LibraryChatViewModel: ObservableObject {
             streamTask = nil
         }
         // History: see the matching comment in `runCloudSend`. Same
-        // capture-before-draft ordering.
+        // capture-before-draft ordering. Trimmed to the same per-VM
+        // `maxHistoryTurns` cap as the cloud path so local-model
+        // context doesn't grow without bound either.
+        let trimmed = trimChatHistory(
+            Array(messages.dropLast()), maxTurns: maxHistoryTurns
+        )
         var history: [OllamaClient.ChatHistoryMessage] = []
-        for prior in messages.dropLast() {
+        for prior in trimmed {
             history.append(.init(
                 role: prior.role == .user ? .user : .assistant,
                 content: prior.text
