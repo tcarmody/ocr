@@ -64,7 +64,7 @@ struct OllamaSetupSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Set Up Local Chat")
                 .font(.title2.bold())
-            Text("Local chat runs on your machine via Ollama — no API key, no per-token cost, no data leaves your Mac. The default is Gemma 4 26B MoE: a 26 B-parameter Mixture-of-Experts model that activates only ~4 B parameters per token, so inference speed is closer to a 4 B dense model while answer quality is closer to a 26 B dense model.")
+            Text("Local chat runs on your machine via Ollama — no API key, no per-token cost, no data leaves your Mac. The default is Qwen 3.5 9B: a dense 9 B-parameter model with built-in tool-call support, so library chat can fan out via `search_concept` / `search_library` to span the whole corpus on multi-author questions. Smaller siblings (`qwen3.5:4b`, `qwen3.5:2b`) trade tool-use reliability for speed and disk; the older `gemma4:26b` MoE has stronger synthesis but no tool use, so it answers from the initial retrieval slice only.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -75,18 +75,22 @@ struct OllamaSetupSheet: View {
             HStack(spacing: 16) {
                 stat(systemImage: "arrow.down.circle",
                      label: "Download",
-                     value: "~18 GB",
-                     detail: "Gemma 4 26B MoE Q4")
+                     value: "~6.6 GB",
+                     detail: "Qwen 3.5 9B Q4")
                 stat(systemImage: "memorychip",
                      label: "RAM",
-                     value: "~20 GB",
-                     detail: "needs 32 GB Mac")
+                     value: "~10 GB",
+                     detail: "comfortable on 16 GB Mac")
                 stat(systemImage: "clock",
                      label: "Speed",
-                     value: "~25 tok/s",
+                     value: "~40 tok/s",
                      detail: "M-series Apple Silicon")
             }
             .padding(.top, 2)
+            Text("Alternative tags:  `qwen3.5:4b` (~3.4 GB, tool use unreliable on multi-author questions),  `qwen3.5:2b` (~2.7 GB, no agentic retrieval),  `gemma4:26b` (~18 GB, 20 GB RAM, no tool use). Pull any of these with `ollama pull <tag>`; pick the one in Settings → Chat → Ollama Model.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -182,7 +186,7 @@ struct OllamaSetupSheet: View {
             )
 
             if daemonReady && !modelInstalled && !installDone {
-                Text("Downloads the model weights into Ollama's local store. ~18 GB; takes 5–15 minutes depending on your connection.")
+                Text("Downloads the model weights into Ollama's local store. Default `qwen3.5:9b` is ~6.6 GB; takes 2–5 minutes depending on your connection. (Older default `gemma4:26b` was ~18 GB / 5–15 minutes.)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -228,7 +232,7 @@ struct OllamaSetupSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Local chat is ready")
                     .font(.callout.weight(.semibold))
-                Text("Set the chat backend to \"Local (Ollama)\" in Settings → AI to use it. The chat pane will route queries through your local Gemma 4 instance instead of the Anthropic API.")
+                Text("Set the chat backend to \"Local (Ollama)\" in Settings → AI to use it. The chat pane will route queries through your local Ollama model instead of the Anthropic API.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

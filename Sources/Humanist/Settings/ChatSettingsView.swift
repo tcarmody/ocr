@@ -16,7 +16,7 @@ struct ChatSettingsView: View {
     @AppStorage("humanist.chat.backend")
     private var chatBackendRaw: String = ChatBackend.cloudHaiku.rawValue
     @AppStorage("humanist.chat.ollamaModel")
-    private var ollamaModel: String = "gemma4:26b"
+    private var ollamaModel: String = "qwen3.5:9b"
     /// Ollama embedding model tag. Independent from the chat model
     /// so users can run a small dedicated embedder (~270 MB) for
     /// retrieval and a heavier model for chat answers.
@@ -213,7 +213,7 @@ struct ChatSettingsView: View {
                     TextField("ollama tag", text: $ollamaModel)
                         .textFieldStyle(.roundedBorder)
                 }
-                Text("Runs locally via Ollama — no API key, no per-token cost, no network egress. Default \"gemma4:26b\" needs ~20 GB RAM. Smaller alternatives: \"qwen3:14b\" (~9 GB), \"gemma4:e4b\" (~4 GB).")
+                Text("Runs locally via Ollama — no API key, no per-token cost, no network egress. Default \"qwen3.5:9b\" needs ~10 GB RAM and supports tool use, so library chat can call `search_concept` / `search_library` to broaden retrieval. Alternatives: \"gemma4:26b\" (~20 GB, better synthesis, no tool use), \"qwen3.5:4b\" (~5 GB, faster but unreliable tool use), \"qwen3.5:2b\" (~3 GB, no agentic retrieval). Pull with `ollama pull <tag>`.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

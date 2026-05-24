@@ -79,9 +79,12 @@ final class LibraryChatViewModel: ObservableObject {
     }
 
     private var ollamaModel: String {
+        // Same defaults switch as BookChatViewModel — qwen3.5:9b
+        // ships with tool support so the agentic loop's
+        // search_concept / search_library calls actually fire.
         let raw = UserDefaults.standard.string(forKey: "humanist.chat.ollamaModel")
             ?? ""
-        return raw.isEmpty ? "gemma4:26b" : raw
+        return raw.isEmpty ? "qwen3.5:9b" : raw
     }
 
     private var ollamaEmbeddingModel: String {

@@ -207,9 +207,16 @@ final class BookChatViewModel: ObservableObject {
     /// Local Ollama model tag. Default is the Gemma 4 26B MoE; users
     /// can override via Settings → AI for a different local model.
     private var ollamaModel: String {
+        // R-Chat-Agentic: defaults switched from gemma4:26b to
+        // qwen3.5:9b once Ollama tool-use shipped. Gemma doesn't
+        // support tool calls, so the agentic loop's search_concept
+        // / search_library tools can't fire on it; Qwen 3.5 9B
+        // does and is ~10 GB smaller. Existing users keep their
+        // previously-saved choice via @AppStorage — only fresh
+        // installs see the new default.
         let raw = UserDefaults.standard.string(forKey: "humanist.chat.ollamaModel")
             ?? ""
-        return raw.isEmpty ? "gemma4:26b" : raw
+        return raw.isEmpty ? "qwen3.5:9b" : raw
     }
 
     /// Local Ollama embedding model tag. Independent from the chat
