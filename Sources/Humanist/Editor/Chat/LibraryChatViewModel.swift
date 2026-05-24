@@ -916,10 +916,25 @@ final class LibraryChatViewModel: ObservableObject {
     ) -> CitationParse {
         var bookByIndex: [Int: (url: URL, title: String)] = [:]
         var seenBooks: [URL: Int] = [:]
-        for hit in allowedHits where seenBooks[hit.epubURL] == nil {
-            let idx = seenBooks.count
-            seenBooks[hit.epubURL] = idx
-            bookByIndex[idx] = (hit.epubURL, hit.bookTitle)
+        // Validity sets so the parser drops citations whose
+        // (book, chapter, paragraph) combo wasn't in the retrieved
+        // set — the model occasionally invents these, and an
+        // invalid citation chip looks clickable but jumps to a
+        // wrong / nonexistent anchor. `[book:N chapter:M]` without
+        // a paragraph is valid if ANY hit covered that chapter
+        // (matches the prompt's "shorter form is fine for whole-
+        // chapter references" clause).
+        var chapterValid: Set<String> = []
+        var paraValid: Set<String> = []
+        for hit in allowedHits {
+            if seenBooks[hit.epubURL] == nil {
+                let idx = seenBooks.count
+                seenBooks[hit.epubURL] = idx
+                bookByIndex[idx] = (hit.epubURL, hit.bookTitle)
+            }
+            let idx = seenBooks[hit.epubURL] ?? 0
+            chapterValid.insert("\(idx)#\(hit.chapterIdx)")
+            paraValid.insert("\(idx)#\(hit.chapterIdx)#\(hit.paragraphIdx)")
         }
         // Match `[book:N chapter:M]` and `[book:N chapter:M para:K]`
         // in one pass; paragraph segment is optional. Group 3 is
@@ -956,6 +971,24 @@ final class LibraryChatViewModel: ObservableObject {
                 continue
             }
             let paraIdx: Int? = paragraphRaw.flatMap(Int.init)
+            // Validate (book, chapter[, para]) against the
+            // retrieved set. Drop hallucinated citations rather
+            // than render a chip that opens the wrong paragraph.
+            let isValid: Bool = {
+                if let paraIdx {
+                    return paraValid.contains(
+                        "\(bookIdx)#\(chapterIdx)#\(paraIdx)"
+                    )
+                }
+                return chapterValid.contains("\(bookIdx)#\(chapterIdx)")
+            }()
+            guard isValid else {
+                let nsRange = match.range(at: 0)
+                if let r = Range(nsRange, in: cleaned) {
+                    cleaned.removeSubrange(r)
+                }
+                continue
+            }
             let key = "\(bookIdx)#\(chapterIdx)#\(paraIdx.map(String.init) ?? "-")"
             if seen[key] == nil {
                 seen[key] = BookChatCitation(

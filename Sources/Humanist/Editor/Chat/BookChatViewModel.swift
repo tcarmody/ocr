@@ -1675,13 +1675,24 @@ final class BookChatViewModel: ObservableObject {
     ) -> CitationParse {
         // Reconstruct the [book:N] → URL/title mapping from the
         // ordered list of distinct allowedHits books — same scheme
-        // as renderLibraryContext.
+        // as renderLibraryContext. Build validity sets in the same
+        // pass so we can drop citations whose (book, chapter[, para])
+        // combo wasn't in the retrieved set (the model occasionally
+        // invents these, and an invalid chip looks clickable but
+        // jumps to a wrong / nonexistent anchor).
         var bookByIndex: [Int: (url: URL, title: String)] = [:]
         var seenBooks: [URL: Int] = [:]
-        for hit in allowedHits where seenBooks[hit.epubURL] == nil {
-            let idx = seenBooks.count
-            seenBooks[hit.epubURL] = idx
-            bookByIndex[idx] = (hit.epubURL, hit.bookTitle)
+        var chapterValid: Set<String> = []
+        var paraValid: Set<String> = []
+        for hit in allowedHits {
+            if seenBooks[hit.epubURL] == nil {
+                let idx = seenBooks.count
+                seenBooks[hit.epubURL] = idx
+                bookByIndex[idx] = (hit.epubURL, hit.bookTitle)
+            }
+            let idx = seenBooks[hit.epubURL] ?? 0
+            chapterValid.insert("\(idx)#\(hit.chapterIdx)")
+            paraValid.insert("\(idx)#\(hit.chapterIdx)#\(hit.paragraphIdx)")
         }
         // Match `[book:N chapter:M]` and `[book:N chapter:M para:K]`
         // in one pass — paragraph segment is optional. Group 3 is
@@ -1718,6 +1729,26 @@ final class BookChatViewModel: ObservableObject {
                 continue
             }
             let paraIdx: Int? = paragraphRaw.flatMap(Int.init)
+            // Validate the (book, chapter[, para]) against the
+            // retrieved set — mirrors `LibraryChatViewModel
+            // .parseCitations`. Library scope renders only the
+            // hit's paragraph, so a citation pointing outside the
+            // hits set is a hallucination.
+            let isValid: Bool = {
+                if let paraIdx {
+                    return paraValid.contains(
+                        "\(bookIdx)#\(chapterIdx)#\(paraIdx)"
+                    )
+                }
+                return chapterValid.contains("\(bookIdx)#\(chapterIdx)")
+            }()
+            guard isValid else {
+                let nsRange = match.range(at: 0)
+                if let r = Range(nsRange, in: cleaned) {
+                    cleaned.removeSubrange(r)
+                }
+                continue
+            }
             let key = "\(bookIdx)#\(chapterIdx)#\(paraIdx.map(String.init) ?? "-")"
             if seen[key] == nil {
                 seen[key] = BookChatCitation(
