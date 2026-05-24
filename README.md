@@ -1,6 +1,6 @@
 # Humanist
 
-Native macOS app (macOS 26+) for turning PDFs and other documents into well-formatted EPUBs you can read, edit, search, and ask questions about. Built for academic content — mathematical formulas, polytonic Greek, mixed-script footnotes, printed tables of contents, figures with captions — but works just as well on contemporary trade books or journal articles.
+Native macOS app (macOS 26+) for turning PDFs and other documents into well-formatted EPUBs you can read, edit, search, and ask questions about. Built for academic content — mathematical formulas, polytonic Greek, mixed-script footnotes, printed tables of contents, figures with captions — but works just as well on contemporary trade books or technical articles.
 
 ## What it does
 
