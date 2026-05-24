@@ -4975,22 +4975,33 @@ this version is grounded in real chat utility, but the same
 
 ## R-Chat-Reinstate-Polish — Restore features stripped during chat-hang debugging
 
-**Status**: Cued up, gated on validation. The chat scroll + hover
-hang investigation went through multiple attempts that stripped
-real features out of the chat surface as suspects (each one in
-turn ruled out by user testing). The working theory is now that
-the hang was memory pressure from the federated index, not the
-chat view graph — `R-Federated-Memory-Pass` brought RSS from
-~14 GB steady-state down to ~3 GB, and if a fresh post-fix build
-holds up under multi-turn library chat, the features below should
-all come back rather than living on as workarounds.
+**Status**: Shipped 2026-05-24. Memory-pass hypothesis validated:
+no hangs under fast-scroll / hover / drag-select with multi-turn
+transcripts after `R-Federated-Memory-Pass` brought RSS from ~14 GB
+to ~3 GB. All four stripped features restored + the two dead-code
+items resolved.
 
-Do NOT start this work until the user confirms the memory pass
-actually resolved the hangs across a few sessions. If hangs
-reappear at FP16, this entry pauses and the investigation moves
-back to the chat view graph (most likely candidate: `LazyVStack`
-+ `Text(AttributedString)` measurement cascade interacting with
-JetUI selection overlay).
+Shipped commits (chronological):
+- `9db3a5b` — Delete dead `SelectableMessageText.swift`.
+- `3312ee3` — Restore block-level Markdown rendering in
+  `MarkdownMessageBody` (revert d0911b6's single-Text fold).
+- `9ba103d` — Restore `.textSelection(.enabled)` on chat message
+  bodies (revert faeb6bd's strip).
+- `ca5d192` — Drop `MessageSelectionSheet` opt-in workaround now
+  that native selection is back.
+- `d1c5f95` — Restore wrapping citation chips via shared
+  `FlowLayout` (custom Layout, not ViewThatFits).
+
+Standalone window scenes (`LibraryChatWindowView`,
+`BookChatWindowView`, commit 3a98530) kept in place as a product
+feature per the original plan — multi-monitor / reference-while-
+reading is real UX value independent of the debug origins.
+
+Out-of-scope items remain out of scope:
+- Alias substring matching at library scope — sidecar-backed alias
+  inverted index lives in R-Federated-Memory-Pass follow-ups.
+- LazyVStack measurement-cascade investigation — moot now that
+  memory pressure is the established root cause.
 
 ### Features to restore (each is a separate revert)
 
