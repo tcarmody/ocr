@@ -838,7 +838,10 @@ final class LibraryChatViewModel: ObservableObject {
                     system: .cached(systemPrompt, ttl: .oneHour),
                     messages: apiMessages,
                     thinking: .disabled,
-                    tools: maxIterations > 0 ? [LibraryChatTools.searchLibraryTool] : nil
+                    tools: maxIterations > 0
+                        ? [LibraryChatTools.searchLibraryTool,
+                           LibraryChatTools.searchConceptTool]
+                        : nil
                 )
                 let response = try await client.send(request)
                 try Task.checkCancellation()
@@ -905,35 +908,41 @@ final class LibraryChatViewModel: ObservableObject {
                 for call in toolCalls {
                     let resultText: String
                     let isError: Bool
-                    // Surface the in-flight search in the chat pane.
-                    // Short label is the model's query peek so the
-                    // user sees what's being looked up rather than a
-                    // generic spinner. Cleared after the tool
-                    // finishes — the next round's "Thinking…" label
-                    // takes over until the model speaks again or
-                    // emits another tool call.
                     let peekQuery = Self.previewQuery(for: call.inputJSON)
-                    toolStatus = "Searching: \"\(peekQuery)\"…"
+                    toolStatus = call.name == "search_concept"
+                        ? "Looking up concept: \"\(peekQuery)\"…"
+                        : "Searching: \"\(peekQuery)\"…"
                     do {
-                        let (text, hits) = try await dispatchSearchLibrary(
-                            call: call,
-                            library: library,
-                            backend: backend,
-                            registry: registry,
-                            useEntity: useEntity,
-                            entityIndex: entityIndex,
-                            keywordIndex: keywordIndex,
-                            topKDefault: topKDefault,
-                            rrfK: rrfK,
-                            scope: scope,
-                            excluded: excluded,
-                            maxParaChars: maxParaChars
-                        )
-                        accumulatedHits.append(contentsOf: hits)
-                        resultText = text
+                        switch call.name {
+                        case "search_library":
+                            let (text, hits) = try await dispatchSearchLibrary(
+                                call: call,
+                                library: library,
+                                backend: backend,
+                                registry: registry,
+                                useEntity: useEntity,
+                                entityIndex: entityIndex,
+                                keywordIndex: keywordIndex,
+                                topKDefault: topKDefault,
+                                rrfK: rrfK,
+                                scope: scope,
+                                excluded: excluded,
+                                maxParaChars: maxParaChars
+                            )
+                            accumulatedHits.append(contentsOf: hits)
+                            resultText = text
+                        case "search_concept":
+                            resultText = try await dispatchSearchConcept(
+                                call: call,
+                                registry: registry,
+                                backend: backend
+                            )
+                        default:
+                            throw LibraryChatToolError.unknownTool(call.name)
+                        }
                         isError = false
                     } catch {
-                        resultText = "search_library failed: \(error.localizedDescription)"
+                        resultText = "\(call.name) failed: \(error.localizedDescription)"
                         isError = true
                     }
                     toolStatus = nil
@@ -1065,9 +1074,64 @@ final class LibraryChatViewModel: ObservableObject {
         return (text, resolvedHits)
     }
 
+    /// Dispatcher for `search_concept` (R-Chat-Cross-Corpus
+    /// Phase 3). Pulls the `LibraryConceptGraph` from the
+    /// process-lifetime cache — first invocation in a session
+    /// builds it (~40s on a 2k-book library), subsequent ones
+    /// return instantly. Then renders the book-level coverage
+    /// for the requested concept via `renderConceptToolResult`,
+    /// extending the turn registry so the surfaced books get
+    /// stable `[book:N]` indices alongside any books
+    /// `search_library` already registered this turn.
+    ///
+    /// `backend` is unused but kept on the signature for symmetry
+    /// with `dispatchSearchLibrary`; it would be needed if we
+    /// added a vector-based concept fuzzy-match path (rather
+    /// than the current string-based one).
+    private func dispatchSearchConcept(
+        call: (id: String, name: String, inputJSON: Data),
+        registry: LibraryChatTools.TurnBookRegistry,
+        backend: any EmbeddingBackend
+    ) async throws -> String {
+        guard call.name == "search_concept" else {
+            throw LibraryChatToolError.unknownTool(call.name)
+        }
+        let args = try JSONDecoder().decode(
+            LibraryChatTools.SearchConceptArgs.self, from: call.inputJSON
+        )
+        let bookLimit = args.bookLimit ?? 8
+        guard let library = self.library else {
+            throw LibraryChatToolError.libraryUnavailable
+        }
+        let entries = library.entries
+        let identifier = backend.identifier
+        let graph = await LibraryConceptGraphCache.shared.graph(
+            libraryEntries: entries,
+            backendIdentifier: identifier
+        )
+        // Author lookup: walk the catalog once and project URL →
+        // author so the renderer can label new books in the
+        // tool_result with their authors (matches search_library's
+        // shape).
+        var authorByURL: [URL: String] = [:]
+        for entry in entries {
+            if let author = entry.author, !author.isEmpty {
+                authorByURL[entry.epubURL] = author
+            }
+        }
+        return LibraryChatTools.renderConceptToolResult(
+            concept: args.concept,
+            graph: graph,
+            registry: registry,
+            bookLimit: bookLimit,
+            authorLookup: { authorByURL[$0] }
+        )
+    }
+
     private enum LibraryChatToolError: Error, LocalizedError {
         case unknownTool(String)
         case embedFailed
+        case libraryUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -1075,6 +1139,8 @@ final class LibraryChatViewModel: ObservableObject {
                 return "Unknown tool: \(name)"
             case .embedFailed:
                 return "Failed to embed the search query"
+            case .libraryUnavailable:
+                return "Library catalog isn't attached to this chat session"
             }
         }
     }
@@ -1426,16 +1492,32 @@ final class LibraryChatViewModel: ObservableObject {
         with a more author-specific query — name the author and a \
         characteristic concept — rather than draw on secondary work.
 
-        TOOL USE — `search_library(query, top_k?)` runs the same \
-        federated retriever that produced the initial context. Call it \
-        when the initial paragraphs don't cover the question, when you \
-        want to broaden via a rephrased query, when you need primary \
-        sources after secondary commentary came back, or when the user \
-        asks a follow-up that pivots topics. Each tool result extends \
-        the master Books-in-scope list rather than restarting it, so a \
-        `[book:N]` index stays stable across the entire turn. You can \
-        issue several tool calls per turn; spend them on different \
-        angles rather than re-running the same query verbatim.
+        TOOL USE — two tools are available; reach for the one that \
+        matches the question shape.
+
+          • `search_library(query, top_k?)` runs the federated \
+            retriever that produced the initial context. Use it for \
+            **paragraph-level retrieval** — when the initial paragraphs \
+            don't cover the question, when you want to broaden via a \
+            rephrased query, when you need primary sources after \
+            secondary commentary came back, or when the user pivots \
+            topics in a follow-up.
+
+          • `search_concept(concept, book_limit?)` looks up a named \
+            entity (person, place, work, idea) in the library's \
+            entity index and returns **book-level coverage** — which \
+            books mention it, how many times, in which chapters. Use \
+            it when the user asks "which of my books most engage with \
+            X?", when you want a corpus-level view before zooming in, \
+            or when comparing how different books treat the same \
+            concept. Follow up with `search_library` if you need \
+            specific paragraph text from one of the surfaced books.
+
+        Each tool result extends the master Books-in-scope list \
+        rather than restarting it, so a `[book:N]` index stays stable \
+        across the entire turn no matter which tool surfaced the book. \
+        You can issue several tool calls per turn; spend them on \
+        different angles rather than re-running the same query.
 
         \(lengthGuidance)
         """

@@ -1,5 +1,6 @@
 import Foundation
 import AI
+import LibraryIndexing
 
 /// Tool surface advertised to the model for library-scope chat,
 /// plus the per-turn machinery that keeps `[book:N]` citation
@@ -28,6 +29,23 @@ enum LibraryChatTools {
         }
     }
 
+    /// JSON arguments for `search_concept` — the
+    /// R-Chat-Cross-Corpus Phase 3 tool. Looks up book-level
+    /// coverage for a named concept (entity / person / place) in
+    /// the federated `LibraryConceptGraph` and surfaces ranked
+    /// books with mention counts + chapter spans. Different
+    /// shape from `search_library`: that's per-paragraph
+    /// retrieval, this is per-book coverage.
+    struct SearchConceptArgs: Decodable {
+        let concept: String
+        let bookLimit: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case concept
+            case bookLimit = "book_limit"
+        }
+    }
+
     /// `search_library` tool descriptor. Schema is intentionally
     /// minimal — `query` + optional `top_k` — to keep the model's
     /// tool-use surface small and reliable. More dimensions (book
@@ -35,6 +53,57 @@ enum LibraryChatTools {
     /// without touching this one. `cacheControl` is set so the
     /// tools-block prefix is cached alongside the system prompt
     /// across the multi-turn session.
+    /// `search_concept` tool descriptor. Complements
+    /// `search_library`: where that returns paragraph-level hits
+    /// from cosine + BM25 + entity fusion, this returns
+    /// **book-level coverage** for a named concept — useful when
+    /// the user asks "which of my books most engage with X?"
+    /// rather than "what does X mean?" The model can chain a
+    /// follow-up `search_library` if it wants specific
+    /// paragraphs from one of the surfaced books.
+    static let searchConceptTool: Tool = {
+        let schemaJSON = """
+        {
+          "type": "object",
+          "properties": {
+            "concept": {
+              "type": "string",
+              "description": "Concept or named entity to look up (e.g. 'Foucault', 'phenomenology', 'mirror stage', 'Plato'). Matched case-insensitively against the library's named-entity index, with built-in aliases collapsing synonyms (e.g. 'America' resolves to 'United States')."
+            },
+            "book_limit": {
+              "type": "integer",
+              "description": "Max books to return. Defaults to 8; raise to 20 for broader sweeps."
+            }
+          },
+          "required": ["concept"]
+        }
+        """
+        return Tool(
+            name: "search_concept",
+            description: """
+                Look up a concept or named entity across the user's library \
+                and return book-level coverage: which books mention this \
+                concept, how many times, and which chapters. Each surfaced \
+                book gets a [book:N] index that you can cite. Useful when:
+
+                  • the user asks "which books in my library most engage with X?"
+                  • you want a corpus-level view before zooming into paragraphs
+                  • you're comparing how different books treat the same concept
+
+                Returns: ranked book list + related concepts (by co-occurrence). \
+                For specific paragraph text from one of these books, follow up \
+                with search_library using a query that includes the concept + \
+                the book title.
+
+                If the concept isn't in the entity index, the result will tell \
+                you — try a synonym (the alias map handles common ones) or fall \
+                back to search_library for free-text retrieval.
+                """,
+            inputSchema: Data(schemaJSON.utf8),
+            cacheControl: CacheControl(type: .ephemeral)
+        )
+    }()
+
     static let searchLibraryTool: Tool = {
         let schemaJSON = """
         {
@@ -153,6 +222,109 @@ enum LibraryChatTools {
         }
         out += "Relevant paragraphs:\n"
         out += paragraphLines.joined(separator: "\n")
+        return out
+    }
+
+    /// Render a `search_concept` tool result as the text body
+    /// the model reads on its next turn. Resolves `concept`
+    /// against the graph with an alias-aware fuzzy match (exact
+    /// canonical → alias-canonicalized → displayName-contains),
+    /// extends the registry with the surfaced books so their
+    /// [book:N] indices stay stable across follow-up tool calls,
+    /// and surfaces related concepts so the model can pivot.
+    static func renderConceptToolResult(
+        concept: String,
+        graph: LibraryConceptGraph,
+        registry: TurnBookRegistry,
+        bookLimit: Int = 8,
+        authorLookup: (URL) -> String? = { _ in nil }
+    ) -> String {
+        let raw = concept
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let canonical = ConceptAliases.canonical(for: raw)
+
+        // Resolution chain: exact canonical → alias-canonical →
+        // displayName contains. The last is forgiving for the
+        // common case where the model passes a display form like
+        // "Foucault" that lowercases to a stored canonical, but
+        // also catches partial matches like "phenomenolog" → the
+        // "phenomenology" row.
+        let stats: LibraryConceptGraph.ConceptStats?
+        if let exact = graph.concepts[canonical] {
+            stats = exact
+        } else {
+            stats = graph.conceptsByBreadth().first { row in
+                row.displayName.lowercased() == raw
+                    || row.displayName.lowercased().contains(raw)
+            }
+        }
+
+        guard let stats else {
+            return """
+            search_concept("\(concept)") found no matching concept in the \
+            library's entity index. Try a synonym (the alias map covers \
+            common ones like america/united states) or fall back to \
+            search_library for free-text retrieval.
+            """
+        }
+
+        let limited = Array(stats.coverage.prefix(bookLimit))
+        var newBooks: [(idx: Int, title: String, author: String?)] = []
+        var bookLines: [String] = []
+        for row in limited {
+            let knownBefore = registry.bookByIndex.values.contains { existing in
+                existing.url == row.epubURL
+            }
+            let author = authorLookup(row.epubURL)
+            let idx = registry.index(
+                for: row.epubURL,
+                title: row.bookTitle,
+                author: author
+            )
+            if !knownBefore {
+                newBooks.append((idx, row.bookTitle, author))
+            }
+            let chapterList = row.chapters.sorted()
+            let shownChapters = chapterList.prefix(8)
+                .map(String.init)
+                .joined(separator: ", ")
+            let truncated = chapterList.count > 8 ? ", …" : ""
+            bookLines.append(
+                "[book:\(idx)] \(row.mentionCount) mentions in chapters \(shownChapters)\(truncated)"
+            )
+        }
+
+        var out = "search_concept(\"\(stats.displayName)\") matched "
+            + "\(stats.bookCount) book\(stats.bookCount == 1 ? "" : "s") "
+            + "across the library, \(stats.totalMentions) total mentions.\n\n"
+
+        if !newBooks.isEmpty {
+            out += "New books in this result (master indexing continues):\n"
+            for book in newBooks {
+                if let author = book.author, !author.isEmpty {
+                    out += "[book:\(book.idx)] \"\(book.title)\" — \(author)\n"
+                } else {
+                    out += "[book:\(book.idx)] \"\(book.title)\"\n"
+                }
+            }
+            out += "\n"
+        }
+
+        out += "Top \(limited.count) book"
+            + (limited.count == 1 ? "" : "s") + " by mention count:\n"
+        out += bookLines.joined(separator: "\n")
+
+        let related = graph.related(to: stats.canonical, limit: 6)
+        if !related.isEmpty {
+            out += "\n\nRelated concepts (paragraphs where they co-occur with \(stats.displayName)):\n"
+            for entry in related {
+                let display = graph.concepts[entry.concept]?.displayName
+                    ?? entry.concept
+                out += "  • \(display) (\(entry.count))\n"
+            }
+        }
+
         return out
     }
 
