@@ -1839,6 +1839,158 @@ Phase 6 (figures) — same plumbing.
 
 ---
 
+## P-Diagram-Description — Cloud-augmented diagram alt text and search content
+
+**Status**: planned 2026-05-24.
+
+Sonnet does effectively nothing with diagrams today. Surya marks
+the bbox, `FigureExtractor` crops the page raster to PNG, the
+EPUB embeds an `<img alt="figure">` (or the caption text when a
+nearby `.caption` region exists). The Sonnet whole-page-OCR
+prompt is explicit: "Image content; describe nothing." Gaps this
+creates:
+
+  * **Accessibility**: `alt="figure"` is screen-reader noise — a
+    VoiceOver user hears the word "figure" with no idea what's
+    in the diagram.
+  * **Searchability**: chat-with-book / BM25 / embedding indexes
+    have no text from inside diagrams. A user asking "what does
+    the marriage market diagram show?" gets no hit because the
+    diagram's content is invisible to retrieval.
+  * **OCR'd text in figures**: axis labels on charts, callouts
+    on anatomical drawings, equation fragments embedded in
+    diagrams — all lost.
+
+### Goal
+
+A `DiagramExtractor` protocol (mirrors `MathExtractor`,
+`TableExtractor`) that takes a cropped `.picture` region and
+asks Sonnet for one or more of:
+  * **Tier 1 — short alt text** (≤ 120 chars, screen-reader-
+    ready). Replaces `alt="figure"` so VoiceOver reads something
+    meaningful.
+  * **Tier 2 — longer description** (200–500 chars). Lives on
+    a per-figure metadata field, NOT in the visible chapter
+    XHTML — feeds the chat / search index so RAG queries about
+    diagram content land somewhere.
+  * **Tier 3 — labels list** (axis labels, callouts, legend
+    entries). Same posture as the description — indexable, not
+    visible.
+
+Ship Tier 1 first (single prompt change, single output field,
+biggest single accessibility win). Tiers 2+3 stack on top
+without re-doing the protocol — extend `DiagramExtractionResult`
+with optional fields, default to nil for backwards compat.
+
+### Approach
+
+**Protocol shape**:
+```swift
+public struct DiagramExtractionResult: Sendable {
+    public let altText: String         // ≤ 120 chars
+    public let description: String?    // Tier 2, nil in v1
+    public let labels: [String]        // Tier 3, [] in v1
+}
+
+public protocol DiagramExtractor: Sendable {
+    func extract(
+        pageImage: CGImage,
+        regionBox: CGRect,
+        captionText: String?,
+        languages: [BCP47],
+        pageIndex: Int,
+        regionIndex: Int
+    ) async -> DiagramExtractionResult?
+}
+```
+
+The associated caption is passed in (when known) so Sonnet's
+output stays consistent with the printed caption. A figure
+captioned "Figure 3.1: Marriage market dynamics" should produce
+alt text agreeing on "marriage market dynamics" — not invent
+a different topic. The implementation includes the caption in
+the prompt's user-turn context.
+
+**Prompt design**:
+The hard part. The prompt must produce:
+  * **Specific diagram type** — "bar chart" / "scatter plot" /
+    "flowchart" / "anatomical illustration" / "photograph" /
+    "schematic" — not generic "figure".
+  * **Salient content** — what's actually plotted / shown.
+  * **No preamble** — strip "This image shows…" / "The figure
+    depicts…" boilerplate.
+  * **No invention** — return empty string if image is unclear
+    or non-substantive (decorative ornaments, blank space).
+
+Sample target output for the Becker marriage-market diagram:
+`"Supply-demand chart with male/female populations on opposing axes, dotted lines marking optimal pairing curves"`
+
+**Cascade integration** (mirrors `P-Math-Cascade`):
+  * `CascadePageOutcome.diagramEntries: [(regionIndex: Int,
+    result: DiagramExtractionResult)]`
+  * `mathExtractionsByKey`-style dict in `PDFToEPUBPipeline`
+  * Plumbed through `PipelineReflow.reflow` →
+    `RegionAwareReflow.reflow` → `reflowPage`
+  * Reflow's `.picture` branch (the existing figure-emit path)
+    overrides the `alt` with `extraction.altText` when present;
+    otherwise unchanged.
+
+**Settings UI**:
+  * New toggle in Settings → AI:
+    `cloudFeatures.diagramDescription` (default-off; opt-in like
+    `postOCRCleanup`).
+  * Caption: "One Sonnet call per detected figure; generates
+    accessibility alt text and search-indexable description.
+    ~$0.005–$0.02 per figure; a typical academic book has
+    5–15 figures."
+  * No launcher-level toggle in v1 — Settings default is enough.
+
+**Per-book cost shape**:
+  * Typical academic book: 5–15 figures × ~$0.01 = $0.05–$0.15
+  * Math/STEM heavy: 20–40 figures × ~$0.01 = $0.20–$0.40
+  * Picture-book / art history: 100+ figures × $0.01 = $1+ —
+    warrant a profile-warning if `figureDensityThreshold` fires
+    AND `diagramDescription` is on.
+
+### Effort estimate (Tier 1)
+
+  * `DiagramExtractor.swift` protocol + `DiagramExtractionResult`
+    type: ~15 min.
+  * `ClaudeDiagramExtractor.swift` (mirrors `ClaudeMathExtractor`):
+    prompt, API call, sanitization, budget gate. ~1 hour.
+  * Cascade-loop plumbing (CascadePageOutcome / pipeline /
+    reflow): ~45 min.
+  * Settings UI toggle + caption text: ~15 min.
+  * Tests (sanitize, parse, end-to-end mock, caption-aware
+    prompt): ~1 hour.
+  * Total: ~3.5 hours.
+
+### Tier 2/3 (deferred)
+
+Tier 2 (description) and Tier 3 (labels) build on the v1
+protocol by extending the response shape and the result struct.
+The plumbing path is unchanged — only the prompt and the
+consumer of the optional fields change:
+  * Description lives on a new `Chapter.figureMetadata:
+    [assetId: FigureMetadata]` field, where `FigureMetadata`
+    carries `description` + `labels`.
+  * Chat / search indexer pulls these into the retrieval corpus
+    alongside paragraph text (treat description as a paragraph
+    associated with the figure's page anchor).
+  * No visible-EPUB change; the chapter renders identically.
+  * Effort: another ~2 hours once Tier 1 is shipped and the
+    response shape is validated against real diagrams.
+
+### Goal accessibility win even without Tier 2
+
+The pure-alt-text path is already 90% of the user-visible
+value: every diagram in every converted book gets a meaningful
+description for screen readers. Tier 2/3 are nice-to-haves that
+make chat / search more powerful but don't change anyone's
+EPUB-reading experience.
+
+---
+
 ## P-Verse-Layout — Free-verse and irregularly-spaced poetry
 
 **Status**: planned 2026-05-19. Pound's *Cantos*, Olson, late
