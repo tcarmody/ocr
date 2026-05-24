@@ -23,42 +23,51 @@ import SwiftUI
 /// dependency.
 struct MarkdownMessageBody: View {
     let text: String
-    /// Cached block parse + inline AttributedStrings. SwiftUI
-    /// recomputes the view's `body` on every observable change in
-    /// the enclosing chat pane — that's many times per second
-    /// while scrolling, while streaming, while a tool status flips.
-    /// Without caching, each recompute paid the full Markdown
-    /// parse (regex line splitting + per-line `AttributedString(
-    /// markdown:)` calls) for every visible message; on a long
-    /// transcript that compounded into 100s of regex passes per
-    /// scroll frame and produced visible hangs (sampled main
-    /// thread pinned in SelectionOverlay/JetUI update cascades
-    /// downstream of body recompute).
+    /// Cached block parse folded into a single AttributedString so
+    /// the view emits exactly one `Text` regardless of how many
+    /// paragraphs / bullets / headings the message contains.
     ///
-    /// Recomputed only when `text` changes (via the `id:` modifier
-    /// on the outer view) so a streaming append still re-parses,
-    /// but a hover / scroll / unrelated state change reuses the
-    /// cache.
-    @State private var cache: Cache = Cache(text: "", blocks: [])
+    /// Why one Text: each `Text(...).textSelection(.enabled)` on
+    /// macOS 26 backs into an `NSTextField` wrapped by SwiftUI's
+    /// `SelectionOverlay` NSViewRepresentable. Every `NSTextField`
+    /// in scope sets its font on every layout pass, and each
+    /// `setFont` invalidates intrinsic content size, which triggers
+    /// another layout pass, which calls setFont again — a feedback
+    /// loop in the JetUI / Liquid Glass renderer that scales
+    /// linearly with the *count* of selectable Text views in the
+    /// scroll view. A 10-message transcript with multi-Text bodies
+    /// produced ~30+ NSTextFields and pinned the main thread on
+    /// every hover / scroll / unrelated state change (sampled
+    /// cascade: SelectionOverlay → FallbackAlignmentProvider →
+    /// setFont → invalidateIntrinsicContentSize, repeating).
+    ///
+    /// Folding to one Text per message cuts the NSTextField count
+    /// 3-5× and breaks the cascade. Visual cost: bullet lists
+    /// render as "• item" inline rather than as indented HStacks,
+    /// code blocks lose their tinted background, headings render
+    /// as bold inline rather than separate larger lines. Acceptable
+    /// trade for a chat pane that scrolls.
+    ///
+    /// Recomputed only when `text` changes via `.task(id: text)`
+    /// so a streaming append still re-renders, but a hover /
+    /// scroll / unrelated state change reuses the cache.
+    @State private var cache: Cache = Cache(text: "", attributed: AttributedString())
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(cache.blocks.indices, id: \.self) { idx in
-                renderBlock(cache.blocks[idx])
+        Text(cache.attributed)
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // One textSelection on one Text — the whole point of
+            // the fold above. Reverting to per-block Text views
+            // would put the JetUI feedback loop back.
+            .textSelection(.enabled)
+            .task(id: text) {
+                // Cancels-and-restarts on text change (streaming
+                // append cadence). The fold is pure-string work,
+                // safe to run on the MainActor at parse cost.
+                let folded = Self.foldToAttributedString(text)
+                cache = Cache(text: text, attributed: folded)
             }
-        }
-        // Selection scoped to the whole message so a user can drag
-        // across multiple paragraphs the way they would in any
-        // standard text view.
-        .textSelection(.enabled)
-        .task(id: text) {
-            // Parse off the main actor only when the input changes;
-            // `.task(id:)` cancels + restarts on every text change
-            // which is exactly the streaming-append cadence we want
-            // (cancel old parse, start fresh on the new text).
-            let blocks = Self.parse(text)
-            cache = Cache(text: text, blocks: blocks)
-        }
     }
 
     // MARK: - Block parsing
@@ -75,12 +84,99 @@ struct MarkdownMessageBody: View {
         case codeBlock(language: String?, code: String)
     }
 
-    /// `Cache` keys parsed blocks by the text they came from so an
-    /// out-of-order task completion (rare but possible during fast
-    /// streaming) doesn't render blocks against a stale text.
+    /// `Cache` keys the folded AttributedString by the text it came
+    /// from so an out-of-order task completion (rare but possible
+    /// during fast streaming) doesn't render against a stale text.
     private struct Cache: Equatable {
         let text: String
-        let blocks: [Block]
+        let attributed: AttributedString
+    }
+
+    // MARK: - Folding blocks into one AttributedString
+
+    /// Parse + fold in one pass. Each block contributes its inline
+    /// AttributedString with block-specific attributes applied
+    /// (heading → bold + larger; bullet → "• " prefix; code → fixed
+    /// width; blockquote → secondary + italic). Blocks are separated
+    /// by a double-newline so they wrap as paragraphs without
+    /// needing layout primitives.
+    static func foldToAttributedString(_ text: String) -> AttributedString {
+        let blocks = parse(text)
+        var out = AttributedString()
+        for (i, block) in blocks.enumerated() {
+            if i > 0 { out += AttributedString("\n\n") }
+            out += renderBlockAttributed(block)
+        }
+        return out
+    }
+
+    /// Render one block into an AttributedString. Uses
+    /// `AttributedString(markdown:)` for inline emphasis within
+    /// the block's text payload so **bold** / *italic* / `code`
+    /// still render correctly.
+    private static func renderBlockAttributed(_ block: Block) -> AttributedString {
+        switch block {
+        case .paragraph(let text):
+            return inlineAttributed(text)
+        case .heading(let level, let text):
+            var a = inlineAttributed(text)
+            a.font = headingFontForFold(level: level)
+            return a
+        case .bulletList(let items):
+            var combined = AttributedString()
+            for (i, item) in items.enumerated() {
+                if i > 0 { combined += AttributedString("\n") }
+                var bullet = AttributedString("•  ")
+                bullet.foregroundColor = .secondary
+                combined += bullet
+                combined += inlineAttributed(item)
+            }
+            return combined
+        case .orderedList(let items):
+            var combined = AttributedString()
+            for (i, item) in items.enumerated() {
+                if i > 0 { combined += AttributedString("\n") }
+                var marker = AttributedString("\(i + 1).  ")
+                marker.foregroundColor = .secondary
+                combined += marker
+                combined += inlineAttributed(item)
+            }
+            return combined
+        case .blockquote(let text):
+            var a = inlineAttributed(text)
+            a.foregroundColor = .secondary
+            // Italic via font modifier — applied as a SwiftUI font
+            // attribute so it composes with the renderer's default
+            // size / weight.
+            a.font = .callout.italic()
+            return a
+        case .codeBlock(_, let code):
+            var a = AttributedString(code)
+            a.font = .callout.monospaced()
+            return a
+        }
+    }
+
+    /// Inline-Markdown render via `AttributedString(markdown:)`.
+    /// `.inlineOnlyPreservingWhitespace` so the parser doesn't try
+    /// to interpret block-level structure inside what we've
+    /// already classified as one block.
+    private static func inlineAttributed(_ s: String) -> AttributedString {
+        do {
+            var options = AttributedString.MarkdownParsingOptions()
+            options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+            return try AttributedString(markdown: s, options: options)
+        } catch {
+            return AttributedString(s)
+        }
+    }
+
+    private static func headingFontForFold(level: Int) -> Font {
+        switch level {
+        case 1: return .title3.weight(.semibold)
+        case 2: return .headline
+        default: return .callout.weight(.semibold)
+        }
     }
 
     /// Walk the input line-by-line, batching lines into blocks.
@@ -251,86 +347,4 @@ struct MarkdownMessageBody: View {
         return trimmed.drop(while: { $0 == " " }).description
     }
 
-    // MARK: - Block rendering
-
-    @ViewBuilder
-    private func renderBlock(_ block: Block) -> some View {
-        switch block {
-        case .paragraph(let text):
-            Text(inline(text))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        case .heading(let level, let text):
-            Text(inline(text))
-                .font(headingFont(for: level))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, level == 1 ? 4 : 2)
-        case .bulletList(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(items.indices, id: \.self) { idx in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("•").foregroundStyle(.secondary)
-                        Text(inline(items[idx]))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-        case .orderedList(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(items.indices, id: \.self) { idx in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("\(idx + 1).")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        Text(inline(items[idx]))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-        case .blockquote(let text):
-            HStack(alignment: .top, spacing: 8) {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Color.secondary.opacity(0.4))
-                    .frame(width: 3)
-                Text(inline(text))
-                    .foregroundStyle(.secondary)
-                    .italic()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        case .codeBlock(_, let code):
-            Text(code)
-                .font(.callout.monospaced())
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.secondary.opacity(0.10))
-                )
-        }
-    }
-
-    private func headingFont(for level: Int) -> Font {
-        switch level {
-        case 1: return .title2.weight(.semibold)
-        case 2: return .title3.weight(.semibold)
-        case 3: return .headline
-        default: return .body.weight(.semibold)
-        }
-    }
-
-    /// Inline-Markdown pass via `AttributedString(markdown:)`.
-    /// Falls back to the raw string when parsing fails (rare —
-    /// only on input the parser actively rejects, like an
-    /// unbalanced bracket pair).
-    private func inline(_ s: String) -> AttributedString {
-        do {
-            // `.inlineOnlyPreservingWhitespace` keeps the input's
-            // single-newline / multi-space layout untouched so the
-            // parser doesn't re-flow chat text.
-            var options = AttributedString.MarkdownParsingOptions()
-            options.interpretedSyntax = .inlineOnlyPreservingWhitespace
-            return try AttributedString(markdown: s, options: options)
-        } catch {
-            return AttributedString(s)
-        }
-    }
 }
