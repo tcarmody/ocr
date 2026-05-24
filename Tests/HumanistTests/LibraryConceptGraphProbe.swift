@@ -35,14 +35,58 @@ final class LibraryConceptGraphProbe: XCTestCase {
         print("Entries in catalog: \(entries.count)")
 
         let store = EmbeddingsSidecarStore()
-        let buildStart = Date()
-        let graph = LibraryConceptGraph.build(
+
+        // Filtered build (Phase 2a default).
+        let filteredStart = Date()
+        let filtered = LibraryConceptGraph.build(
             libraryEntries: entries, store: store
         )
-        let elapsed = Date().timeIntervalSince(buildStart)
+        let filteredElapsed = Date().timeIntervalSince(filteredStart)
+
+        // Unfiltered build for comparison so we can quantify the
+        // noise the stopwords + aliases dropped.
+        let unfilteredStart = Date()
+        let unfiltered = LibraryConceptGraph.build(
+            libraryEntries: entries, store: store, applyFilters: false
+        )
+        let unfilteredElapsed = Date().timeIntervalSince(unfilteredStart)
+
+        // Cache round-trip — first call should be a hit and
+        // return near-instantaneously.
+        let cache = LibraryConceptGraphCache()
+        _ = cache.graph(
+            libraryEntries: entries,
+            backendIdentifier: "probe.backend",
+            store: store
+        )
+        let cacheStart = Date()
+        _ = cache.graph(
+            libraryEntries: entries,
+            backendIdentifier: "probe.backend",
+            store: store
+        )
+        let cacheHitElapsed = Date().timeIntervalSince(cacheStart)
 
         let topK = Int(env["HUMANIST_PROBE_TOPK"] ?? "") ?? 25
-        printStats(graph: graph, elapsed: elapsed, topK: topK)
+        print("")
+        print("=== Build comparison ===")
+        print(String(
+            format: "Unfiltered build:  %.2fs, %d concepts, %d edges",
+            unfilteredElapsed, unfiltered.concepts.count,
+            unfiltered.coOccurrence.count
+        ))
+        print(String(
+            format: "Filtered build:    %.2fs, %d concepts, %d edges",
+            filteredElapsed, filtered.concepts.count,
+            filtered.coOccurrence.count
+        ))
+        print(String(
+            format: "Cache hit:         %.4fs", cacheHitElapsed
+        ))
+        let significant = filtered.significantConcepts()
+        print("Significant (bookCount >= 2): \(significant.count)")
+
+        printStats(graph: filtered, elapsed: filteredElapsed, topK: topK)
     }
 
     // MARK: - Stats formatting
@@ -71,9 +115,9 @@ final class LibraryConceptGraphProbe: XCTestCase {
             ))
         }
 
-        let byBreadth = graph.conceptsByBreadth()
+        let byBreadth = graph.significantConcepts()
         print("")
-        print("=== Top \(topK) concepts by breadth (book count) ===")
+        print("=== Top \(topK) SIGNIFICANT concepts by breadth ===")
         for stats in byBreadth.prefix(topK) {
             print(String(
                 format: "  %4d books, %5d mentions  %@",

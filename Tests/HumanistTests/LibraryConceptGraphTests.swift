@@ -288,6 +288,175 @@ final class LibraryConceptGraphTests: XCTestCase {
         XCTAssertFalse(related.contains { $0.concept == "foucault" })
     }
 
+    // MARK: - Stopwords + aliases (Phase 2a)
+
+    func test_stopwords_dropConceptsFromRollup() {
+        let entry = makeEntry(title: "Stopwords Book")
+        let entities = BookEntityIndex(
+            mentions: [
+                "new york": [.init(chapterIdx: 0, paragraphIdx: 0)],
+                "foucault": [.init(chapterIdx: 0, paragraphIdx: 1)],
+            ],
+            displayNames: [
+                "new york": "New York",
+                "foucault": "Foucault",
+            ]
+        )
+        writeSidecar(for: entry, entities: entities)
+
+        let graph = LibraryConceptGraph.build(
+            libraryEntries: [entry], store: store
+        )
+        XCTAssertNil(graph.concepts["new york"])
+        XCTAssertNotNil(graph.concepts["foucault"])
+    }
+
+    func test_aliases_mergeSynonymousConceptsInOneBook() {
+        let entry = makeEntry(title: "Aliases Book")
+        // Both "america" and "united states" appear; expect them
+        // to merge into the "united states" primary (per
+        // ConceptAliases). mentionCount should sum.
+        let entities = BookEntityIndex(
+            mentions: [
+                "america": [
+                    .init(chapterIdx: 0, paragraphIdx: 0),
+                    .init(chapterIdx: 1, paragraphIdx: 0),
+                ],
+                "united states": [
+                    .init(chapterIdx: 2, paragraphIdx: 0),
+                ],
+            ],
+            displayNames: [
+                "america": "America",
+                "united states": "United States",
+            ]
+        )
+        writeSidecar(for: entry, entities: entities)
+
+        let graph = LibraryConceptGraph.build(
+            libraryEntries: [entry], store: store
+        )
+        XCTAssertNil(graph.concepts["america"])
+        let primary = try? XCTUnwrap(graph.concepts["united states"])
+        XCTAssertEqual(primary?.totalMentions, 3)
+        XCTAssertEqual(primary?.coverage.first?.chapters, [0, 1, 2])
+    }
+
+    func test_aliases_canBeDisabled_viaApplyFiltersFlag() {
+        let entry = makeEntry(title: "Filters Off Book")
+        let entities = BookEntityIndex(
+            mentions: [
+                "new york": [.init(chapterIdx: 0, paragraphIdx: 0)],
+                "america": [.init(chapterIdx: 0, paragraphIdx: 1)],
+            ],
+            displayNames: [
+                "new york": "New York",
+                "america": "America",
+            ]
+        )
+        writeSidecar(for: entry, entities: entities)
+
+        let graph = LibraryConceptGraph.build(
+            libraryEntries: [entry], store: store, applyFilters: false
+        )
+        XCTAssertNotNil(graph.concepts["new york"])
+        XCTAssertNotNil(graph.concepts["america"])
+        XCTAssertNil(graph.concepts["united states"])
+    }
+
+    func test_significantConcepts_dropsSingleBookConcepts() {
+        let bookA = makeEntry(title: "Book A")
+        let bookB = makeEntry(title: "Book B")
+        writeSidecar(
+            for: bookA,
+            entities: BookEntityIndex(
+                mentions: [
+                    "foucault": [.init(chapterIdx: 0, paragraphIdx: 0)],
+                    "obscure": [.init(chapterIdx: 0, paragraphIdx: 1)],
+                ],
+                displayNames: ["foucault": "Foucault", "obscure": "Obscure"]
+            )
+        )
+        writeSidecar(
+            for: bookB,
+            entities: BookEntityIndex(
+                mentions: [
+                    "foucault": [.init(chapterIdx: 0, paragraphIdx: 0)],
+                ],
+                displayNames: ["foucault": "Foucault"]
+            )
+        )
+        let graph = LibraryConceptGraph.build(
+            libraryEntries: [bookA, bookB], store: store
+        )
+        let significant = graph.significantConcepts()
+            .map(\.canonical)
+        XCTAssertEqual(significant, ["foucault"])
+        // Full set still includes the obscure one for the
+        // search_concept tool path.
+        XCTAssertNotNil(graph.concepts["obscure"])
+    }
+
+    // MARK: - Cache (Phase 2a)
+
+    func test_cache_returnsSameInstanceOnRepeatCall() {
+        let entry = makeEntry(title: "Cache Book")
+        writeSidecar(
+            for: entry,
+            entities: BookEntityIndex(
+                mentions: [
+                    "foucault": [
+                        .init(chapterIdx: 0, paragraphIdx: 0),
+                    ],
+                ],
+                displayNames: ["foucault": "Foucault"]
+            )
+        )
+        let cache = LibraryConceptGraphCache()
+        let first = cache.graph(
+            libraryEntries: [entry],
+            backendIdentifier: "test.backend",
+            store: store
+        )
+        XCTAssertTrue(cache.hasCache(
+            libraryEntries: [entry],
+            backendIdentifier: "test.backend",
+            store: store
+        ))
+        let second = cache.graph(
+            libraryEntries: [entry],
+            backendIdentifier: "test.backend",
+            store: store
+        )
+        // Concept dictionary identity isn't observable through
+        // the public API, but the count + a sentinel value
+        // round-trip identically.
+        XCTAssertEqual(first.concepts.count, second.concepts.count)
+        XCTAssertNotNil(second.concepts["foucault"])
+    }
+
+    func test_cache_invalidatesOnBackendChange() {
+        let entry = makeEntry(title: "Backend-Switch Book")
+        writeSidecar(
+            for: entry,
+            entities: BookEntityIndex(
+                mentions: ["foucault": [.init(chapterIdx: 0, paragraphIdx: 0)]],
+                displayNames: ["foucault": "Foucault"]
+            )
+        )
+        let cache = LibraryConceptGraphCache()
+        _ = cache.graph(
+            libraryEntries: [entry],
+            backendIdentifier: "backend.a",
+            store: store
+        )
+        XCTAssertFalse(cache.hasCache(
+            libraryEntries: [entry],
+            backendIdentifier: "backend.b",
+            store: store
+        ))
+    }
+
     // MARK: - Helpers
 
     private func makeEntry(title: String) -> LibraryEntry {

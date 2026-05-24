@@ -109,10 +109,25 @@ struct LibraryConceptGraph: Sendable {
     /// Fold every book's per-paragraph entity sets into the
     /// federated concept stats + co-occurrence map. `store` is
     /// injectable so tests can use a tempdir-scoped sidecar store.
+    ///
+    /// Filters applied:
+    /// - **Stopwords** — entries in `ConceptStopwords` drop on
+    ///   the floor (no coverage rows, no edges). Suppresses the
+    ///   NLTagger-at-scale publication-metadata noise that
+    ///   would otherwise dominate the breadth ranking.
+    /// - **Aliases** — entries map through `ConceptAliases
+    ///   .canonical(for:)` before pair generation so synonyms
+    ///   like america/united states merge into one row.
+    /// - **`bookCount ≥ 2`** is NOT applied here; the full
+    ///   concept dictionary is preserved for the `search_concept`
+    ///   tool (Phase 3) which may want long-tail hits. The
+    ///   sidebar / breadth-ranking surface uses
+    ///   `significantConcepts()` instead.
     static func build(
         libraryEntries: [LibraryEntry],
         store: EmbeddingsSidecarStore = EmbeddingsSidecarStore(),
-        minEdgeCount: Int = defaultMinEdgeCount
+        minEdgeCount: Int = defaultMinEdgeCount,
+        applyFilters: Bool = true
     ) -> LibraryConceptGraph {
         // Per-concept aggregation across books. Keyed by canonical;
         // value carries each contributing book's coverage row, the
@@ -141,24 +156,50 @@ struct LibraryConceptGraph: Sendable {
             // happen to repeat within a paragraph; the per-book
             // builder already dedupes via last-anchor check, so the
             // Set form is a defense rather than a load-bearing
-            // optimization.
+            // optimization. Stopwords are dropped here so they
+            // contribute neither coverage nor co-occurrence; aliases
+            // are folded to their primary form so synonyms merge.
             var perAnchor: [BookEntityIndex.Anchor: Set<String>] = [:]
             var perConceptInBook: [String: (count: Int, chapters: Set<Int>)] = [:]
-            for (canonical, anchors) in book.mentions {
+            for (canonicalRaw, anchors) in book.mentions {
+                let canonical = applyFilters
+                    ? ConceptAliases.canonical(for: canonicalRaw)
+                    : canonicalRaw
+                if applyFilters,
+                   ConceptStopwords.contains(canonical) { continue }
                 var chaptersForConcept: Set<Int> = []
                 for anchor in anchors {
                     perAnchor[anchor, default: []].insert(canonical)
                     chaptersForConcept.insert(anchor.chapterIdx)
                 }
-                perConceptInBook[canonical] = (
-                    anchors.count, chaptersForConcept
-                )
+                // When two aliases collide onto the same primary
+                // within one book (e.g. both "america" and "united
+                // states" appear), accumulate rather than overwrite.
+                if let prior = perConceptInBook[canonical] {
+                    perConceptInBook[canonical] = (
+                        prior.count + anchors.count,
+                        prior.chapters.union(chaptersForConcept)
+                    )
+                } else {
+                    perConceptInBook[canonical] = (
+                        anchors.count, chaptersForConcept
+                    )
+                }
             }
 
             // Step 2: contribute this book's per-concept coverage
             // rows to the federated map.
             for (canonical, stats) in perConceptInBook {
-                let display = book.displayNames[canonical] ?? canonical
+                // Display-name resolution after the alias map: prefer
+                // the per-book displayName for the canonical form;
+                // fall back to any alias's display if the primary
+                // wasn't seen directly in this book; final fallback
+                // is the canonical key itself.
+                let display = book.displayNames[canonical]
+                    ?? bestAliasDisplay(
+                        for: canonical, in: book, applyFilters: applyFilters
+                    )
+                    ?? canonical
                 let row = BookCoverage(
                     epubURL: entry.epubURL,
                     bookTitle: entry.title,
@@ -231,12 +272,42 @@ struct LibraryConceptGraph: Sendable {
         return uppers * 10 + s.count
     }
 
+    /// When the primary canonical isn't directly present in the
+    /// book's `displayNames` (because the book only uses an
+    /// alias form), pick the best display from any alias that
+    /// IS present. Returns nil when no alias maps to `primary`
+    /// in this book.
+    private static func bestAliasDisplay(
+        for primary: String,
+        in book: BookEntityIndex,
+        applyFilters: Bool
+    ) -> String? {
+        guard applyFilters else { return nil }
+        var best: String?
+        for (alias, primaryForAlias) in ConceptAliases.snapshot
+        where primaryForAlias == primary {
+            if let display = book.displayNames[alias] {
+                if let existing = best {
+                    if scoreDisplay(display) > scoreDisplay(existing) {
+                        best = display
+                    }
+                } else {
+                    best = display
+                }
+            }
+        }
+        return best
+    }
+
     // MARK: - Querying
 
     /// Concepts sorted by `bookCount` descending — the natural
     /// default for the sidebar's "broadly-discussed first" ordering.
     /// Ties broken by `totalMentions` desc, then `displayName` asc
-    /// so the list is deterministic across rebuilds.
+    /// so the list is deterministic across rebuilds. Returns the
+    /// full concept set including singletons; the sidebar should
+    /// prefer `significantConcepts()` to skip the NLTagger
+    /// one-off noise.
     func conceptsByBreadth() -> [ConceptStats] {
         concepts.values.sorted {
             if $0.bookCount != $1.bookCount {
@@ -247,6 +318,16 @@ struct LibraryConceptGraph: Sendable {
             }
             return $0.displayName < $1.displayName
         }
+    }
+
+    /// Default sidebar feed: concepts that appear in at least
+    /// `minBookCount` books, sorted by breadth. Filters out the
+    /// long tail of single-book NLTagger hits that dominate
+    /// `concepts.count` but carry no cross-book signal. The full
+    /// concept dictionary stays available for the `search_concept`
+    /// chat tool, which may want long-tail lookups.
+    func significantConcepts(minBookCount: Int = 2) -> [ConceptStats] {
+        conceptsByBreadth().filter { $0.bookCount >= minBookCount }
     }
 
     /// Top `limit` related concepts for `canonical`, ranked by raw
