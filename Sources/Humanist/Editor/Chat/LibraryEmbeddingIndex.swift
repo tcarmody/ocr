@@ -37,22 +37,17 @@ struct LibraryEmbeddingIndex: Sendable {
 
     /// In-memory federated paragraph. Distinct from `EmbeddingsSidecar
     /// .Entry` (which sidecars use) because the federated cache stores
-    /// half-precision vectors to halve the resident memory footprint.
-    /// Sampled the user's chat send on a 48 GB Gemini-3072 cache: the
-    /// `[Float]` representation held ~14 GB resident; `[Float16]` cuts
-    /// it to ~7 GB with negligible cosine accuracy loss (<0.1%).
-    /// Per-book sidecars stay Float32 (source of truth); conversion
-    /// happens at federated-index build time.
+    /// half-precision vectors to halve the resident memory footprint
+    /// AND omits the per-paragraph text (resolved from the per-book
+    /// sidecar lazily on hit instead). Sampled chat send on a 48 GB
+    /// Gemini-3072 cache: dropping text cut another ~50% off the
+    /// resident index size by removing redundant prose storage that
+    /// already lives in the per-book sidecars.
     struct ParagraphEntry: Sendable {
         let chapterIdx: Int
         let paragraphIdx: Int
         let textHash: String
         let vector: [Float16]
-        /// Paragraph text. Still cached here for now; the next
-        /// follow-up drops this and routes hit rendering through the
-        /// per-book sidecar lookup so the federated cache size
-        /// shrinks again.
-        let text: String?
     }
 
     /// One paragraph hit. Carries the book identity so the chat
@@ -129,18 +124,19 @@ struct LibraryEmbeddingIndex: Sendable {
                 mismatch += 1
                 continue
             }
-            // Convert sidecar entries (Float32 vectors) to the
-            // federated `ParagraphEntry` (Float16 vectors). Sidecar
-            // stays the source of truth at Float32; the federated
-            // cache is a compressed derivative that halves the
-            // resident footprint of the in-memory index.
+            // Convert sidecar entries (Float32 vectors + text) to
+            // the federated `ParagraphEntry` (Float16 vectors, no
+            // text). Sidecar stays the source of truth; the
+            // federated cache is a compressed derivative — text is
+            // resolved per-hit from the sidecar at render time
+            // (see `BookChatViewModel.resolveLibraryHits` / its
+            // sibling in `LibraryChatViewModel`).
             let paragraphs: [ParagraphEntry] = sidecar.paragraphs.map { e in
                 ParagraphEntry(
                     chapterIdx: e.chapterIdx,
                     paragraphIdx: e.paragraphIdx,
                     textHash: e.textHash,
-                    vector: e.vector.map { Float16($0) },
-                    text: e.text
+                    vector: e.vector.map { Float16($0) }
                 )
             }
             sources.append(Source(
@@ -245,7 +241,7 @@ struct LibraryEmbeddingIndex: Sendable {
                         chapterIdx: entry.chapterIdx,
                         paragraphIdx: entry.paragraphIdx,
                         textHash: entry.textHash,
-                        text: entry.text,
+                        text: nil,  // resolved per-hit from sidecar
                         score: score
                     ),
                     cosineScore: score

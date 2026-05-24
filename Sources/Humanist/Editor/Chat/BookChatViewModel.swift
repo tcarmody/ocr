@@ -141,6 +141,16 @@ final class BookChatViewModel: ObservableObject {
     /// to extract the paragraph; cache the extracted list so
     /// further hits in the same book skip the unzip cost.
     private var libraryParagraphCache: [URL: [ParagraphExtractor.Item]] = [:]
+    /// Session-scoped per-book sidecar paragraph-text cache.
+    /// Federated cache v4 dropped per-paragraph text; sidecars
+    /// remain the source of truth. First hit on a given book pays
+    /// the sidecar decode (~100 ms typical); subsequent hits in
+    /// the same book are O(1) lookups. Parallel to
+    /// `libraryParagraphCache` (the on-disk EPUB fallback path)
+    /// but cheaper to populate when the sidecar already carries
+    /// per-paragraph text.
+    private var libraryHitTextCache: [URL: [String: String]] = [:]
+    private let libraryHitSidecarStore = EmbeddingsSidecarStore()
     private(set) var book: EPUBBook
     private let bookTitle: String
     /// Live library reference attached by EditorViewModel after
@@ -1416,31 +1426,19 @@ final class BookChatViewModel: ObservableObject {
         library: LibraryEmbeddingIndex,
         aliases: AliasDictionary
     ) -> [LibraryEntityIndex.LibraryAnchor] {
-        guard !aliases.terms.isEmpty else { return [] }
-        let queryLowered = query.lowercased()
-        let matched = aliases.terms.filter { queryLowered.contains($0) }
-        guard !matched.isEmpty else { return [] }
-        var anchors: [LibraryEntityIndex.LibraryAnchor] = []
-        let perAliasCap = 200
-        let totalCap = 1500
-        for source in library.sources {
-            for entry in source.paragraphs {
-                guard let text = entry.text else { continue }
-                let textLowered = text.lowercased()
-                for term in matched where textLowered.contains(term) {
-                    anchors.append(LibraryEntityIndex.LibraryAnchor(
-                        epubURL: source.epubURL,
-                        bookTitle: source.bookTitle,
-                        chapterIdx: entry.chapterIdx,
-                        paragraphIdx: entry.paragraphIdx
-                    ))
-                    if anchors.count >= totalCap { return anchors }
-                    break
-                }
-            }
-            if anchors.count >= perAliasCap * matched.count { break }
-        }
-        return anchors
+        // Federated cache v4 dropped per-paragraph text storage to
+        // halve the resident memory footprint. Alias substring
+        // matching against paragraph text requires re-reading
+        // every per-book sidecar, which would defeat the federated
+        // cache's purpose. Returning empty is the trade — entity-
+        // based retrieval (NER) still fires; only user-defined
+        // alias substrings stop matching at library scope.
+        // Re-enabling needs either a dedicated alias inverted
+        // index built at sidecar-load time, or a sidecar-backed
+        // text lookup gated to the books that actually own the
+        // matched aliases. Queued in `R-Federated-Memory-Pass`.
+        _ = (query, library, aliases)
+        return []
     }
 
     // MARK: - Library scope
@@ -1505,16 +1503,21 @@ final class BookChatViewModel: ObservableObject {
         return index
     }
 
-    /// Resolve text for each hit. Uses the sidecar's cached text
-    /// when present; otherwise opens the book on disk and extracts
-    /// paragraphs once per session (cached per-book).
+    /// Resolve text for each hit. Federated cache v4 always ships
+    /// `hit.text == nil`, so we look up text from per-book sidecars
+    /// (cached per session via `libraryHitTextCache`). If the
+    /// sidecar lacks text for a hit (pre-text-storage sidecar), we
+    /// fall back to opening the book on disk and extracting
+    /// paragraphs — the slow path, but rare on libraries indexed
+    /// after the text-on-sidecar landed.
     private func resolveLibraryHits(
         _ hits: [LibraryEmbeddingIndex.Hit]
     ) async -> [ResolvedLibraryHit] {
         var out: [ResolvedLibraryHit] = []
         out.reserveCapacity(hits.count)
         for hit in hits {
-            if let text = hit.text {
+            // Sidecar-text path — cheap, no book unzip.
+            if let text = sidecarTextFor(hit) {
                 out.append(ResolvedLibraryHit(
                     epubURL: hit.epubURL,
                     bookTitle: hit.bookTitle,
@@ -1526,9 +1529,9 @@ final class BookChatViewModel: ObservableObject {
                 ))
                 continue
             }
-            // Fallback path: open the book on disk and extract its
-            // paragraphs. Cached per-book within the session so a
-            // burst of hits in one book pays the unzip cost once.
+            // Fallback: open the book on disk. Cached per-book
+            // within the session so a burst of hits in one book
+            // pays the unzip cost once.
             let paragraphs = await loadLibraryParagraphs(for: hit.epubURL)
             guard let paragraph = paragraphs.first(where: {
                 $0.chapterIdx == hit.chapterIdx
@@ -1554,6 +1557,34 @@ final class BookChatViewModel: ObservableObject {
     /// Errors silently → empty array; the missing-text path is
     /// non-fatal (the chat just renders less context).
     @MainActor
+    /// Look up paragraph text for `hit` via the per-book sidecar.
+    /// Returns nil if the sidecar is missing or doesn't have text
+    /// cached for that paragraph (older sidecars predate the
+    /// per-entry text storage). On nil, callers fall back to the
+    /// expensive on-disk book open path. Session-cached.
+    private func sidecarTextFor(
+        _ hit: LibraryEmbeddingIndex.Hit
+    ) -> String? {
+        let url = hit.epubURL
+        if libraryHitTextCache[url] == nil {
+            let libraryID = library?.entries.first {
+                $0.epubURL.canonicalForFile == url.canonicalForFile
+            }?.id
+            var texts: [String: String] = [:]
+            if let sidecar = libraryHitSidecarStore.read(
+                for: url, libraryID: libraryID
+            ) {
+                for entry in sidecar.paragraphs {
+                    if let text = entry.text {
+                        texts["\(entry.chapterIdx)#\(entry.paragraphIdx)"] = text
+                    }
+                }
+            }
+            libraryHitTextCache[url] = texts
+        }
+        return libraryHitTextCache[url]?["\(hit.chapterIdx)#\(hit.paragraphIdx)"]
+    }
+
     private func loadLibraryParagraphs(
         for url: URL
     ) async -> [ParagraphExtractor.Item] {

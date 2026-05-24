@@ -36,11 +36,13 @@ enum FederatedIndexCache {
     /// Version `\x02` adds a length-prefixed `bookAuthor` field
     /// after `bookTitle` in each source.
     /// Version `\x03` stores vectors as Float16 (`UInt16` bit
-    /// patterns) instead of Float32 — halves the on-disk cache
-    /// size and the in-memory federated index footprint with
-    /// negligible cosine accuracy loss.
+    /// patterns) instead of Float32.
+    /// Version `\x04` drops the per-paragraph `text` field — text
+    /// is resolved from the per-book sidecar at hit-render time
+    /// (cached per-session via the chat VM's hit-text resolver).
+    /// Cuts cache size another ~50% on text-heavy libraries.
     private static let magic: [UInt8] = [
-        0x48, 0x55, 0x4D, 0x41, 0x4E, 0x43, 0x41, 0x03  // "HUMANCA\x03"
+        0x48, 0x55, 0x4D, 0x41, 0x4E, 0x43, 0x41, 0x04  // "HUMANCA\x04"
     ]
 
     /// Per-call payload returned to the chat VM on a cache hit.
@@ -265,12 +267,6 @@ enum FederatedIndexCache {
                 try w.writeI32(Int32(p.chapterIdx))
                 try w.writeI32(Int32(p.paragraphIdx))
                 try w.writeString(p.textHash)
-                if let text = p.text {
-                    try w.writeU8(1)
-                    try w.writeString(text)
-                } else {
-                    try w.writeU8(0)
-                }
                 try w.writeHalfVector(p.vector, expectedCount: payload.dimension)
             }
         }
@@ -330,15 +326,12 @@ enum FederatedIndexCache {
                 let chapterIdx = Int(try r.readI32())
                 let paragraphIdx = Int(try r.readI32())
                 let textHash = try r.readString()
-                let hasText = try r.readU8() == 1
-                let text: String? = hasText ? try r.readString() : nil
                 let vector = try r.readHalfVector(count: dimension)
                 paragraphs.append(LibraryEmbeddingIndex.ParagraphEntry(
                     chapterIdx: chapterIdx,
                     paragraphIdx: paragraphIdx,
                     textHash: textHash,
-                    vector: vector,
-                    text: text
+                    vector: vector
                 ))
             }
             sources.append(LibraryEmbeddingIndex.Source(

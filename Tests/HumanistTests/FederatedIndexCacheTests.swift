@@ -85,11 +85,13 @@ final class FederatedIndexCacheTests: XCTestCase {
         XCTAssertNil(r.sources[1].bookAuthor,
                      "empty author must round-trip back to nil, not Optional(\"\")")
         XCTAssertEqual(r.sources[0].paragraphs[0].textHash, "a1")
-        XCTAssertEqual(r.sources[0].paragraphs[0].text, "alpha p1")
         XCTAssertEqual(r.sources[0].paragraphs[0].vector,
                        Array(repeating: Float16(0.1), count: 8))
-        XCTAssertNil(r.sources[0].paragraphs[1].text,
-                     "nil text must survive the round-trip distinct from empty string")
+        // Cache v4 dropped per-paragraph text storage; resolution
+        // happens via per-book sidecars at hit-render time (see
+        // `LibraryChatViewModel.resolveHitTexts`). The round-trip
+        // asserts what the cache actually persists now — vectors
+        // + textHash + chapter/para indices.
 
         XCTAssertEqual(r.entityIndex.mentions["Foucault"]?.count, 2)
         XCTAssertEqual(r.entityIndex.displayNames["foucault"], "Foucault")
@@ -317,16 +319,17 @@ final class FederatedIndexCacheTests: XCTestCase {
     private func para(
         chapter: Int, idx: Int, hash: String, text: String?, vec: [Float]
     ) -> LibraryEmbeddingIndex.ParagraphEntry {
-        // Convert test-supplied Float32 vectors to Float16 to match
-        // the federated cache's storage. Within the half-precision
-        // representable range for typical test inputs (small floats
-        // near 0–1) the round-trip is exact.
-        LibraryEmbeddingIndex.ParagraphEntry(
+        // Cache format v4 dropped the per-entry `text` field —
+        // text is resolved from per-book sidecars at hit-render
+        // time. The `text` parameter here is ignored; callers
+        // that need to verify text resolution should hit the
+        // sidecar path directly.
+        _ = text
+        return LibraryEmbeddingIndex.ParagraphEntry(
             chapterIdx: chapter,
             paragraphIdx: idx,
             textHash: hash,
-            vector: vec.map { Float16($0) },
-            text: text
+            vector: vec.map { Float16($0) }
         )
     }
 

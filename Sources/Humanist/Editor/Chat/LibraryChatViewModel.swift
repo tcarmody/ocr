@@ -152,6 +152,15 @@ final class LibraryChatViewModel: ObservableObject {
     /// metadata + the existing sidecar's hierarchy; building from
     /// them is sub-second even at 2k+ books).
     private var libraryKeywordIndex: LibraryKeywordIndex?
+    /// Session-scoped sidecar paragraph-text cache. Federated
+    /// cache v4 dropped per-paragraph text storage to halve the
+    /// resident memory footprint; text is resolved lazily from
+    /// per-book sidecars at hit-render time. First hit on a given
+    /// book pays the sidecar JSON decode (~100 ms for a typical
+    /// book); subsequent hits in the same book are O(1) lookups.
+    /// Cleared alongside `libraryIndex` on backend change.
+    private var sidecarTextCache: [URL: [String: String]] = [:]
+    private let embeddingsStore = EmbeddingsSidecarStore()
     private var streamTask: Task<Void, Never>?
     /// Same `nonisolated(unsafe)` justification as the per-book
     /// chat VM: the observer token is opaque, deinit-only, and
@@ -422,6 +431,12 @@ final class LibraryChatViewModel: ObservableObject {
                     excluding: excluded
                 )
             }.value
+            // Federated cache v4 drops per-paragraph text — resolve
+            // from per-book sidecars before rendering so the model
+            // sees actual paragraph content in the prompt. Sidecar
+            // reads are cached per session, so paying once per
+            // unique book per session.
+            let resolvedHits = self.resolveHitTexts(hits)
             // Build a per-turn registry so `[book:N]` indices stay
             // consistent across the initial context AND any later
             // tool-result renders. The Ollama path doesn't use tools
@@ -429,7 +444,7 @@ final class LibraryChatViewModel: ObservableObject {
             // there just won't be any subsequent renders.
             let registry = LibraryChatTools.TurnBookRegistry()
             let context = LibraryChatTools.renderInitialContext(
-                hits: hits, registry: registry, maxParaChars: maxParaChars
+                hits: resolvedHits, registry: registry, maxParaChars: maxParaChars
             )
             let userPrompt = context + "\n\nQuestion: " + query
 
@@ -437,14 +452,14 @@ final class LibraryChatViewModel: ObservableObject {
             case .cloudHaiku, .cloudSonnet:
                 await self.runCloudSendAgentic(
                     userPrompt: userPrompt,
-                    initialHits: hits,
+                    initialHits: resolvedHits,
                     registry: registry,
                     library: library,
                     backend: backend,
                     model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
                 )
             case .localOllama:
-                await self.runOllamaSend(userPrompt: userPrompt, allowedHits: hits)
+                await self.runOllamaSend(userPrompt: userPrompt, allowedHits: resolvedHits)
             }
         }
         streamTask?.cancel()
@@ -616,8 +631,51 @@ final class LibraryChatViewModel: ObservableObject {
         libraryIndex = nil
         libraryEntityIndex = nil
         libraryKeywordIndex = nil
+        sidecarTextCache.removeAll()
         libraryStatus = .idle
         FederatedIndexCache.invalidate()
+    }
+
+    /// Resolve paragraph text for each hit from per-book sidecars.
+    /// Federated cache v4 doesn't ship text — only vectors — so
+    /// `hit.text` arrives nil from `library.search`. This pass
+    /// fills in the text via session-cached sidecar reads. Called
+    /// between `library.search` and the renderers so the model
+    /// gets actual paragraph content in the prompt.
+    private func resolveHitTexts(
+        _ hits: [LibraryEmbeddingIndex.Hit]
+    ) -> [LibraryEmbeddingIndex.Hit] {
+        hits.map { hit in
+            let url = hit.epubURL
+            if sidecarTextCache[url] == nil {
+                let libraryID = library?.entries.first {
+                    $0.epubURL.canonicalForFile == url.canonicalForFile
+                }?.id
+                var texts: [String: String] = [:]
+                if let sidecar = embeddingsStore.read(
+                    for: url, libraryID: libraryID
+                ) {
+                    for entry in sidecar.paragraphs {
+                        if let text = entry.text {
+                            texts["\(entry.chapterIdx)#\(entry.paragraphIdx)"] = text
+                        }
+                    }
+                }
+                sidecarTextCache[url] = texts
+            }
+            let key = "\(hit.chapterIdx)#\(hit.paragraphIdx)"
+            let text = sidecarTextCache[url]?[key]
+            return LibraryEmbeddingIndex.Hit(
+                epubURL: hit.epubURL,
+                bookTitle: hit.bookTitle,
+                bookAuthor: hit.bookAuthor,
+                chapterIdx: hit.chapterIdx,
+                paragraphIdx: hit.paragraphIdx,
+                textHash: hit.textHash,
+                text: text,
+                score: hit.score
+            )
+        }
     }
 
     /// Restrict retrieval to a subset of the library — used by the
@@ -702,31 +760,13 @@ final class LibraryChatViewModel: ObservableObject {
         library: LibraryEmbeddingIndex,
         aliases: AliasDictionary
     ) -> [LibraryEntityIndex.LibraryAnchor] {
-        guard !aliases.terms.isEmpty else { return [] }
-        let queryLowered = query.lowercased()
-        let matched = aliases.terms.filter { queryLowered.contains($0) }
-        guard !matched.isEmpty else { return [] }
-        var anchors: [LibraryEntityIndex.LibraryAnchor] = []
-        let perAliasCap = 200
-        let totalCap = 1500
-        for source in library.sources {
-            for entry in source.paragraphs {
-                guard let text = entry.text else { continue }
-                let textLowered = text.lowercased()
-                for term in matched where textLowered.contains(term) {
-                    anchors.append(LibraryEntityIndex.LibraryAnchor(
-                        epubURL: source.epubURL,
-                        bookTitle: source.bookTitle,
-                        chapterIdx: entry.chapterIdx,
-                        paragraphIdx: entry.paragraphIdx
-                    ))
-                    if anchors.count >= totalCap { return anchors }
-                    break
-                }
-            }
-            if anchors.count >= perAliasCap * matched.count { break }
-        }
-        return anchors
+        // See the parallel comment in `BookChatViewModel
+        // .computeLibraryAliasAnchors`: federated cache v4 dropped
+        // per-paragraph text, alias substring matching needs text,
+        // so this returns empty until a sidecar-backed alias
+        // inverted index lands.
+        _ = (query, library, aliases)
+        return []
     }
 
     // MARK: - Sending
@@ -1009,13 +1049,19 @@ final class LibraryChatViewModel: ObservableObject {
                 excluding: excluded
             )
         }.value
+        // Federated cache v4 ships vectors only — resolve paragraph
+        // text from sidecars before rendering the tool result so
+        // the model gets actual content. Synchronous MainActor
+        // call (this function is MainActor; the detached search
+        // already awaited back to MainActor).
+        let resolvedHits = resolveHitTexts(hits)
         let text = LibraryChatTools.renderToolResult(
             query: toolQuery,
-            hits: hits,
+            hits: resolvedHits,
             registry: registry,
             maxParaChars: maxParaChars
         )
-        return (text, hits)
+        return (text, resolvedHits)
     }
 
     private enum LibraryChatToolError: Error, LocalizedError {
