@@ -22,7 +22,7 @@ import Foundation
 @MainActor
 final class LibraryConceptGraphProbe: XCTestCase {
 
-    func test_ProbeConceptGraph() throws {
+    func test_ProbeConceptGraph() async throws {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(
             env["HUMANIST_PROBE"] == "1",
@@ -55,13 +55,13 @@ final class LibraryConceptGraphProbe: XCTestCase {
         // Cache round-trip — first call should be a hit and
         // return near-instantaneously.
         let cache = LibraryConceptGraphCache()
-        _ = cache.graph(
+        _ = await cache.graph(
             libraryEntries: entries,
             backendIdentifier: "probe.backend",
             store: store
         )
         let cacheStart = Date()
-        _ = cache.graph(
+        _ = await cache.graph(
             libraryEntries: entries,
             backendIdentifier: "probe.backend",
             store: store

@@ -13,12 +13,11 @@ import CryptoKit
 /// Schema-option-C work; we don't want to ship a new sidecar format
 /// before we know the in-memory size / shape is stable.
 ///
-/// Thread model: `@MainActor`-confined. The Concepts sidebar lives
-/// on the main actor, and the build work itself runs synchronously
-/// inside the cache call — callers that want async behavior should
-/// wrap the call in `Task.detached` themselves.
-@MainActor
-final class LibraryConceptGraphCache {
+/// Thread model: `actor` so the build (which is synchronous sidecar
+/// IO + map manipulation; ~40s on a 2k-book library) runs off the
+/// main actor. The Concepts sidebar awaits the cache call and stays
+/// responsive while the build runs in the background.
+actor LibraryConceptGraphCache {
 
     /// Process-wide singleton. The library catalog is a singleton
     /// (one `LibraryStore` per app launch), so the cache shape

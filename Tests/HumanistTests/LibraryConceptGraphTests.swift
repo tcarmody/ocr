@@ -434,7 +434,7 @@ final class LibraryConceptGraphTests: XCTestCase {
 
     // MARK: - Cache (Phase 2a)
 
-    func test_cache_returnsSameInstanceOnRepeatCall() {
+    func test_cache_returnsSameInstanceOnRepeatCall() async {
         let entry = makeEntry(title: "Cache Book")
         writeSidecar(
             for: entry,
@@ -448,17 +448,18 @@ final class LibraryConceptGraphTests: XCTestCase {
             )
         )
         let cache = LibraryConceptGraphCache()
-        let first = cache.graph(
+        let first = await cache.graph(
             libraryEntries: [entry],
             backendIdentifier: "test.backend",
             store: store
         )
-        XCTAssertTrue(cache.hasCache(
+        let hit = await cache.hasCache(
             libraryEntries: [entry],
             backendIdentifier: "test.backend",
             store: store
-        ))
-        let second = cache.graph(
+        )
+        XCTAssertTrue(hit)
+        let second = await cache.graph(
             libraryEntries: [entry],
             backendIdentifier: "test.backend",
             store: store
@@ -470,7 +471,7 @@ final class LibraryConceptGraphTests: XCTestCase {
         XCTAssertNotNil(second.concepts["foucault"])
     }
 
-    func test_cache_invalidatesOnBackendChange() {
+    func test_cache_invalidatesOnBackendChange() async {
         let entry = makeEntry(title: "Backend-Switch Book")
         writeSidecar(
             for: entry,
@@ -480,16 +481,17 @@ final class LibraryConceptGraphTests: XCTestCase {
             )
         )
         let cache = LibraryConceptGraphCache()
-        _ = cache.graph(
+        _ = await cache.graph(
             libraryEntries: [entry],
             backendIdentifier: "backend.a",
             store: store
         )
-        XCTAssertFalse(cache.hasCache(
+        let hitOtherBackend = await cache.hasCache(
             libraryEntries: [entry],
             backendIdentifier: "backend.b",
             store: store
-        ))
+        )
+        XCTAssertFalse(hitOtherBackend)
     }
 
     // MARK: - Helpers

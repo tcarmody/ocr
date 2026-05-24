@@ -65,6 +65,17 @@ struct LibraryWindowView: View {
     @AppStorage("humanist.library.showCollectionsSidebar")
     private var showCollectionsSidebar: Bool = false
 
+    /// Whether the Concepts sidebar is visible (R-Chat-Cross-Corpus
+    /// Phase 2b). Persisted per app; default off — the concept
+    /// rollup is a power-user surface and the first build takes
+    /// ~40s, so we don't want to fire it for users who never asked.
+    @AppStorage("humanist.library.showConceptsSidebar")
+    private var showConceptsSidebar: Bool = false
+    /// Canonical key of the currently-selected concept (drives the
+    /// detail pane). nil when nothing is selected; the sidebar's
+    /// List(selection:) binds to this.
+    @State private var selectedConceptCanonical: String?
+
     /// Expanded state for each top-level sidebar section. Backed by
     /// `@State` (not `@AppStorage`) — reads happen during render and
     /// must not go through a publisher; the previous @AppStorage +
@@ -569,6 +580,15 @@ struct LibraryWindowView: View {
             if showCollectionsSidebar {
                 collectionsSidebar
                     .frame(minWidth: 180, idealWidth: 220, maxWidth: 320)
+            }
+            if showConceptsSidebar {
+                ConceptsSidebarView(
+                    library: library,
+                    selectedCanonical: $selectedConceptCanonical
+                )
+                .frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
+                conceptDetailColumn
+                    .frame(minWidth: 320, idealWidth: 420)
             }
             browserColumn
                 .frame(minWidth: 480)
@@ -1789,6 +1809,27 @@ struct LibraryWindowView: View {
                   ? "Hide collections sidebar"
                   : "Show collections sidebar")
         }
+        ToolbarItem(placement: .navigation) {
+            Button {
+                showConceptsSidebar.toggle()
+                // Drop any prior selection on hide so the detail
+                // pane doesn't flash back the next time the user
+                // re-opens the sidebar — they should pick fresh.
+                if !showConceptsSidebar {
+                    selectedConceptCanonical = nil
+                }
+            } label: {
+                Image(systemName: showConceptsSidebar
+                      ? "tag.fill"
+                      : "tag")
+            }
+            .help(showConceptsSidebar
+                  ? "Hide concepts sidebar"
+                  : "Show concepts sidebar (R-Chat-Cross-Corpus)")
+            .accessibilityLabel(showConceptsSidebar
+                  ? "Hide concepts sidebar"
+                  : "Show concepts sidebar")
+        }
         ToolbarItemGroup(placement: .primaryAction) {
             if !availableLanguages.isEmpty {
                 Picker("Language", selection: $languageFilter) {
@@ -1900,6 +1941,24 @@ struct LibraryWindowView: View {
         return showChatPane
             ? "Hide library chat pane"
             : "Show library chat pane"
+    }
+
+    // MARK: - concepts detail column
+
+    /// Detail pane shown to the right of the Concepts sidebar.
+    /// Resolves the selected canonical key against the cached
+    /// graph (synchronous read because the sidebar's task already
+    /// awaited the build before letting the user click anything).
+    /// When nothing's selected, shows an empty-state prompt.
+    @ViewBuilder
+    private var conceptDetailColumn: some View {
+        ConceptDetailHost(
+            selectedCanonical: $selectedConceptCanonical,
+            library: library,
+            onOpenBook: { url in
+                OpenRouter.open(url, openWindow: openWindow)
+            }
+        )
     }
 
     // MARK: - collections sidebar
