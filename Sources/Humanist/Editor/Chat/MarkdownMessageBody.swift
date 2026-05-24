@@ -58,23 +58,8 @@ struct MarkdownMessageBody: View {
             } label: {
                 Label("Copy Message", systemImage: "doc.on.doc")
             }
-            Button {
-                showSelectionSheet = true
-            } label: {
-                Label("Select Text…", systemImage: "text.cursor")
-            }
-        }
-        .sheet(isPresented: $showSelectionSheet) {
-            MessageSelectionSheet(text: text) {
-                showSelectionSheet = false
-            }
         }
     }
-
-    /// Opt-in selection sheet. Will go away in the
-    /// R-Chat-Reinstate-Polish "Drop MessageSelectionSheet" commit
-    /// once `.textSelection(.enabled)` is back on the chat row.
-    @State private var showSelectionSheet: Bool = false
 
     // MARK: - Block rendering
 

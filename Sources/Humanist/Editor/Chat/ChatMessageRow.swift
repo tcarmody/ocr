@@ -28,10 +28,6 @@ struct ChatMessageRow: View {
     /// chrome — useful for diagnosing "why did this paragraph
     /// surface?" without reaching for a debugger.
     var showRetrievalDetail: Bool = false
-    /// Non-nil → the "Select Text…" sheet is presented with that
-    /// message text. User-message sheet only — assistant-side
-    /// selection sheet is owned inside `MarkdownMessageBody`.
-    @State private var userSelectionSheetText: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -111,20 +107,6 @@ struct ChatMessageRow: View {
                 retrievalDetailView(detail)
             }
         }
-        .sheet(item: Binding(
-            get: { userSelectionSheetText.map(SelectionPayload.init) },
-            set: { userSelectionSheetText = $0?.text }
-        )) { payload in
-            MessageSelectionSheet(text: payload.text) {
-                userSelectionSheetText = nil
-            }
-        }
-    }
-
-    /// Wrap for `.sheet(item:)` since String isn't Identifiable.
-    private struct SelectionPayload: Identifiable {
-        let text: String
-        var id: String { text }
     }
 
     @ViewBuilder
