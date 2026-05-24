@@ -1,4 +1,60 @@
 import SwiftUI
+import EPUB
+
+/// Wrapper that owns the `BookBriefingService` as a `@StateObject`
+/// and mounts the briefing sheet. Pulled out of `ChatPaneView`
+/// because holding the service there made every streaming text
+/// delta re-render the entire chat pane — observed as a main-
+/// thread hang on long transcripts (a sampled stack showed
+/// thousands of `BookChatMessage` copy/destroy ops per update).
+///
+/// Mounted only while the sheet is presented, so the
+/// `@StateObject`'s update churn never leaves this small subtree.
+/// The chat pane's parent view stays still — same pattern as
+/// `feedback_swiftui_stateobject_cascade.md` (demote rapidly-
+/// publishing state to a child the parent doesn't observe).
+///
+/// One side effect: dismissing + reopening the sheet starts a
+/// fresh briefing. Acceptable for a ~5–15 s generation; the user
+/// gets a Retry button inside the sheet for a deliberate rerun
+/// during the same session.
+struct BriefingSheetContainer: View {
+    let book: EPUBBook
+    let bookTitle: String
+    let entry: LibraryEntry?
+    let library: LibraryStore?
+    let onDismiss: () -> Void
+
+    @StateObject private var service = BookBriefingService()
+
+    var body: some View {
+        BookBriefingSheet(
+            service: service,
+            bookTitle: bookTitle,
+            author: entry?.author,
+            onRetry: { start() },
+            onDismiss: onDismiss
+        )
+        .onAppear {
+            // First mount → kick off the briefing once. Re-mounts
+            // (sheet dismiss + reopen) reach this path too; the
+            // service's `start` is idempotent and cancels any
+            // prior in-flight task.
+            if service.briefing.isEmpty && !service.isStreaming {
+                start()
+            }
+        }
+    }
+
+    private func start() {
+        service.start(
+            book: book,
+            entry: entry,
+            bookTitle: bookTitle,
+            library: library
+        )
+    }
+}
 
 /// Modal that renders a streaming pre-reading briefing produced
 /// by `BookBriefingService`. Read-only — the briefing is a
