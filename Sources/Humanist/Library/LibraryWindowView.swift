@@ -1912,25 +1912,36 @@ struct LibraryWindowView: View {
         }
     }
 
-    /// Smart click for the consolidated chat button. Honors the
-    /// selection / collection scope before falling through to
-    /// toggle, so a single click does the right thing in every
-    /// state without the user having to find a separate "Chat
-    /// with Selected" button on the left.
+    /// Smart click for the consolidated chat button. When the pane
+    /// is already open, clicking always hides it — otherwise the
+    /// user could never close the pane once a row was selected or
+    /// a collection was active (every click would re-fire the
+    /// scoped chat). When the pane is closed, fall through to the
+    /// scoped action (selection → chatWithSelected; collection →
+    /// chatWithCollection; otherwise → open the pane).
     private func chatIconAction() {
+        if showChatPane {
+            showChatPane = false
+            return
+        }
         if !selection.isEmpty {
             chatWithSelected()
         } else if let collection = activeCollection,
                   !collection.bookIDs.isEmpty {
             chatWithCollection(collection)
         } else {
-            showChatPane.toggle()
+            showChatPane = true
         }
     }
 
     /// Tooltip for the chat icon, matched to whatever
-    /// `chatIconAction` will do on click.
+    /// `chatIconAction` will do on click. Hide-over-chat-action
+    /// when the pane is already open so the tooltip matches what
+    /// actually happens.
     private var chatIconHelp: String {
+        if showChatPane {
+            return "Hide library chat pane"
+        }
         if !selection.isEmpty {
             return "Chat with \(selection.count) selected book\(selection.count == 1 ? "" : "s")"
         }
@@ -1938,9 +1949,7 @@ struct LibraryWindowView: View {
            !collection.bookIDs.isEmpty {
             return "Chat with \(collection.name) (\(collection.bookIDs.count) book\(collection.bookIDs.count == 1 ? "" : "s"))"
         }
-        return showChatPane
-            ? "Hide library chat pane"
-            : "Show library chat pane"
+        return "Show library chat pane"
     }
 
     // MARK: - concepts detail column
