@@ -498,6 +498,41 @@ enum OpenRouter {
             openWindow(id: "source-viewer", value: url)
         }
     }
+
+    /// Citation-tap hand-off — always opens the reader scene
+    /// (ignoring the user's Settings preference for editor-as-
+    /// default) and, when `paragraphIdx` is non-nil, posts a
+    /// `humanistOpenAtParagraph` notification so the matching
+    /// reader window scrolls to the cited paragraph after the
+    /// EPUB loads. Reader-over-editor because the reader's
+    /// pagination + paragraph anchor support is the right surface
+    /// for landing on a specific passage; the editor is for
+    /// authoring, not reading.
+    ///
+    /// Works for both already-open readers (surfaces the matching
+    /// window via SwiftUI's `openWindow(value:)` deduplication)
+    /// and freshly-spawned readers (the new VM stashes a pending
+    /// jump and consumes it once `load()` completes).
+    static func openInReader(
+        url: URL,
+        chapterIdx: Int,
+        paragraphIdx: Int?,
+        openWindow: OpenWindowAction
+    ) {
+        RecentsStore.add(url)
+        library?.recordOpen(url)
+        openWindow(id: "reader", value: url)
+        guard let paragraphIdx else { return }
+        NotificationCenter.default.post(
+            name: .humanistOpenAtParagraph,
+            object: nil,
+            userInfo: [
+                "url": url,
+                "chapter": chapterIdx,
+                "paragraph": paragraphIdx
+            ]
+        )
+    }
 }
 
 private struct OpenCommand: View {
@@ -1005,5 +1040,19 @@ extension Notification.Name {
     /// mid-paragraph.
     static let humanistEPUBSavedFromEditor = Notification.Name(
         "humanistEPUBSavedFromEditor"
+    )
+
+    /// Posted by `OpenRouter.openInReader(...)` after opening (or
+    /// surfacing) a reader window for a specific paragraph.
+    /// `userInfo["url"]` is the EPUB URL, `userInfo["chapter"]` is
+    /// the 0-based spine index, `userInfo["paragraph"]` is the
+    /// 0-based paragraph index within the chapter. The matching
+    /// reader window's view model observes this and calls
+    /// `jumpToParagraph`. Drives citation-chip → reader hand-off
+    /// from library-scope chat: the citation has a chapter +
+    /// paragraph; the reader is the better surface for landing on
+    /// a specific passage than the editor.
+    static let humanistOpenAtParagraph = Notification.Name(
+        "humanistOpenAtParagraph"
     )
 }

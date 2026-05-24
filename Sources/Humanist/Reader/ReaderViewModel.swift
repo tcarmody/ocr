@@ -125,6 +125,18 @@ final class ReaderViewModel: ObservableObject {
     /// notification callback — same posture as
     /// `BookChatViewModel.backendChangeObserver`.
     private nonisolated(unsafe) var editorSaveObserver: (any NSObjectProtocol)?
+    /// Observer token for `.humanistOpenAtParagraph` — fires when
+    /// a library-scope chat citation tap routes through
+    /// `OpenRouter.openInReader`. Same lifecycle posture as
+    /// `editorSaveObserver`.
+    private nonisolated(unsafe) var paragraphJumpObserver: (any NSObjectProtocol)?
+    /// Buffered jump request the reader stashes when the
+    /// `.humanistOpenAtParagraph` notification arrives BEFORE
+    /// `load()` finishes — newly-spawned reader windows can't run
+    /// `jumpToParagraph` until `book` is non-nil, so we hold the
+    /// request and apply it at the end of `load()`. Nil once
+    /// consumed (or when no jump is queued).
+    private var pendingParagraphJump: (chapterIdx: Int, paragraphIdx: Int)?
     /// Pending page-navigation request — caught by `WebReaderPane`
     /// and translated into a JS call. Nonce-tagged so repeat
     /// presses on the same button re-fire instead of being
@@ -218,11 +230,41 @@ final class ReaderViewModel: ObservableObject {
                     }
                 }
             }
+        // Citation-tap hand-off observer. When a chat citation
+        // routes through OpenRouter.openInReader, the matching
+        // reader window's VM either jumps immediately (book
+        // already loaded) or stashes the request for load() to
+        // consume.
+        self.paragraphJumpObserver = NotificationCenter.default
+            .addObserver(
+                forName: .humanistOpenAtParagraph,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self else { return }
+                guard let target = notification.userInfo?["url"] as? URL,
+                      target.canonicalForFile == watchedURL,
+                      let chapter = notification.userInfo?["chapter"] as? Int,
+                      let paragraph = notification.userInfo?["paragraph"] as? Int
+                else { return }
+                Task { @MainActor in
+                    if self.book != nil {
+                        self.jumpToParagraph(
+                            chapterIdx: chapter, paragraphIdx: paragraph
+                        )
+                    } else {
+                        self.pendingParagraphJump = (chapter, paragraph)
+                    }
+                }
+            }
         Task { await load() }
     }
 
     deinit {
         if let observer = editorSaveObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = paragraphJumpObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         scrollPersistTask?.cancel()
@@ -341,12 +383,26 @@ final class ReaderViewModel: ObservableObject {
             // is cheap; the embedding build is what we're
             // pre-warming.
             ensureChatViewModel()
-            // Hash + restore in the background. Don't gate the
-            // reader window on this; the user can start reading
-            // immediately and we'll jump them to the saved
-            // position when the hash + lookup complete (usually
-            // a fraction of a second on Apple Silicon).
-            await restorePositionIfAvailable()
+            // Citation-tap hand-off: if a humanistOpenAtParagraph
+            // notification arrived between init and load() finish
+            // (the common case when the reader was freshly
+            // spawned by a chat tap), apply the queued jump now
+            // that `book` is non-nil. Consumed in this block so a
+            // later restore can't replay it.
+            if let pending = pendingParagraphJump {
+                pendingParagraphJump = nil
+                jumpToParagraph(
+                    chapterIdx: pending.chapterIdx,
+                    paragraphIdx: pending.paragraphIdx
+                )
+            } else {
+                // No queued jump → restore the user's saved
+                // reading position. We skip restore when a chat
+                // hand-off is in flight so the citation lands on
+                // the cited paragraph instead of bouncing to the
+                // user's bookmark.
+                await restorePositionIfAvailable()
+            }
         } catch {
             self.state = .failed(error.localizedDescription)
         }

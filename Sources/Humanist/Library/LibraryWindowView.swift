@@ -584,7 +584,19 @@ struct LibraryWindowView: View {
                     vm: chatVM,
                     onCitationTap: { citation in
                         if let url = citation.bookEpubURL {
-                            OpenRouter.open(url, openWindow: openWindow)
+                            // Citation taps go to the reader (not the
+                            // editor) regardless of the user's default
+                            // open target — reading a cited passage is
+                            // the reader's job. When the citation has a
+                            // paragraph index, OpenRouter posts a
+                            // notification the reader observes to scroll
+                            // to that paragraph after load.
+                            OpenRouter.openInReader(
+                                url: url,
+                                chapterIdx: citation.chapterIndex,
+                                paragraphIdx: citation.paragraphIndex,
+                                openWindow: openWindow
+                            )
                         }
                     }
                 )

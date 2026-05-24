@@ -488,14 +488,22 @@ struct EditorView: View {
                     vm: chat,
                     onCitationTap: { citation in
                         // Library-scope citations carry a source
-                        // book URL — open it in a new editor window
-                        // (or activate one already open). Per-book
+                        // book URL — hand off to the reader (with
+                        // a paragraph jump when available) so the
+                        // user lands on the cited passage in the
+                        // surface designed for reading. Per-book
                         // citations stay in this window. When the
-                        // citation specifies a paragraph index,
-                        // scroll the editor to that paragraph
-                        // rather than just selecting the chapter.
+                        // per-book citation specifies a paragraph
+                        // index, scroll the editor to that
+                        // paragraph rather than just selecting the
+                        // chapter.
                         if let bookURL = citation.bookEpubURL {
-                            OpenRouter.open(bookURL, openWindow: openWindow)
+                            OpenRouter.openInReader(
+                                url: bookURL,
+                                chapterIdx: citation.chapterIndex,
+                                paragraphIdx: citation.paragraphIndex,
+                                openWindow: openWindow
+                            )
                         } else if let paraIdx = citation.paragraphIndex {
                             vm.requestParagraphScroll(
                                 resourceID: citation.resourceID,

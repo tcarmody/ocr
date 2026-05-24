@@ -365,8 +365,14 @@ struct LibraryChatPaneView: View {
                                 if let tap = onCitationTap {
                                     tap(citation)
                                 } else if let url = citation.bookEpubURL {
-                                    OpenRouter.open(
-                                        url, openWindow: openWindow
+                                    // Standalone library-chat window
+                                    // fallback — same reader-over-editor
+                                    // posture as the inline pane.
+                                    OpenRouter.openInReader(
+                                        url: url,
+                                        chapterIdx: citation.chapterIndex,
+                                        paragraphIdx: citation.paragraphIndex,
+                                        openWindow: openWindow
                                     )
                                 }
                             },
