@@ -242,6 +242,16 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// per formula; on by default in Cloud mode (most books
         /// have 0-2 display equations, so the floor is rounding).
         public var mathExtraction: Bool
+        /// P-Diagram-Description Tier 1. Per-`.picture`-region
+        /// Sonnet call that generates short alt text for the
+        /// embedded `<img>`. The whole-page Cloud OCR prompt
+        /// explicitly skips image content; without this flag,
+        /// every diagram ships as `alt="figure"` — screen-reader
+        /// noise. ~$0.005-$0.02 per figure; a typical academic
+        /// book has 5-15 figures so per-book cost lands at
+        /// $0.05-$0.15. Off by default (opt-in like the post-OCR
+        /// cleanup pass) since it's a new surface.
+        public var diagramDescription: Bool
         /// Character-level cleanup pass on OCR output that's already
         /// "good enough" but has known mojibake / diacritic issues
         /// (Haiku 4.5).
@@ -344,6 +354,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             landingAITableExtraction: Bool = false,
             tableExtraction: Bool = true,
             mathExtraction: Bool = true,
+            diagramDescription: Bool = false,
             postOCRCleanup: Bool = false,
             postOCRCleanupVisionMode: Bool = false,
             semanticClassification: Bool = false,
@@ -363,6 +374,7 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.landingAITableExtraction = landingAITableExtraction
             self.tableExtraction = tableExtraction
             self.mathExtraction = mathExtraction
+            self.diagramDescription = diagramDescription
             self.postOCRCleanup = postOCRCleanup
             self.postOCRCleanupVisionMode = postOCRCleanupVisionMode
             self.semanticClassification = semanticClassification
@@ -381,7 +393,9 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// `postOCRCleanupVisionMode` / `metadataExtraction` existed
         /// don't break.
         private enum CodingKeys: String, CodingKey {
-            case hardRegionOCR, tableExtraction, mathExtraction, postOCRCleanup
+            case hardRegionOCR, tableExtraction, mathExtraction
+            case diagramDescription
+            case postOCRCleanup
             case postOCRCleanupVisionMode
             case semanticClassification, tocParsing
             case metadataExtraction
@@ -425,6 +439,12 @@ public struct AISettings: Sendable, Codable, Equatable {
             self.mathExtraction = try c.decodeIfPresent(
                 Bool.self, forKey: .mathExtraction
             ) ?? true
+            // Default-off for previously-stored settings: diagram
+            // description is opt-in like the post-OCR cleanup pass.
+            // New surface, costs money, no automatic on.
+            self.diagramDescription = try c.decodeIfPresent(
+                Bool.self, forKey: .diagramDescription
+            ) ?? false
             self.postOCRCleanup = try c.decode(Bool.self, forKey: .postOCRCleanup)
             self.postOCRCleanupVisionMode = try c.decodeIfPresent(
                 Bool.self, forKey: .postOCRCleanupVisionMode

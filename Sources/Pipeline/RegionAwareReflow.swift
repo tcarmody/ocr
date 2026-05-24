@@ -150,6 +150,7 @@ enum RegionAwareReflow {
         figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
         tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:],
         mathExtractions: [CaptionAssociator.PageRegionKey: MathExtractionResult] = [:],
+        diagramExtractions: [CaptionAssociator.PageRegionKey: DiagramExtractionResult] = [:],
         captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
             captionByFigure: [:], orientation: .below
         )
@@ -329,6 +330,7 @@ enum RegionAwareReflow {
                 captionsClaimed: captionsClaimed,
                 tableExtractions: tableExtractions,
                 mathExtractions: mathExtractions,
+                diagramExtractions: diagramExtractions,
                 diagnostics: &diagnostics
             ))
         }
@@ -422,6 +424,7 @@ enum RegionAwareReflow {
         captionsClaimed: Set<CaptionAssociator.PageRegionKey>,
         tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]],
         mathExtractions: [CaptionAssociator.PageRegionKey: MathExtractionResult],
+        diagramExtractions: [CaptionAssociator.PageRegionKey: DiagramExtractionResult],
         diagnostics: inout Diagnostics
     ) -> [Block] {
         // Sort by reading order; -1 (unassigned) sorts to the end so
@@ -504,7 +507,22 @@ enum RegionAwareReflow {
                             observations: page.observations,
                             pageFootnotes: pageFootnotes
                         )
-                        let alt = altText(forKind: region.kind, captionRuns: captionRuns)
+                        // P-Diagram-Description Tier 1: when the
+                        // diagram extractor produced alt text for
+                        // this `.picture` region, prefer it over
+                        // the caption / generic-"figure" fallback —
+                        // it's a screen-reader-grade description
+                        // of the image itself, not just a label.
+                        // `.formula` falls back to its existing
+                        // caption-or-"formula" path.
+                        let alt: String
+                        if region.kind == .picture,
+                           let extraction = diagramExtractions[key],
+                           !extraction.altText.isEmpty {
+                            alt = extraction.altText
+                        } else {
+                            alt = altText(forKind: region.kind, captionRuns: captionRuns)
+                        }
                         blocks.append(.figure(
                             assetId: assetId, alt: alt, caption: captionRuns
                         ))

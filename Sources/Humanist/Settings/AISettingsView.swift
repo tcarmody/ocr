@@ -29,6 +29,7 @@ struct AISettingsView: View {
                 pageOCRSection
                 regionOCRSection
                 tablesSection
+                figuresSection
                 textCleanupSection
                 documentUnderstandingSection
                 costCapSection
@@ -185,6 +186,17 @@ struct AISettingsView: View {
                 Text("LandingAI first, cloud fallback").tag(TableExtractorChoice.landingAIThenSonnet)
             }
             caption("Replaces the X/Y heuristic on .table regions. Routes to whichever Page OCR provider you picked above — Sonnet (~$0.04/table) or Gemini Flash (a fraction of that). The model reads the cropped image and emits JSON cells (rowspan/colspan preserved). LandingAI is purpose-built for tables and often wins on dense layouts, but markdown output means merged cells flatten to 1×1; the cloud-model path picks up cases LandingAI declines. Surya is the offline fallback regardless.")
+        }
+    }
+
+    // MARK: - Figures & Diagrams
+
+    @ViewBuilder
+    private var figuresSection: some View {
+        Section("Figures & Diagrams") {
+            Toggle("Generate alt text for diagrams (Sonnet)",
+                   isOn: $vm.settings.cloudFeatures.diagramDescription)
+            caption("One Sonnet call per detected figure region: replaces alt=\"figure\" on `<img>` with a short, screen-reader-ready description (\"bar chart with male/female populations on opposing axes\"). Accessibility win for VoiceOver and search-engine indexing; doesn't change visible EPUB rendering. ~$0.005–$0.02 per figure; a typical academic book has 5–15 figures (~$0.05–$0.15 added). Off by default — opt-in for the same reason as post-OCR cleanup.")
         }
     }
 

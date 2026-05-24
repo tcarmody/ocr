@@ -382,6 +382,20 @@ extension PDFToEPUBPipeline {
         ) { ClaudeMathExtractor(client: $0, budget: $1) }
     }
 
+    /// P-Diagram-Description Tier 1. Cloud-mode diagram alt-text
+    /// generator for `.picture` regions. Today Claude-only —
+    /// Sonnet's vision describes diagrams well and the per-book
+    /// cost is modest (~$0.05-$0.15 typical). Nil when Cloud-mode
+    /// is off, the `diagramDescription` feature flag is off, or
+    /// no Anthropic key is configured.
+    static func makeCloudDiagramExtractor(
+        options: Options, budget: CloudCallBudget
+    ) -> (any DiagramExtractor)? {
+        makeClaudeEngine(
+            options: options, budget: budget, feature: \.diagramDescription
+        ) { ClaudeDiagramExtractor(client: $0, budget: $1) }
+    }
+
     /// Cloud-mode table-extractor picker. Routes to Claude
     /// (`ClaudeTableExtractor`) or Gemini Flash
     /// (`GeminiTableExtractor`) depending on `pageOCRProvider` —
@@ -627,6 +641,11 @@ extension PDFToEPUBPipeline {
         /// `.formula` regions in cascade mode. Nil when Cloud is off,
         /// the `mathExtraction` flag is off, or no Anthropic key.
         let mathExtractor: (any MathExtractor)?
+        /// P-Diagram-Description Tier 1. Cloud diagram alt-text
+        /// generator (Sonnet) for `.picture` regions. Nil when
+        /// Cloud is off, the `diagramDescription` flag is off, or
+        /// no Anthropic key.
+        let diagramExtractor: (any DiagramExtractor)?
         /// Active page-OCR engine. Either `ClaudePageOCREngine` or
         /// `GeminiPageOCREngine` depending on the user's provider
         /// pick. Manuscript mode forces Claude.
@@ -672,6 +691,9 @@ extension PDFToEPUBPipeline {
                     options: options, budget: budget
                 ),
                 mathExtractor: makeCloudMathExtractor(
+                    options: options, budget: budget
+                ),
+                diagramExtractor: makeCloudDiagramExtractor(
                     options: options, budget: budget
                 ),
                 pageEngine: pageEngine,

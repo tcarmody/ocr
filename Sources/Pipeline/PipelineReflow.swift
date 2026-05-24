@@ -48,6 +48,7 @@ extension PDFToEPUBPipeline {
         figureExtractions: [Int: [FigureExtractor.ExtractedFigure]] = [:],
         tableExtractions: [CaptionAssociator.PageRegionKey: [[TableCell]]] = [:],
         mathExtractions: [CaptionAssociator.PageRegionKey: MathExtractionResult] = [:],
+        diagramExtractions: [CaptionAssociator.PageRegionKey: DiagramExtractionResult] = [:],
         captionAssociations: CaptionAssociator.Associations = CaptionAssociator.Associations(
             captionByFigure: [:], orientation: .below
         ),
@@ -81,6 +82,7 @@ extension PDFToEPUBPipeline {
                 figureExtractions: figureExtractions,
                 tableExtractions: tableExtractions,
                 mathExtractions: mathExtractions,
+                diagramExtractions: diagramExtractions,
                 captionAssociations: captionAssociations
             )
             merged = result.blocks
