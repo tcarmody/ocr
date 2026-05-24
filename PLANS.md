@@ -4667,6 +4667,105 @@ real friction.
 
 ---
 
+## R-Federated-Memory-Pass — Shrink the federated index footprint
+
+**Status**: Phase 1 shipped (commits `f4bebd8`, `3c984f1`,
+`5b8d8c6`). On the user's 2k-book Gemini-3072 library, chat sends
+were peaking RSS at ~14 GB steady-state with an 8 GB transient
+spike during `Data(contentsOf:)` cache load — enough memory
+pressure that macOS swap thrashing manifested as chat scroll +
+hover hangs elsewhere in the app. Three changes brought it under
+control.
+
+### Shipped — Phase 1
+
+- ~~**`Data(contentsOf:, .alwaysMapped)` on cache load**~~ (commit
+  `f4bebd8`). Hands the cache bytes to the kernel's page cache
+  instead of allocating a single heap `Data`. Killed the 8 GB
+  transient at t=70s of the sampled chat send.
+- ~~**Float16 vectors in federated cache**~~ (commit `3c984f1`).
+  New `LibraryEmbeddingIndex.ParagraphEntry` type stores
+  half-precision vectors; sidecars stay Float32 (source of truth)
+  and the federated cache is a compressed derivative. Cache
+  binary format v3 — magic bumped, v2 caches rebuild on next
+  send. Cosine accuracy delta vs Float32 baseline: max abs
+  ~5e-5, mean ~1e-6 — well below ranking sensitivity. ~50% on-
+  disk + resident reduction.
+- ~~**Drop per-paragraph text from federated cache**~~ (commit
+  `5b8d8c6`). Format v4. Text is resolved per-hit from per-book
+  sidecars at render time via session-scoped
+  `sidecarTextCache` / `libraryHitTextCache` maps in both chat
+  VMs. First hit on a given book pays the sidecar decode
+  (~100 ms typical); subsequent hits in the same book are O(1).
+  Another ~50% size reduction on text-heavy libraries.
+
+Combined expected effect: 48 GB cache → ~12 GB on disk; ~14 GB
+resident → ~3-4 GB resident steady-state. Validates the next time
+the user runs a library-scope chat send (existing v3 cache will
+be rebuilt automatically on the magic-byte rejection).
+
+### Known regressions to fix
+
+- **Alias substring matching at library scope is disabled.**
+  `computeLibraryAliasAnchors` in both VMs returns empty because
+  the federated cache no longer carries paragraph text and
+  matching against text would require reloading every per-book
+  sidecar (defeating the federated cache's purpose). Entity-
+  based retrieval (NER) is unaffected; only user-defined alias
+  terms stop matching at library scope. Re-enabling needs either
+  a dedicated alias inverted index built at sidecar-load time,
+  or a sidecar-backed lookup gated to the books that own the
+  matched aliases. Low priority unless someone actually uses
+  alias terms in library-scope queries.
+
+### Phase 2 — pick up when needed
+
+- **INT8 / FP8 quantized vectors** for another ~2× footprint
+  cut. Swift has no native FP8; we'd roll our own int8 with a
+  per-vector or global scale factor. Cosine accuracy hits ~1-2%
+  vs ~0.1% for FP16. Voyage's INT8 embeddings show this is a
+  documented technique that works fine for top-K retrieval.
+  Expected effect on user's library: ~12 GB cache → ~6 GB,
+  ~3-4 GB resident → ~1.5-2 GB. Pick up if FP16 still feels
+  tight (e.g. on smaller-memory machines).
+- **mmap-backed `UnsafeBufferPointer<Float16>` for vectors** —
+  truly minimize resident memory by referencing vectors directly
+  in the mmap'd cache file instead of decoding into Swift arrays.
+  Resident drops to working-set only (~few hundred MB during a
+  cosine pass). Bigger refactor — vectors stop being copy-on-
+  read Swift values and become unsafe pointers; the entire
+  search loop has to be audited for liveness. ~1 day. Worth it
+  if INT8 isn't enough.
+- **Real on-disk vector index** (sqlite-vec, faiss with mmap'd
+  index, etc.). Logarithmic-time nearest-neighbor; resident drops
+  to MB-scale; no full brute-force scan. Total rearchitecture —
+  the federated cache + cosine path goes away. ~1 week. Worth
+  it if (a) library scales past current 2k-book range or (b)
+  query latency at brute force becomes a felt problem.
+
+### Caveats
+
+- The Phase 1 changes are all in `FederatedIndexCache` + the two
+  chat VMs. Per-book sidecars stay Float32 + text — they're
+  source of truth, untouched. So bulk re-indexing isn't required;
+  only the federated cache rebuilds.
+- Phase 2 INT8 would be backward-incompatible with Phase 1 v4
+  caches (another magic-byte bump + rebuild).
+- Phase 2 mmap-backed vectors is the highest-leverage purely-
+  internal change; sqlite-vec would be more invasive but
+  fundamentally lifts the brute-force scan cost too. Pick the
+  scope of the next round when the next memory pain hits.
+
+### Dependencies
+
+- All three Phase 1 changes assume per-book sidecars carry text
+  (they have since the `text` field landed on
+  `EmbeddingsSidecar.Entry`). Old sidecars without text trigger
+  the on-disk-EPUB-open fallback in
+  `BookChatViewModel.resolveLibraryHits` — slow but functional.
+
+---
+
 ## R-EPUB-Import — Bring existing EPUBs into the library
 
 **Status**: v1 shipped. File → Import EPUB into Library… (⇧⌘I)
