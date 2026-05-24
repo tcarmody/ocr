@@ -65,7 +65,21 @@ public struct EPUBRepacker {
             ))
         }
 
-        try EPUBPackager().write(entries, to: outputURL)
+        // Wrap the archive write in `FileCoordination.coordinated
+        // Write` so iCloud-stored EPUBs go through the sync
+        // daemon — pauses sync during the write window, lets
+        // the OS surface the right TCC dialog instead of a cold
+        // EPERM, and matches the read-side coordination on
+        // `EPUBUnpacker`. No-op for local paths.
+        //
+        // `.forReplacing` because `EPUBPackager.write` removes
+        // the existing file before creating the new one — that's
+        // exactly the "replace" semantics the option describes.
+        try FileCoordination.coordinatedWrite(
+            at: outputURL, options: .forReplacing
+        ) { url in
+            try EPUBPackager().write(entries, to: url)
+        }
     }
 
     // MARK: - helpers

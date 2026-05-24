@@ -38,9 +38,18 @@ public struct EPUBUnpacker {
             at: workingDir, withIntermediateDirectories: true
         )
 
+        // `FileCoordination.coordinatedRead` is a no-op for local
+        // paths and routes through `NSFileCoordinator` for iCloud
+        // paths. That materializes evicted placeholders, pauses
+        // iCloud sync during the read, and goes through the
+        // iCloud daemon's privileges — all of which sidestep
+        // EPERM cases that hit raw POSIX I/O on cloud-stored
+        // files. See `FileCoordination` for the full rationale.
         let archive: Archive
         do {
-            archive = try Archive(url: epubURL, accessMode: .read)
+            archive = try FileCoordination.coordinatedRead(at: epubURL) { url in
+                try Archive(url: url, accessMode: .read)
+            }
         } catch {
             throw UnpackError.openFailed(String(describing: error))
         }
