@@ -139,6 +139,12 @@ final class LibraryChatViewModel: ObservableObject {
 
     private var libraryIndex: LibraryEmbeddingIndex?
     private var libraryEntityIndex: LibraryEntityIndex?
+    /// Per-book BM25 over title + author + section headings. Built
+    /// in-memory each session alongside the federated embedding
+    /// index — not persisted (the underlying inputs are catalog
+    /// metadata + the existing sidecar's hierarchy; building from
+    /// them is sub-second even at 2k+ books).
+    private var libraryKeywordIndex: LibraryKeywordIndex?
     private var streamTask: Task<Void, Never>?
     /// Same `nonisolated(unsafe)` justification as the per-book
     /// chat VM: the observer token is opaque, deinit-only, and
@@ -325,6 +331,7 @@ final class LibraryChatViewModel: ObservableObject {
             // Settings, both NER hits and aliases skip.
             let useEntity = self.useEntityRetrieval
             let entityIndex = self.libraryEntityIndex
+            let keywordIndex = self.libraryKeywordIndex
             let topK = self.maxRetrievedParagraphs
             let rrfK = self.rrfK
             let scope = self.scopedURLs
@@ -370,10 +377,17 @@ final class LibraryChatViewModel: ObservableObject {
                     }
                     return !excludedSourcePaths.contains(p)
                 }
+                // BM25 over per-book metadata (title + author +
+                // section headings). Surfaces books that match the
+                // query on the title/author/headings axis but didn't
+                // happen to score high on cosine — the textbook case
+                // is an author-name query.
+                let keywordHits = keywordIndex?.search(query: query, topK: 20) ?? []
                 return library.search(
                     queryVector: queryVector,
                     topK: topK,
                     entityMatches: filtered,
+                    keywordHits: keywordHits,
                     rrfK: rrfK,
                     restrictTo: scope,
                     excluding: excluded
@@ -493,6 +507,7 @@ final class LibraryChatViewModel: ObservableObject {
         ) { () -> (
             LibraryEmbeddingIndex,
             LibraryEntityIndex,
+            LibraryKeywordIndex,
             String,
             Bool
         ) in
@@ -501,6 +516,12 @@ final class LibraryChatViewModel: ObservableObject {
                 dimension: backendDim,
                 entries: entries
             )
+            // Per-book BM25 is built off the catalog + each book's
+            // hierarchy sidecar. Always rebuilt in-memory — cheap
+            // (sub-second at 2k books), and decoupling from the
+            // on-disk federated cache means existing v2 caches stay
+            // valid without a format bump.
+            let keywordIdx = LibraryKeywordIndex(libraryEntries: entries)
             if let payload = FederatedIndexCache.load(
                 expectedFingerprint: fingerprint,
                 backendIdentifier: backendID,
@@ -511,7 +532,7 @@ final class LibraryChatViewModel: ObservableObject {
                     backend: backend,
                     stats: payload.stats
                 )
-                return (idx, payload.entityIndex, fingerprint, true)
+                return (idx, payload.entityIndex, keywordIdx, fingerprint, true)
             }
             let idx = LibraryEmbeddingIndex.build(
                 libraryEntries: entries, backend: backend
@@ -531,12 +552,13 @@ final class LibraryChatViewModel: ObservableObject {
             Task.detached(priority: .utility) {
                 FederatedIndexCache.save(snapshot)
             }
-            return (idx, entityIdx, fingerprint, false)
+            return (idx, entityIdx, keywordIdx, fingerprint, false)
         }.value
 
-        let (index, entityIndex, _, _) = detached
+        let (index, entityIndex, keywordIndex, _, _) = detached
         libraryIndex = index
         libraryEntityIndex = entityIndex
+        libraryKeywordIndex = keywordIndex
         libraryStatus = .ready(
             indexed: index.stats.indexed,
             unindexed: index.stats.unindexed,
@@ -554,6 +576,7 @@ final class LibraryChatViewModel: ObservableObject {
     func invalidateLibraryIndex() {
         libraryIndex = nil
         libraryEntityIndex = nil
+        libraryKeywordIndex = nil
         libraryStatus = .idle
         FederatedIndexCache.invalidate()
     }

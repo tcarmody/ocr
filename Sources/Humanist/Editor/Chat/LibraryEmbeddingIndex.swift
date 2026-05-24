@@ -146,6 +146,7 @@ struct LibraryEmbeddingIndex: Sendable {
         queryVector: [Float],
         topK: Int = 12,
         entityMatches: [LibraryEntityIndex.LibraryAnchor] = [],
+        keywordHits: [LibraryKeywordIndex.BookHit] = [],
         rrfK: Double = 60,
         restrictTo: Set<URL>? = nil,
         excluding: Set<URL> = []
@@ -166,6 +167,16 @@ struct LibraryEmbeddingIndex: Sendable {
         let entitySet: Set<EntityKey> = Set(entityMatches.map {
             EntityKey($0.epubURL, $0.chapterIdx, $0.paragraphIdx)
         })
+        // Per-book BM25 rank keyed by canonical path so the lookup
+        // matches sources regardless of URL form variation. Every
+        // paragraph of a ranked book inherits the same per-book
+        // rank — exactly the "BM25 picks the book, embedding picks
+        // the paragraph inside" pattern.
+        let keywordRankByPath: [String: Int] = Dictionary(
+            uniqueKeysWithValues: keywordHits.map {
+                ($0.epubURL.canonicalForFile.standardizedFileURL.path, $0.rank)
+            }
+        )
         // Score every paragraph by cosine; track its position so
         // RRF rank can be added later without a second sort.
         struct Candidate {
@@ -228,6 +239,14 @@ struct LibraryEmbeddingIndex: Sendable {
             if entitySet.contains(key) {
                 score += 1.0 / (rrfK + 1.0)
             }
+            // Per-book BM25 rank projected onto every paragraph of
+            // its book — same trick `HybridRetriever` uses for
+            // per-book BM25 chapter→paragraph projection.
+            let bookPath = candidate.hit.epubURL
+                .canonicalForFile.standardizedFileURL.path
+            if let bookRank = keywordRankByPath[bookPath] {
+                score += 1.0 / (rrfK + Double(bookRank))
+            }
             fused.append((candidate.hit, score))
         }
         // Add entity-matched anchors that didn't make the cosine
@@ -241,7 +260,13 @@ struct LibraryEmbeddingIndex: Sendable {
                 )
                 guard entitySet.contains(key), !inUnion.contains(key) else { continue }
                 inUnion.insert(key)
-                fused.append((candidate.hit, 1.0 / (rrfK + 1.0)))
+                var score = 1.0 / (rrfK + 1.0)
+                let bookPath = candidate.hit.epubURL
+                    .canonicalForFile.standardizedFileURL.path
+                if let bookRank = keywordRankByPath[bookPath] {
+                    score += 1.0 / (rrfK + Double(bookRank))
+                }
+                fused.append((candidate.hit, score))
             }
         }
         return fused

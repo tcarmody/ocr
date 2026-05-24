@@ -126,6 +126,11 @@ final class BookChatViewModel: ObservableObject {
     /// in a library-scope query — every paragraph mentioning that
     /// entity across the library participates in RRF.
     private var libraryEntityIndex: LibraryEntityIndex?
+    /// Per-book BM25 over title + author + section headings.
+    /// Mirror of the same field on `LibraryChatViewModel`; built
+    /// in-memory each session and contributes a per-book rank to
+    /// the federated RRF fusion.
+    private var libraryKeywordIndex: LibraryKeywordIndex?
     /// Per-book paragraph cache for library scope. When a hit's
     /// sidecar entry has no cached `text`, we open the book on disk
     /// to extract the paragraph; cache the extracted list so
@@ -720,6 +725,7 @@ final class BookChatViewModel: ObservableObject {
             // retrieval.
             let useEntity = self.useEntityRetrieval
             let entityIndex = self.libraryEntityIndex
+            let keywordIndex = self.libraryKeywordIndex
             let topK = self.maxRetrievedParagraphs
             let rrfK = self.rrfK
             let excluded = self.excludedLibraryBookURLs
@@ -752,10 +758,16 @@ final class BookChatViewModel: ObservableObject {
                         .canonicalForFile.standardizedFileURL.path
                     return !excludedSourcePaths.contains(p)
                 }
+                // Per-book BM25 over title + author + headings —
+                // surfaces books matching the keyword axis that
+                // cosine drifted past. Same usage as in
+                // `LibraryChatViewModel.send`.
+                let keywordHits = keywordIndex?.search(query: query, topK: 20) ?? []
                 return library.search(
                     queryVector: queryVector,
                     topK: topK,
                     entityMatches: filtered,
+                    keywordHits: keywordHits,
                     rrfK: rrfK,
                     excluding: excluded
                 )
@@ -1419,7 +1431,7 @@ final class BookChatViewModel: ObservableObject {
         // fresh `LibraryStore()` would trigger. Fallback to a
         // fresh instance only when no live reference is wired.
         let entries = (library?.entries) ?? LibraryStore().entries
-        let (index, entityIndex) = await Task.detached(priority: .userInitiated) {
+        let (index, entityIndex, keywordIndex) = await Task.detached(priority: .userInitiated) {
             let idx = LibraryEmbeddingIndex.build(
                 libraryEntries: entries,
                 backend: backend
@@ -1427,10 +1439,14 @@ final class BookChatViewModel: ObservableObject {
             let entityIdx = LibraryEntityIndex.build(
                 libraryEntries: entries
             )
-            return (idx, entityIdx)
+            // Per-book BM25 over title + author + section headings;
+            // mirror of `LibraryChatViewModel.buildOrReuseLibraryIndex`.
+            let keywordIdx = LibraryKeywordIndex(libraryEntries: entries)
+            return (idx, entityIdx, keywordIdx)
         }.value
         libraryIndex = index
         libraryEntityIndex = entityIndex
+        libraryKeywordIndex = keywordIndex
         libraryStatus = .ready(
             indexed: index.stats.indexed,
             unindexed: index.stats.unindexed,
