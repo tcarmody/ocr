@@ -50,13 +50,15 @@ enum LibraryChatTools {
         }
     }
 
-    /// `search_library` tool descriptor. Schema is intentionally
-    /// minimal — `query` + optional `top_k` — to keep the model's
-    /// tool-use surface small and reliable. More dimensions (book
-    /// restriction, author filter) can land as follow-up tools
-    /// without touching this one. `cacheControl` is set so the
-    /// tools-block prefix is cached alongside the system prompt
-    /// across the multi-turn session.
+    /// Tool descriptors are intentionally cache-control-FREE — the
+    /// system prompt's 1h cache breakpoint covers everything up to
+    /// (and including) the tools block, so adding per-tool
+    /// breakpoints would (a) burn against Anthropic's 4-breakpoint
+    /// limit per request and (b) create the TTL-ordering trap
+    /// (tools default to 5m, system is 1h, ordering violation).
+    /// One system-level breakpoint caches the whole tools+system
+    /// prefix together — exactly what we want for a stable session.
+    ///
     /// `search_topic` tool descriptor. Complements `search_library`:
     /// where that returns paragraph-level hits from cosine + BM25 +
     /// entity fusion, this returns **book-level coverage** for a
@@ -102,8 +104,7 @@ enum LibraryChatTools {
                 you — try a synonym (the alias map handles common ones) or fall \
                 back to search_library for free-text retrieval.
                 """,
-            inputSchema: Data(schemaJSON.utf8),
-            cacheControl: CacheControl(type: .ephemeral)
+            inputSchema: Data(schemaJSON.utf8)
         )
     }()
 
@@ -140,8 +141,7 @@ enum LibraryChatTools {
                 Book indices in your response refer to the master Books-in-scope \
                 list; each tool result extends that list with any new books found.
                 """,
-            inputSchema: Data(schemaJSON.utf8),
-            cacheControl: CacheControl(type: .ephemeral)
+            inputSchema: Data(schemaJSON.utf8)
         )
     }()
 

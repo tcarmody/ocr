@@ -59,9 +59,9 @@ enum BookChatTools {
     /// `search_book` re-runs the per-book hybrid retriever (cosine
     /// + BM25 + entity fusion) on a new query. Same dispatcher
     /// shape as library-scope's `search_library` but bounded to
-    /// the open book. Cache-controlled so the tools-block prefix
-    /// is cached alongside the system prompt across the multi-
-    /// turn session.
+    /// the open book. No per-tool cacheControl — the system
+    /// prompt's 1h breakpoint covers the whole tools+system
+    /// prefix (see LibraryChatTools for the full reasoning).
     static let searchBookTool: Tool = {
         let schemaJSON = """
         {
@@ -93,8 +93,7 @@ enum BookChatTools {
                 Bounded to THIS book — to ask about other books, the \
                 user needs to be on library chat.
                 """,
-            inputSchema: Data(schemaJSON.utf8),
-            cacheControl: CacheControl(type: .ephemeral)
+            inputSchema: Data(schemaJSON.utf8)
         )
     }()
 
@@ -127,8 +126,7 @@ enum BookChatTools {
                 renderer's character limit — the result will tell \
                 you when truncation happened.
                 """,
-            inputSchema: Data(schemaJSON.utf8),
-            cacheControl: CacheControl(type: .ephemeral)
+            inputSchema: Data(schemaJSON.utf8)
         )
     }()
 
@@ -154,8 +152,7 @@ enum BookChatTools {
                 "the discipline chapter") to a numbered chapter for \
                 expand_chapter.
                 """,
-            inputSchema: Data(schemaJSON.utf8),
-            cacheControl: CacheControl(type: .ephemeral)
+            inputSchema: Data(schemaJSON.utf8)
         )
     }()
 
