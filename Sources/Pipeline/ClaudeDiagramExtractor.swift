@@ -112,12 +112,16 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
         Return ONLY the metadata in the format described below. \
         No preface, no commentary, no markdown fences.
 
-        Output format — two parts separated by a literal \
-        `---DESCRIPTION---` line on its own:
+        Output format — three parts separated by literal \
+        `---DESCRIPTION---` and `---LABELS---` lines on their own:
 
         <alt text — single line, ≤ 120 characters>
         ---DESCRIPTION---
         <longer description — 1-3 sentences, ≤ 500 characters>
+        ---LABELS---
+        - <label 1>
+        - <label 2>
+        - <label 3>
 
         First part (ALT TEXT) rules:
           * Name the diagram TYPE specifically: "bar chart", \
@@ -152,12 +156,25 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
           * NO preambles for this part either — start with a noun \
         phrase ("A bar chart with…", "Two-axis plot showing…").
 
+        Third part (LABELS) rules:
+          * One label per line, leading "- ". Each label is a \
+        verbatim transcription of a text string that appears \
+        INSIDE the diagram — axis labels, callouts, legend \
+        entries, anatomical part names, flowchart node text. \
+        At most 12 labels; omit minor / decorative text.
+          * Transcribe characters as printed (preserve case, \
+        diacritics, math symbols). Do NOT translate, expand \
+        abbreviations, or paraphrase.
+          * If the diagram has no readable in-image text, leave \
+        this part empty — just the `---LABELS---` separator with \
+        no lines after it.
+
         If the image is unclear, decorative-only, or you cannot \
-        tell what's depicted, return the empty string for BOTH \
-        parts (i.e. just the `---DESCRIPTION---` separator on \
-        its own line with no content before or after). The caller \
-        treats empty as "fall back to the default alt='figure'" — \
-        never invent content.
+        tell what's depicted, return the empty string for ALL \
+        three parts (i.e. just the two separator lines on their \
+        own, with no content before or between or after). The \
+        caller treats empty as "fall back to the default \
+        alt='figure'" — never invent content.
         """
 
     /// User-turn prompt; includes the caption text (when known)
@@ -181,43 +198,95 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
 
     // MARK: - Sanitization
 
-    /// Parse the model's response into a `DiagramExtractionResult`.
-    /// Tier 1 populates `altText`; Tier 2 adds `description`.
-    /// Tier 3 (labels) extends without changing the call site.
+    /// Parse the model's three-part response into a
+    /// `DiagramExtractionResult`. Tier 1 populates `altText`,
+    /// Tier 2 adds `description`, Tier 3 adds `labels`. Tier 2 /
+    /// Tier 3 sections are optional — a partial response (no
+    /// separator, or `---DESCRIPTION---` without
+    /// `---LABELS---`) still surfaces whatever it has.
     ///
-    /// Returns nil on empty / refusal-style responses so the
-    /// caller leaves the default `alt="figure"` in place.
+    /// Returns nil on empty / refusal-style alt-text responses
+    /// so the caller leaves the default `alt="figure"` in place.
     static func parseResponse(_ raw: String) -> DiagramExtractionResult? {
         let stripped = stripCodeFence(raw)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if stripped.isEmpty { return nil }
 
-        // Tier 2 separator. Tolerate surrounding whitespace +
-        // optional newlines (the model occasionally drops them).
-        let separators = [
+        // Split on the description separator first, then on the
+        // labels separator within the post-description chunk.
+        let (head, afterDesc) = splitOnce(stripped, anyOf: [
             "\n---DESCRIPTION---\n",
             "\n---DESCRIPTION---",
             "---DESCRIPTION---\n",
             "---DESCRIPTION---",
-        ]
-        var head = stripped
-        var tail: String? = nil
-        for sep in separators {
-            if let range = stripped.range(of: sep) {
-                head = String(stripped[stripped.startIndex..<range.lowerBound])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                tail = String(stripped[range.upperBound...])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                break
-            }
+        ])
+        let descChunk: String?
+        let labelsChunk: String?
+        if let afterDesc {
+            let (d, l) = splitOnce(afterDesc, anyOf: [
+                "\n---LABELS---\n",
+                "\n---LABELS---",
+                "---LABELS---\n",
+                "---LABELS---",
+            ])
+            descChunk = d.isEmpty ? nil : d
+            labelsChunk = l
+        } else {
+            descChunk = nil
+            labelsChunk = nil
         }
 
         guard let altText = sanitizeAltText(head) else { return nil }
-        let description = tail.flatMap { sanitizeDescription($0) }
+        let description = descChunk.flatMap { sanitizeDescription($0) }
+        let labels = labelsChunk.map { parseLabels($0) } ?? []
         return DiagramExtractionResult(
             altText: altText,
-            description: description
+            description: description,
+            labels: labels
         )
+    }
+
+    /// Split `text` on the first matching separator from `seps`,
+    /// trimming whitespace on both halves. Returns `(prefix,
+    /// suffix?)`. When no separator matches, the prefix is the
+    /// full input and the suffix is nil.
+    static func splitOnce(
+        _ text: String, anyOf seps: [String]
+    ) -> (String, String?) {
+        for sep in seps {
+            if let range = text.range(of: sep) {
+                let head = String(text[text.startIndex..<range.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let tail = String(text[range.upperBound...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (head, tail)
+            }
+        }
+        return (text, nil)
+    }
+
+    /// Parse the labels half of a three-part response. Each line
+    /// is one label; leading "- " / "* " / "• " bullets get
+    /// stripped. Empty lines and lines longer than 80 chars are
+    /// dropped — runaway content is more likely a parse artifact
+    /// than a real label. Hard cap at 12 labels per figure to
+    /// match the prompt rule.
+    static func parseLabels(_ raw: String) -> [String] {
+        let lines = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n")
+        var out: [String] = []
+        for line in lines {
+            var t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("- ") { t = String(t.dropFirst(2)) }
+            else if t.hasPrefix("* ") { t = String(t.dropFirst(2)) }
+            else if t.hasPrefix("• ") { t = String(t.dropFirst(2)) }
+            t = t.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty, t.count <= 80 else { continue }
+            out.append(t)
+            if out.count >= 12 { break }
+        }
+        return out
     }
 
     /// Sanitize the alt-text half of a two-part response (or the

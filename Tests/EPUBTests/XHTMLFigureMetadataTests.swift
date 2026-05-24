@@ -93,4 +93,49 @@ final class XHTMLFigureMetadataTests: XCTestCase {
         XCTAssertTrue(xhtml.contains("5 &lt; x &amp; y &gt; 3"))
         XCTAssertFalse(xhtml.contains("5 < x"))  // raw not present
     }
+
+    // MARK: - Tier 3 (labels)
+
+    func test_emits_labels_in_aside_when_present() {
+        let chapter = makeFigureChapter(
+            metadata: FigureMetadata(
+                altText: "heart diagram",
+                description: nil,
+                labels: ["left atrium", "right atrium", "aorta"]
+            )
+        )
+        let xhtml = render(chapter)
+        XCTAssertTrue(
+            xhtml.contains("hu-figure-metadata"),
+            "expected aside to emit when labels present (even without description)"
+        )
+        XCTAssertTrue(xhtml.contains("Labels: left atrium, right atrium, aorta"))
+    }
+
+    func test_emits_both_description_and_labels_when_both_present() {
+        let chapter = makeFigureChapter(
+            metadata: FigureMetadata(
+                altText: "bar chart",
+                description: "Five categories from 1950 to 1990.",
+                labels: ["1950", "1960", "1970", "1980", "1990"]
+            )
+        )
+        let xhtml = render(chapter)
+        XCTAssertTrue(xhtml.contains("Five categories from 1950 to 1990."))
+        XCTAssertTrue(xhtml.contains("Labels: 1950, 1960, 1970, 1980, 1990"))
+    }
+
+    func test_labels_are_xml_escaped() {
+        // Defensive: a label containing `<` / `>` / `&` (math
+        // symbols, comparison operators) mustn't break XHTML.
+        let chapter = makeFigureChapter(
+            metadata: FigureMetadata(
+                altText: "alt",
+                labels: ["x < 5", "y & z"]
+            )
+        )
+        let xhtml = render(chapter)
+        XCTAssertTrue(xhtml.contains("x &lt; 5"))
+        XCTAssertTrue(xhtml.contains("y &amp; z"))
+    }
 }

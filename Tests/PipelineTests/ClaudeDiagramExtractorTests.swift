@@ -239,6 +239,92 @@ final class ClaudeDiagramExtractorTests: XCTestCase {
         )
     }
 
+    // MARK: - Tier 3 (labels)
+
+    func test_parse_extracts_labels_with_bullet_prefix() {
+        let raw = """
+            Anatomical illustration of human heart
+            ---DESCRIPTION---
+            A cross-section view showing the four chambers and major vessels.
+            ---LABELS---
+            - left atrium
+            - right atrium
+            - aorta
+            - pulmonary artery
+            """
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.labels, [
+            "left atrium", "right atrium", "aorta", "pulmonary artery"
+        ])
+    }
+
+    func test_parse_extracts_labels_without_bullet() {
+        // Defensive: model might forget the bullet prefix.
+        let raw = """
+            Bar chart
+            ---DESCRIPTION---
+            Two-axis chart.
+            ---LABELS---
+            x-axis
+            y-axis
+            origin
+            """
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.labels, ["x-axis", "y-axis", "origin"])
+    }
+
+    func test_parse_drops_blank_and_overlong_label_lines() {
+        // Empty lines and lines >80 chars get filtered — runaway
+        // content is more likely a parse artifact than a real
+        // label.
+        let raw = """
+            Chart
+            ---DESCRIPTION---
+            Desc.
+            ---LABELS---
+            - good label
+
+            - \(String(repeating: "X", count: 100))
+            - another good one
+            """
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.labels, ["good label", "another good one"])
+    }
+
+    func test_parse_caps_label_count_at_12() {
+        var rawLines: [String] = ["Chart", "---DESCRIPTION---", "Desc.", "---LABELS---"]
+        for i in 1...20 { rawLines.append("- label \(i)") }
+        let raw = rawLines.joined(separator: "\n")
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.labels.count, 12)
+    }
+
+    func test_parse_handles_empty_labels_section() {
+        // Diagram with no visible in-image text — labels section
+        // is empty (just the separator with nothing after).
+        let raw = """
+            Photograph of a stone arch
+            ---DESCRIPTION---
+            A weathered limestone arch in a desert landscape.
+            ---LABELS---
+            """
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertTrue(result?.labels.isEmpty ?? false)
+        XCTAssertNotNil(result?.description)
+    }
+
+    func test_parse_no_labels_separator_returns_empty_labels() {
+        // Backwards compat with a Tier-2-only cached response.
+        let raw = """
+            Bar chart
+            ---DESCRIPTION---
+            Two-axis chart with five categories.
+            """
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertTrue(result?.labels.isEmpty ?? false)
+        XCTAssertNotNil(result?.description)
+    }
+
     // MARK: - End-to-end with mock transport
 
     func test_extract_returns_alt_text_on_success() async {
