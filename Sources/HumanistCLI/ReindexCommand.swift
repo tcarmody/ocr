@@ -77,6 +77,12 @@ struct ReindexCommand: AsyncParsableCommand {
     )
     var limit: Int = 0
 
+    @Option(
+        name: .long,
+        help: "App bundle ID used to look up API keys in the keychain. Defaults to com.tcarmody.Humanist so the CLI finds the same keys the app stored."
+    )
+    var appBundleID: String = "com.tcarmody.Humanist"
+
     func run() async throws {
         let catalogURL = try resolveCatalogURL()
         let storeURL = resolveStoreURL()
@@ -177,11 +183,26 @@ struct ReindexCommand: AsyncParsableCommand {
         case .ollama:
             return try await OllamaEmbeddingBackend.make(model: ollamaModel)
         case .voyage:
-            return try await VoyageEmbeddingBackend.make(model: voyageModel)
+            // Construct an explicit keystore so the CLI binary
+            // looks up the same keychain item the app wrote —
+            // both keystore types build their default service
+            // name from `Bundle.main.bundleIdentifier`, which
+            // differs between the signed Humanist.app and the
+            // `humanist-cli` executable target. Override fixes
+            // the mismatch.
+            let keystore = VoyageAPIKeyStore(
+                service: "\(appBundleID).voyage-api-key"
+            )
+            return try await VoyageEmbeddingBackend.make(
+                model: voyageModel, keyStore: keystore
+            )
         case .gemini:
+            let keystore = GeminiAPIKeyStore(
+                service: "\(appBundleID).gemini-api-key"
+            )
             let dim: Int? = geminiDim > 0 ? geminiDim : nil
             return try await GeminiEmbeddingBackend.make(
-                outputDimensionality: dim
+                outputDimensionality: dim, keyStore: keystore
             )
         }
     }
