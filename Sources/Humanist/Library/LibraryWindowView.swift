@@ -144,6 +144,18 @@ struct LibraryWindowView: View {
     /// sidebar context menu fires "Rename…".
     @State private var renameContext: RenameContext?
 
+    /// "Surface me something" sheet state. Non-nil → the sheet is
+    /// open. The Library window's sparkles toolbar button drives
+    /// this; see `SurfaceParagraphSelector` for the picker rubric
+    /// and `SurfaceHistoryStore` for the recency-filter. Holds the
+    /// currently-displayed paragraph (or nil during the in-flight
+    /// pick) plus an `isLoading` flag so the sheet can show a
+    /// progress state while the selector runs.
+    @State private var surfaceSheetVisible: Bool = false
+    @State private var surfacedParagraph: SurfacedParagraph?
+    @State private var surfaceSelectorLoading: Bool = false
+    private let surfaceHistory = SurfaceHistoryStore()
+
     /// Duplicate-review session. Non-nil → the sheet is open.
     /// The `DuplicateReviewModel` owns the detection + apply
     /// state machine; we keep it on the view so SwiftUI's
@@ -632,6 +644,15 @@ struct LibraryWindowView: View {
             ImportEPUBProgressSheet(
                 importer: importer,
                 isPresented: $showImportProgress
+            )
+        }
+        .sheet(isPresented: $surfaceSheetVisible) {
+            SurfacedParagraphSheet(
+                paragraph: surfacedParagraph,
+                isLoading: surfaceSelectorLoading,
+                onTryAnother: { pickSurfacedParagraph() },
+                onOpenBook: { openSurfacedParagraphBook() },
+                onDismiss: { surfaceSheetVisible = false }
             )
         }
         .sheet(item: $newCollectionSheet) { ctx in
@@ -1593,6 +1614,64 @@ struct LibraryWindowView: View {
         return lines.joined(separator: "\n\n")
     }
 
+    /// Open the "Surface me something" sheet and kick off the
+    /// first pick. The button this routes from is disabled when
+    /// `library.entries` is empty, so we don't need a guard here —
+    /// the selector itself just returns nil in that case and the
+    /// sheet shows its empty-state.
+    private func openSurfaceSheet() {
+        surfaceSheetVisible = true
+        pickSurfacedParagraph()
+    }
+
+    /// Run one paragraph selection — used by both the sheet's
+    /// "Try Another" button and the initial open. Selector is
+    /// fast (~1-3 sidecar reads per pick on average) but happens
+    /// off the main thread anyway so a slow library doesn't lock
+    /// the UI; the `isLoading` flag flips the sheet to its
+    /// progress state during the few-hundred-ms hop.
+    private func pickSurfacedParagraph() {
+        surfaceSelectorLoading = true
+        surfacedParagraph = nil
+        let entries = library.entries
+        let history = surfaceHistory
+        Task.detached(priority: .userInitiated) {
+            var rng = SystemRandomNumberGenerator()
+            let pick = SurfaceParagraphSelector.pick(
+                libraryEntries: entries,
+                history: history,
+                rng: &rng
+            )
+            await MainActor.run {
+                self.surfacedParagraph = pick
+                self.surfaceSelectorLoading = false
+                if let pick {
+                    // Record on display so "Try Another" never
+                    // re-shows the same paragraph in a single
+                    // session even before the recency window elapses.
+                    history.record(
+                        bookURL: pick.libraryEntry.epubURL,
+                        chapterIdx: pick.chapterIdx,
+                        paragraphIdx: pick.paragraphIdx
+                    )
+                }
+            }
+        }
+    }
+
+    /// "Open Book" handler — routes through `OpenRouter` so the
+    /// book lands in the editor (existing instance if open, new
+    /// window otherwise). Doesn't currently jump to the surfaced
+    /// paragraph; the editor's anchor-scroll surface needs a
+    /// chapter+paragraph hop that's wired only for the chat-pane
+    /// citation flow today. Follow-up if the visit-the-paragraph
+    /// jump becomes the obvious next step.
+    private func openSurfacedParagraphBook() {
+        guard let pick = surfacedParagraph else { return }
+        OpenRouter.open(pick.libraryEntry.epubURL, openWindow: openWindow)
+        surfaceSheetVisible = false
+    }
+
     private func startBulkIndex(forceRebuild: Bool = false) {
         indexBuildError = nil
         let entries = library.entries
@@ -1761,6 +1840,20 @@ struct LibraryWindowView: View {
             }
             .help("Build embedding indexes for every book")
             .accessibilityLabel("Build embedding indexes")
+
+            // Surface-me-something — sparkles button picks a
+            // paragraph at random from the library and shows it in
+            // a sheet. See `SurfaceParagraphSelector` for the
+            // "worth re-reading" rubric and `SurfaceHistoryStore`
+            // for the recency-decay filter.
+            Button {
+                openSurfaceSheet()
+            } label: {
+                Image(systemName: "sparkles")
+            }
+            .help("Show me something from my library")
+            .accessibilityLabel("Show me something from my library")
+            .disabled(library.entries.isEmpty)
 
             // Chat-pane button — same triple-duty action as before
             // (selection → chatWithSelected; collection →
