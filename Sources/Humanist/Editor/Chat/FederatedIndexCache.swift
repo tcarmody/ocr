@@ -34,10 +34,13 @@ enum FederatedIndexCache {
     /// Magic + format-version prefix. Bump the trailing byte and
     /// older caches get rejected on load and rebuilt cleanly.
     /// Version `\x02` adds a length-prefixed `bookAuthor` field
-    /// after `bookTitle` in each source, supporting the
-    /// `PRIMARY SOURCES FIRST` rendered-context block.
+    /// after `bookTitle` in each source.
+    /// Version `\x03` stores vectors as Float16 (`UInt16` bit
+    /// patterns) instead of Float32 — halves the on-disk cache
+    /// size and the in-memory federated index footprint with
+    /// negligible cosine accuracy loss.
     private static let magic: [UInt8] = [
-        0x48, 0x55, 0x4D, 0x41, 0x4E, 0x43, 0x41, 0x02  // "HUMANCA\x02"
+        0x48, 0x55, 0x4D, 0x41, 0x4E, 0x43, 0x41, 0x03  // "HUMANCA\x03"
     ]
 
     /// Per-call payload returned to the chat VM on a cache hit.
@@ -268,7 +271,7 @@ enum FederatedIndexCache {
                 } else {
                     try w.writeU8(0)
                 }
-                try w.writeFloatVector(p.vector, expectedCount: payload.dimension)
+                try w.writeHalfVector(p.vector, expectedCount: payload.dimension)
             }
         }
 
@@ -321,7 +324,7 @@ enum FederatedIndexCache {
             let rawAuthor = try r.readString()
             let bookAuthor: String? = rawAuthor.isEmpty ? nil : rawAuthor
             let pCount = Int(try r.readU32())
-            var paragraphs: [EmbeddingsSidecar.Entry] = []
+            var paragraphs: [LibraryEmbeddingIndex.ParagraphEntry] = []
             paragraphs.reserveCapacity(pCount)
             for _ in 0..<pCount {
                 let chapterIdx = Int(try r.readI32())
@@ -329,8 +332,8 @@ enum FederatedIndexCache {
                 let textHash = try r.readString()
                 let hasText = try r.readU8() == 1
                 let text: String? = hasText ? try r.readString() : nil
-                let vector = try r.readFloatVector(count: dimension)
-                paragraphs.append(EmbeddingsSidecar.Entry(
+                let vector = try r.readHalfVector(count: dimension)
+                paragraphs.append(LibraryEmbeddingIndex.ParagraphEntry(
                     chapterIdx: chapterIdx,
                     paragraphIdx: paragraphIdx,
                     textHash: textHash,
@@ -487,6 +490,36 @@ private struct StreamingByteWriter {
         }
     }
 
+    /// Half-precision variant — writes each `Float16` as 2 bytes
+    /// (its `bitPattern`). Halves the on-disk size of vector data
+    /// vs `writeFloatVector` at negligible cosine accuracy loss
+    /// (see `LibraryEmbeddingIndex.cosine` for the accuracy
+    /// rationale). The on-disk byte order matches the in-memory
+    /// `Float16` layout (little-endian on Apple Silicon, which is
+    /// the only platform Humanist ships on).
+    mutating func writeHalfVector(
+        _ v: [Float16], expectedCount: Int
+    ) throws {
+        if v.count != expectedCount {
+            throw FederatedIndexCache.CacheError
+                .vectorDimensionMismatch(expected: expectedCount, actual: v.count)
+        }
+        let byteCount = v.count * MemoryLayout<Float16>.size
+        if byteCount >= Self.flushThreshold {
+            try flush()
+            try v.withUnsafeBufferPointer { ptr -> Void in
+                let raw = UnsafeRawBufferPointer(ptr)
+                try handle.write(contentsOf: Data(raw))
+            }
+        } else {
+            v.withUnsafeBufferPointer { ptr in
+                let raw = UnsafeRawBufferPointer(ptr)
+                buffer.append(contentsOf: raw)
+            }
+            try flushIfNeeded()
+        }
+    }
+
     mutating func flushIfNeeded() throws {
         if buffer.count >= Self.flushThreshold {
             try flush()
@@ -548,6 +581,20 @@ private struct ByteReader {
         let bytes = try readBytes(byteCount)
         return bytes.withUnsafeBytes { raw -> [Float] in
             let ptr = raw.bindMemory(to: Float.self)
+            return Array(UnsafeBufferPointer(
+                start: ptr.baseAddress, count: count
+            ))
+        }
+    }
+
+    /// Half-precision counterpart — reads `count` × 2 bytes,
+    /// interprets each pair as a `Float16` bit pattern. Matches
+    /// `writeHalfVector`'s on-disk layout.
+    mutating func readHalfVector(count: Int) throws -> [Float16] {
+        let byteCount = count * MemoryLayout<Float16>.size
+        let bytes = try readBytes(byteCount)
+        return bytes.withUnsafeBytes { raw -> [Float16] in
+            let ptr = raw.bindMemory(to: Float16.self)
             return Array(UnsafeBufferPointer(
                 start: ptr.baseAddress, count: count
             ))

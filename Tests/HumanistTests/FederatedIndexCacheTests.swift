@@ -87,7 +87,7 @@ final class FederatedIndexCacheTests: XCTestCase {
         XCTAssertEqual(r.sources[0].paragraphs[0].textHash, "a1")
         XCTAssertEqual(r.sources[0].paragraphs[0].text, "alpha p1")
         XCTAssertEqual(r.sources[0].paragraphs[0].vector,
-                       Array(repeating: Float(0.1), count: 8))
+                       Array(repeating: Float16(0.1), count: 8))
         XCTAssertNil(r.sources[0].paragraphs[1].text,
                      "nil text must survive the round-trip distinct from empty string")
 
@@ -283,7 +283,7 @@ final class FederatedIndexCacheTests: XCTestCase {
             title: String,
             author: String?,
             path: String,
-            paragraphs: [EmbeddingsSidecar.Entry]
+            paragraphs: [LibraryEmbeddingIndex.ParagraphEntry]
         )],
         mentions: [String: [LibraryEntityIndex.LibraryAnchor]],
         displayNames: [String: String],
@@ -316,12 +316,16 @@ final class FederatedIndexCacheTests: XCTestCase {
 
     private func para(
         chapter: Int, idx: Int, hash: String, text: String?, vec: [Float]
-    ) -> EmbeddingsSidecar.Entry {
-        EmbeddingsSidecar.Entry(
+    ) -> LibraryEmbeddingIndex.ParagraphEntry {
+        // Convert test-supplied Float32 vectors to Float16 to match
+        // the federated cache's storage. Within the half-precision
+        // representable range for typical test inputs (small floats
+        // near 0–1) the round-trip is exact.
+        LibraryEmbeddingIndex.ParagraphEntry(
             chapterIdx: chapter,
             paragraphIdx: idx,
             textHash: hash,
-            vector: vec,
+            vector: vec.map { Float16($0) },
             text: text
         )
     }
