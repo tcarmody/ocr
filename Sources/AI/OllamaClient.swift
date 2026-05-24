@@ -312,6 +312,176 @@ public actor OllamaClient {
         )
     }
 
+    /// One event in the streaming agentic chat. Callers iterate the
+    /// `AsyncThrowingStream` and update their UI for each — `.textDelta`
+    /// for incremental token output, `.toolCalls` when the model
+    /// requests one or more tool invocations (stream terminates
+    /// after this frame; caller dispatches and re-enters the loop),
+    /// `.done` for stream end without tool calls (final answer).
+    public enum AgenticStreamEvent: Sendable {
+        case textDelta(String)
+        case toolCalls([ToolCall])
+        case done
+    }
+
+    /// Streaming agentic chat — same shape as `chatAgentic` but
+    /// yields incremental token deltas via NDJSON. When the model
+    /// emits tool_calls, the stream yields a `.toolCalls(...)`
+    /// event and terminates; the caller dispatches the calls,
+    /// appends `.toolResult` to its message thread, and starts
+    /// a fresh streaming round.
+    ///
+    /// Restores the streaming UX Ollama users had on the
+    /// pre-tool-use path (commit c1a7562 made every round
+    /// non-streaming as the simplest first cut). With this method,
+    /// the model's text deltas appear live during the final-answer
+    /// round, and intermediate tool-using rounds still feel
+    /// responsive via the toolStatus indicator.
+    public nonisolated func chatAgenticStream(
+        model: String,
+        messages: [AgenticMessage],
+        tools: [ToolDescriptor]
+    ) -> AsyncThrowingStream<AgenticStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                await self.runChatAgenticStream(
+                    model: model,
+                    messages: messages,
+                    tools: tools,
+                    continuation: continuation
+                )
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func runChatAgenticStream(
+        model: String,
+        messages: [AgenticMessage],
+        tools: [ToolDescriptor],
+        continuation: AsyncThrowingStream<AgenticStreamEvent, Error>.Continuation
+    ) async {
+        let wireTools: [AgenticChatRequestBody.ToolWire]
+        do {
+            wireTools = try tools.map { tool in
+                AgenticChatRequestBody.ToolWire(
+                    type: "function",
+                    function: AgenticChatRequestBody.ToolWire.Function(
+                        name: tool.name,
+                        description: tool.description,
+                        parameters: try AnyCodable(jsonBytes: tool.parametersJSON)
+                    )
+                )
+            }
+        } catch {
+            continuation.finish(throwing: error)
+            return
+        }
+        let body = AgenticChatRequestBody(
+            model: model,
+            messages: messages.map(Self.wireMessage(_:)),
+            tools: wireTools,
+            stream: true
+        )
+        let request: URLRequest
+        do {
+            request = try buildRequest(path: "/api/chat", body: body)
+        } catch {
+            continuation.finish(throwing: error)
+            return
+        }
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch let urlError as URLError where urlError.code == .cannotConnectToHost
+                                             || urlError.code == .networkConnectionLost {
+            continuation.finish(throwing: OllamaError.daemonNotReachable)
+            return
+        } catch {
+            continuation.finish(throwing: OllamaError.network(error))
+            return
+        }
+        if let http = response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            continuation.finish(throwing: OllamaError.serverError(
+                status: http.statusCode, message: nil
+            ))
+            return
+        }
+        // NDJSON pull. Tool_calls arrive in a single frame (Ollama
+        // doesn't stream individual tool-call argument tokens); when
+        // we see one, yield it and stop. Plain-text deltas yield as
+        // `.textDelta`. The terminal `done: true` frame with no
+        // content + no tool_calls yields `.done`.
+        do {
+            for try await line in bytes.lines {
+                if Task.isCancelled {
+                    continuation.finish()
+                    return
+                }
+                guard !line.isEmpty,
+                      let lineData = line.data(using: .utf8) else {
+                    continue
+                }
+                let frame: AgenticStreamFrame
+                do {
+                    frame = try Self.decoder.decode(
+                        AgenticStreamFrame.self, from: lineData
+                    )
+                } catch {
+                    // Heartbeat / partial line / unrecognized shape —
+                    // skip rather than tearing down the stream.
+                    continue
+                }
+                if let calls = frame.message?.tool_calls, !calls.isEmpty {
+                    let mapped: [ToolCall] = calls.map { wire in
+                        let argsData = (try? Self.encoder.encode(wire.function.arguments))
+                            ?? Data("{}".utf8)
+                        return ToolCall(
+                            id: UUID().uuidString,
+                            name: wire.function.name,
+                            argumentsJSON: argsData
+                        )
+                    }
+                    continuation.yield(.toolCalls(mapped))
+                    continuation.finish()
+                    return
+                }
+                if let content = frame.message?.content, !content.isEmpty {
+                    continuation.yield(.textDelta(content))
+                }
+                if frame.done == true {
+                    continuation.yield(.done)
+                    continuation.finish()
+                    return
+                }
+            }
+            continuation.finish()
+        } catch {
+            continuation.finish(throwing: OllamaError.network(error))
+        }
+    }
+
+    /// One NDJSON frame from `/api/chat` with `stream: true` and
+    /// `tools:` in the request. Shape mirrors the non-streaming
+    /// `AgenticChatResponseBody` but every field is optional so
+    /// heartbeats and partial frames decode cleanly.
+    fileprivate struct AgenticStreamFrame: Decodable {
+        let message: AssistantFragment?
+        let done: Bool?
+
+        struct AssistantFragment: Decodable {
+            let role: String?
+            let content: String?
+            let tool_calls: [AgenticChatResponseBody.ToolCallWire]?
+
+            private enum CodingKeys: String, CodingKey {
+                case role, content, tool_calls
+            }
+        }
+    }
+
     /// Translate the AgenticMessage enum into wire-level messages.
     /// Tool results use Ollama's `{role: "tool", content: ...,
     /// name: ...}` shape; assistant turns with tool calls inline

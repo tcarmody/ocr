@@ -1272,19 +1272,33 @@ final class LibraryChatViewModel: ObservableObject {
 
         do {
             while true {
-                let response = try await ollama.chatAgentic(
+                // Stream this round. Text deltas append live; a
+                // tool_calls frame breaks the loop and the round
+                // moves to dispatch + iterate. Final-answer rounds
+                // (no tool_calls, just text) stream all the way
+                // through to .done.
+                var roundText = ""
+                var roundToolCalls: [OllamaClient.ToolCall] = []
+                let stream = ollama.chatAgenticStream(
                     model: ollamaModel,
                     messages: convo,
                     tools: maxIterations > 0 ? toolDescriptors : []
                 )
-                try Task.checkCancellation()
-
-                if !response.text.isEmpty {
-                    appendToDraft(id: draftId, text: response.text)
-                    isThinking = false
+                for try await event in stream {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .textDelta(let delta):
+                        roundText += delta
+                        appendToDraft(id: draftId, text: delta)
+                        isThinking = false
+                    case .toolCalls(let calls):
+                        roundToolCalls = calls
+                    case .done:
+                        break
+                    }
                 }
 
-                if response.toolCalls.isEmpty || iteration >= maxIterations {
+                if roundToolCalls.isEmpty || iteration >= maxIterations {
                     finalizeAgenticDraft(
                         id: draftId,
                         registry: registry,
@@ -1298,10 +1312,10 @@ final class LibraryChatViewModel: ObservableObject {
                 // tool_calls in the message history before the
                 // matching tool results.
                 convo.append(.assistant(
-                    text: response.text, toolCalls: response.toolCalls
+                    text: roundText, toolCalls: roundToolCalls
                 ))
 
-                for call in response.toolCalls {
+                for call in roundToolCalls {
                     let triple: (id: String, name: String, inputJSON: Data) = (
                         call.id, call.name, call.argumentsJSON
                     )

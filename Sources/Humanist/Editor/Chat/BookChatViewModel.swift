@@ -2045,19 +2045,32 @@ final class BookChatViewModel: ObservableObject {
 
         do {
             while true {
-                let response = try await ollama.chatAgentic(
+                // Stream this round. Same shape as
+                // LibraryChatViewModel.runOllamaSendAgentic — text
+                // deltas append live, a tool_calls frame breaks the
+                // loop and moves the round to dispatch + iterate.
+                var roundText = ""
+                var roundToolCalls: [OllamaClient.ToolCall] = []
+                let stream = ollama.chatAgenticStream(
                     model: ollamaModel,
                     messages: convo,
                     tools: maxIterations > 0 ? toolDescriptors : []
                 )
-                try Task.checkCancellation()
-
-                if !response.text.isEmpty {
-                    appendToDraft(id: draftId, text: response.text)
-                    isThinking = false
+                for try await event in stream {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .textDelta(let delta):
+                        roundText += delta
+                        appendToDraft(id: draftId, text: delta)
+                        isThinking = false
+                    case .toolCalls(let calls):
+                        roundToolCalls = calls
+                    case .done:
+                        break
+                    }
                 }
 
-                if response.toolCalls.isEmpty || iteration >= maxIterations {
+                if roundToolCalls.isEmpty || iteration >= maxIterations {
                     finalizeAgenticLibraryDraft(
                         id: draftId,
                         registry: registry,
@@ -2067,10 +2080,10 @@ final class BookChatViewModel: ObservableObject {
                 }
 
                 convo.append(.assistant(
-                    text: response.text, toolCalls: response.toolCalls
+                    text: roundText, toolCalls: roundToolCalls
                 ))
 
-                for call in response.toolCalls {
+                for call in roundToolCalls {
                     let triple: (id: String, name: String, inputJSON: Data) = (
                         call.id, call.name, call.argumentsJSON
                     )
