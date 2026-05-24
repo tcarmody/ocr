@@ -4712,14 +4712,21 @@ struct LibraryConceptGraph: Sendable {
 }
 ```
 
-Build pass: walk every paragraph in every book's sidecar, run
-`EntityExtractor` once per paragraph, for each pair of distinct
-canonical entities in that paragraph bump `coOccurrence[Edge(a, b)]`.
-At library scale (2k books × ~1500 paragraphs avg = ~3M paragraphs)
-this is the expensive bit — but it's the same NER work the
-existing per-book entity index already does. Reuse: cache the
-extracted entity-per-paragraph list in the sidecar so the rollup
-becomes a sparse-array sum rather than re-running NLTagger.
+Build pass: for each book, **invert** its existing
+`BookEntityIndex.mentions` (`entity → [anchor]`) into a transient
+`anchor → [entity]` map, then for each anchor's entity list bump
+`coOccurrence[Edge(a, b)]` for every distinct pair. No NER at
+federation time — entirely map manipulation over data the per-book
+sidecar already extracted. Constrained by whatever NLTagger caught
+when each book was indexed; missed entities stay missed until a
+re-index, which is acceptable for v1.
+
+Schema option C from design discussion (extend the sidecar to
+store `paragraph → [entity]` directly) is deferred: it would clean
+up the inversion step and pay for itself if we later add other
+per-paragraph signals (sentiment, claim-type), but it forces a
+sidecar version bump and a full library re-walk, which we don't
+need yet.
 
 Storage: in-memory only for Phase 1. Build alongside the federated
 entity index; flush together when the embedding backend changes.
@@ -4831,13 +4838,13 @@ book references already in scope, asking the model to mediate.
 
 ### Files to touch
 
-- `LibraryEntityIndex.swift` — expose the per-paragraph entity
-  list so the co-occurrence walker doesn't re-run NER (or move
-  the per-paragraph cache into the sidecar).
-- `BookEntityIndex.swift` — optionally extend `Anchor` with a
-  per-anchor entity list to avoid the re-extraction.
+- `LibraryEntityIndex.swift` — surface the per-book `mentions`
+  map (or add a helper that returns the inverted `anchor →
+  [entity]` view) so the co-occurrence walker can fold it in
+  without touching `BookEntityIndex` internals.
 - `EmbeddingsSidecar` schema — add optional `conceptGraph` field
-  for Phase 1 persistence (deferred from initial cut).
+  for Phase 1 persistence (deferred from initial cut; in-memory
+  only at first).
 - Library window scene — add the two new sidebar tabs.
 - Chat system prompts — mention the new `search_concept` tool.
 
