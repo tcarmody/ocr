@@ -729,6 +729,8 @@ final class LibraryChatViewModel: ObservableObject {
         // appended; we replace it with the context-laden version
         // below so the conversation history stays clean (older
         // user turns carry their bare queries, not stale contexts).
+        // Captured BEFORE `appendDraftAssistant` so the empty draft
+        // doesn't leak into the wire history.
         var apiMessages: [Message] = []
         for prior in messages.dropLast() {
             apiMessages.append(Message(
@@ -744,31 +746,38 @@ final class LibraryChatViewModel: ObservableObject {
             messages: apiMessages,
             thinking: .disabled
         )
+        // Stream — library-scope responses can run 30+ seconds on
+        // long-form synthesis. Without the draft-message pattern
+        // the user stares at a blank pane the whole time.
+        let draftId = appendDraftAssistant()
+        var sawFirstDelta = false
         do {
-            let response = try await client.send(request)
-            try Task.checkCancellation()
-            let raw = response.firstText() ?? ""
-            let cited = parseCitations(
-                in: raw, allowedHits: allowedHits
-            )
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: cited.cleaned,
-                citations: cited.citations,
-                retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits),
-            ))
+            let stream = client.sendStream(request)
+            for try await event in stream {
+                try Task.checkCancellation()
+                switch event {
+                case .textDelta(let chunk):
+                    if !sawFirstDelta {
+                        sawFirstDelta = true
+                        isThinking = false
+                    }
+                    appendToDraft(id: draftId, text: chunk)
+                case .messageStop:
+                    break
+                }
+            }
+            finalizeDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
+            removeDraft(id: draftId)
             return
         } catch let error as AnthropicAPIError {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         } catch {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         }
     }
 
@@ -780,7 +789,8 @@ final class LibraryChatViewModel: ObservableObject {
             isThinking = false
             streamTask = nil
         }
-        // History: see the matching comment in `runCloudSend`.
+        // History: see the matching comment in `runCloudSend`. Same
+        // capture-before-draft ordering.
         var history: [OllamaClient.ChatHistoryMessage] = []
         for prior in messages.dropLast() {
             history.append(.init(
@@ -788,36 +798,85 @@ final class LibraryChatViewModel: ObservableObject {
                 content: prior.text
             ))
         }
+        let draftId = appendDraftAssistant()
+        var sawFirstDelta = false
         do {
-            let raw = try await ollama.chat(
+            let stream = ollama.chatStream(
                 model: ollamaModel,
                 system: systemPrompt,
                 history: history,
                 userMessage: userPrompt
             )
-            try Task.checkCancellation()
-            let cited = parseCitations(
-                in: raw, allowedHits: allowedHits
-            )
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: cited.cleaned,
-                citations: cited.citations,
-                retrievalDetail: Self.makeRetrievalDetail(hits: allowedHits),
-            ))
+            for try await delta in stream {
+                try Task.checkCancellation()
+                if !sawFirstDelta {
+                    sawFirstDelta = true
+                    isThinking = false
+                }
+                appendToDraft(id: draftId, text: delta)
+            }
+            finalizeDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
+            removeDraft(id: draftId)
             return
         } catch let error as OllamaError {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         } catch {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         }
+    }
+
+    // MARK: - Streaming draft helpers
+
+    /// Append an empty assistant draft message and return its id.
+    /// The streaming send paths grow this message's `text` as deltas
+    /// arrive, then finalize it (parse citations + persist) at
+    /// stream end. Same id remains stable throughout so SwiftUI's
+    /// LazyVStack can keep view identity. Mirrors the per-book chat
+    /// VM's helper of the same name.
+    private func appendDraftAssistant() -> UUID {
+        let draft = BookChatMessage(role: .assistant, text: "")
+        messages.append(draft)
+        return draft.id
+    }
+
+    private func appendToDraft(id: UUID, text: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        messages[idx].text += text
+    }
+
+    /// Stream completed cleanly. Run citation parse + persist.
+    private func finalizeDraft(
+        id: UUID, allowedHits: [LibraryEmbeddingIndex.Hit]
+    ) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let raw = messages[idx].text
+        let cited = parseCitations(in: raw, allowedHits: allowedHits)
+        messages[idx].text = cited.cleaned
+        messages[idx].citations = cited.citations
+        messages[idx].retrievalDetail = Self.makeRetrievalDetail(hits: allowedHits)
+        persistTranscript()
+    }
+
+    private func replaceDraftWithError(id: UUID, message: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        messages[idx].text = "Couldn't answer that — \(message)."
+        messages[idx].citations = []
+        persistTranscript()
+    }
+
+    private func removeDraft(id: UUID) {
+        messages.removeAll { $0.id == id }
     }
 
     /// Project library hits into the persisted retrieval-debug

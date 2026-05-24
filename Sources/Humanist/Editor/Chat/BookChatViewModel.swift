@@ -943,6 +943,28 @@ final class BookChatViewModel: ObservableObject {
         persist()
     }
 
+    /// Library-scope counterpart. Same shape as `finalizeDraft` but
+    /// runs the library-flavored citation parse so `[book:N …]`
+    /// markers resolve correctly, and uses the library-hit retrieval-
+    /// detail factory so the debug surface labels hits by source
+    /// book. Kept distinct rather than overloading so the per-book
+    /// and library streaming paths can't accidentally swap parsers.
+    private func finalizeLibraryDraft(
+        id: UUID, allowedHits: [ResolvedLibraryHit]
+    ) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let raw = messages[idx].text
+        let cited = parseLibraryCitations(in: raw, allowedHits: allowedHits)
+        messages[idx].text = cited.cleaned
+        messages[idx].citations = cited.citations
+        messages[idx].retrievalDetail = Self.makeRetrievalDetail(
+            libraryHits: allowedHits
+        )
+        persist()
+    }
+
     /// Replace the in-flight draft with an error message.
     /// Preserves the message id so the row doesn't flicker.
     private func replaceDraftWithError(id: UUID, message: String) {
@@ -1537,7 +1559,9 @@ final class BookChatViewModel: ObservableObject {
         }
         // Build API messages from prior turns + the context-laden
         // current user prompt. See `runCloudSend` for the full
-        // rationale; same shape, different system prompt.
+        // rationale; same shape, different system prompt. Captured
+        // BEFORE `appendDraftAssistant` so the empty draft doesn't
+        // leak into the wire history.
         var apiMessages: [Message] = []
         for prior in messages.dropLast() {
             apiMessages.append(Message(
@@ -1553,33 +1577,40 @@ final class BookChatViewModel: ObservableObject {
             messages: apiMessages,
             thinking: .disabled
         )
+        // Streaming — library-scope responses can run 30+s with
+        // long-form synthesis on. Without the draft-message
+        // pattern the user stares at a blank pane the whole time.
+        // Mirrors `runCloudSend` but uses the library-flavored
+        // finalizer so `[book:N …]` markers parse correctly.
+        let draftId = appendDraftAssistant()
+        var sawFirstDelta = false
         do {
-            let response = try await client.send(request)
-            try Task.checkCancellation()
-            let raw = response.firstText() ?? ""
-            let cited = parseLibraryCitations(
-                in: raw, allowedHits: allowedHits
-            )
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: cited.cleaned,
-                citations: cited.citations,
-                retrievalDetail: Self.makeRetrievalDetail(
-                    libraryHits: allowedHits
-                ),
-            ))
+            let stream = client.sendStream(request)
+            for try await event in stream {
+                try Task.checkCancellation()
+                switch event {
+                case .textDelta(let chunk):
+                    if !sawFirstDelta {
+                        sawFirstDelta = true
+                        isThinking = false
+                    }
+                    appendToDraft(id: draftId, text: chunk)
+                case .messageStop:
+                    break
+                }
+            }
+            finalizeLibraryDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
+            removeDraft(id: draftId)
             return
         } catch let error as AnthropicAPIError {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         } catch {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         }
     }
 
@@ -1592,6 +1623,8 @@ final class BookChatViewModel: ObservableObject {
             streamTask = nil
         }
         let model = ollamaModel
+        // History captured BEFORE appendDraftAssistant so the empty
+        // draft doesn't leak into the conversation we send.
         var history: [OllamaClient.ChatHistoryMessage] = []
         for prior in messages.dropLast() {
             history.append(.init(
@@ -1599,37 +1632,37 @@ final class BookChatViewModel: ObservableObject {
                 content: prior.text
             ))
         }
+        // Streaming for the same reason as `runLibraryCloudSend` —
+        // local 26B models take 30-90s for a multi-paragraph reply.
+        let draftId = appendDraftAssistant()
+        var sawFirstDelta = false
         do {
-            let raw = try await ollama.chat(
+            let stream = ollama.chatStream(
                 model: model,
                 system: libraryScopeSystemPrompt,
                 history: history,
                 userMessage: userPrompt
             )
-            try Task.checkCancellation()
-            let cited = parseLibraryCitations(
-                in: raw, allowedHits: allowedHits
-            )
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: cited.cleaned,
-                citations: cited.citations,
-                retrievalDetail: Self.makeRetrievalDetail(
-                    libraryHits: allowedHits
-                ),
-            ))
+            for try await delta in stream {
+                try Task.checkCancellation()
+                if !sawFirstDelta {
+                    sawFirstDelta = true
+                    isThinking = false
+                }
+                appendToDraft(id: draftId, text: delta)
+            }
+            finalizeLibraryDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
+            removeDraft(id: draftId)
             return
         } catch let error as OllamaError {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         } catch {
-            appendAndPersist(BookChatMessage(
-                role: .assistant,
-                text: "Couldn't answer that — \(error.localizedDescription)."
-            ))
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
         }
     }
 
