@@ -47,23 +47,26 @@ public struct DiagramExtractionResult: Sendable, Equatable {
 ///
 /// Today only `ClaudeDiagramExtractor` (Sonnet 4.6) conforms;
 /// future Gemini Flash and on-device VLM implementations will
-/// conform without touching the cascade-loop call site (mirrors
+/// conform without touching the call site (mirrors
 /// `TableExtractor` / `MathExtractor`).
 ///
-/// The `captionText` parameter passes the OCR'd text of any
-/// associated `.caption` region (when `CaptionAssociator` paired
-/// one with this picture). The extractor includes it in the
-/// prompt's user turn so the model's output stays consistent with
-/// the printed caption — a figure captioned "Figure 3.1: Marriage
-/// market dynamics" should produce alt text agreeing on
-/// "marriage market", not invent a different topic.
+/// Input is the pre-cropped figure image — the call site lives
+/// in a post-cascade phase that consumes the figure bytes
+/// `FigureExtractor` already produced. No re-cropping needed.
+///
+/// `captionText` is the OCR'd text of the figure's associated
+/// `.caption` region, resolved via `CaptionAssociator`'s book-
+/// wide orientation vote (above vs. below). When the figure has
+/// no associated caption, pass `nil`. The extractor includes the
+/// caption in the prompt so the model's output stays consistent
+/// with the printed caption — a figure captioned "Figure 3.1:
+/// Marriage market dynamics" should produce alt text agreeing
+/// on "marriage market", not invent a different topic.
 public protocol DiagramExtractor: Sendable {
     func extract(
-        pageImage: CGImage,
-        regionBox: CGRect,
+        figureImage: CGImage,
         captionText: String?,
         languages: [BCP47],
-        stagingDir: URL,
         pageIndex: Int,
         regionIndex: Int
     ) async -> DiagramExtractionResult?

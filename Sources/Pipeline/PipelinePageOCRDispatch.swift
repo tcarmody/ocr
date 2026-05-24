@@ -1447,6 +1447,65 @@ extension PDFToEPUBPipeline {
     }
 
 
+    /// Decode PNG bytes into a `CGImage`. Used by the post-cascade
+    /// diagram-extraction phase, which already has `.picture`
+    /// figures as PNG `Data` (from `FigureExtractor`) and feeds
+    /// them back into the diagram extractor without going through
+    /// page-image + crop again. Returns nil on undecodable input.
+    static func decodePNG(_ data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(
+            data as CFData, nil
+        ) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    /// Look up the caption text for a figure region post-cascade.
+    /// Resolves the figure→caption association from
+    /// `CaptionAssociator`'s book-wide vote, then aggregates the
+    /// page observations whose midpoint falls inside the caption
+    /// region's bbox. Returns `nil` when the figure has no
+    /// associated caption — the diagram extractor's prompt
+    /// handles a missing caption gracefully (no `Printed caption:`
+    /// header in the user turn).
+    static func lookupCaptionText(
+        forFigure figureKey: CaptionAssociator.PageRegionKey,
+        associations: CaptionAssociator.Associations,
+        regionsByPage: [Int: [LayoutRegion]],
+        observationsByPage: [Int: [TextObservation]]
+    ) -> String? {
+        guard let captionKey = associations.captionByFigure[figureKey],
+              let regions = regionsByPage[captionKey.pageIndex],
+              captionKey.regionIndex < regions.count
+        else { return nil }
+        let captionBox = regions[captionKey.regionIndex].box
+        guard let observations = observationsByPage[captionKey.pageIndex],
+              !observations.isEmpty
+        else { return nil }
+        // Same containment test the reflow's `captionRuns` helper
+        // uses — observations whose box midpoint falls inside an
+        // inflated caption bbox count toward the caption text.
+        let inflated = captionBox.insetBy(dx: -0.005, dy: -0.005)
+        var lines: [(y: CGFloat, x: CGFloat, text: String)] = []
+        for obs in observations {
+            let cx = obs.box.midX
+            let cy = obs.box.midY
+            if cx >= inflated.minX, cx <= inflated.maxX,
+               cy >= inflated.minY, cy <= inflated.maxY {
+                lines.append((cy, cx, obs.text))
+            }
+        }
+        guard !lines.isEmpty else { return nil }
+        // Sort top-down then left-right (Vision coords: larger Y
+        // = higher on the page).
+        lines.sort { (a, b) in
+            if abs(a.y - b.y) > 0.005 { return a.y > b.y }
+            return a.x < b.x
+        }
+        let joined = lines.map(\.text).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
     /// Save a CGImage as PNG to the given URL. Used by the debug-log
     /// path so we can visually inspect what Vision was actually fed.
     /// Silently no-ops on failure — debug aid, not load-bearing.

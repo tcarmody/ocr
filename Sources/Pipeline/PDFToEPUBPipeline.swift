@@ -1602,8 +1602,7 @@ public actor PDFToEPUBPipeline {
                 claudePostProcessor: claudePostProcessor,
                 cloudTableExtractor: cloudTableExtractor,
                 landingAITableExtractor: landingAITableExtractor,
-                cloudMathExtractor: cloudMathExtractor,
-                cloudDiagramExtractor: cloudDiagramExtractor
+                cloudMathExtractor: cloudMathExtractor
             )
             extractorDiagnostics[i] = outcome.extractorDiagnostics
             qualityScores[i] = outcome.qualityScore
@@ -1622,12 +1621,6 @@ public actor PDFToEPUBPipeline {
                     pageIndex: i, regionIndex: entry.regionIndex
                 )
                 mathExtractionsByKey[key] = entry.result
-            }
-            for entry in outcome.diagramEntries {
-                let key = CaptionAssociator.PageRegionKey(
-                    pageIndex: i, regionIndex: entry.regionIndex
-                )
-                diagramExtractionsByKey[key] = entry.result
             }
             correctionTrailEntries.append(
                 contentsOf: outcome.correctionTrailEntries
@@ -1730,8 +1723,7 @@ public actor PDFToEPUBPipeline {
                                 claudePostProcessor,
                                 cloudTableExtractor,
                                 landingAITableExtractor,
-                                cloudMathExtractor,
-                                cloudDiagramExtractor
+                                cloudMathExtractor
                             )
                             return (pageIndex, outcome)
                         }
@@ -1764,13 +1756,6 @@ public actor PDFToEPUBPipeline {
                                 regionIndex: entry.regionIndex
                             )
                             mathExtractionsByKey[key] = entry.result
-                        }
-                        for entry in outcome.diagramEntries {
-                            let key = CaptionAssociator.PageRegionKey(
-                                pageIndex: i,
-                                regionIndex: entry.regionIndex
-                            )
-                            diagramExtractionsByKey[key] = entry.result
                         }
                         correctionTrailEntries.append(
                             contentsOf: outcome.correctionTrailEntries
@@ -2012,6 +1997,46 @@ public actor PDFToEPUBPipeline {
         let captionAssociations = CaptionAssociator.associate(
             regionsByPage: regionsByPage
         )
+
+        // P-Diagram-Description Tier 1/2/3 (post-cascade phase).
+        // Runs here — not inside the cascade loop — because
+        // `CaptionAssociator.associate` votes on caption
+        // orientation (above vs. below) book-wide. By the time
+        // this phase fires, we have the resolved figure→caption
+        // map, so the extractor sees the printed caption and
+        // produces output consistent with it. Each call decodes
+        // the figure PNG back to a CGImage and pulls the
+        // associated caption's text from the page observations.
+        if let diagExt = cloudDiagramExtractor {
+            let observationsByPage: [Int: [TextObservation]] =
+                pageResults.reduce(into: [:]) {
+                    $0[$1.pageIndex] = $1.observations
+                }
+            for (pageIndex, figures) in figureExtractionsByPage {
+                for fig in figures where fig.regionKind == .picture {
+                    guard let cgImage = Self.decodePNG(fig.data)
+                    else { continue }
+                    let figureKey = CaptionAssociator.PageRegionKey(
+                        pageIndex: pageIndex, regionIndex: fig.regionIndex
+                    )
+                    let captionText = Self.lookupCaptionText(
+                        forFigure: figureKey,
+                        associations: captionAssociations,
+                        regionsByPage: regionsByPage,
+                        observationsByPage: observationsByPage
+                    )
+                    if let result = await diagExt.extract(
+                        figureImage: cgImage,
+                        captionText: captionText,
+                        languages: options.languages,
+                        pageIndex: pageIndex,
+                        regionIndex: fig.regionIndex
+                    ), !result.altText.isEmpty {
+                        diagramExtractionsByKey[figureKey] = result
+                    }
+                }
+            }
+        }
 
         // Bilingual facing-page detection (Loeb Classical Library
         // style). Runs after OCR is complete so we score the actual

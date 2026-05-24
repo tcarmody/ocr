@@ -105,12 +105,15 @@ final class ClaudeDiagramExtractorTests: XCTestCase {
             rateLimiter: nil
         )
         let extractor = ClaudeDiagramExtractor(client: client, budget: budget)
+        // P-Diagram-Description Option B refactor: the extractor
+        // now takes the pre-cropped figure image directly — the
+        // post-cascade phase feeds it the bytes that
+        // `FigureExtractor` already produced, decoded back to a
+        // CGImage.
         return await extractor.extract(
-            pageImage: makeImage(),
-            regionBox: CGRect(x: 0.1, y: 0.2, width: 0.8, height: 0.6),
+            figureImage: makeImage(),
             captionText: captionText,
             languages: [BCP47("en")],
-            stagingDir: FileManager.default.temporaryDirectory,
             pageIndex: 0,
             regionIndex: 0
         )

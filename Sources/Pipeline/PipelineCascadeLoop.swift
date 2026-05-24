@@ -52,13 +52,6 @@ extension PDFToEPUBPipeline {
         /// Empty when no math extractor is wired or every region
         /// declined / failed.
         let mathEntries: [(regionIndex: Int, result: MathExtractionResult)]
-        /// P-Diagram-Description Tier 1. Per-region alt-text and
-        /// (Tier 2/3, deferred) description / labels for `.picture`
-        /// regions. Caller maps these to
-        /// `diagramExtractionsByKey[PageRegionKey(pageIndex:i, regionIndex:...)]`.
-        /// Empty when no diagram extractor is wired (Cloud-mode
-        /// off / flag off / no key) or every region declined.
-        let diagramEntries: [(regionIndex: Int, result: DiagramExtractionResult)]
         let qualityScore: EmbeddedTextQualityScorer.Score
         let extractorDiagnostics: EmbeddedTextExtractor.Diagnostics
         let correctionTrailEntries: [CorrectionTrail.Entry]
@@ -92,8 +85,7 @@ extension PDFToEPUBPipeline {
         claudePostProcessor: (any PostOCRProcessor)?,
         cloudTableExtractor: (any TableExtractor)?,
         landingAITableExtractor: LandingAITableExtractor?,
-        cloudMathExtractor: (any MathExtractor)?,
-        cloudDiagramExtractor: (any DiagramExtractor)?
+        cloudMathExtractor: (any MathExtractor)?
     ) async throws -> CascadePageOutcome {
         // Sync prep: embedded extraction + quality scoring. Wrap
         // in autoreleasepool so PDFKit/CoreGraphics NSObject
@@ -127,7 +119,6 @@ extension PDFToEPUBPipeline {
         var figures: [FigureExtractor.ExtractedFigure] = []
         var tableEntries: [(regionIndex: Int, rows: [[TableCell]])] = []
         var mathEntries: [(regionIndex: Int, result: MathExtractionResult)] = []
-        var diagramEntries: [(regionIndex: Int, result: DiagramExtractionResult)] = []
         var correctionTrail: [CorrectionTrail.Entry] = []
         var layoutError: String? = nil
         var ocrError: String? = nil
@@ -351,36 +342,6 @@ extension PDFToEPUBPipeline {
                 correctionTrail.append(contentsOf: outcome.trailEntries)
             }
 
-            // P-Diagram-Description Tier 1. For each `.picture`
-            // region, ask Sonnet for short accessibility alt text.
-            // Replaces `alt="figure"` for screen readers; doesn't
-            // change visible EPUB rendering. Decline → existing
-            // alt-text behavior preserved (caption text when a
-            // caption is associated, else "figure"). Caption text
-            // is not threaded in at this stage — `CaptionAssociator`
-            // runs book-wide after all pages OCR (it votes on
-            // caption orientation across the book), so per-page
-            // pairing isn't available here yet. The prompt works
-            // without that context; passing the caption in is a
-            // future refinement.
-            if let diagExt = cloudDiagramExtractor,
-               let regions = layoutForPage, !regions.isEmpty {
-                for (regionIdx, region) in regions.enumerated()
-                where region.kind == .picture {
-                    if let result = await diagExt.extract(
-                        pageImage: image,
-                        regionBox: region.box,
-                        captionText: nil,
-                        languages: options.languages,
-                        stagingDir: stagingDir,
-                        pageIndex: i,
-                        regionIndex: regionIdx
-                    ), !result.altText.isEmpty {
-                        diagramEntries.append((regionIdx, result))
-                    }
-                }
-            }
-
             // P-Math-Region-Detection Tier 2. Post-OCR text-pattern
             // promotion. Runs against the cleanest available text
             // (cascade-escalated + Haiku-cleaned where applicable)
@@ -510,7 +471,6 @@ extension PDFToEPUBPipeline {
             figures: figures,
             tableEntries: tableEntries,
             mathEntries: mathEntries,
-            diagramEntries: diagramEntries,
             qualityScore: quality,
             extractorDiagnostics: extracted.diagnostics,
             correctionTrailEntries: correctionTrail,

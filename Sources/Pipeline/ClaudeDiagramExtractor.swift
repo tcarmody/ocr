@@ -49,21 +49,16 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
     }
 
     public func extract(
-        pageImage: CGImage,
-        regionBox: CGRect,
+        figureImage: CGImage,
         captionText: String?,
         languages: [BCP47],
-        stagingDir: URL,
         pageIndex: Int,
         regionIndex: Int
     ) async -> DiagramExtractionResult? {
-        guard let cropped = RegionCascade.cropImage(pageImage, to: regionBox) else {
-            return nil
-        }
         guard await budget.tryConsume() else { return nil }
         try? Task.checkCancellation()
 
-        guard let png = Self.encodePNG(cropped) else { return nil }
+        guard let png = Self.encodePNG(figureImage) else { return nil }
         let base64 = png.base64EncodedString()
 
         let request = AnthropicMessageRequest(
