@@ -25,6 +25,27 @@ struct ReaderChatPaneView: View {
     /// the user wants to see why each paragraph got picked.
     @State private var showRetrievalDetail: Bool = false
 
+    // Chat appearance — same three knobs as the editor's
+    // ChatPaneView; @AppStorage keys shared via ChatAppearance.Keys
+    // so all chat surfaces agree.
+    @AppStorage(ChatAppearance.Keys.fontFamily)
+    private var appearanceFontFamilyRaw: String = ChatAppearance.FontFamily.system.rawValue
+    @AppStorage(ChatAppearance.Keys.fontSize)
+    private var appearanceFontSizeRaw: String = ChatAppearance.FontSize.medium.rawValue
+    @AppStorage(ChatAppearance.Keys.colorMode)
+    private var appearanceColorModeRaw: String = ChatAppearance.ColorMode.auto.rawValue
+
+    private var resolvedAppearance: ChatAppearance.Resolved {
+        ChatAppearance.resolve(
+            family: ChatAppearance.FontFamily(rawValue: appearanceFontFamilyRaw)
+                ?? .system,
+            size: ChatAppearance.FontSize(rawValue: appearanceFontSizeRaw)
+                ?? .medium,
+            mode: ChatAppearance.ColorMode(rawValue: appearanceColorModeRaw)
+                ?? .auto
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             chrome
@@ -36,6 +57,7 @@ struct ReaderChatPaneView: View {
             inputRow
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .preferredColorScheme(resolvedAppearance.colorScheme)
     }
 
     // MARK: - Chrome (top row above the transcript)
@@ -176,7 +198,8 @@ struct ReaderChatPaneView: View {
                             // doesn't show the action in its
                             // context menu.
                             onExcludeBook: { _ in },
-                            showRetrievalDetail: showRetrievalDetail
+                            showRetrievalDetail: showRetrievalDetail,
+                            appearance: resolvedAppearance
                         )
                         .id(message.id)
                     }

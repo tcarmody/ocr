@@ -109,6 +109,40 @@ struct ChatSettingsView: View {
     /// Refreshed on appear and after either clear.
     @State private var outdatedIndexCount: Int = 0
 
+    // MARK: - Chat appearance (R-Chat-Appearance Phase 1)
+
+    @AppStorage(ChatAppearance.Keys.fontFamily)
+    private var appearanceFontFamilyRaw: String = ChatAppearance.FontFamily.system.rawValue
+    @AppStorage(ChatAppearance.Keys.fontSize)
+    private var appearanceFontSizeRaw: String = ChatAppearance.FontSize.medium.rawValue
+    @AppStorage(ChatAppearance.Keys.colorMode)
+    private var appearanceColorModeRaw: String = ChatAppearance.ColorMode.auto.rawValue
+
+    private var appearanceFontFamilyBinding: Binding<ChatAppearance.FontFamily> {
+        Binding(
+            get: {
+                ChatAppearance.FontFamily(rawValue: appearanceFontFamilyRaw) ?? .system
+            },
+            set: { appearanceFontFamilyRaw = $0.rawValue }
+        )
+    }
+    private var appearanceFontSizeBinding: Binding<ChatAppearance.FontSize> {
+        Binding(
+            get: {
+                ChatAppearance.FontSize(rawValue: appearanceFontSizeRaw) ?? .medium
+            },
+            set: { appearanceFontSizeRaw = $0.rawValue }
+        )
+    }
+    private var appearanceColorModeBinding: Binding<ChatAppearance.ColorMode> {
+        Binding(
+            get: {
+                ChatAppearance.ColorMode(rawValue: appearanceColorModeRaw) ?? .auto
+            },
+            set: { appearanceColorModeRaw = $0.rawValue }
+        )
+    }
+
     private var chatBackendBinding: Binding<ChatBackend> {
         Binding(
             get: { ChatBackend(rawValue: chatBackendRaw) ?? .cloudHaiku },
@@ -145,6 +179,7 @@ struct ChatSettingsView: View {
     var body: some View {
         Form {
             bookChatSection
+            chatAppearanceSection
             chatRetrievalSection
         }
         .formStyle(.grouped)
@@ -225,6 +260,31 @@ struct ChatSettingsView: View {
                         )
                     }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var chatAppearanceSection: some View {
+        Section("Chat Appearance") {
+            Picker("Font", selection: appearanceFontFamilyBinding) {
+                ForEach(ChatAppearance.FontFamily.allCases) { family in
+                    Text(family.displayName).tag(family)
+                }
+            }
+            Picker("Size", selection: appearanceFontSizeBinding) {
+                ForEach(ChatAppearance.FontSize.allCases) { size in
+                    Text(size.displayName).tag(size)
+                }
+            }
+            Picker("Theme", selection: appearanceColorModeBinding) {
+                ForEach(ChatAppearance.ColorMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            Text("Applies to every chat surface — per-book chat in the editor and reader, library chat, standalone chat windows. \"Match System\" follows your macOS appearance setting; Light / Dark override it for chat regardless of the surrounding window.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

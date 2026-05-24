@@ -34,6 +34,12 @@ import SwiftUI
 /// loop on NSTextField-backed selectable Text).
 struct MarkdownMessageBody: View {
     let text: String
+    /// Resolved chat-appearance snapshot the host (chat pane /
+    /// standalone window) computes from `@AppStorage` and passes
+    /// down. nil = use the pre-appearance defaults (callout base,
+    /// title3/headline for headings), which matches the body's
+    /// behavior before R-Chat-Appearance shipped.
+    var appearance: ChatAppearance.Resolved? = nil
     /// Cached block parse keyed by the input text. Recomputed only
     /// when `text` changes via `.task(id: text)` so a streaming
     /// append still re-parses, but a hover / scroll / unrelated
@@ -63,16 +69,34 @@ struct MarkdownMessageBody: View {
 
     // MARK: - Block rendering
 
+    // MARK: - Fonts (resolved from appearance when present, else
+    // fall back to the pre-appearance defaults so callers that
+    // don't thread appearance through still render identically.)
+
+    private var baseFont: Font {
+        appearance?.baseFont ?? .callout
+    }
+    private var codeFont: Font {
+        appearance?.codeFont ?? .callout.monospaced()
+    }
+    private var italicFont: Font {
+        appearance?.italicFont ?? .callout.italic()
+    }
+    private func headingFont(level: Int) -> Font {
+        if let appearance { return appearance.headingFont(level: level) }
+        return Self.headingFont(level: level)
+    }
+
     @ViewBuilder
     private func blockView(_ block: Block) -> some View {
         switch block {
         case .paragraph(let s):
             Text(Self.inlineAttributed(s))
-                .font(.callout)
+                .font(baseFont)
                 .fixedSize(horizontal: false, vertical: true)
         case .heading(let level, let s):
             Text(Self.inlineAttributed(s))
-                .font(Self.headingFont(level: level))
+                .font(headingFont(level: level))
                 .fixedSize(horizontal: false, vertical: true)
                 // Slightly tighter top padding so headings hug the
                 // preceding paragraph the way prose readers expect.
@@ -84,7 +108,7 @@ struct MarkdownMessageBody: View {
                         Text("•")
                             .foregroundStyle(.secondary)
                         Text(Self.inlineAttributed(item))
-                            .font(.callout)
+                            .font(baseFont)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -97,7 +121,7 @@ struct MarkdownMessageBody: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                         Text(Self.inlineAttributed(item))
-                            .font(.callout)
+                            .font(baseFont)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -108,13 +132,13 @@ struct MarkdownMessageBody: View {
                     .fill(.quaternary)
                     .frame(width: 3)
                 Text(Self.inlineAttributed(s))
-                    .font(.callout.italic())
+                    .font(italicFont)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         case .codeBlock(_, let code):
             Text(code)
-                .font(.callout.monospaced())
+                .font(codeFont)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)

@@ -32,6 +32,26 @@ struct LibraryChatPaneView: View {
     /// itself).
     @Environment(\.openWindow) private var openWindow
 
+    // Same chat-appearance knobs as ChatPaneView — keys live in
+    // ChatAppearance.Keys so the two surfaces share state.
+    @AppStorage(ChatAppearance.Keys.fontFamily)
+    private var appearanceFontFamilyRaw: String = ChatAppearance.FontFamily.system.rawValue
+    @AppStorage(ChatAppearance.Keys.fontSize)
+    private var appearanceFontSizeRaw: String = ChatAppearance.FontSize.medium.rawValue
+    @AppStorage(ChatAppearance.Keys.colorMode)
+    private var appearanceColorModeRaw: String = ChatAppearance.ColorMode.auto.rawValue
+
+    private var resolvedAppearance: ChatAppearance.Resolved {
+        ChatAppearance.resolve(
+            family: ChatAppearance.FontFamily(rawValue: appearanceFontFamilyRaw)
+                ?? .system,
+            size: ChatAppearance.FontSize(rawValue: appearanceFontSizeRaw)
+                ?? .medium,
+            mode: ChatAppearance.ColorMode(rawValue: appearanceColorModeRaw)
+                ?? .auto
+        )
+    }
+
     init(
         vm: LibraryChatViewModel,
         onCitationTap: ((BookChatCitation) -> Void)? = nil
@@ -53,6 +73,7 @@ struct LibraryChatPaneView: View {
             inputRow
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .preferredColorScheme(resolvedAppearance.colorScheme)
     }
 
     /// Banner shown when something is actively mutating the vector
@@ -384,7 +405,8 @@ struct LibraryChatPaneView: View {
                                 else { return }
                                 vm.excludeBook(url: url, title: title)
                             },
-                            showRetrievalDetail: showRetrievalDetail
+                            showRetrievalDetail: showRetrievalDetail,
+                            appearance: resolvedAppearance
                         )
                         .id(message.id)
                     }

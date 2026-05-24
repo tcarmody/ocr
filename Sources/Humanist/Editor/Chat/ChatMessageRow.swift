@@ -28,6 +28,11 @@ struct ChatMessageRow: View {
     /// chrome — useful for diagnosing "why did this paragraph
     /// surface?" without reaching for a debugger.
     var showRetrievalDetail: Bool = false
+    /// Resolved chat-appearance snapshot the host (chat pane /
+    /// standalone window) computes from `@AppStorage` and passes
+    /// down. nil = use the pre-appearance defaults so callers
+    /// that haven't been wired through still render identically.
+    var appearance: ChatAppearance.Resolved? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -47,11 +52,14 @@ struct ChatMessageRow: View {
             // asterisks as bold is the wrong behavior.
             Group {
                 if message.role == .assistant {
-                    MarkdownMessageBody(text: message.text)
-                        .font(.callout)
+                    MarkdownMessageBody(
+                        text: message.text,
+                        appearance: appearance
+                    )
+                    .font(appearance?.baseFont ?? .callout)
                 } else {
                     Text(message.text)
-                        .font(.callout)
+                        .font(appearance?.baseFont ?? .callout)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contextMenu {
                             Button {

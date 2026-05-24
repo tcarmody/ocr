@@ -31,6 +31,28 @@ struct ChatPaneView: View {
     /// dedicated `book-chat` scene for this book.
     @Environment(\.openWindow) private var openWindow
 
+    // Chat appearance — three @AppStorage knobs the user controls
+    // from Settings → Chat → Appearance. Resolving on body
+    // recompute (not in init) means a Settings change propagates
+    // without a window relaunch.
+    @AppStorage(ChatAppearance.Keys.fontFamily)
+    private var appearanceFontFamilyRaw: String = ChatAppearance.FontFamily.system.rawValue
+    @AppStorage(ChatAppearance.Keys.fontSize)
+    private var appearanceFontSizeRaw: String = ChatAppearance.FontSize.medium.rawValue
+    @AppStorage(ChatAppearance.Keys.colorMode)
+    private var appearanceColorModeRaw: String = ChatAppearance.ColorMode.auto.rawValue
+
+    private var resolvedAppearance: ChatAppearance.Resolved {
+        ChatAppearance.resolve(
+            family: ChatAppearance.FontFamily(rawValue: appearanceFontFamilyRaw)
+                ?? .system,
+            size: ChatAppearance.FontSize(rawValue: appearanceFontSizeRaw)
+                ?? .medium,
+            mode: ChatAppearance.ColorMode(rawValue: appearanceColorModeRaw)
+                ?? .auto
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             scopeStrip
@@ -46,6 +68,10 @@ struct ChatPaneView: View {
             inputRow
         }
         .background(Color(nsColor: .textBackgroundColor))
+        // Chat-specific color-scheme override. Auto (nil) inherits
+        // from the parent window; light / dark force the chat pane
+        // independent of the surrounding app.
+        .preferredColorScheme(resolvedAppearance.colorScheme)
         .sheet(isPresented: $showBriefingSheet) {
             BriefingSheetContainer(
                 book: vm.book,
@@ -351,7 +377,8 @@ struct ChatPaneView: View {
                                 else { return }
                                 vm.excludeLibraryBook(url: url, title: title)
                             },
-                            showRetrievalDetail: showRetrievalDetail
+                            showRetrievalDetail: showRetrievalDetail,
+                            appearance: resolvedAppearance
                         )
                         .id(message.id)
                     }
