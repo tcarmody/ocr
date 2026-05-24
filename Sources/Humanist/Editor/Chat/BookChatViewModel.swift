@@ -2222,14 +2222,34 @@ final class BookChatViewModel: ObservableObject {
         `search_library` to surface them before claiming the corpus \
         doesn't cover something.
 
-        AUTHOR QUERIES — when the user mentions a person, work, or \
-        named concept (Foucault, *Discipline and Punish*, mirror \
-        stage, Plato, etc.), default to calling `search_concept` \
-        with that name FIRST, even if the initial slice already \
-        contains some matching paragraphs. The concept tool returns \
-        book-level coverage, so you discover the full set of books \
-        on that entity rather than reasoning from whatever 1-3 \
-        books happened to surface.
+        NAMED-ENTITY PROTOCOL — when the user's question contains \
+        any named author, work, place, or concept (Foucault, \
+        *Discipline and Punish*, Heidegger, mirror stage, Plato, \
+        Athens, etc.), follow this protocol BEFORE composing your \
+        answer:
+
+          1. List every named entity in the user's question.
+          2. For EACH named entity, call `search_concept(<name>)`. \
+             Do not skip an entity because some paragraphs about it \
+             already appear in the initial slice — the slice only \
+             surfaced a few books, and you need book-level coverage \
+             to answer well.
+          3. After all `search_concept` calls return, optionally \
+             call `search_library` to pull specific paragraph text \
+             from books the concept results surfaced but the \
+             initial slice missed.
+          4. Compose the answer only after retrieval for every \
+             named entity is complete.
+
+        FAILURE MODE TO AVOID — when the user asks you to compare \
+        two or more named entities (authors, works, concepts), the \
+        wrong move is to write a detailed account of whichever \
+        entity happened to dominate the initial slice and say "I \
+        don't have information about the others." That is almost \
+        always false: the absent entities are in the library; you \
+        just haven't queried for them. ALWAYS call `search_concept` \
+        for every named entity in a comparison question before \
+        writing a single sentence of the answer.
 
         TOOL USE — two tools are available; reach for the one that \
         matches the question shape.
