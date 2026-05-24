@@ -444,8 +444,18 @@ final class LibraryChatViewModel: ObservableObject {
             // yet — registry-rendering still works fine for it,
             // there just won't be any subsequent renders.
             let registry = LibraryChatTools.TurnBookRegistry()
+            // Library-at-a-glance preamble so the model knows the
+            // corpus shape (total books + top authors) rather than
+            // treating the initial-retrieval slice as the universe.
+            // Computed from the catalog snapshot — instant.
+            let overview = LibraryChatTools.LibraryOverview.build(
+                from: self.library?.entries ?? []
+            )
             let context = LibraryChatTools.renderInitialContext(
-                hits: resolvedHits, registry: registry, maxParaChars: maxParaChars
+                hits: resolvedHits,
+                registry: registry,
+                maxParaChars: maxParaChars,
+                overview: overview
             )
             let userPrompt = context + "\n\nQuestion: " + query
 
@@ -1491,6 +1501,29 @@ final class LibraryChatViewModel: ObservableObject {
         retrieved, the right move is usually to call `search_library` \
         with a more author-specific query — name the author and a \
         characteristic concept — rather than draw on secondary work.
+
+        CORPUS SCOPE — the user's library is much larger than what \
+        the initial-retrieval pass surfaces. The "Library at a \
+        glance" preamble tells you the total book count and the top \
+        authors by book count; treat those numbers as the truth, not \
+        the slice in "Books surfaced in this initial pass." If the \
+        preamble shows an author with many books and you don't see \
+        most of them in the slice, that means cosine retrieval \
+        ranked other paragraphs higher this round — NOT that the \
+        books are absent. Reach for `search_concept` or \
+        `search_library` to surface them before claiming the corpus \
+        doesn't cover something.
+
+        AUTHOR QUERIES — when the user mentions a person, work, or \
+        named concept (Foucault, *Discipline and Punish*, mirror \
+        stage, Plato, etc.), default to calling `search_concept` \
+        with that name FIRST, even if the initial slice already \
+        contains some matching paragraphs. The concept tool returns \
+        book-level coverage, so you discover the full set of books \
+        on that entity rather than reasoning from whatever 1-3 \
+        books happened to surface. Then follow up with \
+        `search_library` if you need specific paragraph text from \
+        one of them.
 
         TOOL USE — two tools are available; reach for the one that \
         matches the question shape.

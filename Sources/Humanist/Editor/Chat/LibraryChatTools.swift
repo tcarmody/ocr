@@ -333,18 +333,34 @@ enum LibraryChatTools {
     /// Replaces the standalone `renderLibraryContext` for the
     /// agentic path; the legacy path's renderer stays put for the
     /// per-book chat which doesn't (yet) have tool use.
+    ///
+    /// `overview` is an optional preamble describing the library at
+    /// a glance (total books, top authors). Without it, the model
+    /// reads the "Books surfaced in this initial pass" list as if
+    /// it were the whole corpus — leading to "your library doesn't
+    /// have X" answers when the cosine pass missed authors that ARE
+    /// represented. The library-scope chat VMs build it from their
+    /// `LibraryStore` and pass it through; per-book chat in
+    /// library scope can do the same.
     static func renderInitialContext(
         hits: [LibraryEmbeddingIndex.Hit],
         registry: TurnBookRegistry,
-        maxParaChars: Int
+        maxParaChars: Int,
+        overview: LibraryOverview? = nil
     ) -> String {
         guard !hits.isEmpty else {
-            return """
+            var out = ""
+            if let overview {
+                out += overview.render() + "\n\n"
+            }
+            out += """
             (No matching paragraphs were found across the user's \
             library on the initial pass. Call `search_library` with a \
-            rephrased query if you think material exists; otherwise \
-            tell the user the corpus doesn't seem to cover this.)
+            rephrased query, or `search_concept` if the user named an \
+            author / person / work, before concluding the corpus \
+            doesn't cover this.)
             """
+            return out
         }
         var paragraphLines: [String] = []
         for hit in hits {
@@ -358,7 +374,15 @@ enum LibraryChatTools {
                 "[book:\(idx) chapter:\(hit.chapterIdx) para:\(hit.paragraphIdx)]\n  • \(text)"
             )
         }
-        var out = "Books in scope:\n"
+        var out = ""
+        if let overview {
+            out += overview.render() + "\n\n"
+        }
+        // Label deliberately calls out that this is an INITIAL
+        // PASS, not the whole library. Without this, the model
+        // treats the slice as the entire universe and won't
+        // broaden via the tools.
+        out += "Books surfaced in this initial pass (call search_library / search_concept to surface more):\n"
         for (i, entry) in registry.ordered.enumerated() {
             if let author = entry.author, !author.isEmpty {
                 out += "[book:\(i)] \"\(entry.title)\" — \(author)\n"
@@ -369,5 +393,65 @@ enum LibraryChatTools {
         out += "\nRelevant paragraphs:\n"
         out += paragraphLines.joined(separator: "\n")
         return out
+    }
+
+    /// Library-at-a-glance preamble that anchors the model in the
+    /// real corpus shape rather than the narrow initial-retrieval
+    /// slice. Built from the `LibraryStore.entries` snapshot — no
+    /// dependence on the federated index, sidecars, or chat state,
+    /// so it's instant to compute regardless of cache warmth.
+    ///
+    /// Reports total book count and the top-N authors by book
+    /// count. The top-authors list tells the model "this library
+    /// has 73 books by Foucault, 42 by Deleuze, 38 by Heidegger,
+    /// …" so it won't claim there's only one or two when a
+    /// well-represented author comes up.
+    struct LibraryOverview: Sendable {
+        let totalBooks: Int
+        let topAuthors: [(name: String, bookCount: Int)]
+
+        /// Default top-author cap. Larger than the typical chat
+        /// retrieval surface (~6 books) so the model sees breadth;
+        /// small enough that it doesn't dominate the prompt token
+        /// budget. Caller can override.
+        static let defaultTopAuthors: Int = 25
+
+        static func build(
+            from entries: [LibraryEntry],
+            topAuthorLimit: Int = defaultTopAuthors
+        ) -> LibraryOverview {
+            var counts: [String: Int] = [:]
+            for entry in entries {
+                guard let raw = entry.author?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !raw.isEmpty else { continue }
+                counts[raw, default: 0] += 1
+            }
+            let top = counts
+                .sorted { lhs, rhs in
+                    if lhs.value != rhs.value { return lhs.value > rhs.value }
+                    return lhs.key < rhs.key
+                }
+                .prefix(topAuthorLimit)
+                .map { (name: $0.key, bookCount: $0.value) }
+            return LibraryOverview(
+                totalBooks: entries.count,
+                topAuthors: Array(top)
+            )
+        }
+
+        /// Render as the prompt-ready preamble. Short and dense —
+        /// the model can parse this in O(visual scan) before
+        /// dropping into the retrieval slice.
+        func render() -> String {
+            var out = "Library at a glance: \(totalBooks) books total.\n"
+            if !topAuthors.isEmpty {
+                out += "Top authors by book count: "
+                out += topAuthors
+                    .map { "\($0.name) (\($0.bookCount))" }
+                    .joined(separator: "; ")
+            }
+            return out
+        }
     }
 }
