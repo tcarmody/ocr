@@ -4667,6 +4667,117 @@ real friction.
 
 ---
 
+## R-Chat-Reinstate-Polish — Restore features stripped during chat-hang debugging
+
+**Status**: Cued up, gated on validation. The chat scroll + hover
+hang investigation went through multiple attempts that stripped
+real features out of the chat surface as suspects (each one in
+turn ruled out by user testing). The working theory is now that
+the hang was memory pressure from the federated index, not the
+chat view graph — `R-Federated-Memory-Pass` brought RSS from
+~14 GB steady-state down to ~3 GB, and if a fresh post-fix build
+holds up under multi-turn library chat, the features below should
+all come back rather than living on as workarounds.
+
+Do NOT start this work until the user confirms the memory pass
+actually resolved the hangs across a few sessions. If hangs
+reappear at FP16, this entry pauses and the investigation moves
+back to the chat view graph (most likely candidate: `LazyVStack`
++ `Text(AttributedString)` measurement cascade interacting with
+JetUI selection overlay).
+
+### Features to restore (each is a separate revert)
+
+- **Block-level Markdown rendering** in `MarkdownMessageBody`.
+  Commit `d0911b6` folded the per-block VStack (paragraphs,
+  bullet HStacks, code-block backgrounds, separated heading
+  styles) into a single `Text(AttributedString)` because the
+  multi-Text layout was the leading suspect for the scroll hang.
+  Restore the prior structure: parsed `MarkdownBlock` array,
+  per-block view builder, real bullet rows with `•` HStacks,
+  `RoundedRectangle` background on code blocks, `.title3` /
+  `.headline` on heading levels. The cached `parsed` array in
+  `MarkdownMessageBody` (commit `90f0473`) is the right place
+  to hang the rendering off — keep the cache, just rebuild the
+  view-side switch over block kinds.
+- **`.textSelection(.enabled)` on chat message bodies**. Commit
+  `faeb6bd` stripped `.textSelection` from message rows as the
+  macOS 26 JetUI `SelectionOverlay` was hypothesized to feed
+  back into the LazyVStack `lengthAndSpacing` pass. Re-add the
+  modifier on both user and assistant `ChatMessageRow` bodies
+  and on `MarkdownMessageBody`'s root Text.
+- **Wrapping citation chips in `FlowingCitationRow`**. The chip
+  row was reduced to an overflow-only single-line HStack during
+  the hang hunt. Restore the wrapping behavior via either
+  `ViewThatFits` cascading through width buckets or a small
+  custom `Layout` (Flow). Custom Layout is the cleaner solution
+  if `ViewThatFits` re-introduces measurement churn — Flow
+  layouts only run their `sizeThatFits` once per width.
+- **Drop the `MessageSelectionSheet` workaround**. Commit
+  `b753884` added a "Select Text…" context-menu action that
+  opens a sheet hosting a `TextEditor` with the message body.
+  Once native `.textSelection(.enabled)` is back, delete
+  `MessageSelectionSheet.swift` and remove the context-menu
+  branch from `MarkdownMessageBody`. Keep the "Copy Message"
+  context-menu action — that one is good UX independent of
+  selection.
+
+### Dead-code decisions (do these regardless of hang outcome)
+
+- **Delete `SelectableMessageText.swift`**. Commit `9784fc2`
+  introduced an `NSTextView`-wrapping `NSViewRepresentable` as
+  an attempt to opt out of the JetUI selection overlay. Multiple
+  follow-up tweaks (short-circuit on Coordinator.appliedText,
+  width-only invalidation, cached `intrinsicContentSize`) all
+  failed to resolve the hang, and the file is unreferenced after
+  the revert in `b753884`. Just delete it.
+- **Decide fate of standalone window scenes**
+  (`LibraryChatWindowView`, `BookChatWindowView`, the
+  `Window("Library Chat", id: "library-chat")` and
+  `WindowGroup("Chat", id: "book-chat", for: URL.self)` scenes
+  in `HumanistApp`). These were added in commit `3a98530` to
+  isolate the chat view graph from the editor split, on the
+  theory that the editor's NSSplitView was contributing to the
+  hang. They didn't fix the hang, but having chat available as
+  standalone windows is genuinely useful UX (multi-monitor,
+  reference-while-reading). Keep them; document them as a
+  product feature rather than a debug artifact. (No code change —
+  just an `App` mention in MACUX or onboarding copy.)
+
+### Out of scope here
+
+- Re-enabling alias substring matching at library scope. The
+  `computeLibraryAliasAnchors` regression from dropping
+  per-paragraph text is a separate workstream — see
+  `R-Federated-Memory-Pass` "Sidecar-backed alias inverted
+  index" follow-up.
+- Re-investigating the LazyVStack measurement cascade. If
+  hangs come back at FP16, that's a fresh investigation, not
+  part of this entry.
+
+### Acceptance
+
+- Library chat with a 2k-book Gemini-3072 federated index does
+  not hang on hover or scroll across at least 10 multi-turn
+  conversations spanning a session restart.
+- All four restored features (block Markdown, textSelection,
+  wrapping chips, dropped sheet) verified visually in both
+  library chat and per-book chat surfaces.
+- `SelectableMessageText.swift` and any related dead state
+  removed; build clean.
+- One commit per restored feature so each can be reverted
+  independently if the cascade comes back from one specific
+  source.
+
+### Dependencies
+
+- `R-Federated-Memory-Pass` Phase 1 shipped (done) — the
+  precondition for this entry being safe to start.
+- User validation that hangs are actually gone in normal use
+  (the explicit gate).
+
+---
+
 ## R-Federated-Memory-Pass — Shrink the federated index footprint
 
 **Status**: Phase 1 shipped (commits `f4bebd8`, `3c984f1`,
