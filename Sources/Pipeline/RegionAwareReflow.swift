@@ -78,6 +78,11 @@ enum RegionAwareReflow {
         let footnotes: [Footnote]
         let pageAnchors: [PageAnchor]
         let figureAssets: [FigureAsset]
+        /// P-Diagram-Description Tier 2/3. Per-figure metadata
+        /// keyed by `FigureAsset.id`. Sliced per-chapter by
+        /// `ChapterSplitter`. Empty when the diagram extractor
+        /// is off or no `.picture` regions produced metadata.
+        let figureMetadata: [String: FigureMetadata]
         var diagnostics: Diagnostics = Diagnostics()
     }
 
@@ -181,6 +186,10 @@ enum RegionAwareReflow {
         // is the manifest item id and the filename stem.
         var assetIdByFigureKey: [CaptionAssociator.PageRegionKey: String] = [:]
         var figureAssets: [FigureAsset] = []
+        // P-Diagram-Description Tier 2/3. Build the same-keyed
+        // metadata map so a chapter splitter can slice it by
+        // chapter alongside the figure assets.
+        var figureMetadata: [String: FigureMetadata] = [:]
         var nextAssetIndex = 0
         for page in pageResults.sorted(by: { $0.pageIndex < $1.pageIndex }) {
             guard let figures = figureExtractions[page.pageIndex] else { continue }
@@ -191,6 +200,14 @@ enum RegionAwareReflow {
                     pageIndex: page.pageIndex, regionIndex: fig.regionIndex
                 )
                 assetIdByFigureKey[key] = assetId
+                if let extraction = diagramExtractions[key],
+                   !extraction.altText.isEmpty {
+                    figureMetadata[assetId] = FigureMetadata(
+                        altText: extraction.altText,
+                        description: extraction.description,
+                        labels: extraction.labels
+                    )
+                }
                 figureAssets.append(FigureAsset(
                     id: assetId,
                     data: fig.data,
@@ -340,6 +357,7 @@ enum RegionAwareReflow {
             footnotes: FootnoteLinker.footnotesForChapter(allFootnotes),
             pageAnchors: pageAnchors,
             figureAssets: figureAssets,
+            figureMetadata: figureMetadata,
             diagnostics: diagnostics
         )
     }

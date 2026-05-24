@@ -21,16 +21,23 @@ extension PDFToEPUBPipeline {
         public let footnotes: [Footnote]
         public let pageAnchors: [PageAnchor]
         public let figureAssets: [FigureAsset]
+        /// P-Diagram-Description Tier 2/3 metadata, keyed by
+        /// `FigureAsset.id`. Empty when diagram description was
+        /// off; `ChapterSplitter` slices this per-chapter
+        /// alongside `figureAssets`.
+        public let figureMetadata: [String: FigureMetadata]
         public init(
             blocks: [Block],
             footnotes: [Footnote],
             pageAnchors: [PageAnchor] = [],
-            figureAssets: [FigureAsset] = []
+            figureAssets: [FigureAsset] = [],
+            figureMetadata: [String: FigureMetadata] = [:]
         ) {
             self.blocks = blocks
             self.footnotes = footnotes
             self.pageAnchors = pageAnchors
             self.figureAssets = figureAssets
+            self.figureMetadata = figureMetadata
         }
     }
 
@@ -64,6 +71,7 @@ extension PDFToEPUBPipeline {
         let footnotes: [Footnote]
         let pageAnchors: [PageAnchor]
         let figureAssets: [FigureAsset]
+        let figureMetadata: [String: FigureMetadata]
         let classification: HeaderFooterClassifier.Result
         // Reflow diagnostics for the debug log. Empty (defaulted) on
         // the heuristic-only path, populated with per-page audit
@@ -89,6 +97,7 @@ extension PDFToEPUBPipeline {
             footnotes = result.footnotes
             pageAnchors = result.pageAnchors
             figureAssets = result.figureAssets
+            figureMetadata = result.figureMetadata
             reflowDiagnostics = result.diagnostics
         } else {
             // Heuristic-only path (Phase 1.5 behavior). No layout
@@ -109,6 +118,7 @@ extension PDFToEPUBPipeline {
             footnotes = []
             pageAnchors = []
             figureAssets = []
+            figureMetadata = [:]
         }
 
         if let debugLogURL {
@@ -129,7 +139,8 @@ extension PDFToEPUBPipeline {
             blocks: merged,
             footnotes: footnotes,
             pageAnchors: pageAnchors,
-            figureAssets: figureAssets
+            figureAssets: figureAssets,
+            figureMetadata: figureMetadata
         )
     }
 }

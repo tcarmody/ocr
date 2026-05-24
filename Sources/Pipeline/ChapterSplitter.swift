@@ -132,6 +132,7 @@ public enum ChapterSplitter {
         footnotes: [Footnote],
         pageAnchors: [PageAnchor],
         figureAssets: [FigureAsset] = [],
+        figureMetadata: [String: FigureMetadata] = [:],
         bookFallbackTitle: String
     ) -> [Chapter] {
         // Convenience overload preserved for callers / tests that
@@ -142,6 +143,7 @@ public enum ChapterSplitter {
             footnotes: footnotes,
             pageAnchors: pageAnchors,
             figureAssets: figureAssets,
+            figureMetadata: figureMetadata,
             bookFallbackTitle: bookFallbackTitle
         ).chapters
     }
@@ -158,6 +160,7 @@ public enum ChapterSplitter {
         footnotes: [Footnote],
         pageAnchors: [PageAnchor],
         figureAssets: [FigureAsset] = [],
+        figureMetadata: [String: FigureMetadata] = [:],
         bookFallbackTitle: String
     ) -> Result {
         let headingFreq = headingTextFrequency(in: blocks)
@@ -208,7 +211,8 @@ public enum ChapterSplitter {
                 blocks: blocks,
                 footnotes: footnotes,
                 pageAnchors: pageAnchors,
-                figureAssets: figureAssets
+                figureAssets: figureAssets,
+                figureMetadata: figureMetadata
             )], diagnostics: diagnostics)
         }
 
@@ -224,7 +228,8 @@ public enum ChapterSplitter {
                 segment: frontMatterBlocks,
                 allFootnotes: footnotes,
                 allPageAnchors: pageAnchors,
-                allFigureAssets: figureAssets
+                allFigureAssets: figureAssets,
+                allFigureMetadata: figureMetadata
             ))
         }
 
@@ -241,7 +246,8 @@ public enum ChapterSplitter {
                 segment: segment,
                 allFootnotes: footnotes,
                 allPageAnchors: pageAnchors,
-                allFigureAssets: figureAssets
+                allFigureAssets: figureAssets,
+                allFigureMetadata: figureMetadata
             ))
         }
 
@@ -530,7 +536,8 @@ public enum ChapterSplitter {
         segment: [Block],
         allFootnotes: [Footnote],
         allPageAnchors: [PageAnchor],
-        allFigureAssets: [FigureAsset]
+        allFigureAssets: [FigureAsset],
+        allFigureMetadata: [String: FigureMetadata] = [:]
     ) -> Chapter {
         let noterefIds = collectNoterefIds(in: segment)
         let footnotes = allFootnotes.filter { noterefIds.contains($0.id) }
@@ -538,12 +545,19 @@ public enum ChapterSplitter {
         let anchors = allPageAnchors.filter { anchorIds.contains($0.anchorId) }
         let figureIds = collectFigureAssetIds(in: segment)
         let figures = allFigureAssets.filter { figureIds.contains($0.id) }
+        // Slice figure metadata to this chapter's referenced
+        // assets only (mirrors the figureAssets filter above).
+        // Empty when diagram description was off; defaults to
+        // `[:]` so non-cascade callers (legacy outline splitter)
+        // don't have to pass it explicitly.
+        let metadata = allFigureMetadata.filter { figureIds.contains($0.key) }
         return Chapter(
             title: title,
             blocks: segment,
             footnotes: footnotes,
             pageAnchors: anchors,
-            figureAssets: figures
+            figureAssets: figures,
+            figureMetadata: metadata
         )
     }
 

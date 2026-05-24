@@ -184,6 +184,61 @@ final class ClaudeDiagramExtractorTests: XCTestCase {
         XCTAssertTrue(result?.altText.hasSuffix("…") ?? false)
     }
 
+    // MARK: - Tier 2 (description)
+
+    func test_parse_returns_both_alt_and_description_when_separator_present() {
+        let raw = """
+            Bar chart of marriage rates
+            ---DESCRIPTION---
+            A vertical bar chart with five categories on the x-axis labeled 1950 through 1990, showing marriage rates per 1000 population declining from ~22 to ~10.
+            """
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.altText, "Bar chart of marriage rates")
+        XCTAssertNotNil(result?.description)
+        XCTAssertTrue(result?.description?.contains("five categories") ?? false)
+    }
+
+    func test_parse_tolerates_separator_without_surrounding_newlines() {
+        let raw = "Scatter plot of wages---DESCRIPTION---Two-axis scatter with male and female populations."
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.altText, "Scatter plot of wages")
+        XCTAssertEqual(
+            result?.description,
+            "Two-axis scatter with male and female populations."
+        )
+    }
+
+    func test_parse_alt_only_when_separator_absent() {
+        // Defensive: a response without the Tier-2 separator
+        // (older prompt cache, partial response) still surfaces
+        // alt text. Description stays nil; XHTML writer just
+        // doesn't emit an aside.
+        let raw = "Photograph of a stone arch"
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.altText, "Photograph of a stone arch")
+        XCTAssertNil(result?.description)
+    }
+
+    func test_parse_caps_long_description_at_500_chars() {
+        let raw = "Chart\n---DESCRIPTION---\n" + String(repeating: "B", count: 700)
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(result?.description?.count, 498)  // 497 + ellipsis
+        XCTAssertTrue(result?.description?.hasSuffix("…") ?? false)
+    }
+
+    func test_parse_description_strips_preamble() {
+        let raw = """
+            Bar chart
+            ---DESCRIPTION---
+            This figure depicts a bar chart with five categories.
+            """
+        let result = ClaudeDiagramExtractor.parseResponse(raw)
+        XCTAssertEqual(
+            result?.description,
+            "A bar chart with five categories."
+        )
+    }
+
     // MARK: - End-to-end with mock transport
 
     func test_extract_returns_alt_text_on_success() async {

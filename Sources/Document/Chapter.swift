@@ -18,6 +18,15 @@ public struct Chapter: Sendable, Equatable {
     /// `blocks`. Bytes live here so blocks stay cheap to copy / log;
     /// the EPUB writer copies these into `OEBPS/images/`.
     public var figureAssets: [FigureAsset]
+    /// P-Diagram-Description Tier 2/3. Per-figure machine-
+    /// readable metadata (alt text, longer description, label
+    /// list) keyed by `FigureAsset.id`. Populated by the Cloud
+    /// diagram extractor when enabled; empty otherwise. The
+    /// XHTML writer emits the description + labels as a hidden
+    /// `<aside>` next to each figure so the existing paragraph-
+    /// based chat / search indexer picks them up without
+    /// changing what readers see.
+    public var figureMetadata: [String: FigureMetadata]
     /// EPUB 3 Structural Semantics Vocabulary token for this chapter
     /// — `chapter`, `preface`, `appendix`, `bibliography`, etc.
     /// Emitted as `<body epub:type="...">` and on the corresponding
@@ -32,12 +41,14 @@ public struct Chapter: Sendable, Equatable {
                 footnotes: [Footnote] = [],
                 pageAnchors: [PageAnchor] = [],
                 figureAssets: [FigureAsset] = [],
+                figureMetadata: [String: FigureMetadata] = [:],
                 epubType: String? = nil) {
         self.title = title
         self.blocks = blocks
         self.footnotes = footnotes
         self.pageAnchors = pageAnchors
         self.figureAssets = figureAssets
+        self.figureMetadata = figureMetadata
         self.epubType = epubType
     }
 }

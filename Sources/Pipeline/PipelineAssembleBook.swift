@@ -180,6 +180,7 @@ extension PDFToEPUBPipeline {
                 footnotes: reflowed.footnotes,
                 pageAnchors: reflowed.pageAnchors,
                 figureAssets: reflowed.figureAssets,
+                figureMetadata: reflowed.figureMetadata,
                 bookFallbackTitle: title
             )
             let rawChapters = splitResult.chapters

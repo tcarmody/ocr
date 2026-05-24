@@ -92,6 +92,21 @@ struct XHTMLWriter {
                     body += renderRuns(caption, parentLanguage: defaultLanguage)
                     body += "</figcaption>"
                 }
+                // P-Diagram-Description Tier 2/3. When the Cloud
+                // diagram extractor produced a description and/or
+                // labels for this figure, emit them inside a
+                // `<aside hidden epub:type="aside">` so the
+                // chat / search indexer (which chunks paragraph-
+                // shaped XHTML) picks them up automatically, but
+                // EPUB readers don't render them. The `hidden`
+                // attribute + book.css `aside.hu-figure-metadata
+                // { display: none }` rule both contribute (defense
+                // in depth — old readers respect one but not the
+                // other).
+                if let metadata = chapter.figureMetadata[assetId],
+                   metadata.hasIndexableContent {
+                    body += renderFigureMetadataAside(metadata)
+                }
                 body += "</figure>\n"
             case .table(let rows, let caption):
                 body += renderTable(
@@ -157,6 +172,30 @@ struct XHTMLWriter {
         \(body)</body>
         </html>
         """
+    }
+
+    /// P-Diagram-Description Tier 2/3. Emit Sonnet-generated
+    /// figure description + label list inside an `<aside
+    /// hidden>` so the chat / search indexer picks them up from
+    /// the chapter XHTML (it chunks paragraph-shaped content).
+    /// The `hidden` attribute keeps the aside out of the
+    /// rendered chapter; `book.css` adds a `display: none` rule
+    /// on the class for older readers that don't honor `hidden`.
+    private func renderFigureMetadataAside(_ metadata: FigureMetadata) -> String {
+        var out = "<aside class=\"hu-figure-metadata\" hidden>"
+        if let description = metadata.description, !description.isEmpty {
+            out += "<p>\(XMLEscape.text(description))</p>"
+        }
+        // Tier 3 labels populate this helper too — currently empty
+        // for Tier 2, but the markup site is here so the next
+        // commit only extends `metadata.labels` handling.
+        if !metadata.labels.isEmpty {
+            out += "<p>Labels: "
+                + XMLEscape.text(metadata.labels.joined(separator: ", "))
+                + "</p>"
+        }
+        out += "</aside>"
+        return out
     }
 
     /// Render a `Block.table` — `<table role="table">` with optional

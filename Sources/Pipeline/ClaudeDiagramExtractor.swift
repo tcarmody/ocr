@@ -102,19 +102,24 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
     // MARK: - Prompt
 
     /// Stable system prompt — kept byte-stable across requests so
-    /// the prefix is cacheable. Asks for a single short alt-text
-    /// line, no surrounding prose.
+    /// the prefix is cacheable. Asks for alt text + longer
+    /// description in a two-part response separated by a sentinel.
     static let systemPrompt = """
-        You generate short accessibility alt text for diagrams \
-        and figures extracted from book pages. The image shows ONE \
+        You generate accessibility metadata for diagrams and \
+        figures extracted from book pages. The image shows ONE \
         figure region — could be a chart, schematic, photograph, \
         anatomical illustration, flowchart, map, or other visual. \
-        Return ONLY the alt text, in the format described below. \
+        Return ONLY the metadata in the format described below. \
         No preface, no commentary, no markdown fences.
 
-        Output format — a single line, ≤ 120 characters, plain text.
+        Output format — two parts separated by a literal \
+        `---DESCRIPTION---` line on its own:
 
-        Rules:
+        <alt text — single line, ≤ 120 characters>
+        ---DESCRIPTION---
+        <longer description — 1-3 sentences, ≤ 500 characters>
+
+        First part (ALT TEXT) rules:
           * Name the diagram TYPE specifically: "bar chart", \
         "scatter plot", "line graph", "flowchart", "anatomical \
         illustration", "schematic diagram", "photograph", "map", \
@@ -129,18 +134,30 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
         "The figure depicts", "An illustration of", "A diagram \
         showing", etc. Lead with the diagram type or subject \
         directly.
-          * NO speculation. If the image is unclear or you can't \
-        tell what's depicted, return the empty string. The caller \
-        treats empty as "fall back to the default alt='figure'" — \
-        never invent content.
-          * Decorative ornaments, page-edge flourishes, and chapter \
-        opener illustrations without subject matter: return the \
-        empty string.
           * Match the printed caption's framing when the user turn \
         provides one — don't invent a different topic than the \
-        caption states. The caption is authoritative on the \
-        SUBJECT; your job is to add visual-form detail \
-        ("the bar chart [from caption] shows X on the x-axis…").
+        caption states.
+
+        Second part (DESCRIPTION) rules:
+          * 1-3 complete sentences. Aim for 150-400 characters; \
+        hard cap at 500.
+          * Describe what's visible in MORE DETAIL than the alt \
+        text affords — region structure, layout, labeled \
+        elements, value ranges, geometric relationships. The \
+        goal is text a chat / search index can hit on queries \
+        about the diagram's content.
+          * Stay factual and visible: only describe what's actually \
+        rendered. No interpretation, no inferred meaning, no \
+        "this represents…" speculation.
+          * NO preambles for this part either — start with a noun \
+        phrase ("A bar chart with…", "Two-axis plot showing…").
+
+        If the image is unclear, decorative-only, or you cannot \
+        tell what's depicted, return the empty string for BOTH \
+        parts (i.e. just the `---DESCRIPTION---` separator on \
+        its own line with no content before or after). The caller \
+        treats empty as "fall back to the default alt='figure'" — \
+        never invent content.
         """
 
     /// User-turn prompt; includes the caption text (when known)
@@ -165,8 +182,8 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
     // MARK: - Sanitization
 
     /// Parse the model's response into a `DiagramExtractionResult`.
-    /// Tier 1 only populates `altText`; Tier 2 (description) and
-    /// Tier 3 (labels) extend this without changing the call site.
+    /// Tier 1 populates `altText`; Tier 2 adds `description`.
+    /// Tier 3 (labels) extends without changing the call site.
     ///
     /// Returns nil on empty / refusal-style responses so the
     /// caller leaves the default `alt="figure"` in place.
@@ -175,13 +192,45 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if stripped.isEmpty { return nil }
 
+        // Tier 2 separator. Tolerate surrounding whitespace +
+        // optional newlines (the model occasionally drops them).
+        let separators = [
+            "\n---DESCRIPTION---\n",
+            "\n---DESCRIPTION---",
+            "---DESCRIPTION---\n",
+            "---DESCRIPTION---",
+        ]
+        var head = stripped
+        var tail: String? = nil
+        for sep in separators {
+            if let range = stripped.range(of: sep) {
+                head = String(stripped[stripped.startIndex..<range.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                tail = String(stripped[range.upperBound...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+
+        guard let altText = sanitizeAltText(head) else { return nil }
+        let description = tail.flatMap { sanitizeDescription($0) }
+        return DiagramExtractionResult(
+            altText: altText,
+            description: description
+        )
+    }
+
+    /// Sanitize the alt-text half of a two-part response (or the
+    /// entire response when the separator is missing — keeps
+    /// pre-Tier-2 prompt cache hits working). Empty / refusal-
+    /// prefixed input returns nil; preambles get stripped;
+    /// length capped at 120 chars.
+    static func sanitizeAltText(_ raw: String) -> String? {
+        let stripped = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.isEmpty { return nil }
+
         // Defensive: catch common refusal-style replies that
-        // shouldn't get wrapped as alt text. The system prompt
-        // tells the model to return empty when not a diagram,
-        // but a hedged response sometimes leaks through —
-        // "alt='I cannot describe this image'" would render in
-        // screen readers as exactly that, which is worse than
-        // the bare "figure" fallback.
+        // shouldn't get wrapped as alt text.
         let lower = stripped.lowercased()
         let refusalPrefixes = [
             "i cannot", "i can't", "i am unable", "i'm unable",
@@ -192,35 +241,65 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
         }
 
         // Strip the kind of preamble the prompt forbids but
-        // models occasionally slip in anyway. Case-insensitive
-        // match at the start of the string only.
-        let preambles = [
-            "this image shows ", "this figure shows ",
-            "this image depicts ", "this figure depicts ",
-            "an illustration of ", "a diagram showing ",
-            "a diagram of ", "a figure showing ",
-            "the image shows ", "the figure shows ",
-            "the figure depicts ", "the image depicts ",
-        ]
+        // models occasionally slip in anyway.
         var trimmed = stripped
-        for preamble in preambles where trimmed.lowercased().hasPrefix(preamble) {
+        for preamble in Self.bannedPreambles
+        where trimmed.lowercased().hasPrefix(preamble) {
             trimmed = String(trimmed.dropFirst(preamble.count))
-            // Capitalize the leading character so the alt text
-            // reads as a sentence.
             if let first = trimmed.first {
                 trimmed = first.uppercased() + trimmed.dropFirst()
             }
             break
         }
 
-        // Cap at 120 chars defensively even when the prompt asks
-        // for that — screen readers are slow when alt text gets
-        // long, and a runaway response shouldn't degrade UX.
         let capped = trimmed.count <= 120
             ? trimmed
             : String(trimmed.prefix(117)) + "…"
-        return DiagramExtractionResult(altText: capped)
+        return capped
     }
+
+    /// Sanitize the description half. Same refusal-prefix +
+    /// preamble guards as alt text, but with a longer length
+    /// cap (500 chars) matching the prompt instructions.
+    /// Returns nil for empty / refusal-style input so the
+    /// caller leaves `description` nil.
+    static func sanitizeDescription(_ raw: String) -> String? {
+        let stripped = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.isEmpty { return nil }
+
+        let lower = stripped.lowercased()
+        let refusalPrefixes = [
+            "i cannot", "i can't", "i am unable", "i'm unable",
+            "sorry", "unable to",
+        ]
+        for prefix in refusalPrefixes where lower.hasPrefix(prefix) {
+            return nil
+        }
+
+        var trimmed = stripped
+        for preamble in Self.bannedPreambles
+        where trimmed.lowercased().hasPrefix(preamble) {
+            trimmed = String(trimmed.dropFirst(preamble.count))
+            if let first = trimmed.first {
+                trimmed = first.uppercased() + trimmed.dropFirst()
+            }
+            break
+        }
+
+        let capped = trimmed.count <= 500
+            ? trimmed
+            : String(trimmed.prefix(497)) + "…"
+        return capped
+    }
+
+    static let bannedPreambles = [
+        "this image shows ", "this figure shows ",
+        "this image depicts ", "this figure depicts ",
+        "an illustration of ", "a diagram showing ",
+        "a diagram of ", "a figure showing ",
+        "the image shows ", "the figure shows ",
+        "the figure depicts ", "the image depicts ",
+    ]
 
     /// Strip outer ```...``` fence (with optional language tag)
     /// from a model response. Conservative — only the outer fence
