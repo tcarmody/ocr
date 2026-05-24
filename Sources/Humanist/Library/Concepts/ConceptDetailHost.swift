@@ -48,7 +48,6 @@ struct ConceptDetailHost: View {
                 // copy. The sidebar shows its own progress UI;
                 // here we just defer.
                 ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView(
                     "Pick a concept",
@@ -59,6 +58,10 @@ struct ConceptDetailHost: View {
                 )
             }
         }
+        // Pin the empty-state placeholders to fill the pane —
+        // otherwise their small intrinsic size lets HSplitView
+        // collapse the whole row to match.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: backendIdentifier) {
             await loadGraph()
         }

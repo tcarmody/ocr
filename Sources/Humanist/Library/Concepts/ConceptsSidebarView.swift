@@ -56,6 +56,12 @@ struct ConceptsSidebarView: View {
             Divider()
             content
         }
+        // Without explicit maxHeight, the building-state
+        // ProgressView's small intrinsic height lets HSplitView
+        // collapse the whole row to a thin band. Pin the pane
+        // to fill vertically so every state (idle / building /
+        // ready) sits at the full column height.
+        .frame(maxHeight: .infinity, alignment: .top)
         .task(id: backendIdentifier) {
             await buildIfNeeded()
         }
