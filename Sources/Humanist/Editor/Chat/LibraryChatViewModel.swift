@@ -862,29 +862,27 @@ final class LibraryChatViewModel: ObservableObject {
                            LibraryChatTools.searchTopicTool]
                         : nil
                 )
-                let response = try await client.send(request)
-                try Task.checkCancellation()
-
-                // Pull out text + tool_use blocks. Unknown blocks
-                // we drop quietly — they're a forward-compat hatch.
-                var textChunks: [String] = []
+                // Stream this round. Text deltas append live to the
+                // draft (matches the Ollama agentic path); tool_use
+                // blocks are accumulated by the SSE parser and
+                // delivered as single `.toolUse` events at
+                // content_block_stop time, so we never see partial
+                // input_json here.
+                var roundText = ""
                 var toolCalls: [(id: String, name: String, inputJSON: Data)] = []
-                for block in response.content {
-                    switch block {
-                    case .text(let s): textChunks.append(s)
+                let stream = client.sendStream(request)
+                for try await event in stream {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .textDelta(let chunk):
+                        roundText += chunk
+                        appendToDraft(id: draftId, text: chunk)
+                        isThinking = false
                     case .toolUse(let id, let name, let json):
                         toolCalls.append((id, name, json))
-                    case .unknown: break
+                    case .messageStop:
+                        break
                     }
-                }
-
-                // Append any text the model emitted on this round
-                // into the visible draft so the user sees progress
-                // even when the model is mid-loop.
-                let combinedText = textChunks.joined()
-                if !combinedText.isEmpty {
-                    appendToDraft(id: draftId, text: combinedText)
-                    isThinking = false
                 }
 
                 // Final answer reached: either no tool calls or
@@ -905,14 +903,13 @@ final class LibraryChatViewModel: ObservableObject {
                 // full assistant turn (including tool_use blocks)
                 // to precede the matching tool_result user turn.
                 var assistantBlocks: [ContentBlock] = []
-                for block in response.content {
-                    switch block {
-                    case .text(let s):
-                        assistantBlocks.append(.text(s, cacheControl: nil))
-                    case .toolUse(let id, let name, let json):
-                        assistantBlocks.append(.toolUse(id: id, name: name, inputJSON: json))
-                    case .unknown: break
-                    }
+                if !roundText.isEmpty {
+                    assistantBlocks.append(.text(roundText, cacheControl: nil))
+                }
+                for call in toolCalls {
+                    assistantBlocks.append(.toolUse(
+                        id: call.id, name: call.name, inputJSON: call.inputJSON
+                    ))
                 }
                 apiMessages.append(Message(
                     role: .assistant, content: .blocks(assistantBlocks)

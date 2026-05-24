@@ -934,6 +934,11 @@ final class BookChatViewModel: ObservableObject {
                         isThinking = false
                     }
                     appendToDraft(id: draftId, text: chunk)
+                case .toolUse:
+                    // This non-agentic send doesn't advertise tools;
+                    // any tool_use block here is a model anomaly to
+                    // silently ignore.
+                    break
                 case .messageStop:
                     break
                 }
@@ -1061,23 +1066,26 @@ final class BookChatViewModel: ObservableObject {
                     thinking: .disabled,
                     tools: maxIterations > 0 ? toolDescriptors : nil
                 )
-                let response = try await client.send(request)
-                try Task.checkCancellation()
-
-                var textChunks: [String] = []
+                // Stream this round — same shape as
+                // LibraryChatViewModel.runCloudSendAgentic and
+                // runLibraryCloudSendAgentic. Text deltas append
+                // live; tool_use blocks arrive complete via the SSE
+                // parser.
+                var roundText = ""
                 var toolCalls: [(id: String, name: String, inputJSON: Data)] = []
-                for block in response.content {
-                    switch block {
-                    case .text(let s): textChunks.append(s)
+                let stream = client.sendStream(request)
+                for try await event in stream {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .textDelta(let chunk):
+                        roundText += chunk
+                        appendToDraft(id: draftId, text: chunk)
+                        isThinking = false
                     case .toolUse(let id, let name, let json):
                         toolCalls.append((id, name, json))
-                    case .unknown: break
+                    case .messageStop:
+                        break
                     }
-                }
-                let combinedText = textChunks.joined()
-                if !combinedText.isEmpty {
-                    appendToDraft(id: draftId, text: combinedText)
-                    isThinking = false
                 }
 
                 if toolCalls.isEmpty || iteration >= maxIterations {
@@ -1086,14 +1094,13 @@ final class BookChatViewModel: ObservableObject {
                 }
 
                 var assistantBlocks: [ContentBlock] = []
-                for block in response.content {
-                    switch block {
-                    case .text(let s):
-                        assistantBlocks.append(.text(s, cacheControl: nil))
-                    case .toolUse(let id, let name, let json):
-                        assistantBlocks.append(.toolUse(id: id, name: name, inputJSON: json))
-                    case .unknown: break
-                    }
+                if !roundText.isEmpty {
+                    assistantBlocks.append(.text(roundText, cacheControl: nil))
+                }
+                for call in toolCalls {
+                    assistantBlocks.append(.toolUse(
+                        id: call.id, name: call.name, inputJSON: call.inputJSON
+                    ))
                 }
                 apiMessages.append(Message(
                     role: .assistant, content: .blocks(assistantBlocks)
@@ -2154,23 +2161,25 @@ final class BookChatViewModel: ObservableObject {
                            LibraryChatTools.searchTopicTool]
                         : nil
                 )
-                let response = try await client.send(request)
-                try Task.checkCancellation()
-
-                var textChunks: [String] = []
+                // Stream this round — text deltas append live, tool_use
+                // blocks accumulate via the SSE parser and arrive as
+                // single `.toolUse` events. Same shape as
+                // LibraryChatViewModel.runCloudSendAgentic.
+                var roundText = ""
                 var toolCalls: [(id: String, name: String, inputJSON: Data)] = []
-                for block in response.content {
-                    switch block {
-                    case .text(let s): textChunks.append(s)
+                let stream = client.sendStream(request)
+                for try await event in stream {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .textDelta(let chunk):
+                        roundText += chunk
+                        appendToDraft(id: draftId, text: chunk)
+                        isThinking = false
                     case .toolUse(let id, let name, let json):
                         toolCalls.append((id, name, json))
-                    case .unknown: break
+                    case .messageStop:
+                        break
                     }
-                }
-                let combinedText = textChunks.joined()
-                if !combinedText.isEmpty {
-                    appendToDraft(id: draftId, text: combinedText)
-                    isThinking = false
                 }
 
                 if toolCalls.isEmpty || iteration >= maxIterations {
@@ -2183,14 +2192,13 @@ final class BookChatViewModel: ObservableObject {
                 }
 
                 var assistantBlocks: [ContentBlock] = []
-                for block in response.content {
-                    switch block {
-                    case .text(let s):
-                        assistantBlocks.append(.text(s, cacheControl: nil))
-                    case .toolUse(let id, let name, let json):
-                        assistantBlocks.append(.toolUse(id: id, name: name, inputJSON: json))
-                    case .unknown: break
-                    }
+                if !roundText.isEmpty {
+                    assistantBlocks.append(.text(roundText, cacheControl: nil))
+                }
+                for call in toolCalls {
+                    assistantBlocks.append(.toolUse(
+                        id: call.id, name: call.name, inputJSON: call.inputJSON
+                    ))
                 }
                 apiMessages.append(Message(
                     role: .assistant, content: .blocks(assistantBlocks)

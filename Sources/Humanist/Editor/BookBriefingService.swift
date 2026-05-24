@@ -118,6 +118,11 @@ final class BookBriefingService: ObservableObject {
                 switch event {
                 case .textDelta(let chunk):
                     briefing += chunk
+                case .toolUse:
+                    // Briefing doesn't use tools; ignore any
+                    // unexpected tool_use blocks rather than
+                    // erroring out.
+                    break
                 case .messageStop:
                     break
                 }
