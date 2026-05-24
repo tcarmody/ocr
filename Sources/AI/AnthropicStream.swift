@@ -8,21 +8,12 @@ private let streamLog = Logger(
 
 /// One event yielded from a streaming `messages` request. The SSE
 /// stream emits more event types than these, but the chat path
-/// only needs incremental text, completed tool-use blocks, and an
-/// end-of-stream signal.
+/// only needs incremental text + an end-of-stream signal.
 public enum AnthropicStreamEvent: Sendable, Equatable {
     /// Incremental text from a `content_block_delta` event of type
     /// `text_delta`. The chat caller appends these to the draft
     /// assistant message as they arrive.
     case textDelta(String)
-    /// One complete tool_use block. The SSE parser accumulates the
-    /// `input_json_delta` chunks across the block's lifetime and
-    /// emits this single event at `content_block_stop` time, so
-    /// consumers don't have to assemble partial JSON themselves.
-    /// `inputJSON` is the raw bytes the model assembled for the
-    /// tool's arguments — same shape as the non-streaming
-    /// `ResponseBlock.toolUse` carries.
-    case toolUse(id: String, name: String, inputJSON: Data)
     /// `message_stop` event. Stream completes after this; the
     /// `AsyncThrowingStream` then finishes with no error.
     case messageStop
@@ -122,18 +113,8 @@ extension AnthropicAPIClient {
         // SSE format: blocks of `event: <name>\n` + `data: <json>\n`
         // separated by blank lines. We accumulate per-block and
         // dispatch on the blank-line boundary.
-        //
-        // For tool_use streaming, the wire format spreads one
-        // logical "tool call" across multiple SSE events:
-        //   content_block_start (carries id + name, empty input)
-        //   content_block_delta × N (input_json_delta carries chunks)
-        //   content_block_stop
-        // We accumulate per-block-index and emit a single
-        // `.toolUse(id, name, inputJSON)` event at content_block_stop
-        // time so consumers don't have to assemble partial JSON.
         var currentEvent: String?
         var currentDataLines: [String] = []
-        var toolUseAccumulators: [Int: ToolUseAccumulator] = [:]
         do {
             for try await line in bytes.lines {
                 streamLog.debug("line: \(line, privacy: .public)")
@@ -143,7 +124,6 @@ extension AnthropicAPIClient {
                         let stop = handleSSEEvent(
                             event: event,
                             data: payload,
-                            toolUseAccumulators: &toolUseAccumulators,
                             continuation: continuation
                         )
                         if stop { return }
@@ -174,74 +154,23 @@ extension AnthropicAPIClient {
 
     /// Parse one SSE event. Returns true when the stream is logically
     /// complete (`message_stop` or `error` event) so the outer
-    /// loop can stop reading. Tool-use accumulators are passed in
-    /// by reference so a content_block_start can stash {id, name},
-    /// content_block_delta with input_json_delta can append JSON
-    /// chunks, and content_block_stop can drain the accumulator
-    /// into a single `.toolUse` event.
+    /// loop can stop reading.
     private func handleSSEEvent(
         event: String,
         data: String,
-        toolUseAccumulators: inout [Int: ToolUseAccumulator],
         continuation: AsyncThrowingStream<AnthropicStreamEvent, Error>.Continuation
     ) -> Bool {
         switch event {
-        case "content_block_start":
-            // {"type":"content_block_start","index":N,
-            //  "content_block":{"type":"tool_use","id":"...",
-            //                   "name":"...","input":{}}}
-            guard let payload = data.data(using: .utf8),
-                  let parsed = try? Self.decoder.decode(
-                    SSEContentBlockStart.self, from: payload
-                  )
-            else { return false }
-            if parsed.content_block.type == "tool_use",
-               let id = parsed.content_block.id,
-               let name = parsed.content_block.name {
-                toolUseAccumulators[parsed.index] = ToolUseAccumulator(
-                    id: id, name: name, json: ""
-                )
-            }
-            return false
         case "content_block_delta":
             // {"type":"content_block_delta","index":0,
             //  "delta":{"type":"text_delta","text":"Hello"}}
-            // — or —
-            // {"type":"content_block_delta","index":1,
-            //  "delta":{"type":"input_json_delta",
-            //           "partial_json":"\"que"}}
             guard let payload = data.data(using: .utf8),
                   let parsed = try? Self.decoder.decode(
                     SSEContentBlockDelta.self, from: payload
                   )
             else { return false }
-            switch parsed.delta.type {
-            case "text_delta":
+            if parsed.delta.type == "text_delta" {
                 continuation.yield(.textDelta(parsed.delta.text ?? ""))
-            case "input_json_delta":
-                if let partial = parsed.delta.partial_json,
-                   var acc = toolUseAccumulators[parsed.index] {
-                    acc.json += partial
-                    toolUseAccumulators[parsed.index] = acc
-                }
-            default:
-                break
-            }
-            return false
-        case "content_block_stop":
-            // {"type":"content_block_stop","index":N}
-            // Drain the tool-use accumulator (if any) into a single
-            // .toolUse event so the consumer never sees partial JSON.
-            guard let payload = data.data(using: .utf8),
-                  let parsed = try? Self.decoder.decode(
-                    SSEContentBlockStop.self, from: payload
-                  )
-            else { return false }
-            if let acc = toolUseAccumulators.removeValue(forKey: parsed.index) {
-                let jsonData = acc.json.data(using: .utf8) ?? Data("{}".utf8)
-                continuation.yield(.toolUse(
-                    id: acc.id, name: acc.name, inputJSON: jsonData
-                ))
             }
             return false
         case "message_stop":
@@ -272,39 +201,12 @@ extension AnthropicAPIClient {
         }
     }
 
-    private struct SSEContentBlockStart: Decodable {
-        let index: Int
-        let content_block: ContentBlockShape
-        struct ContentBlockShape: Decodable {
-            let type: String
-            let id: String?
-            let name: String?
-        }
-    }
-
     private struct SSEContentBlockDelta: Decodable {
-        let index: Int
         let delta: Delta
         struct Delta: Decodable {
             let type: String
             let text: String?
-            let partial_json: String?
         }
-    }
-
-    private struct SSEContentBlockStop: Decodable {
-        let index: Int
-    }
-
-    /// Per-block accumulator for tool_use streaming. Lifecycle:
-    /// `content_block_start` creates the entry with id+name + an
-    /// empty JSON buffer; each `input_json_delta` appends to the
-    /// buffer; `content_block_stop` drains the entry into a
-    /// `.toolUse` event.
-    fileprivate struct ToolUseAccumulator: Sendable {
-        let id: String
-        let name: String
-        var json: String
     }
 
     /// Streaming requests need the `Accept: text/event-stream`
