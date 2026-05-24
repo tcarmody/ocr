@@ -152,7 +152,7 @@ let package = Package(
             name: "HumanistCLI",
             dependencies: [
                 "Document", "PDFIngest", "OCR", "EPUB", "Layout",
-                "Pipeline", "AI",
+                "Pipeline", "AI", "LibraryIndexing",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/HumanistCLI",
