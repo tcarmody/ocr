@@ -23,17 +23,42 @@ import SwiftUI
 /// dependency.
 struct MarkdownMessageBody: View {
     let text: String
+    /// Cached block parse + inline AttributedStrings. SwiftUI
+    /// recomputes the view's `body` on every observable change in
+    /// the enclosing chat pane — that's many times per second
+    /// while scrolling, while streaming, while a tool status flips.
+    /// Without caching, each recompute paid the full Markdown
+    /// parse (regex line splitting + per-line `AttributedString(
+    /// markdown:)` calls) for every visible message; on a long
+    /// transcript that compounded into 100s of regex passes per
+    /// scroll frame and produced visible hangs (sampled main
+    /// thread pinned in SelectionOverlay/JetUI update cascades
+    /// downstream of body recompute).
+    ///
+    /// Recomputed only when `text` changes (via the `id:` modifier
+    /// on the outer view) so a streaming append still re-parses,
+    /// but a hover / scroll / unrelated state change reuses the
+    /// cache.
+    @State private var cache: Cache = Cache(text: "", blocks: [])
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(blocks.indices, id: \.self) { idx in
-                renderBlock(blocks[idx])
+            ForEach(cache.blocks.indices, id: \.self) { idx in
+                renderBlock(cache.blocks[idx])
             }
         }
         // Selection scoped to the whole message so a user can drag
         // across multiple paragraphs the way they would in any
         // standard text view.
         .textSelection(.enabled)
+        .task(id: text) {
+            // Parse off the main actor only when the input changes;
+            // `.task(id:)` cancels + restarts on every text change
+            // which is exactly the streaming-append cadence we want
+            // (cancel old parse, start fresh on the new text).
+            let blocks = Self.parse(text)
+            cache = Cache(text: text, blocks: blocks)
+        }
     }
 
     // MARK: - Block parsing
@@ -50,11 +75,12 @@ struct MarkdownMessageBody: View {
         case codeBlock(language: String?, code: String)
     }
 
-    /// Lazy property: parsed once per body evaluation. SwiftUI
-    /// re-evaluates body on text change anyway, so caching across
-    /// renders isn't worth the complexity.
-    private var blocks: [Block] {
-        Self.parse(text)
+    /// `Cache` keys parsed blocks by the text they came from so an
+    /// out-of-order task completion (rare but possible during fast
+    /// streaming) doesn't render blocks against a stale text.
+    private struct Cache: Equatable {
+        let text: String
+        let blocks: [Block]
     }
 
     /// Walk the input line-by-line, batching lines into blocks.
