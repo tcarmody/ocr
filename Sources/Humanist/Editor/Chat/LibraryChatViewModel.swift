@@ -310,52 +310,65 @@ final class LibraryChatViewModel: ObservableObject {
             // Entity + alias boosts. Same gating as the per-book
             // path — when the user disables entity retrieval in
             // Settings, both NER hits and aliases skip.
-            let useEntity = await MainActor.run { self.useEntityRetrieval }
-            let entityIndex = await MainActor.run { self.libraryEntityIndex }
-            var entityAnchors = useEntity
-                ? self.computeLibraryEntityAnchors(
-                    query: query, entities: entityIndex
-                  )
-                : []
-            let aliases = useEntity
+            let useEntity = self.useEntityRetrieval
+            let entityIndex = self.libraryEntityIndex
+            let topK = self.maxRetrievedParagraphs
+            let rrfK = self.rrfK
+            let scope = self.scopedURLs
+            let excluded = self.excludedBookURLs
+            let maxParaChars = self.maxParagraphChars
+            // Heavy retrieval — brute-force cosine across every
+            // paragraph in every source, plus entity + alias scans
+            // that walk every paragraph. Both are O(library) and
+            // dominate the wall time on big libraries. Push them
+            // off the main actor so the UI stays live; without this
+            // the @MainActor Task inherits actor isolation and the
+            // search blocks the event loop for the whole pass.
+            let aliases: AliasDictionary = useEntity
                 ? AliasDictionaryStore().read()
                 : .empty
-            entityAnchors.append(contentsOf: self.computeLibraryAliasAnchors(
-                query: query, library: library, aliases: aliases
-            ))
-            let topK = await MainActor.run { self.maxRetrievedParagraphs }
-            let rrfK = await MainActor.run { self.rrfK }
-            let scope = await MainActor.run { self.scopedURLs }
-            let excluded = await MainActor.run { self.excludedBookURLs }
-            // Filter entity anchors against the same scope + deny-
-            // list combination the cosine search uses, otherwise
-            // the federated entity index would pull in anchors
-            // outside the effective participating-books set.
-            let allowedSourcePaths: Set<String>? = scope.map { urls in
-                Set(urls.map {
+            let hits = await Task.detached(priority: .userInitiated) {
+                () -> [LibraryEmbeddingIndex.Hit] in
+                var entityAnchors = useEntity
+                    ? Self.computeLibraryEntityAnchors(
+                        query: query, entities: entityIndex
+                      )
+                    : []
+                entityAnchors.append(contentsOf: Self.computeLibraryAliasAnchors(
+                    query: query, library: library, aliases: aliases
+                ))
+                // Filter entity anchors against the same scope + deny-
+                // list combination the cosine search uses, otherwise
+                // the federated entity index would pull in anchors
+                // outside the effective participating-books set.
+                let allowedSourcePaths: Set<String>? = scope.map { urls in
+                    Set(urls.map {
+                        $0.canonicalForFile.standardizedFileURL.path
+                    })
+                }
+                let excludedSourcePaths: Set<String> = Set(excluded.map {
                     $0.canonicalForFile.standardizedFileURL.path
                 })
-            }
-            let excludedSourcePaths: Set<String> = Set(excluded.map {
-                $0.canonicalForFile.standardizedFileURL.path
-            })
-            let filteredEntityAnchors = entityAnchors.filter { anchor in
-                let p = anchor.epubURL
-                    .canonicalForFile.standardizedFileURL.path
-                if let allowedSourcePaths, !allowedSourcePaths.contains(p) {
-                    return false
+                let filtered = entityAnchors.filter { anchor in
+                    let p = anchor.epubURL
+                        .canonicalForFile.standardizedFileURL.path
+                    if let allowedSourcePaths, !allowedSourcePaths.contains(p) {
+                        return false
+                    }
+                    return !excludedSourcePaths.contains(p)
                 }
-                return !excludedSourcePaths.contains(p)
-            }
-            let hits = library.search(
-                queryVector: queryVector,
-                topK: topK,
-                entityMatches: filteredEntityAnchors,
-                rrfK: rrfK,
-                restrictTo: scope,
-                excluding: excluded
+                return library.search(
+                    queryVector: queryVector,
+                    topK: topK,
+                    entityMatches: filtered,
+                    rrfK: rrfK,
+                    restrictTo: scope,
+                    excluding: excluded
+                )
+            }.value
+            let context = Self.renderLibraryContext(
+                hits: hits, maxParaChars: maxParaChars
             )
-            let context = self.renderLibraryContext(hits: hits)
             let userPrompt = context + "\n\nQuestion: " + query
 
             switch chosenBackend {
@@ -583,7 +596,10 @@ final class LibraryChatViewModel: ObservableObject {
 
     // MARK: - Entity / alias boosts (library scope)
 
-    private func computeLibraryEntityAnchors(
+    /// `nonisolated static` so the off-main retrieval block in
+    /// `send()` can call it without hopping back to MainActor.
+    /// Reads only its parameters — no instance state.
+    private nonisolated static func computeLibraryEntityAnchors(
         query: String,
         entities: LibraryEntityIndex?
     ) -> [LibraryEntityIndex.LibraryAnchor] {
@@ -602,7 +618,11 @@ final class LibraryChatViewModel: ObservableObject {
         return out
     }
 
-    private func computeLibraryAliasAnchors(
+    /// `nonisolated static` for the same reason as
+    /// `computeLibraryEntityAnchors` — walks every paragraph in
+    /// every source, so it MUST run off the main actor on large
+    /// libraries.
+    private nonisolated static func computeLibraryAliasAnchors(
         query: String,
         library: LibraryEmbeddingIndex,
         aliases: AliasDictionary
@@ -636,7 +656,13 @@ final class LibraryChatViewModel: ObservableObject {
 
     // MARK: - Rendering + sending
 
-    private func renderLibraryContext(hits: [LibraryEmbeddingIndex.Hit]) -> String {
+    /// `nonisolated static` so retrieval can render the context
+    /// inside the same off-main block. `maxParaChars` is plumbed
+    /// in because it used to read off `self`.
+    private nonisolated static func renderLibraryContext(
+        hits: [LibraryEmbeddingIndex.Hit],
+        maxParaChars: Int
+    ) -> String {
         guard !hits.isEmpty else {
             return """
             (No matching paragraphs were found across the user's \
@@ -658,7 +684,7 @@ final class LibraryChatViewModel: ObservableObject {
         for hit in hits {
             guard let bIdx = bookIndex[hit.epubURL] else { continue }
             let text = (hit.text ?? "")
-                .prefix(maxParagraphChars)
+                .prefix(maxParaChars)
             out += "[book:\(bIdx) chapter:\(hit.chapterIdx) para:\(hit.paragraphIdx)]\n  • \(text)\n\n"
         }
         return out

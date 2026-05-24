@@ -148,7 +148,7 @@ struct CompareCorpusCommand: AsyncParsableCommand {
             do {
                 try await Self.convert(
                     pdf: pdf, output: outURL,
-                    `private`: self.private,
+                    private: self.private,
                     apiKeyEnv: apiKeyEnv
                 )
             } catch {

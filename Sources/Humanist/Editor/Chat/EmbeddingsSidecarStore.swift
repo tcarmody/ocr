@@ -39,6 +39,18 @@ struct EmbeddingsSidecar: Codable, Sendable {
     /// during the embedding pipeline. Drives entity-shaped
     /// retrieval and library-wide entity federation.
     var entities: BookEntityIndex?
+    /// True iff this sidecar's `backendIdentifier` records a
+    /// fallback build — the user's chosen primary backend errored
+    /// for this book and the indexer used Apple NLEmbedding as a
+    /// safety net. Set on write by the fallback path in
+    /// `BookSidecarBuilder.buildIfNeeded`; consulted by the
+    /// bulk-index skip check so genuine fallbacks stay sticky
+    /// across re-runs without wasting an API call retrying a known
+    /// failure. Defaults to false on decode so legacy sidecars
+    /// (which pre-date this flag) are treated as primary-backend
+    /// builds — eligible for upgrade when the user changes their
+    /// backend and re-indexes.
+    var wasFallback: Bool
 
     struct Entry: Codable, Sendable {
         let chapterIdx: Int
@@ -102,7 +114,7 @@ struct EmbeddingsSidecar: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, backendIdentifier, dimension
-        case paragraphs, hierarchy, entities
+        case paragraphs, hierarchy, entities, wasFallback
     }
 
     init(
@@ -111,7 +123,8 @@ struct EmbeddingsSidecar: Codable, Sendable {
         dimension: Int,
         paragraphs: [Entry],
         hierarchy: BookHierarchyIndex?,
-        entities: BookEntityIndex?
+        entities: BookEntityIndex?,
+        wasFallback: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.backendIdentifier = backendIdentifier
@@ -119,6 +132,7 @@ struct EmbeddingsSidecar: Codable, Sendable {
         self.paragraphs = paragraphs
         self.hierarchy = hierarchy
         self.entities = entities
+        self.wasFallback = wasFallback
     }
 
     init(from decoder: Decoder) throws {
@@ -135,6 +149,13 @@ struct EmbeddingsSidecar: Codable, Sendable {
         self.entities = try c.decodeIfPresent(
             BookEntityIndex.self, forKey: .entities
         )
+        // Legacy sidecars don't carry the flag; default false so
+        // they're treated as primary-backend builds and become
+        // eligible for upgrade in a bulk re-index after the user
+        // changes backends. New code sets the flag explicitly.
+        self.wasFallback = try c.decodeIfPresent(
+            Bool.self, forKey: .wasFallback
+        ) ?? false
     }
 }
 

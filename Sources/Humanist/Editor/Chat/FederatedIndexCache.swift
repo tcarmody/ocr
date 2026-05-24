@@ -147,15 +147,46 @@ enum FederatedIndexCache {
         _ payload: Payload,
         to url: URL = defaultCacheURL
     ) -> Bool {
+        // Stream the encoded blob to a temp file via a bounded
+        // buffer rather than building one giant in-memory Data —
+        // the previous `try data.write(to:)` path could peak at
+        // tens of GB on big libraries (high-dim Gemini × thousands
+        // of books) because Data doubles capacity on append, and
+        // the in-memory `sources` payload still has to coexist
+        // with the half-encoded buffer. Streaming caps the
+        // transient cost at the buffer size (~256 KB).
+        let parent = url.deletingLastPathComponent()
+        let tempURL = parent.appendingPathComponent(
+            "library-federated-index.bin.tmp-\(UUID().uuidString)"
+        )
         do {
             try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
+                at: parent, withIntermediateDirectories: true
             )
-            let data = try encode(payload)
-            try data.write(to: url, options: .atomic)
+            guard FileManager.default.createFile(
+                atPath: tempURL.path, contents: nil
+            ) else { return false }
+            let handle = try FileHandle(forWritingTo: tempURL)
+            do {
+                var writer = StreamingByteWriter(handle: handle)
+                try encode(payload, into: &writer)
+                try writer.flush()
+                try handle.close()
+            } catch {
+                try? handle.close()
+                try? FileManager.default.removeItem(at: tempURL)
+                return false
+            }
+            // Atomic replace. `replaceItemAt` returns the new URL
+            // of the destination; we don't need it.
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: tempURL)
+            } else {
+                try FileManager.default.moveItem(at: tempURL, to: url)
+            }
             return true
         } catch {
+            try? FileManager.default.removeItem(at: tempURL)
             return false
         }
     }
@@ -192,55 +223,55 @@ enum FederatedIndexCache {
 
     // MARK: - Encode
 
-    private static func encode(_ payload: Payload) throws -> Data {
-        var w = ByteWriter()
-        w.writeBytes(Data(magic))
-        w.writeString(payload.fingerprint)
-        w.writeString(payload.backendIdentifier)
-        w.writeI32(Int32(payload.dimension))
+    private static func encode(
+        _ payload: Payload,
+        into w: inout StreamingByteWriter
+    ) throws {
+        try w.writeBytes(Data(magic))
+        try w.writeString(payload.fingerprint)
+        try w.writeString(payload.backendIdentifier)
+        try w.writeI32(Int32(payload.dimension))
 
-        w.writeI32(Int32(payload.stats.indexed))
-        w.writeI32(Int32(payload.stats.unindexed))
-        w.writeI32(Int32(payload.stats.backendMismatch))
+        try w.writeI32(Int32(payload.stats.indexed))
+        try w.writeI32(Int32(payload.stats.unindexed))
+        try w.writeI32(Int32(payload.stats.backendMismatch))
 
-        w.writeU32(UInt32(payload.sources.count))
+        try w.writeU32(UInt32(payload.sources.count))
         for source in payload.sources {
-            w.writeString(source.epubURL.path)
-            w.writeString(source.bookTitle)
-            w.writeU32(UInt32(source.paragraphs.count))
+            try w.writeString(source.epubURL.path)
+            try w.writeString(source.bookTitle)
+            try w.writeU32(UInt32(source.paragraphs.count))
             for p in source.paragraphs {
-                w.writeI32(Int32(p.chapterIdx))
-                w.writeI32(Int32(p.paragraphIdx))
-                w.writeString(p.textHash)
+                try w.writeI32(Int32(p.chapterIdx))
+                try w.writeI32(Int32(p.paragraphIdx))
+                try w.writeString(p.textHash)
                 if let text = p.text {
-                    w.writeU8(1)
-                    w.writeString(text)
+                    try w.writeU8(1)
+                    try w.writeString(text)
                 } else {
-                    w.writeU8(0)
+                    try w.writeU8(0)
                 }
                 try w.writeFloatVector(p.vector, expectedCount: payload.dimension)
             }
         }
 
-        w.writeU32(UInt32(payload.entityIndex.mentions.count))
+        try w.writeU32(UInt32(payload.entityIndex.mentions.count))
         for (canonical, anchors) in payload.entityIndex.mentions {
-            w.writeString(canonical)
-            w.writeU32(UInt32(anchors.count))
+            try w.writeString(canonical)
+            try w.writeU32(UInt32(anchors.count))
             for a in anchors {
-                w.writeString(a.epubURL.path)
-                w.writeString(a.bookTitle)
-                w.writeI32(Int32(a.chapterIdx))
-                w.writeI32(Int32(a.paragraphIdx))
+                try w.writeString(a.epubURL.path)
+                try w.writeString(a.bookTitle)
+                try w.writeI32(Int32(a.chapterIdx))
+                try w.writeI32(Int32(a.paragraphIdx))
             }
         }
-        w.writeU32(UInt32(payload.entityIndex.displayNames.count))
+        try w.writeU32(UInt32(payload.entityIndex.displayNames.count))
         for (canonical, display) in payload.entityIndex.displayNames {
-            w.writeString(canonical)
-            w.writeString(display)
+            try w.writeString(canonical)
+            try w.writeString(display)
         }
-        w.writeI32(Int32(payload.entityIndex.indexedBookCount))
-
-        return w.buffer
+        try w.writeI32(Int32(payload.entityIndex.indexedBookCount))
     }
 
     // MARK: - Decode
@@ -351,31 +382,66 @@ enum FederatedIndexCache {
 
 // MARK: - Byte writer
 
-private struct ByteWriter {
-    var buffer = Data()
+/// FileHandle-backed writer with a small in-memory chunk buffer.
+/// Keeps peak transient memory bounded — the previous Data-backed
+/// `ByteWriter` could balloon to tens of GB on big libraries
+/// because `Data.append` doubles capacity on overflow and the
+/// in-memory `sources` payload still has to coexist with it.
+///
+/// The 256 KB threshold is a balance: small enough that peak
+/// memory stays trivial, large enough that we're not making a
+/// syscall every few writes. With a 36 GB encoded blob (1k books
+/// × 1500 paragraphs × 3072-dim Float32 + text) that's ~140 K
+/// flushes — fine at ~µs each.
+private struct StreamingByteWriter {
+    let handle: FileHandle
+    private var buffer = Data()
+    private static let flushThreshold = 256 * 1024
 
-    mutating func writeU8(_ v: UInt8) {
+    init(handle: FileHandle) {
+        self.handle = handle
+        buffer.reserveCapacity(Self.flushThreshold + 4096)
+    }
+
+    mutating func writeU8(_ v: UInt8) throws {
         buffer.append(v)
+        try flushIfNeeded()
     }
 
-    mutating func writeU32(_ v: UInt32) {
+    mutating func writeU32(_ v: UInt32) throws {
         var le = v.littleEndian
         withUnsafeBytes(of: &le) { buffer.append(contentsOf: $0) }
+        try flushIfNeeded()
     }
 
-    mutating func writeI32(_ v: Int32) {
+    mutating func writeI32(_ v: Int32) throws {
         var le = v.littleEndian
         withUnsafeBytes(of: &le) { buffer.append(contentsOf: $0) }
+        try flushIfNeeded()
     }
 
-    mutating func writeString(_ s: String) {
+    mutating func writeString(_ s: String) throws {
         let bytes = Data(s.utf8)
-        writeU32(UInt32(bytes.count))
-        buffer.append(bytes)
+        try writeU32(UInt32(bytes.count))
+        // Large strings are flushed directly to avoid blowing
+        // the buffer past its threshold in one shot.
+        if bytes.count >= Self.flushThreshold {
+            try flush()
+            try handle.write(contentsOf: bytes)
+        } else {
+            buffer.append(bytes)
+            try flushIfNeeded()
+        }
     }
 
-    mutating func writeBytes(_ d: Data) {
-        buffer.append(d)
+    mutating func writeBytes(_ d: Data) throws {
+        if d.count >= Self.flushThreshold {
+            try flush()
+            try handle.write(contentsOf: d)
+        } else {
+            buffer.append(d)
+            try flushIfNeeded()
+        }
     }
 
     mutating func writeFloatVector(
@@ -385,10 +451,32 @@ private struct ByteWriter {
             throw FederatedIndexCache.CacheError
                 .vectorDimensionMismatch(expected: expectedCount, actual: v.count)
         }
-        v.withUnsafeBufferPointer { ptr in
-            let raw = UnsafeRawBufferPointer(ptr)
-            buffer.append(contentsOf: raw)
+        let byteCount = v.count * MemoryLayout<Float>.size
+        if byteCount >= Self.flushThreshold {
+            try flush()
+            try v.withUnsafeBufferPointer { ptr -> Void in
+                let raw = UnsafeRawBufferPointer(ptr)
+                try handle.write(contentsOf: Data(raw))
+            }
+        } else {
+            v.withUnsafeBufferPointer { ptr in
+                let raw = UnsafeRawBufferPointer(ptr)
+                buffer.append(contentsOf: raw)
+            }
+            try flushIfNeeded()
         }
+    }
+
+    mutating func flushIfNeeded() throws {
+        if buffer.count >= Self.flushThreshold {
+            try flush()
+        }
+    }
+
+    mutating func flush() throws {
+        guard !buffer.isEmpty else { return }
+        try handle.write(contentsOf: buffer)
+        buffer.removeAll(keepingCapacity: true)
     }
 }
 

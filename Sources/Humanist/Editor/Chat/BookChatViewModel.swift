@@ -697,45 +697,48 @@ final class BookChatViewModel: ObservableObject {
             // contribution alongside the cosine hits. Gated by
             // the same Settings toggle as per-book entity
             // retrieval.
-            let useEntity = await MainActor.run { self.useEntityRetrieval }
-            let entityIndex = await MainActor.run { self.libraryEntityIndex }
-            var entityAnchors = useEntity
-                ? self.computeLibraryEntityAnchors(
-                    query: query, entities: entityIndex
-                  )
-                : []
+            let useEntity = self.useEntityRetrieval
+            let entityIndex = self.libraryEntityIndex
+            let topK = self.maxRetrievedParagraphs
+            let rrfK = self.rrfK
+            let excluded = self.excludedLibraryBookURLs
             // Alias dictionary contributes additional anchors via
             // a paragraph-text scan across the federated sources.
             // Same toggle as the entity boost.
-            let aliasDictionary = useEntity
+            let aliasDictionary: AliasDictionary = useEntity
                 ? AliasDictionaryStore().read()
                 : .empty
-            entityAnchors.append(contentsOf: self.computeLibraryAliasAnchors(
-                query: query, library: library, aliases: aliasDictionary
-            ))
-            let topK = await MainActor.run { self.maxRetrievedParagraphs }
-            let rrfK = await MainActor.run { self.rrfK }
-            let excluded = await MainActor.run {
-                self.excludedLibraryBookURLs
-            }
-            // Filter entity anchors against the same deny-list
-            // applied to the cosine search — see the parallel
-            // logic in LibraryChatViewModel.sendLibrary.
-            let excludedSourcePaths: Set<String> = Set(excluded.map {
-                $0.canonicalForFile.standardizedFileURL.path
-            })
-            let filteredEntityAnchors = entityAnchors.filter { anchor in
-                let p = anchor.epubURL
-                    .canonicalForFile.standardizedFileURL.path
-                return !excludedSourcePaths.contains(p)
-            }
-            let hits = library.search(
-                queryVector: queryVector,
-                topK: topK,
-                entityMatches: filteredEntityAnchors,
-                rrfK: rrfK,
-                excluding: excluded
-            )
+            // Heavy retrieval pushed off the main actor — see the
+            // parallel comment in `LibraryChatViewModel.send` for
+            // the full story. The Task here inherits @MainActor
+            // isolation, so without this detached hop the cosine
+            // search + alias scan blocks the UI on a big library.
+            let hits = await Task.detached(priority: .userInitiated) {
+                () -> [LibraryEmbeddingIndex.Hit] in
+                var entityAnchors = useEntity
+                    ? Self.computeLibraryEntityAnchors(
+                        query: query, entities: entityIndex
+                      )
+                    : []
+                entityAnchors.append(contentsOf: Self.computeLibraryAliasAnchors(
+                    query: query, library: library, aliases: aliasDictionary
+                ))
+                let excludedSourcePaths: Set<String> = Set(excluded.map {
+                    $0.canonicalForFile.standardizedFileURL.path
+                })
+                let filtered = entityAnchors.filter { anchor in
+                    let p = anchor.epubURL
+                        .canonicalForFile.standardizedFileURL.path
+                    return !excludedSourcePaths.contains(p)
+                }
+                return library.search(
+                    queryVector: queryVector,
+                    topK: topK,
+                    entityMatches: filtered,
+                    rrfK: rrfK,
+                    excluding: excluded
+                )
+            }.value
             let resolved = await self.resolveLibraryHits(hits)
             let context = self.renderLibraryContext(hits: resolved)
             let userPrompt = context + "\n\nQuestion: " + query
@@ -1122,6 +1125,13 @@ final class BookChatViewModel: ObservableObject {
                 // run itself.
                 let entities = BookEntityIndex.build(from: snapshot)
                 sidecar.entities = entities
+                // The chat pane always uses the resolved primary
+                // backend (no fallback path here), so any sticky
+                // fallback flag from a prior bulk run is stale and
+                // must clear before write. See `sidecarMatches` in
+                // `BookSidecarBuilder` for why this matters to the
+                // bulk-index skip logic.
+                sidecar.wasFallback = false
                 store.write(sidecar, for: url, libraryID: libraryID)
                 try Task.checkCancellation()
                 await MainActor.run {
@@ -1215,7 +1225,9 @@ final class BookChatViewModel: ObservableObject {
     /// Same per-entity / total caps as the per-book path; the
     /// budget is shared across books since a popular entity in a
     /// 100-book corpus could otherwise dominate.
-    private func computeLibraryEntityAnchors(
+    /// `nonisolated static` so `sendLibrary`'s detached retrieval
+    /// block can call it directly. Reads only its parameters.
+    private nonisolated static func computeLibraryEntityAnchors(
         query: String,
         entities: LibraryEntityIndex?
     ) -> [LibraryEntityIndex.LibraryAnchor] {
@@ -1268,7 +1280,10 @@ final class BookChatViewModel: ObservableObject {
     /// pre-dates the per-entry text storage contribute nothing for
     /// this path — the alias scan needs the text on hand and we
     /// don't unzip books on every query.
-    private func computeLibraryAliasAnchors(
+    /// `nonisolated static` for the same reason — walks every
+    /// paragraph in every source so MUST run off main on big
+    /// libraries.
+    private nonisolated static func computeLibraryAliasAnchors(
         query: String,
         library: LibraryEmbeddingIndex,
         aliases: AliasDictionary

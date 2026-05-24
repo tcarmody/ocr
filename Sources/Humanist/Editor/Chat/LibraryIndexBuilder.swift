@@ -383,6 +383,10 @@ enum BookSidecarBuilder {
             )
             sidecar.hierarchy = BookHierarchyIndex.build(from: book)
             sidecar.entities = BookEntityIndex.build(from: book)
+            // Primary succeeded — clear any sticky fallback flag a
+            // prior build left behind, so the bulk-index skip logic
+            // treats this sidecar as a goal-state primary build.
+            sidecar.wasFallback = false
             store.write(sidecar, for: epubURL, libraryID: libraryID)
             return .built(usedFallback: false, primaryError: nil)
         } catch is CancellationError {
@@ -404,6 +408,10 @@ enum BookSidecarBuilder {
             )
             sidecar.hierarchy = BookHierarchyIndex.build(from: book)
             sidecar.entities = BookEntityIndex.build(from: book)
+            // Mark so the next bulk re-index skips this book
+            // instead of retrying a primary that already errored.
+            // Cleared automatically the next time primary succeeds.
+            sidecar.wasFallback = true
             store.write(sidecar, for: epubURL, libraryID: libraryID)
             return .built(
                 usedFallback: true,
@@ -412,11 +420,15 @@ enum BookSidecarBuilder {
         }
     }
 
-    /// True when `sidecar` was built with either the primary or
-    /// fallback backend. Used by the cache-check fast path so a
-    /// previously-fallback-built sidecar is preserved instead of
-    /// triggering a wasteful primary-then-fallback retry on every
-    /// bulk-index run.
+    /// True when `sidecar` already records the goal state — either
+    /// a primary-backend build, or a known-failure fallback build
+    /// marked sticky via `wasFallback`. The fallback branch is
+    /// gated on the flag (not just identifier+dimension) so a
+    /// legacy Apple-NL sidecar from a pre-Gemini backend choice
+    /// is treated as an upgrade candidate, not a sticky failure.
+    /// If the primary still fails for a legacy book the fallback
+    /// path kicks in again and re-saves with the flag set, so the
+    /// next re-index skips it.
     private static func sidecarMatches(
         _ sidecar: EmbeddingsSidecar,
         primary: any EmbeddingBackend,
@@ -426,7 +438,8 @@ enum BookSidecarBuilder {
            sidecar.dimension == primary.dimension {
             return true
         }
-        if let fallback,
+        if sidecar.wasFallback,
+           let fallback,
            sidecar.backendIdentifier == fallback.identifier,
            sidecar.dimension == fallback.dimension {
             return true

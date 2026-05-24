@@ -1110,7 +1110,7 @@ extension PDFToEPUBPipeline {
             guard let data = line.data(using: .utf8) else { return }
             if FileManager.default.fileExists(atPath: url.path) {
                 if let handle = try? FileHandle(forWritingTo: url) {
-                    try? handle.seekToEnd()
+                    _ = try? handle.seekToEnd()
                     try? handle.write(contentsOf: data)
                     try? handle.close()
                 }
