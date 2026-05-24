@@ -13,32 +13,32 @@ import EPUB
 /// outweigh the debuggability hit. If real-world libraries grow past
 /// 50 MB total embedding cache, switch to `Data(contentsOf:).gunzipped()`
 /// later — the schema doesn't have to change.
-struct EmbeddingsSidecar: Codable, Sendable {
+public struct EmbeddingsSidecar: Codable, Sendable {
     /// Schema version. Bump and old sidecars get rebuilt on next
     /// open. Bumped from 1 to 2 in `R-Chat-Graph-Lite` to add the
     /// `hierarchy` section.
-    static let currentSchemaVersion: Int = 2
+    public static let currentSchemaVersion: Int = 2
 
-    var schemaVersion: Int
+    public var schemaVersion: Int
     /// Backend identity (`apple.nl.sentence.en`, `voyage.voyage-3-lite`,
     /// etc.). A change forces a full rebuild — the vector spaces are
     /// not comparable across backends.
-    var backendIdentifier: String
+    public var backendIdentifier: String
     /// Vector dimension. Stored alongside the identifier as a defense
     /// against a backend whose dimension changes between versions
     /// (Matryoshka models, different output_dim configs, etc.).
-    var dimension: Int
-    var paragraphs: [Entry]
+    public var dimension: Int
+    public var paragraphs: [Entry]
     /// Per-book chapter/section tree built from `nav.xhtml`. Optional
     /// for forward compatibility — earlier sidecars (schemaVersion 1)
     /// loaded with a nil hierarchy and trigger a rebuild that
     /// populates it.
-    var hierarchy: BookHierarchyIndex?
+    public var hierarchy: BookHierarchyIndex?
     /// Per-book named-entity index from NLTagger. Optional for
     /// forward compatibility; populated by `BookEntityIndex.build`
     /// during the embedding pipeline. Drives entity-shaped
     /// retrieval and library-wide entity federation.
-    var entities: BookEntityIndex?
+    public var entities: BookEntityIndex?
     /// True iff this sidecar's `backendIdentifier` records a
     /// fallback build — the user's chosen primary backend errored
     /// for this book and the indexer used Apple NLEmbedding as a
@@ -50,13 +50,13 @@ struct EmbeddingsSidecar: Codable, Sendable {
     /// (which pre-date this flag) are treated as primary-backend
     /// builds — eligible for upgrade when the user changes their
     /// backend and re-indexes.
-    var wasFallback: Bool
+    public var wasFallback: Bool
 
-    struct Entry: Codable, Sendable {
-        let chapterIdx: Int
-        let paragraphIdx: Int
-        let textHash: String
-        let vector: [Float]
+    public struct Entry: Codable, Sendable {
+        public let chapterIdx: Int
+        public let paragraphIdx: Int
+        public let textHash: String
+        public let vector: [Float]
         /// Verbatim paragraph text. Optional for backward
         /// compatibility — early v2 sidecars (between the schema
         /// bump and this add) don't carry it. Populated by
@@ -68,13 +68,13 @@ struct EmbeddingsSidecar: Codable, Sendable {
         /// when library-scope retrieval surfaces hits across books
         /// the user doesn't have open. Cost is ~1-2 MB extra per
         /// book on disk — small relative to the source EPUB.
-        let text: String?
+        public let text: String?
 
         private enum CodingKeys: String, CodingKey {
             case chapterIdx, paragraphIdx, textHash, vector, text
         }
 
-        init(
+        public init(
             chapterIdx: Int,
             paragraphIdx: Int,
             textHash: String,
@@ -88,7 +88,7 @@ struct EmbeddingsSidecar: Codable, Sendable {
             self.text = text
         }
 
-        init(from decoder: Decoder) throws {
+        public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.chapterIdx = try c.decode(Int.self, forKey: .chapterIdx)
             self.paragraphIdx = try c.decode(Int.self, forKey: .paragraphIdx)
@@ -101,7 +101,7 @@ struct EmbeddingsSidecar: Codable, Sendable {
     /// Empty sidecar with the given backend metadata. Used as the
     /// starting state when no on-disk file exists or when the loaded
     /// file's backend doesn't match the current selection.
-    static func empty(backend: String, dimension: Int) -> EmbeddingsSidecar {
+    public static func empty(backend: String, dimension: Int) -> EmbeddingsSidecar {
         EmbeddingsSidecar(
             schemaVersion: currentSchemaVersion,
             backendIdentifier: backend,
@@ -117,7 +117,7 @@ struct EmbeddingsSidecar: Codable, Sendable {
         case paragraphs, hierarchy, entities, wasFallback
     }
 
-    init(
+    public init(
         schemaVersion: Int,
         backendIdentifier: String,
         dimension: Int,
@@ -135,7 +135,7 @@ struct EmbeddingsSidecar: Codable, Sendable {
         self.wasFallback = wasFallback
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
         self.backendIdentifier = try c.decode(String.self, forKey: .backendIdentifier)
@@ -193,10 +193,10 @@ struct EmbeddingsSidecar: Codable, Sendable {
 /// is irrelevant). The old SHA-keyed orphans are still possible
 /// for uncataloged books; auto-catalog on editor open keeps this
 /// rare.
-struct EmbeddingsSidecarStore {
+public struct EmbeddingsSidecarStore: Sendable {
     private let baseDirectory: URL
 
-    init(baseDirectory: URL? = nil) {
+    public init(baseDirectory: URL? = nil) {
         if let baseDirectory {
             self.baseDirectory = baseDirectory
         } else {
@@ -215,7 +215,7 @@ struct EmbeddingsSidecarStore {
     /// Public for tests + Settings cache-size compute. UUID-keyed
     /// writes use the `.emb` binary format; SHA-keyed (rare,
     /// uncataloged) keeps the legacy `.json` shape.
-    func writeURL(for epubURL: URL, libraryID: UUID?) -> URL {
+    public func writeURL(for epubURL: URL, libraryID: UUID?) -> URL {
         if let libraryID {
             return baseDirectory.appendingPathComponent(
                 "\(libraryID.uuidString).emb"
@@ -228,7 +228,7 @@ struct EmbeddingsSidecarStore {
     /// the SHA-keyed legacy path so existing call sites that
     /// haven't been threaded through libraryID still work. New
     /// code should call `writeURL(for:libraryID:)`.
-    func fileURL(for epubURL: URL) -> URL {
+    public func fileURL(for epubURL: URL) -> URL {
         legacySHAFileURL(for: epubURL)
     }
 
@@ -240,7 +240,7 @@ struct EmbeddingsSidecarStore {
     /// pre-Phase-A files in iCloud have been moved here by
     /// `EmbeddingsCloudMigration` on launch). Visible-internal
     /// for tests.
-    func readCandidateURLs(
+    public func readCandidateURLs(
         for epubURL: URL, libraryID: UUID?
     ) -> [URL] {
         var out: [URL] = []
@@ -261,7 +261,7 @@ struct EmbeddingsSidecarStore {
     /// them exist or the schemaVersion is too old. Dispatches to
     /// the binary decoder for `.emb` files and the legacy JSON
     /// decoder for everything else.
-    func read(for epubURL: URL, libraryID: UUID? = nil) -> EmbeddingsSidecar? {
+    public func read(for epubURL: URL, libraryID: UUID? = nil) -> EmbeddingsSidecar? {
         for url in readCandidateURLs(for: epubURL, libraryID: libraryID) {
             guard FileManager.default.fileExists(atPath: url.path),
                   let data = try? Data(contentsOf: url)
@@ -287,7 +287,7 @@ struct EmbeddingsSidecarStore {
     /// rebuild on next open, not a broken editor. UUID-keyed
     /// writes go through the `.emb` binary encoder; SHA-keyed
     /// (uncataloged) writes keep the legacy JSON shape.
-    func write(
+    public func write(
         _ sidecar: EmbeddingsSidecar,
         for epubURL: URL,
         libraryID: UUID? = nil
@@ -310,7 +310,7 @@ struct EmbeddingsSidecarStore {
     /// Drop every known location for this book's sidecar (UUID +
     /// SHA at app support). Used by Settings → "Clear all indexes"
     /// (per-book variant) and tests.
-    func clear(for epubURL: URL, libraryID: UUID? = nil) {
+    public func clear(for epubURL: URL, libraryID: UUID? = nil) {
         for url in readCandidateURLs(for: epubURL, libraryID: libraryID) {
             try? FileManager.default.removeItem(at: url)
         }
@@ -330,7 +330,7 @@ struct EmbeddingsSidecarStore {
     /// recreate so we don't have to enumerate. Returns the number of
     /// bytes reclaimed (0 on failure).
     @discardableResult
-    func clearAll() -> Int {
+    public func clearAll() -> Int {
         let total = totalBytes()
         try? FileManager.default.removeItem(at: baseDirectory)
         return total
@@ -364,7 +364,7 @@ struct EmbeddingsSidecarStore {
     /// read just enough to surface its `backendIdentifier`. On a
     /// 2k-book library that's ~seconds.
     @discardableResult
-    func clearMismatched(primaryPrefix: String) -> Int {
+    public func clearMismatched(primaryPrefix: String) -> Int {
         walkSidecarFiles { sidecar in
             !sidecar.backendIdentifier.hasPrefix(primaryPrefix)
         } action: { url in
@@ -376,7 +376,7 @@ struct EmbeddingsSidecarStore {
     /// `primaryPrefix`. Drives the Settings button's label so the
     /// user sees how many books would be retried before they
     /// click.
-    func countMismatched(primaryPrefix: String) -> Int {
+    public func countMismatched(primaryPrefix: String) -> Int {
         walkSidecarFiles { sidecar in
             !sidecar.backendIdentifier.hasPrefix(primaryPrefix)
         } action: { _ in }
@@ -419,7 +419,7 @@ struct EmbeddingsSidecarStore {
     /// Surfaced in Settings so the user knows what they're carrying.
     /// Cheap to compute — directory enumeration with attribute
     /// fetches; ~ms even on large libraries.
-    func totalBytes() -> Int {
+    public func totalBytes() -> Int {
         guard let enumerator = FileManager.default.enumerator(
             at: baseDirectory,
             includingPropertiesForKeys: [.fileSizeKey],

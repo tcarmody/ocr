@@ -1,4 +1,5 @@
 import SwiftUI
+import LibraryIndexing
 import AI
 
 /// Settings pane for chat-with-book + chat-with-library — the AI

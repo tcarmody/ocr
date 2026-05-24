@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 import EPUB
 
 /// Federated named-entity index across the user's library. Each

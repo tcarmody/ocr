@@ -1,4 +1,5 @@
 import XCTest
+import LibraryIndexing
 import Foundation
 import CryptoKit
 import EPUB

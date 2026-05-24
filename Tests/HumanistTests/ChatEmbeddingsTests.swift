@@ -1,4 +1,5 @@
 import XCTest
+import LibraryIndexing
 @testable import Humanist
 @testable import AI
 

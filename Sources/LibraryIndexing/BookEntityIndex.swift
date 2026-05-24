@@ -20,28 +20,33 @@ import EPUB
 /// (R-Chat-Graph-Lite Settings) is the planned remediation for
 /// missed entities; for v1 the index just records what NLTagger
 /// surfaces.
-struct BookEntityIndex: Sendable, Codable, Equatable {
+public struct BookEntityIndex: Sendable, Codable, Equatable {
 
     /// One paragraph anchor — mirrors the embedding sidecar's
     /// (chapterIdx, paragraphIdx) tuple so a hit can be projected
     /// onto the same paragraph identity space the cosine path uses.
-    struct Anchor: Sendable, Codable, Equatable, Hashable {
-        let chapterIdx: Int
-        let paragraphIdx: Int
+    public struct Anchor: Sendable, Codable, Equatable, Hashable {
+        public let chapterIdx: Int
+        public let paragraphIdx: Int
+
+        public init(chapterIdx: Int, paragraphIdx: Int) {
+            self.chapterIdx = chapterIdx
+            self.paragraphIdx = paragraphIdx
+        }
     }
 
     /// Canonical (lowercased, whitespace-trimmed) entity name →
     /// every anchor that mentions it. Sorted within the array by
     /// (chapterIdx, paragraphIdx) for deterministic output.
-    let mentions: [String: [Anchor]]
+    public let mentions: [String: [Anchor]]
     /// Canonical name → best display-cased form we saw. Used by
     /// the retriever to label entity hits and by the alias-
     /// dictionary editor (planned) to show users what's there.
-    let displayNames: [String: String]
+    public let displayNames: [String: String]
 
-    static let empty = BookEntityIndex(mentions: [:], displayNames: [:])
+    public static let empty = BookEntityIndex(mentions: [:], displayNames: [:])
 
-    init(mentions: [String: [Anchor]], displayNames: [String: String]) {
+    public init(mentions: [String: [Anchor]], displayNames: [String: String]) {
         self.mentions = mentions
         self.displayNames = displayNames
     }
@@ -53,7 +58,7 @@ struct BookEntityIndex: Sendable, Codable, Equatable {
     /// enough that a 1500-paragraph book completes in seconds, and
     /// the build sits inside the existing embedding-build task so
     /// it doesn't add to perceived latency.
-    static func build(from book: EPUBBook) -> BookEntityIndex {
+    public static func build(from book: EPUBBook) -> BookEntityIndex {
         let items = ParagraphExtractor.extract(from: book)
         var mentions: [String: [Anchor]] = [:]
         var displayNames: [String: String] = [:]
@@ -102,7 +107,7 @@ struct BookEntityIndex: Sendable, Codable, Equatable {
     /// (heavily-mentioned entities are usually more central to the
     /// book; surfacing them first makes the retriever's boost
     /// apply where it's most likely to help).
-    func entitiesMatching(query: String) -> [String] {
+    public func entitiesMatching(query: String) -> [String] {
         let detected = EntityExtractor.extract(from: query)
             .map(\.0)
         let unique = Array(Set(detected))
@@ -117,7 +122,7 @@ struct BookEntityIndex: Sendable, Codable, Equatable {
 
     /// Every paragraph anchor mentioning `canonical`. Empty if not
     /// present.
-    func anchors(for canonical: String) -> [Anchor] {
+    public func anchors(for canonical: String) -> [Anchor] {
         mentions[canonical] ?? []
     }
 }
@@ -131,9 +136,9 @@ struct BookEntityIndex: Sendable, Codable, Equatable {
 /// `.joinNames` means multi-token entities ("Michel Foucault") come
 /// back as a single span; `.omitPunctuation` + `.omitWhitespace`
 /// strips noise tokens so the enumerator only fires on content.
-enum EntityExtractor {
+public enum EntityExtractor {
 
-    static func extract(
+    public static func extract(
         from text: String
     ) -> [(canonical: String, displayName: String)] {
         guard !text.isEmpty else { return [] }

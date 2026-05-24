@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "Layout", targets: ["Layout"]),
         .library(name: "Pipeline", targets: ["Pipeline"]),
         .library(name: "AI", targets: ["AI"]),
+        .library(name: "LibraryIndexing", targets: ["LibraryIndexing"]),
     ],
     dependencies: [
         // ZIPFoundation handles the ZIP packaging — most importantly the
@@ -106,9 +107,21 @@ let package = Package(
             name: "AI",
             path: "Sources/AI"
         ),
+        // Per-book indexing primitives shared between the Humanist
+        // app and `humanist-cli`. Sidecar IO (`EmbeddingsSidecar
+        // Store`, binary format), per-book hierarchy + entity
+        // extraction, and (after the Phase 2 refactor) the
+        // `BookSidecarBuilder` build pipeline all live here so a
+        // headless CLI rebuild path doesn't have to drag in the
+        // Humanist executable's @MainActor / SwiftUI surface.
+        .target(
+            name: "LibraryIndexing",
+            dependencies: ["AI", "EPUB"],
+            path: "Sources/LibraryIndexing"
+        ),
         .executableTarget(
             name: "Humanist",
-            dependencies: ["Pipeline", "AI", "PDFIngest"],
+            dependencies: ["Pipeline", "AI", "PDFIngest", "LibraryIndexing"],
             path: "Sources/Humanist"
         ),
         // One-shot CLI for the Cloud-mode validation spike (PLANS.md

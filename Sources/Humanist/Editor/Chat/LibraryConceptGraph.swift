@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 import EPUB
 
 /// Federated concept graph across the library. Sits on top of

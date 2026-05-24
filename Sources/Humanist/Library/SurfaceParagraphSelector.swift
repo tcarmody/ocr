@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 
 /// One paragraph picked by `SurfaceParagraphSelector.pick`. Carries
 /// just enough to render the "From your library" sheet and route

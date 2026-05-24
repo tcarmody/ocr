@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 import AppKit
 import AI
 import Document

@@ -1,4 +1,5 @@
 import XCTest
+import LibraryIndexing
 import AI
 import EPUB
 @testable import Humanist

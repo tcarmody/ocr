@@ -1,4 +1,5 @@
 import XCTest
+import LibraryIndexing
 import Foundation
 @testable import Humanist
 

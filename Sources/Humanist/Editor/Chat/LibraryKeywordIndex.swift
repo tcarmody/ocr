@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 import EPUB
 
 /// BM25 index over per-book "documents" assembled from the catalog

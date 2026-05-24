@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 import AI
 import EPUB
 

@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 import CryptoKit
 import EPUB
 

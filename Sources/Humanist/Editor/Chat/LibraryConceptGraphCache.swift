@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 import CryptoKit
 
 /// Process-lifetime in-memory cache for `LibraryConceptGraph`.

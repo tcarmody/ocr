@@ -17,42 +17,58 @@ import EPUB
 /// The hierarchy is already implicit in the EPUB's nav doc — this
 /// type just exposes it as a retrieval-time data structure. No
 /// additional analysis or NER required.
-struct BookHierarchyIndex: Sendable, Codable, Equatable {
+public struct BookHierarchyIndex: Sendable, Codable, Equatable {
 
     /// One node in the chapter / section tree. `chapterIdx` indexes
     /// `book.spine`; `fragment` is the optional `#anchor` after the
     /// nav href and identifies a section start within the chapter
     /// XHTML. `children` are nested sections (typically depth ≤ 2).
-    struct Node: Sendable, Codable, Equatable {
-        let id: String
-        let kind: Kind
-        let title: String
-        let chapterIdx: Int
-        let fragment: String?
-        let children: [Node]
+    public struct Node: Sendable, Codable, Equatable {
+        public let id: String
+        public let kind: Kind
+        public let title: String
+        public let chapterIdx: Int
+        public let fragment: String?
+        public let children: [Node]
 
-        enum Kind: String, Codable, Sendable {
+        public enum Kind: String, Codable, Sendable {
             case chapter
             case section
+        }
+
+        public init(
+            id: String,
+            kind: Kind,
+            title: String,
+            chapterIdx: Int,
+            fragment: String?,
+            children: [Node]
+        ) {
+            self.id = id
+            self.kind = kind
+            self.title = title
+            self.chapterIdx = chapterIdx
+            self.fragment = fragment
+            self.children = children
         }
     }
 
     /// Top-level nodes (depth 1). Each is typically a chapter; its
     /// children are sections.
-    let nodes: [Node]
+    public let nodes: [Node]
 
     /// Pre-built lookup: spine index → top-level chapter node. Used
     /// by the retriever to attach a chapter title to a paragraph
     /// hit without re-walking the tree.
-    let chapterByIdx: [Int: Node]
+    public let chapterByIdx: [Int: Node]
 
     /// Pre-built flat list of every node, for structural-query
     /// matching against the user's question. Walking a flat list
     /// against a normalized query string is faster + simpler than
     /// recursive matching against the tree.
-    let flatNodes: [Node]
+    public let flatNodes: [Node]
 
-    init(nodes: [Node]) {
+    public init(nodes: [Node]) {
         self.nodes = nodes
         var byIdx: [Int: Node] = [:]
         var flat: [Node] = []
@@ -80,7 +96,7 @@ struct BookHierarchyIndex: Sendable, Codable, Equatable {
     /// Build a hierarchy index from the book's nav resource. Returns
     /// an empty index when nav is missing or unparseable — the chat
     /// path falls back to chapter-only context in that case.
-    static func build(from book: EPUBBook) -> BookHierarchyIndex {
+    public static func build(from book: EPUBBook) -> BookHierarchyIndex {
         guard let nav = book.navResource, let xhtml = nav.text else {
             return BookHierarchyIndex(nodes: [])
         }
@@ -88,7 +104,7 @@ struct BookHierarchyIndex: Sendable, Codable, Equatable {
     }
 
     /// Visible for tests — build from a raw nav XHTML string.
-    static func build(navXHTML xhtml: String, book: EPUBBook) -> BookHierarchyIndex {
+    public static func build(navXHTML xhtml: String, book: EPUBBook) -> BookHierarchyIndex {
         let parsedTree = NavParser.parse(xhtml)
         let resolved = parsedTree.enumerated().map { (idx, raw) in
             convert(raw: raw, book: book, idPrefix: "ch-\(idx)", depth: 0)
@@ -171,7 +187,7 @@ struct BookHierarchyIndex: Sendable, Codable, Equatable {
     /// the node's title (or "chapter N" / "section N" structural
     /// patterns). Order: most-specific (deepest) first, so a
     /// section title beats its containing chapter when both match.
-    func nodesMatching(query: String) -> [Node] {
+    public func nodesMatching(query: String) -> [Node] {
         let normalizedQuery = query.lowercased()
         var matches: [(Node, depth: Int)] = []
         // Walk the flat list once. For each node, test (a) literal
@@ -288,18 +304,18 @@ struct BookHierarchyIndex: Sendable, Codable, Equatable {
 /// is more code than it's worth. If a real-world nav file fails to
 /// parse, the chat path falls back to chapter-only retrieval — no
 /// crash, just weaker structural awareness.
-enum NavParser {
+public enum NavParser {
 
-    struct RawNode {
-        let title: String
-        let href: String
-        let children: [RawNode]
+    public struct RawNode {
+        public let title: String
+        public let href: String
+        public let children: [RawNode]
     }
 
     /// Parse a nav.xhtml string into the top-level chapter list.
     /// Returns an empty array if no `<nav epub:type="toc">` is
     /// found or its first `<ol>` is empty.
-    static func parse(_ xhtml: String) -> [RawNode] {
+    public static func parse(_ xhtml: String) -> [RawNode] {
         guard let navBody = extractNavBody(xhtml) else { return [] }
         guard let firstOL = extractInner(of: "ol", in: navBody) else { return [] }
         return parseList(firstOL)

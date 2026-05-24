@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 
 /// Bulk upgrade: convert legacy `.json` sidecars under
 /// `~/Library/Application Support/Humanist/Embeddings/` to the

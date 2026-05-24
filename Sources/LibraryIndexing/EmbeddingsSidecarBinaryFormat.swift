@@ -29,13 +29,13 @@ import Foundation
 /// Old `.json` sidecars stay readable via the store's read-candidate
 /// chain; new writes go to `.emb`. A separate bulk upgrade migrates
 /// legacy files on next launch.
-enum EmbeddingsSidecarBinaryFormat {
+public enum EmbeddingsSidecarBinaryFormat {
 
     private static let magic: [UInt8] = [
         0x48, 0x55, 0x4D, 0x53, 0x49, 0x44, 0x43, 0x01  // "HUMSIDC\x01"
     ]
 
-    enum FormatError: Error {
+    public enum FormatError: Error {
         case badMagic
         case shortRead
         case headerDecode(Error)
@@ -45,7 +45,7 @@ enum EmbeddingsSidecarBinaryFormat {
 
     // MARK: - Encode
 
-    static func encode(_ sidecar: EmbeddingsSidecar) throws -> Data {
+    public static func encode(_ sidecar: EmbeddingsSidecar) throws -> Data {
         let header = HeaderShape(
             schemaVersion: sidecar.schemaVersion,
             backendIdentifier: sidecar.backendIdentifier,
@@ -84,7 +84,7 @@ enum EmbeddingsSidecarBinaryFormat {
 
     // MARK: - Decode
 
-    static func decode(_ data: Data) throws -> EmbeddingsSidecar {
+    public static func decode(_ data: Data) throws -> EmbeddingsSidecar {
         guard data.count >= magic.count + 4 else {
             throw FormatError.shortRead
         }
