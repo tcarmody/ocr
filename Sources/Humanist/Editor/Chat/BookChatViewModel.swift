@@ -25,6 +25,11 @@ final class BookChatViewModel: ObservableObject {
     @Published private(set) var messages: [BookChatMessage] = []
     @Published var input: String = ""
     @Published private(set) var isThinking: Bool = false
+    /// Short status string surfaced while the library-scope agentic
+    /// loop is dispatching a `search_library` tool call. Mirror of
+    /// `LibraryChatViewModel.toolStatus`. Nil during model thinking
+    /// + outside the agentic path (per-book scope, Ollama).
+    @Published private(set) var toolStatus: String?
     /// Surfaces transient failures (no API key, network error,
     /// content-filter refusal, etc.) so the pane can show a banner.
     @Published var errorMessage: String?
@@ -1657,6 +1662,8 @@ final class BookChatViewModel: ObservableObject {
                 for call in toolCalls {
                     let resultText: String
                     let isError: Bool
+                    let peekQuery = Self.previewToolQuery(for: call.inputJSON)
+                    toolStatus = "Searching: \"\(peekQuery)\"…"
                     do {
                         let (text, hits) = try await dispatchLibrarySearch(
                             call: call,
@@ -1678,6 +1685,7 @@ final class BookChatViewModel: ObservableObject {
                         resultText = "search_library failed: \(error.localizedDescription)"
                         isError = true
                     }
+                    toolStatus = nil
                     resultBlocks.append(.toolResult(
                         toolUseID: call.id,
                         content: resultText,
@@ -1690,17 +1698,31 @@ final class BookChatViewModel: ObservableObject {
                 iteration += 1
             }
         } catch is CancellationError {
+            toolStatus = nil
             removeDraft(id: draftId)
             return
         } catch let error as AnthropicAPIError {
+            toolStatus = nil
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
         } catch {
+            toolStatus = nil
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
         }
+    }
+
+    /// Best-effort decode of the model's tool input to peek at the
+    /// `query` for the chat pane's status line. Mirrors the helper
+    /// in `LibraryChatViewModel`.
+    private static func previewToolQuery(for inputJSON: Data) -> String {
+        guard let obj = try? JSONSerialization.jsonObject(with: inputJSON)
+                as? [String: Any],
+              let q = obj["query"] as? String, !q.isEmpty
+        else { return "library" }
+        return q.count <= 60 ? q : String(q.prefix(57)) + "…"
     }
 
     /// One `search_library` dispatch for the per-book chat path.

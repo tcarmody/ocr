@@ -330,10 +330,15 @@ struct LibraryChatPaneView: View {
                         )
                         .id(message.id)
                     }
-                    if vm.isThinking {
+                    if vm.isThinking || vm.toolStatus != nil {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("Thinking…")
+                            // Tool status wins over the generic
+                            // "Thinking…" label so the user sees
+                            // what the model is actually doing
+                            // (`Searching: "mirror stage"…`) during
+                            // the non-streaming agentic rounds.
+                            Text(vm.toolStatus ?? "Thinking…")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }

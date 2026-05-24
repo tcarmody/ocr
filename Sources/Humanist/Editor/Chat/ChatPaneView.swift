@@ -297,11 +297,15 @@ struct ChatPaneView: View {
                         )
                         .id(message.id)
                     }
-                    if vm.isThinking {
+                    if vm.isThinking || vm.toolStatus != nil {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("Thinking…")
+                            // Mirrors the library-window pane —
+                            // when the agentic loop is dispatching
+                            // a tool, surface what it's looking up
+                            // instead of the generic spinner label.
+                            Text(vm.toolStatus ?? "Thinking…")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }

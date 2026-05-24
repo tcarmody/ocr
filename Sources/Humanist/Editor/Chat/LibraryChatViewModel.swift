@@ -22,6 +22,13 @@ final class LibraryChatViewModel: ObservableObject {
     @Published private(set) var isThinking: Bool = false
     @Published var errorMessage: String?
     @Published private(set) var libraryStatus: LibraryStatus = .idle
+    /// Short status string surfaced while the agentic loop is
+    /// dispatching a `search_library` tool call. Cleared when the
+    /// loop returns to model-thinking or finishes entirely. The
+    /// chat pane uses it to replace the generic "Thinking…"
+    /// spinner label so the user sees what the model is actually
+    /// doing during the non-streaming tool rounds.
+    @Published private(set) var toolStatus: String?
     /// Surfaced when retrieval fell back from the user-selected
     /// embedding backend to NLEmbedding (e.g. the Ollama daemon
     /// isn't running, the Voyage key was rotated, the network's
@@ -857,6 +864,15 @@ final class LibraryChatViewModel: ObservableObject {
                 for call in toolCalls {
                     let resultText: String
                     let isError: Bool
+                    // Surface the in-flight search in the chat pane.
+                    // Short label is the model's query peek so the
+                    // user sees what's being looked up rather than a
+                    // generic spinner. Cleared after the tool
+                    // finishes — the next round's "Thinking…" label
+                    // takes over until the model speaks again or
+                    // emits another tool call.
+                    let peekQuery = Self.previewQuery(for: call.inputJSON)
+                    toolStatus = "Searching: \"\(peekQuery)\"…"
                     do {
                         let (text, hits) = try await dispatchSearchLibrary(
                             call: call,
@@ -879,6 +895,7 @@ final class LibraryChatViewModel: ObservableObject {
                         resultText = "search_library failed: \(error.localizedDescription)"
                         isError = true
                     }
+                    toolStatus = nil
                     resultBlocks.append(.toolResult(
                         toolUseID: call.id,
                         content: resultText,
@@ -891,17 +908,35 @@ final class LibraryChatViewModel: ObservableObject {
                 iteration += 1
             }
         } catch is CancellationError {
+            toolStatus = nil
             removeDraft(id: draftId)
             return
         } catch let error as AnthropicAPIError {
+            toolStatus = nil
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
         } catch {
+            toolStatus = nil
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
         }
+    }
+
+    /// Best-effort decode of the model's tool input just to peek
+    /// at the `query` for the status indicator. Falls back to a
+    /// generic label when the JSON isn't what we expected — the
+    /// real decode + error surfacing happens in
+    /// `dispatchSearchLibrary` below.
+    private static func previewQuery(for inputJSON: Data) -> String {
+        guard let obj = try? JSONSerialization.jsonObject(with: inputJSON)
+                as? [String: Any],
+              let q = obj["query"] as? String, !q.isEmpty
+        else { return "library" }
+        // Tighten the label so a long query doesn't blow the
+        // status line out. 60 chars is plenty for a peek.
+        return q.count <= 60 ? q : String(q.prefix(57)) + "…"
     }
 
     /// Run one `search_library` call from the model. Throws if the
