@@ -250,6 +250,32 @@ struct HumanistApp: App {
             }
         }
 
+        // Standalone library chat window. The embedded pane in
+        // the library window shares a SwiftUI update graph with
+        // the books table + sidebar + cover thumbnails, which
+        // cascades into per-frame layout work for the chat
+        // transcript on long sessions (sampled main thread pinned
+        // in LazySubviewPlacements). The window scene isolates
+        // chat so scroll + hover stay smooth.
+        Window("Library Chat", id: "library-chat") {
+            LibraryChatWindowView()
+                .humanistChrome()
+        }
+
+        // Standalone chat window per book. Same pattern as the
+        // library chat window above, applied to the editor's
+        // embedded per-book chat pane (which shares the editor's
+        // heavy source/preview NSTextViews). Opened via the
+        // editor chat pane's "Pop Out to Window" button.
+        WindowGroup("Chat", id: "book-chat", for: URL.self) { $url in
+            if let url {
+                BookChatWindowView(epubURL: url)
+                    .humanistChrome()
+            } else {
+                _StaleWindowDismisser()
+            }
+        }
+
         // Source viewer window: opened by File > Open on a PDF, or by
         // the editor's "Show Original" command. Same URL → same
         // window. Dispatches by extension so PDFs use PDFKit and

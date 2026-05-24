@@ -27,6 +27,9 @@ struct ChatPaneView: View {
     /// opening triggers a fresh send. Acceptable since briefing is
     /// a one-shot ~5-15s generation.
     @State private var showBriefingSheet: Bool = false
+    /// Used by the "Pop Out to Window" button to open the
+    /// dedicated `book-chat` scene for this book.
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -164,6 +167,22 @@ struct ChatPaneView: View {
                 .buttonStyle(.borderless)
                 .help("Pre-reading briefing: what this book is doing, what tradition it sits in, what to watch for")
                 .accessibilityLabel("Pre-reading briefing")
+
+                // Pop chat into its own window. The embedded pane
+                // shares an update graph with the editor's source +
+                // preview NSTextViews, which cascades into per-frame
+                // layout work for the chat transcript and feels like
+                // a hang on long sessions. A standalone window scene
+                // (`book-chat` in `HumanistApp`) isolates chat so
+                // scroll / hover stay smooth.
+                Button {
+                    openWindow(id: "book-chat", value: vm.epubURL)
+                } label: {
+                    Image(systemName: "macwindow.badge.plus")
+                }
+                .buttonStyle(.borderless)
+                .help("Open this chat in its own window — smoother on long transcripts")
+                .accessibilityLabel("Open chat in window")
                 Button {
                     showRetrievalDetail.toggle()
                 } label: {

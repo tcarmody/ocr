@@ -55,7 +55,8 @@ struct ChatMessageRow: View {
                     // select and ⌘C work natively without the
                     // JetUI/SelectionOverlay cascade.
                     SelectableMessageText(
-                        attributedString: AttributedString(message.text)
+                        attributedString: AttributedString(message.text),
+                        sourceText: message.text
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

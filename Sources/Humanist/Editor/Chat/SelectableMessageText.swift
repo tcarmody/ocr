@@ -23,9 +23,24 @@ import AppKit
 /// instead of one per SwiftUI body recompute.
 struct SelectableMessageText: NSViewRepresentable {
     let attributedString: AttributedString
+    /// Cheap identity for "did the text change?" — used by
+    /// `updateNSView` to skip the expensive
+    /// `NSAttributedString(AttributedString)` conversion when the
+    /// underlying message text is unchanged. SwiftUI fires
+    /// `updateNSView` on every body recompute (many per scroll
+    /// second); without the short-circuit each call paid the full
+    /// conversion + textStorage rebuild and accumulated into the
+    /// hang we just diagnosed.
+    let sourceText: String
     /// Default font for runs that don't carry their own. Matches
     /// the SwiftUI `.callout` posture the previous Text used.
     var defaultFont: NSFont = .preferredFont(forTextStyle: .callout)
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var appliedText: String?
+    }
 
     func makeNSView(context: Context) -> SelfSizingTextView {
         let v = SelfSizingTextView()
@@ -64,24 +79,31 @@ struct SelectableMessageText: NSViewRepresentable {
             .defaultLow, for: .horizontal
         )
         apply(attributedString, to: v)
+        context.coordinator.appliedText = sourceText
         return v
     }
 
     func updateNSView(_ v: SelfSizingTextView, context: Context) {
+        // Cheap O(1)-ish string identity check before the expensive
+        // AttributedString → NSAttributedString conversion. SwiftUI
+        // calls updateNSView on every body recompute regardless of
+        // whether `attributedString` actually changed; without this
+        // guard, every scroll frame paid the full conversion and
+        // textStorage rebuild for every visible message.
+        if context.coordinator.appliedText == sourceText {
+            return
+        }
+        context.coordinator.appliedText = sourceText
         apply(attributedString, to: v)
     }
 
     private func apply(_ source: AttributedString, to v: SelfSizingTextView) {
         let ns = NSAttributedString(source)
-        // Skip the assignment when the text is identical — avoids
-        // an unnecessary layout invalidation on every parent body
-        // recompute that doesn't actually change the message.
-        if v.textStorage?.string == ns.string,
-           v.textStorage?.length == ns.length {
-            return
-        }
         v.textStorage?.setAttributedString(ns)
-        v.invalidateIntrinsicContentSize()
+        // Bust the height cache + invalidate so the next layout
+        // pass picks up the new text. `setFrameSize`'s width-only
+        // guard means we wouldn't otherwise notice a text change.
+        v.textContentsDidChange()
     }
 }
 
@@ -90,26 +112,64 @@ struct SelectableMessageText: NSViewRepresentable {
 /// the laid-out width follows the container; the height computed
 /// from `layoutManager.usedRect(for:)` is what SwiftUI needs to
 /// size the row.
+///
+/// Heights are cached per (text-length, width) tuple — SwiftUI's
+/// LazySubviewPlacements asks visible views for `intrinsicContent
+/// Size` on every render pass (many per scroll second), and the
+/// uncached path called `ensureLayout` on every read. Caching cuts
+/// the per-call cost to a comparison + dictionary-free struct read.
 final class SelfSizingTextView: NSTextView {
+    private var cachedHeight: CGFloat = 0
+    private var cachedForWidth: CGFloat = -1
+    private var cachedForLength: Int = -1
+
     override var intrinsicContentSize: NSSize {
         guard let lm = layoutManager, let tc = textContainer else {
             return super.intrinsicContentSize
         }
-        // Force layout so `usedRect` reflects the current text +
-        // current container width. Without this, the first read
-        // after a text change returns the previous height.
+        let currentWidth = bounds.width
+        let currentLength = textStorage?.length ?? 0
+        if currentWidth == cachedForWidth, currentLength == cachedForLength {
+            return NSSize(
+                width: NSView.noIntrinsicMetric,
+                height: cachedHeight
+            )
+        }
         lm.ensureLayout(for: tc)
         let used = lm.usedRect(for: tc)
+        cachedHeight = ceil(used.height)
+        cachedForWidth = currentWidth
+        cachedForLength = currentLength
         return NSSize(
             width: NSView.noIntrinsicMetric,
-            height: ceil(used.height)
+            height: cachedHeight
         )
     }
 
     override func setFrameSize(_ newSize: NSSize) {
+        // Only invalidate when WIDTH changes — text re-wraps under
+        // a new width and its laid-out height changes. Height-only
+        // changes are SwiftUI applying the intrinsic size we just
+        // reported; invalidating there starts a feedback loop
+        // (setFrameSize → invalidate → SwiftUI re-asks intrinsic →
+        // re-layout → setFrameSize → …), which the sampler caught
+        // pinning the main thread inside LazySubviewPlacements.
+        let widthChanged = abs(frame.width - newSize.width) > 0.5
         super.setFrameSize(newSize)
-        // Frame width changed → re-flow → height may have changed
-        // → tell SwiftUI to re-ask for our intrinsic content size.
+        if widthChanged {
+            // Invalidate the cache too so the next intrinsic read
+            // does the full layout pass for the new width.
+            cachedForWidth = -1
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    /// Called by `SelectableMessageText` after `textStorage` is
+    /// replaced so the cache picks up the new text length on the
+    /// next intrinsic read. Cleaner than monitoring textStorage
+    /// notifications from the subclass.
+    func textContentsDidChange() {
+        cachedForLength = -1
         invalidateIntrinsicContentSize()
     }
 }

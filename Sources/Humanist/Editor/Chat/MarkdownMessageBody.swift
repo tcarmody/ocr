@@ -57,7 +57,10 @@ struct MarkdownMessageBody: View {
         // NSTextView wrapper for selection — see
         // `SelectableMessageText` for why this beats
         // `Text(...).textSelection(.enabled)` on macOS 26.
-        SelectableMessageText(attributedString: cache.attributed)
+        SelectableMessageText(
+            attributedString: cache.attributed,
+            sourceText: cache.text
+        )
             .frame(maxWidth: .infinity, alignment: .leading)
             .task(id: text) {
                 // Cancels-and-restarts on text change (streaming

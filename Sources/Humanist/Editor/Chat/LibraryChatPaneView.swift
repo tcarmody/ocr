@@ -19,8 +19,26 @@ struct LibraryChatPaneView: View {
     /// blocking the user here matches the model.
     @ObservedObject private var indexCoordinator
         = VectorIndexCoordinator.shared
-    let onCitationTap: (BookChatCitation) -> Void
+    /// Optional — only the embedded library-window pane wires this
+    /// since chat citations need to open editor windows. The
+    /// standalone `LibraryChatWindowView` passes nil; citation
+    /// taps in the window route through `OpenRouter` directly via
+    /// the chip's own button action.
+    let onCitationTap: ((BookChatCitation) -> Void)?
     @State private var showRetrievalDetail: Bool = false
+    /// Used by the "Pop Out to Window" button to ask SwiftUI to
+    /// open the dedicated `library-chat` scene. Empty when the
+    /// pane is already inside that scene (the button suppresses
+    /// itself).
+    @Environment(\.openWindow) private var openWindow
+
+    init(
+        vm: LibraryChatViewModel,
+        onCitationTap: ((BookChatCitation) -> Void)? = nil
+    ) {
+        self.vm = vm
+        self.onCitationTap = onCitationTap
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -166,6 +184,26 @@ struct LibraryChatPaneView: View {
                 .buttonStyle(.borderless)
                 .help("Clear this transcript (deletes the persisted chat)")
                 .accessibilityLabel("Clear chat transcript")
+            }
+            // Pop out to standalone window. The embedded pane
+            // shares an update graph with the library window's
+            // books table + sidebar + cover thumbnails; on long
+            // transcripts that cascade pins the main thread on
+            // every scroll / hover. The window scene
+            // (`library-chat`) isolates chat so it stays smooth.
+            // Only shown in the embedded pane — when the chat is
+            // already in the standalone window, this button
+            // would open a duplicate.
+            if onCitationTap != nil {
+                Button {
+                    openWindow(id: "library-chat")
+                } label: {
+                    Image(systemName: "macwindow.badge.plus")
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderless)
+                .help("Open this chat in its own window — smoother on long transcripts")
+                .accessibilityLabel("Open library chat in window")
             }
         }
         .padding(.horizontal, 12)
@@ -317,7 +355,21 @@ struct LibraryChatPaneView: View {
                     ForEach(vm.messages) { message in
                         ChatMessageRow(
                             message: message,
-                            onCitationTap: onCitationTap,
+                            // When the pane is used inside the
+                            // standalone library-chat window, the
+                            // caller doesn't wire `onCitationTap`
+                            // — fall back to opening the cited book
+                            // via OpenRouter directly so chips stay
+                            // clickable in both surfaces.
+                            onCitationTap: { citation in
+                                if let tap = onCitationTap {
+                                    tap(citation)
+                                } else if let url = citation.bookEpubURL {
+                                    OpenRouter.open(
+                                        url, openWindow: openWindow
+                                    )
+                                }
+                            },
                             onCopyCitation: copyCitation,
                             onCopyBibliography: copyBibliography,
                             onExcludeBook: { citation in
