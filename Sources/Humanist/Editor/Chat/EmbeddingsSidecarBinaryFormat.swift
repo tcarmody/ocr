@@ -59,7 +59,8 @@ enum EmbeddingsSidecarBinaryFormat {
                 )
             },
             hierarchy: sidecar.hierarchy,
-            entities: sidecar.entities
+            entities: sidecar.entities,
+            wasFallback: sidecar.wasFallback
         )
         let headerJSON = try Self.encoder.encode(header)
 
@@ -145,7 +146,13 @@ enum EmbeddingsSidecarBinaryFormat {
             dimension: header.dimension,
             paragraphs: paragraphs,
             hierarchy: header.hierarchy,
-            entities: header.entities
+            entities: header.entities,
+            // Legacy `.emb` files (pre-fix) don't carry the field;
+            // default false matches the JSON decoder's behavior so
+            // an upgrade re-index path treats them as primary-
+            // backend builds eligible for retry rather than sticky
+            // fallbacks.
+            wasFallback: header.wasFallback ?? false
         )
     }
 
@@ -155,6 +162,12 @@ enum EmbeddingsSidecarBinaryFormat {
     /// what gets JSON-encoded into the header block. Separate type
     /// (not custom Codable on `Entry`) keeps the in-memory shape
     /// honest: a real `Entry` always carries its vector.
+    ///
+    /// `wasFallback` is Optional so legacy `.emb` files written
+    /// before the field existed still decode (synthesized init
+    /// tolerates a missing key when the target is Optional). The
+    /// decode site maps the absent case to `false` so the rest of
+    /// the pipeline sees a non-optional value.
     private struct HeaderShape: Codable {
         let schemaVersion: Int
         let backendIdentifier: String
@@ -162,6 +175,7 @@ enum EmbeddingsSidecarBinaryFormat {
         let paragraphs: [HeaderEntry]
         let hierarchy: BookHierarchyIndex?
         let entities: BookEntityIndex?
+        let wasFallback: Bool?
 
         struct HeaderEntry: Codable {
             let chapterIdx: Int

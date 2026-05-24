@@ -158,4 +158,30 @@ final class EmbeddingsSidecarBinaryFormatTests: XCTestCase {
         }
         XCTAssertEqual(floats, [1.5, 2.5, 3.5, 4.5])
     }
+
+    func test_roundtrip_preserves_wasFallback_true() throws {
+        // Sticky-fallback flag — set by the fallback branch of the
+        // index builder when the user's primary backend errored and
+        // we wrote against the Apple-NL safety net. Used by the
+        // bulk-index skip check; loses meaning if it doesn't
+        // survive write+read.
+        var sidecar = EmbeddingsSidecar.empty(
+            backend: "apple.nl.sentence.en", dimension: 4
+        )
+        sidecar.wasFallback = true
+        let data = try EmbeddingsSidecarBinaryFormat.encode(sidecar)
+        let restored = try EmbeddingsSidecarBinaryFormat.decode(data)
+        XCTAssertTrue(restored.wasFallback)
+    }
+
+    func test_roundtrip_preserves_wasFallback_false() throws {
+        let sidecar = EmbeddingsSidecar.empty(
+            backend: "gemini.embedding-001.768", dimension: 4
+        )
+        // wasFallback defaults to false; encode/decode should not
+        // flip it.
+        let data = try EmbeddingsSidecarBinaryFormat.encode(sidecar)
+        let restored = try EmbeddingsSidecarBinaryFormat.decode(data)
+        XCTAssertFalse(restored.wasFallback)
+    }
 }

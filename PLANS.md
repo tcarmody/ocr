@@ -5159,24 +5159,6 @@ be rebuilt automatically on the magic-byte rejection).
   the federated cache + cosine path goes away. ~1 week. Worth
   it if (a) library scales past current 2k-book range or (b)
   query latency at brute force becomes a felt problem.
-- **Fix `wasFallback` round-trip in `EmbeddingsSidecarBinaryFormat`.**
-  Discovered while wiring Settings → "Clear outdated": the
-  binary `.emb` format's `HeaderShape` doesn't include
-  `wasFallback`, so every UUID-keyed sidecar (the modern default
-  keying) silently loses the flag on encode/decode. That makes
-  the sticky-fallback branch in
-  `LibraryIndexBuilder.sidecarMatches` dead code for binary
-  files: a book that genuinely can't be indexed against the
-  primary backend will retry on every bulk run, fall back to
-  Apple-NL, save (flag dropped again), and repeat. Fix: add
-  `wasFallback` to `HeaderShape`, encode it, decode with a
-  defaulted `false` for legacy `.emb` files lacking the field.
-  No magic-version bump needed since JSON header tolerates the
-  new field; the missing-key on legacy reads gracefully defaults
-  to false. Until this lands, the Settings "Clear outdated"
-  surface uses backend-identifier prefix matching (cleaner UX
-  anyway), so the bug isn't a user-visible regression.
-
 ### Caveats
 
 - The Phase 1 changes are all in `FederatedIndexCache` + the two
