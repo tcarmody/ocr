@@ -180,17 +180,15 @@ struct FlowingCitationRow: View {
     var onCopyCitation: ((BookChatCitation) -> Void)? = nil
 
     var body: some View {
-        // Plain HStack — was `ViewThatFits` with two variants but
-        // SwiftUI re-measured both on every parent body recompute,
-        // and per-frame measurement of all the citation chips
-        // dominated scroll cost on long transcripts (sampled
-        // cascade pinned in `LazyHVStack.lengthAndSpacing` from
-        // the inner HStack inside ViewThatFits). Citations now
-        // overflow + truncate on tight panes; proper wrapping
-        // would need a custom `Layout` — queued as a follow-up.
-        HStack(spacing: 6) {
+        // Wrap via the custom FlowLayout in Theme/FlowLayout.swift.
+        // Earlier ViewThatFits-with-two-variants approach re-measured
+        // both on every parent body recompute and pinned the scroll
+        // cascade in LazyVStack.lengthAndSpacing — a single-pass
+        // Layout is much cheaper because each subview's
+        // sizeThatFits is called once per row build, not per
+        // candidate variant per body diff.
+        FlowLayout(spacing: 6) {
             content
-            Spacer(minLength: 0)
         }
     }
 
