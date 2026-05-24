@@ -1344,6 +1344,14 @@ Drivers for the current ordering:
 11. **R-Library-Chat-Plus Tier 2 — pinned passages,
     ask-each-book mode**. Build if a research workflow makes
     these specifically painful.
+11a. **R-Chat-Agentic follow-ups** — streaming during tool
+    rounds, Ollama tool-use with capability detection, per-book
+    agentic loop with its own toolset (`search_book`,
+    `expand_chapter`), more library tools (`list_books_by_author`,
+    `expand_paragraph_context`). Each is ~half day to 1 day, all
+    independently shippable. Pick whichever matches current
+    friction. See `R-Chat-Agentic` for the full menu + the
+    Chapters 2–4 roadmap that goes beyond agentic retrieval.
 12. **T-CI** (GitHub Actions running `swift test`). ~half day.
     Earns priority when a regression slips through that the
     test suite would have caught.
@@ -4422,6 +4430,177 @@ runway; don't build unless a specific need surfaces.
   authors / publishers / years populated. The exporter should
   fall back to the source filename + chapter title with a "(no
   author / year recorded)" note rather than fabricating.
+
+---
+
+## R-Chat-Agentic — Tool-using library retrieval
+
+**Status**: Chapter 1 shipped (commits `20a76ed`, `b615e47`,
+`2d812a3`, `3a2bd44`). The rigid retrieve→answer pipeline was the
+ceiling on hard library-scope questions — the model got one cosine
+pass and had to work with whatever it surfaced. With `search_library`
+exposed as an Anthropic tool, Claude can broaden / refine retrieval
+mid-answer, which folds query-rewriting, multi-hop questions, and
+"give me more from author X" into a single agentic loop.
+
+Chapter 1 also indirectly fixed two earlier complaints in
+`R-Library-Chat-Plus` (PRIMARY SOURCES FIRST and follow-up topic
+drift): the model can now react to a weak primary-source pass by
+issuing a more author-specific search rather than synthesizing
+from secondary commentary, and follow-up turns that pivot topics
+get fresh retrievals instead of stale context.
+
+The follow-ups below are the things scoped out of Chapter 1 to ship
+the agentic loop in one session. The Chapters 2–4 list at the bottom
+of this entry sketches the broader chat-features plan picked from
+the "think big" brainstorm; build them as separate work in their
+own sessions.
+
+### Shipped — Chapter 1
+
+- ~~**Tool-use surface on `AnthropicAPIClient`**~~. `Tool` type,
+  `tools:` field on `AnthropicMessageRequest`, `ContentBlock
+  .toolUse` / `.toolResult`, `ResponseBlock.toolUse` decode path.
+  Three tests pin the wire shape (`tool_use_id` snake-case,
+  `is_error` suppression when false, tool-use decode round-trip).
+- ~~**Agentic loop in both library chat VMs**~~. New
+  `LibraryChatTools` module holds the `searchLibraryTool`
+  descriptor, `SearchLibraryArgs`, and a `TurnBookRegistry` that
+  keeps `[book:N]` indices stable across initial render + every
+  tool result so citations resolve correctly no matter which
+  retrieval pass surfaced the paragraph. `LibraryChatViewModel
+  .runCloudSendAgentic` and `BookChatViewModel
+  .runLibraryCloudSendAgentic` both iterate dispatch→search→
+  tool_result with `humanist.chat.agenticMaxIterations` cap
+  (default 3; 0 disables tool use entirely). Failed dispatches
+  return `tool_result` with `is_error: true` so the model can
+  recover. Library system prompts gain a TOOL USE clause.
+- ~~**"Searching: …" status indicator**~~. `toolStatus: String?`
+  published on both VMs; chat panes render `toolStatus ?? "Thinking…"`
+  so the user sees what the model is looking up during the
+  non-streaming agentic rounds.
+
+### Chapter 1 follow-ups
+
+These are sized for focused one-session commits each. Order roughly
+matches "how much user value is left on the table without it."
+
+1. **Streaming during tool rounds** — the agentic loop is
+   non-streaming for v1 because Anthropic's streaming-with-tool-use
+   surface interleaves `content_block_start` / `input_json_delta`
+   events with text deltas, and the current `AnthropicStream`
+   parser only handles `text_delta` + `message_stop`. Goal: stream
+   the FINAL turn's text (the one with no `tool_use` blocks) while
+   still doing the intermediate rounds non-streaming. Lets the
+   user see the answer compose live instead of landing all at once
+   after the last tool call. ~half day. Needs SSE parser extension
+   for `content_block_start` (`type: tool_use`) + `input_json_delta`
+   accumulation + `content_block_stop`.
+2. **Ollama tool-use** — local-model agentic loop. Ollama supports
+   tool-use via the OpenAI-shape `tools:` / `tool_calls` schema as
+   of ~late 2024, but only on models that have it built in
+   (`llama3.1`, `qwen2.5`, `mistral-nemo`, `command-r`). Current
+   default `gemma4:26b` does NOT. Plan: (a) add `tools:` /
+   `tool_calls` to `OllamaClient`, (b) probe the configured model's
+   capabilities on first send and cache, (c) gracefully fall back
+   to the non-tool path when the model lacks support — with a
+   one-time Settings notice suggesting a tool-capable default, (d)
+   parse `tool_calls`, dispatch via the same `LibraryChatTools`
+   surface, loop. Tool-use JSON-formatting reliability is noticeably
+   lower on local models — keep `is_error: true` recovery as the
+   safety net. ~1 day including capability detection.
+3. **Per-book chat agentic loop with its own toolset** — per-book
+   chat (the `.currentBook` scope) is still single-shot. Tools
+   should be different from library scope: `search_book(query,
+   top_k)`, `expand_chapter(chapter)`, `get_paragraph(chapter,
+   paragraph)`, possibly `list_chapter_titles()`. Lets the model
+   pull more chapter context when an initial paragraph hit is
+   suggestive but truncated, or expand from a structural query
+   ("what's in chapter 3"). Reuses the same iteration cap and
+   status-indicator plumbing as the library path. ~1 day.
+4. **More library tools** — `list_books_by_author(author, limit)`
+   (BM25 over per-book metadata, filter by author match) and
+   `expand_paragraph_context(book, chapter, paragraph, before:
+   after)` (fetch ±N paragraphs around a hit so the model can see
+   surrounding argument without re-running cosine). Both unlock
+   queries the current `search_library` handles awkwardly:
+   author-roster questions ("which books in my library does
+   Foucault appear in?") and quote-in-context follow-ups ("show me
+   what comes right before that"). ~1 day each.
+
+### Chapters 2–4 — broader chat-features roadmap
+
+Selected from the "think big" brainstorm as the next directions
+beyond agentic retrieval. Each chapter is its own session's worth
+of work; the order below was the user's pick. Don't treat as a
+hard schedule — sequence around whatever specific friction is
+biting on the days the work happens.
+
+- **Chapter 2 — Discovery** (#11 + #13):
+  - **Surface me something** — single button that picks a paragraph
+    from somewhere in the library the user probably hasn't seen,
+    flagged as "worth re-reading." Recency-decayed entropy score
+    so the same passages don't keep coming up. Daily-quote shape
+    but biased toward genuinely useful re-encounters.
+  - **Pre-reading briefing** — open a book the user hasn't read →
+    "give me what I need to know before I start this." Pulls from
+    the book's own front-matter + the library's other books that
+    engage with this one. Especially useful for translated / dense
+    texts where the introduction is itself a wall.
+- **Chapter 3 — Cross-corpus** (#8 + #10):
+  - **Knowledge-graph layer** — explicit "this book mentions this
+    concept N times, peaks in chapter M" overlay on top of the
+    entity index. Enables queries like "every paragraph mentioning
+    both Foucault and Bourdieu," "which books in my library most
+    engage with Heidegger?" UI: type a concept, see a bar chart of
+    the library by relevance, click a bar to chat about it.
+    Subsumes the speculative `R-Library-Chat-Plus` knowledge-graph
+    item — this version is grounded in the existing entity index
+    rather than a fresh force-directed visualization.
+  - **Disagreement detector** — periodic background pass finding
+    places where books in the library contradict each other on the
+    same topic. Surface as "tension cards" — a small panel showing
+    "Book A says X; Book B says ¬X; here are the passages."
+    Surprising and fun; depends on Chapter 3's graph for the
+    entity-co-occurrence index.
+- **Chapter 4 — Persistence + branching** (#4 + #17):
+  - **Chat-as-annotation** — right-click an assistant turn → "Pin
+    to [book], chapter N as a note." Lands in the EPUB's annotation
+    layer next to the paragraph. Chat becomes durable marginalia.
+  - **Branching conversations** — fork a chat at any turn, try a
+    different framing without losing the original. Stored as a
+    tree, navigable. The default linear-transcript model is the
+    wrong abstraction for research. Pairs naturally with
+    chat-as-annotation since both change the chat data model.
+
+### When to ship
+
+The four Chapter 1 follow-ups are small enough to land
+opportunistically — pick the one that matches current friction
+(streaming if blank-pane wait grates, Ollama tool-use if the local
+path feels degraded by comparison, per-book agentic when reading
+a single book and wanting it to dig deeper, more library tools
+when the existing `search_library` keeps getting awkwardly used
+for author-roster queries).
+
+Chapters 2–4 are session-sized and should each get a fresh design
+pass — none of them are mechanical extensions of Chapter 1, and
+some (the knowledge-graph layer, branching conversations) deserve
+explicit design discussion before code lands. Treat the bullets
+above as the entry point, not the spec.
+
+### Dependencies
+
+- `AnthropicAPIClient` tool-use surface (shipped Chapter 1·1).
+- `LibraryChatTools` registry + renderers (shipped Chapter 1·2).
+- For Ollama follow-up: model capability detection adds new state
+  to `OllamaClient` / Settings.
+- Chapter 3 builds on the existing `LibraryEntityIndex` /
+  `LibraryKeywordIndex`; no new persisted index needed for the
+  knowledge-graph layer beyond an in-memory rollup pass.
+- Chapter 4 chat-as-annotation needs an EPUB annotation surface
+  the editor doesn't fully expose today — confirm scope before
+  starting.
 - **Multiple chat threads conflict with how the transcript is
   persisted today**. The library transcript is a single
   `library.json` keyed by app instance; threading would require
