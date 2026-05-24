@@ -177,6 +177,18 @@ final class LibraryChatViewModel: ObservableObject {
             .object(forKey: "humanist.chat.maxHistoryTurns") as? Int
         return stored ?? 10
     }
+    /// Max iterations of tool calls the model can issue per user
+    /// turn before we force a final answer. Each iteration is an
+    /// extra round-trip; without a cap, a confused model could
+    /// loop on `search_library` forever. Default 3 (initial
+    /// retrieval + up to 3 model-issued searches = generous).
+    /// Set to 0 to disable tool use entirely (model gets only the
+    /// initial implicit context, same as before this feature).
+    private var agenticMaxIterations: Int {
+        let stored = UserDefaults.standard
+            .object(forKey: "humanist.chat.agenticMaxIterations") as? Int
+        return stored ?? 3
+    }
 
     init(transcriptURL: URL? = nil) {
         let keyStore = AnthropicAPIKeyStore()
@@ -403,15 +415,25 @@ final class LibraryChatViewModel: ObservableObject {
                     excluding: excluded
                 )
             }.value
-            let context = Self.renderLibraryContext(
-                hits: hits, maxParaChars: maxParaChars
+            // Build a per-turn registry so `[book:N]` indices stay
+            // consistent across the initial context AND any later
+            // tool-result renders. The Ollama path doesn't use tools
+            // yet — registry-rendering still works fine for it,
+            // there just won't be any subsequent renders.
+            let registry = LibraryChatTools.TurnBookRegistry()
+            let context = LibraryChatTools.renderInitialContext(
+                hits: hits, registry: registry, maxParaChars: maxParaChars
             )
             let userPrompt = context + "\n\nQuestion: " + query
 
             switch chosenBackend {
             case .cloudHaiku, .cloudSonnet:
-                await self.runCloudSend(
-                    userPrompt: userPrompt, allowedHits: hits,
+                await self.runCloudSendAgentic(
+                    userPrompt: userPrompt,
+                    initialHits: hits,
+                    registry: registry,
+                    library: library,
+                    backend: backend,
                     model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
                 )
             case .localOllama:
@@ -700,109 +722,174 @@ final class LibraryChatViewModel: ObservableObject {
         return anchors
     }
 
-    // MARK: - Rendering + sending
+    // MARK: - Sending
 
-    /// `nonisolated static` so retrieval can render the context
-    /// inside the same off-main block. `maxParaChars` is plumbed
-    /// in because it used to read off `self`.
-    private nonisolated static func renderLibraryContext(
-        hits: [LibraryEmbeddingIndex.Hit],
-        maxParaChars: Int
-    ) -> String {
-        guard !hits.isEmpty else {
-            return """
-            (No matching paragraphs were found across the user's \
-            library. Either the question doesn't match anything in \
-            the indexed corpus, or no books have been indexed yet.)
-            """
-        }
-        var bookIndex: [URL: Int] = [:]
-        var orderedBooks: [(url: URL, title: String, author: String?)] = []
-        for hit in hits where bookIndex[hit.epubURL] == nil {
-            bookIndex[hit.epubURL] = orderedBooks.count
-            orderedBooks.append((
-                url: hit.epubURL,
-                title: hit.bookTitle,
-                author: hit.bookAuthor
-            ))
-        }
-        var out = "Books in scope:\n"
-        for (idx, book) in orderedBooks.enumerated() {
-            // Author is what makes `PRIMARY SOURCES FIRST` actionable
-            // — the model couldn't tell "Discipline and Punish" from
-            // "Foucault: A Critical Reader" by title alone.
-            if let author = book.author, !author.isEmpty {
-                out += "[book:\(idx)] \"\(book.title)\" — \(author)\n"
-            } else {
-                out += "[book:\(idx)] \"\(book.title)\"\n"
-            }
-        }
-        out += "\nRelevant paragraphs:\n\n"
-        for hit in hits {
-            guard let bIdx = bookIndex[hit.epubURL] else { continue }
-            let text = (hit.text ?? "")
-                .prefix(maxParaChars)
-            out += "[book:\(bIdx) chapter:\(hit.chapterIdx) para:\(hit.paragraphIdx)]\n  • \(text)\n\n"
-        }
-        return out
-    }
-
-    private func runCloudSend(
+    /// Cloud send with tool use enabled. Issues an initial request
+    /// with `search_library` in the tools list, then dispatches any
+    /// `tool_use` blocks the model emits and loops until either the
+    /// model returns text-only or `agenticMaxIterations` is hit.
+    ///
+    /// Non-streaming for v1 — Anthropic's streaming-with-tool-use
+    /// surface interleaves block kinds and needs more parser
+    /// surgery; landing the agentic loop without that complexity
+    /// first lets us validate the retrieval-quality win on its own,
+    /// then add streaming as a focused follow-up.
+    ///
+    /// Tool dispatch reuses the same federated retriever the
+    /// initial pass uses (cosine + entity + alias + per-book BM25)
+    /// so the model's mid-answer searches get the same quality as
+    /// the initial pull. The per-turn `registry` keeps `[book:N]`
+    /// indices stable across the initial render + every tool
+    /// result, so a citation the model emits at the end resolves
+    /// correctly no matter which retrieval surfaced the paragraph.
+    private func runCloudSendAgentic(
         userPrompt: String,
-        allowedHits: [LibraryEmbeddingIndex.Hit],
+        initialHits: [LibraryEmbeddingIndex.Hit],
+        registry: LibraryChatTools.TurnBookRegistry,
+        library: LibraryEmbeddingIndex,
+        backend: any EmbeddingBackend,
         model: CloudModel
     ) async {
         defer {
             isThinking = false
             streamTask = nil
         }
-        // Build the API messages array from prior turns + the
-        // current context-laden user prompt. `messages.dropLast()`
-        // drops the bare current-user message that `send()` already
-        // appended; we replace it with the context-laden version
-        // below so the conversation history stays clean (older
-        // user turns carry their bare queries, not stale contexts).
-        // The shared helper also drops a `cache_control` marker on
-        // the most-recent assistant turn so multi-turn sessions
-        // hit Anthropic's prompt cache instead of re-tokenizing
-        // the full transcript every send.
-        // Captured BEFORE `appendDraftAssistant` so the empty draft
-        // doesn't leak into the wire history.
+        // Accumulate every hit the model has seen this turn —
+        // citation validation runs over the union so a marker
+        // pointing into a tool-discovered paragraph still passes.
+        var accumulatedHits: [LibraryEmbeddingIndex.Hit] = initialHits
+        // Snapshot the state the detached tool-dispatch task will
+        // need. Read on @MainActor here so the inner Task.detached
+        // closure doesn't have to hop back.
+        let useEntity = self.useEntityRetrieval
+        let entityIndex = self.libraryEntityIndex
+        let keywordIndex = self.libraryKeywordIndex
+        let topKDefault = self.maxRetrievedParagraphs
+        let rrfK = self.rrfK
+        let scope = self.scopedURLs
+        let excluded = self.excludedBookURLs
+        let maxParaChars = self.maxParagraphChars
+
         let trimmed = trimChatHistory(
             Array(messages.dropLast()), maxTurns: maxHistoryTurns
         )
-        let apiMessages = buildAnthropicMessages(
+        var apiMessages = buildAnthropicMessages(
             history: trimmed,
             currentUserPrompt: userPrompt
         )
-        let request = AnthropicMessageRequest(
-            model: model,
-            maxTokens: useLongFormSynthesis ? 2500 : 1500,
-            system: .cached(systemPrompt, ttl: .oneHour),
-            messages: apiMessages,
-            thinking: .disabled
-        )
-        // Stream — library-scope responses can run 30+ seconds on
-        // long-form synthesis. Without the draft-message pattern
-        // the user stares at a blank pane the whole time.
+
         let draftId = appendDraftAssistant()
-        var sawFirstDelta = false
+        let maxIterations = agenticMaxIterations
+        var iteration = 0
+
         do {
-            let stream = client.sendStream(request)
-            for try await event in stream {
+            while true {
+                let request = AnthropicMessageRequest(
+                    model: model,
+                    maxTokens: useLongFormSynthesis ? 2500 : 1500,
+                    system: .cached(systemPrompt, ttl: .oneHour),
+                    messages: apiMessages,
+                    thinking: .disabled,
+                    tools: maxIterations > 0 ? [LibraryChatTools.searchLibraryTool] : nil
+                )
+                let response = try await client.send(request)
                 try Task.checkCancellation()
-                switch event {
-                case .textDelta(let chunk):
-                    if !sawFirstDelta {
-                        sawFirstDelta = true
-                        isThinking = false
+
+                // Pull out text + tool_use blocks. Unknown blocks
+                // we drop quietly — they're a forward-compat hatch.
+                var textChunks: [String] = []
+                var toolCalls: [(id: String, name: String, inputJSON: Data)] = []
+                for block in response.content {
+                    switch block {
+                    case .text(let s): textChunks.append(s)
+                    case .toolUse(let id, let name, let json):
+                        toolCalls.append((id, name, json))
+                    case .unknown: break
                     }
-                    appendToDraft(id: draftId, text: chunk)
-                case .messageStop:
-                    break
                 }
+
+                // Append any text the model emitted on this round
+                // into the visible draft so the user sees progress
+                // even when the model is mid-loop.
+                let combinedText = textChunks.joined()
+                if !combinedText.isEmpty {
+                    appendToDraft(id: draftId, text: combinedText)
+                    isThinking = false
+                }
+
+                // Final answer reached: either no tool calls or
+                // iteration cap hit. Finalize the draft using the
+                // registry-derived validity sets so citations are
+                // checked against everything the model saw.
+                if toolCalls.isEmpty || iteration >= maxIterations {
+                    finalizeAgenticDraft(
+                        id: draftId,
+                        registry: registry,
+                        accumulatedHits: accumulatedHits
+                    )
+                    return
+                }
+
+                // Echo the assistant turn's blocks back into the
+                // running messages array — the API requires the
+                // full assistant turn (including tool_use blocks)
+                // to precede the matching tool_result user turn.
+                var assistantBlocks: [ContentBlock] = []
+                for block in response.content {
+                    switch block {
+                    case .text(let s):
+                        assistantBlocks.append(.text(s, cacheControl: nil))
+                    case .toolUse(let id, let name, let json):
+                        assistantBlocks.append(.toolUse(id: id, name: name, inputJSON: json))
+                    case .unknown: break
+                    }
+                }
+                apiMessages.append(Message(
+                    role: .assistant, content: .blocks(assistantBlocks)
+                ))
+
+                // Dispatch every tool call from this round in
+                // parallel-shaped order (sequential dispatch is
+                // simpler and matches how the model expects to read
+                // them back; the cost of one extra round-trip is
+                // already paid).
+                var resultBlocks: [ContentBlock] = []
+                for call in toolCalls {
+                    let resultText: String
+                    let isError: Bool
+                    do {
+                        let (text, hits) = try await dispatchSearchLibrary(
+                            call: call,
+                            library: library,
+                            backend: backend,
+                            registry: registry,
+                            useEntity: useEntity,
+                            entityIndex: entityIndex,
+                            keywordIndex: keywordIndex,
+                            topKDefault: topKDefault,
+                            rrfK: rrfK,
+                            scope: scope,
+                            excluded: excluded,
+                            maxParaChars: maxParaChars
+                        )
+                        accumulatedHits.append(contentsOf: hits)
+                        resultText = text
+                        isError = false
+                    } catch {
+                        resultText = "search_library failed: \(error.localizedDescription)"
+                        isError = true
+                    }
+                    resultBlocks.append(.toolResult(
+                        toolUseID: call.id,
+                        content: resultText,
+                        isError: isError
+                    ))
+                }
+                apiMessages.append(Message(
+                    role: .user, content: .blocks(resultBlocks)
+                ))
+                iteration += 1
             }
-            finalizeDraft(id: draftId, allowedHits: allowedHits)
         } catch is CancellationError {
             removeDraft(id: draftId)
             return
@@ -815,6 +902,138 @@ final class LibraryChatViewModel: ObservableObject {
                 id: draftId, message: error.localizedDescription
             )
         }
+    }
+
+    /// Run one `search_library` call from the model. Throws if the
+    /// tool name doesn't match, the args don't decode, or the
+    /// embed step fails — caller surfaces the throw as a
+    /// `tool_result` with `isError: true` so the model can recover
+    /// (try a different query, give up gracefully).
+    private func dispatchSearchLibrary(
+        call: (id: String, name: String, inputJSON: Data),
+        library: LibraryEmbeddingIndex,
+        backend: any EmbeddingBackend,
+        registry: LibraryChatTools.TurnBookRegistry,
+        useEntity: Bool,
+        entityIndex: LibraryEntityIndex?,
+        keywordIndex: LibraryKeywordIndex?,
+        topKDefault: Int,
+        rrfK: Double,
+        scope: Set<URL>?,
+        excluded: Set<URL>,
+        maxParaChars: Int
+    ) async throws -> (text: String, hits: [LibraryEmbeddingIndex.Hit]) {
+        guard call.name == "search_library" else {
+            throw LibraryChatToolError.unknownTool(call.name)
+        }
+        let args = try JSONDecoder().decode(
+            LibraryChatTools.SearchLibraryArgs.self, from: call.inputJSON
+        )
+        let toolQuery = args.query
+        let toolTopK = args.topK ?? topKDefault
+        guard let vec = await embedQuery(toolQuery, using: backend) else {
+            throw LibraryChatToolError.embedFailed
+        }
+        let aliases: AliasDictionary = useEntity
+            ? AliasDictionaryStore().read()
+            : .empty
+        let hits = await Task.detached(priority: .userInitiated) {
+            () -> [LibraryEmbeddingIndex.Hit] in
+            var entityAnchors = useEntity
+                ? Self.computeLibraryEntityAnchors(
+                    query: toolQuery, entities: entityIndex
+                  )
+                : []
+            entityAnchors.append(contentsOf: Self.computeLibraryAliasAnchors(
+                query: toolQuery, library: library, aliases: aliases
+            ))
+            let allowedSourcePaths: Set<String>? = scope.map { urls in
+                Set(urls.map {
+                    $0.canonicalForFile.standardizedFileURL.path
+                })
+            }
+            let excludedSourcePaths: Set<String> = Set(excluded.map {
+                $0.canonicalForFile.standardizedFileURL.path
+            })
+            let filtered = entityAnchors.filter { anchor in
+                let p = anchor.epubURL
+                    .canonicalForFile.standardizedFileURL.path
+                if let allowedSourcePaths, !allowedSourcePaths.contains(p) {
+                    return false
+                }
+                return !excludedSourcePaths.contains(p)
+            }
+            let keywordHits = keywordIndex?.search(query: toolQuery, topK: 20) ?? []
+            return library.search(
+                queryVector: vec,
+                topK: toolTopK,
+                entityMatches: filtered,
+                keywordHits: keywordHits,
+                rrfK: rrfK,
+                restrictTo: scope,
+                excluding: excluded
+            )
+        }.value
+        let text = LibraryChatTools.renderToolResult(
+            query: toolQuery,
+            hits: hits,
+            registry: registry,
+            maxParaChars: maxParaChars
+        )
+        return (text, hits)
+    }
+
+    private enum LibraryChatToolError: Error, LocalizedError {
+        case unknownTool(String)
+        case embedFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .unknownTool(let name):
+                return "Unknown tool: \(name)"
+            case .embedFailed:
+                return "Failed to embed the search query"
+            }
+        }
+    }
+
+    /// Finalize the agentic draft: run citation parse against the
+    /// per-turn registry's book mapping + accumulated hits so
+    /// `[book:N chapter:M para:K]` markers from any retrieval
+    /// pass (initial or tool-discovered) resolve correctly.
+    private func finalizeAgenticDraft(
+        id: UUID,
+        registry: LibraryChatTools.TurnBookRegistry,
+        accumulatedHits: [LibraryEmbeddingIndex.Hit]
+    ) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let raw = messages[idx].text
+        let bookByIndex = registry.bookByIndex
+        var chapterValid: Set<String> = []
+        var paraValid: Set<String> = []
+        // Build validity sets keyed by registry index. The registry
+        // already assigned indices for every book the model saw;
+        // look up each hit's book to get its (stable) index.
+        let indexByURL: [URL: Int] = Dictionary(
+            uniqueKeysWithValues: bookByIndex.map { ($0.value.url, $0.key) }
+        )
+        for hit in accumulatedHits {
+            guard let bookIdx = indexByURL[hit.epubURL] else { continue }
+            chapterValid.insert("\(bookIdx)#\(hit.chapterIdx)")
+            paraValid.insert("\(bookIdx)#\(hit.chapterIdx)#\(hit.paragraphIdx)")
+        }
+        let cited = parseCitations(
+            in: raw,
+            bookByIndex: bookByIndex,
+            chapterValid: chapterValid,
+            paraValid: paraValid
+        )
+        messages[idx].text = cited.cleaned
+        messages[idx].citations = cited.citations
+        messages[idx].retrievalDetail = Self.makeRetrievalDetail(hits: accumulatedHits)
+        persistTranscript()
     }
 
     private func runOllamaSend(
@@ -951,20 +1170,18 @@ final class LibraryChatViewModel: ObservableObject {
     /// Library-citation parser — recognizes `[book:N chapter:M]`
     /// markers and projects each back to the source book via the
     /// `allowedHits` ordering (first-appearance-order book index).
+    /// Hit-ordered overload used by the Ollama path — derives the
+    /// `bookByIndex` mapping + validity sets directly from the
+    /// hits in the order they appear. The agentic cloud path uses
+    /// the explicit-mapping overload below since its `[book:N]`
+    /// indices come from a per-turn registry that survives across
+    /// multiple tool calls (and may not match hit insertion order).
     private func parseCitations(
         in text: String,
         allowedHits: [LibraryEmbeddingIndex.Hit]
     ) -> CitationParse {
         var bookByIndex: [Int: (url: URL, title: String)] = [:]
         var seenBooks: [URL: Int] = [:]
-        // Validity sets so the parser drops citations whose
-        // (book, chapter, paragraph) combo wasn't in the retrieved
-        // set — the model occasionally invents these, and an
-        // invalid citation chip looks clickable but jumps to a
-        // wrong / nonexistent anchor. `[book:N chapter:M]` without
-        // a paragraph is valid if ANY hit covered that chapter
-        // (matches the prompt's "shorter form is fine for whole-
-        // chapter references" clause).
         var chapterValid: Set<String> = []
         var paraValid: Set<String> = []
         for hit in allowedHits {
@@ -977,6 +1194,30 @@ final class LibraryChatViewModel: ObservableObject {
             chapterValid.insert("\(idx)#\(hit.chapterIdx)")
             paraValid.insert("\(idx)#\(hit.chapterIdx)#\(hit.paragraphIdx)")
         }
+        return parseCitations(
+            in: text,
+            bookByIndex: bookByIndex,
+            chapterValid: chapterValid,
+            paraValid: paraValid
+        )
+    }
+
+    /// Explicit-mapping overload — the agentic cloud path passes
+    /// the per-turn registry's `bookByIndex` directly so citations
+    /// resolve against the same numbering the model saw across
+    /// every tool result. Validity sets gate paragraph / chapter
+    /// citations the same way the hit-ordered overload does; an
+    /// invalid citation chip looks clickable but jumps to a wrong
+    /// anchor, so we drop those at parse time.
+    /// `[book:N chapter:M]` without a paragraph passes if ANY hit
+    /// covered that chapter — matches the prompt's "shorter form
+    /// is fine for whole-chapter references" clause.
+    private func parseCitations(
+        in text: String,
+        bookByIndex: [Int: (url: URL, title: String)],
+        chapterValid: Set<String>,
+        paraValid: Set<String>
+    ) -> CitationParse {
         // Match `[book:N chapter:M]` and `[book:N chapter:M para:K]`
         // in one pass; paragraph segment is optional. Group 3 is
         // the paragraph index when present.
@@ -1099,8 +1340,20 @@ final class LibraryChatViewModel: ObservableObject {
         the two in your wording so the user can tell which is which \
         ("In Discipline and Punish, Foucault writes…" vs "As one \
         commentator puts it…"). If only secondary sources were \
-        retrieved, say so plainly before drawing on them — the user \
-        may want to re-query or surface the primary source explicitly.
+        retrieved, the right move is usually to call `search_library` \
+        with a more author-specific query — name the author and a \
+        characteristic concept — rather than draw on secondary work.
+
+        TOOL USE — `search_library(query, top_k?)` runs the same \
+        federated retriever that produced the initial context. Call it \
+        when the initial paragraphs don't cover the question, when you \
+        want to broaden via a rephrased query, when you need primary \
+        sources after secondary commentary came back, or when the user \
+        asks a follow-up that pivots topics. Each tool result extends \
+        the master Books-in-scope list rather than restarting it, so a \
+        `[book:N]` index stays stable across the entire turn. You can \
+        issue several tool calls per turn; spend them on different \
+        angles rather than re-running the same query verbatim.
 
         \(lengthGuidance)
         """
