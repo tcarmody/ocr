@@ -41,7 +41,10 @@ enum ConceptAliases {
         // elements are aliases that collapse onto it.
         let groups: [[String]] = [
             // Countries / nationalities
-            ["united states", "america", "u.s.", "u.s.a.", "usa", "us"],
+            [
+                "united states", "america", "u.s.", "u.s.a.",
+                "usa", "us", "united states of america",
+            ],
             ["united kingdom", "britain", "great britain", "uk"],
             ["soviet union", "ussr", "soviet"],
             // Cities + their press / institution variants. We

@@ -397,6 +397,40 @@ final class LibraryConceptGraphTests: XCTestCase {
         XCTAssertNotNil(graph.concepts["obscure"])
     }
 
+    func test_presentationName_lowercasesAllCapsButPreservesMixedCase() {
+        XCTAssertEqual(
+            LibraryConceptGraph.presentationName("UNITED STATES"),
+            "United States"
+        )
+        XCTAssertEqual(
+            LibraryConceptGraph.presentationName("JESUS CHRIST"),
+            "Jesus Christ"
+        )
+        // Mixed case proper nouns pass through untouched —
+        // NLTagger gave us "Michel Foucault" because the source
+        // text capitalized it correctly.
+        XCTAssertEqual(
+            LibraryConceptGraph.presentationName("Michel Foucault"),
+            "Michel Foucault"
+        )
+        // Single-letter or empty edge cases shouldn't crash.
+        XCTAssertEqual(LibraryConceptGraph.presentationName("X"), "X")
+        XCTAssertEqual(LibraryConceptGraph.presentationName(""), "")
+    }
+
+    func test_displayName_isTitleCasedInTheBuiltGraph() {
+        let entry = makeEntry(title: "All Caps Source")
+        let entities = BookEntityIndex(
+            mentions: ["foucault": [.init(chapterIdx: 0, paragraphIdx: 0)]],
+            displayNames: ["foucault": "FOUCAULT"]
+        )
+        writeSidecar(for: entry, entities: entities)
+        let graph = LibraryConceptGraph.build(
+            libraryEntries: [entry], store: store
+        )
+        XCTAssertEqual(graph.concepts["foucault"]?.displayName, "Foucault")
+    }
+
     // MARK: - Cache (Phase 2a)
 
     func test_cache_returnsSameInstanceOnRepeatCall() {

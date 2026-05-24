@@ -38,6 +38,7 @@ enum ConceptStopwords {
         out.formUnion(demonyms)
         out.formUnion(noisyGivenNames)
         out.formUnion(noisyRomanNumerals)
+        out.formUnion(noisyFragments)
         return out
     }()
 
@@ -101,6 +102,16 @@ enum ConceptStopwords {
         "david", "robert", "george", "william", "henry",
         "thomas", "richard", "charles", "edward", "louis",
         "jean", "carl", "max", "hans", "joseph", "anne",
+        // Biblical / mythic single names with given-name
+        // overlap — probe surfaced ADAM at 713 books, mostly
+        // genealogy / scripture references that aren't
+        // concept-level signal.
+        "adam", "eve", "noah", "abraham", "moses", "david king",
+        // Common surnames NLTagger over-detects against the
+        // body of academic prose. BROWN at 919 books was the
+        // worst offender on the probe library.
+        "brown", "smith", "jones", "white", "green", "black",
+        "young", "hall", "wright",
     ]
 
     /// Standalone roman-numeral fragments NLTagger sometimes
@@ -112,5 +123,23 @@ enum ConceptStopwords {
         "i", "ii", "iii", "iv", "v", "vi", "vii", "viii",
         "ix", "x", "xi", "xii", "xiii", "xiv", "xv",
         "st", "mr", "mrs", "dr",
+    ]
+
+    /// Single-word fragments that leak through despite the
+    /// multi-word stopwords elsewhere. `congress` is the worst
+    /// case — caught by `library of congress` but NLTagger also
+    /// emits the bare word when it appears outside that phrase.
+    /// `earth` and `west` are similarly broad terms that
+    /// dominate breadth rankings without being substantive
+    /// concepts.
+    private static let noisyFragments: Set<String> = [
+        "congress", "earth", "west", "east", "north", "south",
+        "ed", "trans", "vol", "no", "pp",
+        // Single-letter initials with trailing dot — NLTagger
+        // sometimes captures author initials like "Kant, I." as
+        // standalone entities. The bare-letter forms are caught
+        // by noisyRomanNumerals.
+        "i.", "j.", "h.", "g.", "f.", "e.", "d.", "c.", "b.", "a.",
+        "m.", "n.", "o.", "p.", "r.", "s.", "t.", "w.",
     ]
 }

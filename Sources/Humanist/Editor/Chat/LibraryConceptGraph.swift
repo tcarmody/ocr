@@ -240,7 +240,9 @@ struct LibraryConceptGraph: Sendable {
 
         // Materialize the final stats: sort each concept's coverage
         // by mentionCount desc, count books, drop edges below the
-        // floor.
+        // floor. displayName is normalized through presentationName
+        // so the sidebar isn't yelling ALL CAPS at the user even
+        // when NLTagger picked up the loudest form during indexing.
         var finalConcepts: [String: ConceptStats] = [:]
         finalConcepts.reserveCapacity(concepts.count)
         for (canonical, acc) in concepts {
@@ -252,7 +254,9 @@ struct LibraryConceptGraph: Sendable {
             }
             finalConcepts[canonical] = ConceptStats(
                 canonical: canonical,
-                displayName: acc.displayName,
+                displayName: applyFilters
+                    ? Self.presentationName(acc.displayName)
+                    : acc.displayName,
                 totalMentions: acc.totalMentions,
                 bookCount: sortedCoverage.count,
                 coverage: sortedCoverage
@@ -270,6 +274,30 @@ struct LibraryConceptGraph: Sendable {
     private static func scoreDisplay(_ s: String) -> Int {
         let uppers = s.filter(\.isUppercase).count
         return uppers * 10 + s.count
+    }
+
+    /// Convert a display name to UI-friendly form. NLTagger
+    /// frequently captures proper nouns from ALL-CAPS running
+    /// titles and section headings ("UNITED STATES",
+    /// "JESUS CHRIST") which then dominate the scoreDisplay
+    /// heuristic and bubble up to the federated displayName.
+    /// For the sidebar we don't want to yell at the user, so
+    /// fully-uppercase names get title-cased; mixed-case names
+    /// pass through unchanged (those are correctly capitalized
+    /// proper nouns like "Michel Foucault").
+    static func presentationName(_ display: String) -> String {
+        let nonSpace = display.filter { !$0.isWhitespace }
+        guard !nonSpace.isEmpty,
+              nonSpace.allSatisfy({ !$0.isLetter || $0.isUppercase })
+        else { return display }
+        return display
+            .split(separator: " ")
+            .map { word -> String in
+                guard let first = word.first else { return String(word) }
+                return String(first).uppercased()
+                    + word.dropFirst().lowercased()
+            }
+            .joined(separator: " ")
     }
 
     /// When the primary canonical isn't directly present in the
