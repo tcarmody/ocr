@@ -4734,7 +4734,83 @@ Persist sidecar-side once we've confirmed the format and size are
 stable (the coOccurrence map is the bulky part — capped to
 edges with count ≥ 2 keeps it manageable).
 
-### Phase 2 — Concept relevance UI
+#### Phase 1 probe findings (2k-book Gemini library)
+
+Real-world numbers from `HUMANIST_PROBE=1 swift test --filter
+LibraryConceptGraphProbe`:
+
+| Metric                  | Value                  |
+|-------------------------|------------------------|
+| Catalog entries         | 2,250                  |
+| Books with sidecars     | 2,137 (95%)            |
+| Distinct concepts       | **631,880**            |
+| Retained edges (≥2)     | 1,748,965              |
+| Build time              | 43.06s                 |
+| Max edge count          | 2,856 (LONDON↔NEW YORK)|
+| Mean edge count         | 4.56                   |
+
+Three findings reshape Phase 2:
+
+1. **NLTagger-at-library-scale surfaces a lot of publication
+   metadata noise.** Top concepts by breadth are dominated by
+   cities of publication and publishers (NEW YORK, LONDON,
+   CAMBRIDGE UNIVERSITY PRESS, LIBRARY OF CONGRESS), not
+   substantive thinkers / concepts.
+2. **Alias collapse is necessary, not optional.** America/United
+   States, France/French, Cambridge/Cambridge University Press
+   all show up as separate top-tier concepts.
+3. **631k rows can't be the sidebar list.** Most are one-off
+   NLTagger false positives; only concepts appearing in multiple
+   books carry signal.
+
+Real concept-level signal IS present (CARAMON↔RAISTLIN at 1,829
+co-occurrences caught a Dragonlance character pair correctly),
+just buried — which is why the filters below are mandatory before
+the UI lands.
+
+### Phase 2a — Data-layer filters + cache (prerequisite)
+
+Three small modules between the rollup and the UI:
+
+- **`ConceptStopwords`** — built-in denylist for publication
+  metadata. Seed list: cities of publication ("new york",
+  "london", "paris", "cambridge", "oxford", "boston", "chicago"),
+  publishers ("cambridge university press", "oxford university
+  press", "harvard university press", "harper", "routledge"),
+  catalog headers ("library of congress"), demonyms
+  ("french", "german", "english", "spanish", "italian", "greek",
+  "european", "american"), and single given names that NLTagger
+  hallucinates as personal entities ("john", "paul", "st",
+  "iii"). Applied in `LibraryConceptGraph.build` so the noise
+  doesn't propagate to coverage rows or edges.
+- **`ConceptAliases`** — built-in synonym map collapsing obvious
+  duplicates: america/united states, france/french, england/
+  english, cambridge/cambridge university press, etc. Applied
+  during inversion: each entity is canonicalized to its alias
+  group's primary form before pair generation, so co-occurrence
+  counts merge correctly. User-editable alias dictionary
+  (existing `R-Chat-Graph-Lite` follow-up) supersedes the
+  built-in map later.
+- **Default `bookCount ≥ 2` filter** on `conceptsByBreadth()`
+  and a new `LibraryConceptGraph.significantConcepts()` helper.
+  The full `concepts` dictionary stays available for the
+  `search_concept` tool (Phase 3) which may want long-tail hits.
+- **Session-lifecycle cache.** 43s rebuild on every library
+  window open is too slow. Cache the built graph keyed by
+  (catalog hash, backend identifier); invalidate on either
+  changing. Pure in-memory for now — sidecar persistence stays
+  deferred per the schema-option-C discussion.
+
+Acceptance for Phase 2a:
+
+- After filters, the top-50 concept list on the probe library
+  contains zero "NEW YORK"-class metadata noise (verified by
+  re-running the probe).
+- Build time unchanged (filters apply in the same pass).
+- Concept count drops from 631k to something more like 5k–20k
+  (the long-tail singletons get filtered out by `bookCount ≥ 2`).
+
+### Phase 2b — Concept relevance UI
 
 New sidebar tab in the library window: **Concepts**. Search field
 at the top; below it a sorted list of `ConceptStats` showing
