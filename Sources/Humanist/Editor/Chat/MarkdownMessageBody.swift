@@ -54,22 +54,48 @@ struct MarkdownMessageBody: View {
     @State private var cache: Cache = Cache(text: "", attributed: AttributedString())
 
     var body: some View {
-        // NSTextView wrapper for selection — see
-        // `SelectableMessageText` for why this beats
-        // `Text(...).textSelection(.enabled)` on macOS 26.
-        SelectableMessageText(
-            attributedString: cache.attributed,
-            sourceText: cache.text
-        )
+        // Plain Text — `.textSelection(.enabled)` and the
+        // `NSTextView`-backed `SelectableMessageText` wrapper both
+        // pinned the main thread on every scroll frame in macOS
+        // 26's renderer (SelectionOverlay/JetUI setFont cascade
+        // for the former; LazyVStack lengthAndSpacing measurement
+        // cost for the latter). Plain Text scrolls smoothly.
+        // Selection is opt-in via the context menu's "Select
+        // Text…" sheet so users can still drag-select / ⌘C the
+        // message content when they want to.
+        Text(cache.attributed)
+            .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
             .task(id: text) {
-                // Cancels-and-restarts on text change (streaming
-                // append cadence). The fold is pure-string work,
-                // safe to run on the MainActor at parse cost.
                 let folded = Self.foldToAttributedString(text)
                 cache = Cache(text: text, attributed: folded)
             }
+            .contextMenu {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                } label: {
+                    Label("Copy Message", systemImage: "doc.on.doc")
+                }
+                Button {
+                    showSelectionSheet = true
+                } label: {
+                    Label("Select Text…", systemImage: "text.cursor")
+                }
+            }
+            .sheet(isPresented: $showSelectionSheet) {
+                MessageSelectionSheet(text: text) {
+                    showSelectionSheet = false
+                }
+            }
     }
+
+    /// Deliberate-selection sheet visibility. Plain Text doesn't
+    /// support drag-select, so users invoke this from the message
+    /// context menu when they want to grab a passage. The sheet
+    /// hosts a `TextEditor` with the message text where native
+    /// macOS text selection (drag, ⌘A, ⌘C) just works.
+    @State private var showSelectionSheet: Bool = false
 
     // MARK: - Block parsing
 

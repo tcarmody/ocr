@@ -28,6 +28,10 @@ struct ChatMessageRow: View {
     /// chrome — useful for diagnosing "why did this paragraph
     /// surface?" without reaching for a debugger.
     var showRetrievalDetail: Bool = false
+    /// Non-nil → the "Select Text…" sheet is presented with that
+    /// message text. User-message sheet only — assistant-side
+    /// selection sheet is owned inside `MarkdownMessageBody`.
+    @State private var userSelectionSheetText: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -50,15 +54,31 @@ struct ChatMessageRow: View {
                     MarkdownMessageBody(text: message.text)
                         .font(.callout)
                 } else {
-                    // Same NSTextView wrapper the assistant side
-                    // uses (see `SelectableMessageText`). Drag-
-                    // select and ⌘C work natively without the
-                    // JetUI/SelectionOverlay cascade.
-                    SelectableMessageText(
-                        attributedString: AttributedString(message.text),
-                        sourceText: message.text
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Plain Text — see the matching comment in
+                    // `MarkdownMessageBody` for why neither
+                    // `.textSelection(.enabled)` nor the
+                    // `SelectableMessageText` NSTextView wrapper
+                    // works on macOS 26 without hanging the chat
+                    // scroll. Selection is opt-in via the context
+                    // menu's "Select Text…" sheet.
+                    Text(message.text)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contextMenu {
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(
+                                    message.text, forType: .string
+                                )
+                            } label: {
+                                Label("Copy Message", systemImage: "doc.on.doc")
+                            }
+                            Button {
+                                userSelectionSheetText = message.text
+                            } label: {
+                                Label("Select Text…", systemImage: "text.cursor")
+                            }
+                        }
                 }
             }
             .padding(10)
@@ -94,6 +114,20 @@ struct ChatMessageRow: View {
                 retrievalDetailView(detail)
             }
         }
+        .sheet(item: Binding(
+            get: { userSelectionSheetText.map(SelectionPayload.init) },
+            set: { userSelectionSheetText = $0?.text }
+        )) { payload in
+            MessageSelectionSheet(text: payload.text) {
+                userSelectionSheetText = nil
+            }
+        }
+    }
+
+    /// Wrap for `.sheet(item:)` since String isn't Identifiable.
+    private struct SelectionPayload: Identifiable {
+        let text: String
+        var id: String { text }
     }
 
     @ViewBuilder
@@ -167,13 +201,17 @@ struct FlowingCitationRow: View {
     var onCopyCitation: ((BookChatCitation) -> Void)? = nil
 
     var body: some View {
-        // ViewThatFits + horizontal layouts handles the common
-        // 2–4 citation case cleanly without a custom Layout.
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) { content }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) { content }
-            }
+        // Plain HStack — was `ViewThatFits` with two variants but
+        // SwiftUI re-measured both on every parent body recompute,
+        // and per-frame measurement of all the citation chips
+        // dominated scroll cost on long transcripts (sampled
+        // cascade pinned in `LazyHVStack.lengthAndSpacing` from
+        // the inner HStack inside ViewThatFits). Citations now
+        // overflow + truncate on tight panes; proper wrapping
+        // would need a custom `Layout` — queued as a follow-up.
+        HStack(spacing: 6) {
+            content
+            Spacer(minLength: 0)
         }
     }
 
