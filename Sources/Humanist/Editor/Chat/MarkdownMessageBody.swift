@@ -54,32 +54,17 @@ struct MarkdownMessageBody: View {
     @State private var cache: Cache = Cache(text: "", attributed: AttributedString())
 
     var body: some View {
-        Text(cache.attributed)
-            .font(.callout)
+        // NSTextView wrapper for selection — see
+        // `SelectableMessageText` for why this beats
+        // `Text(...).textSelection(.enabled)` on macOS 26.
+        SelectableMessageText(attributedString: cache.attributed)
             .frame(maxWidth: .infinity, alignment: .leading)
-            // textSelection deliberately OFF — even one Text with
-            // textSelection per message triggered a JetUI
-            // SelectionOverlay/setFont feedback loop on macOS 26
-            // that pinned the main thread on every scroll/hover.
-            // Trade: users can't drag-select assistant message
-            // text; copy via the per-message context menu (added
-            // alongside this change) is the path instead.
             .task(id: text) {
                 // Cancels-and-restarts on text change (streaming
                 // append cadence). The fold is pure-string work,
                 // safe to run on the MainActor at parse cost.
                 let folded = Self.foldToAttributedString(text)
                 cache = Cache(text: text, attributed: folded)
-            }
-            .contextMenu {
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(
-                        text, forType: .string
-                    )
-                } label: {
-                    Label("Copy Message", systemImage: "doc.on.doc")
-                }
             }
     }
 
