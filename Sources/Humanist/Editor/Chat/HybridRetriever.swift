@@ -1,4 +1,5 @@
 import Foundation
+import LibraryIndexing
 
 /// Two-source paragraph retriever for the chat-with-book pane.
 /// Fuses BM25 (keyword precision) and embedding cosine (conceptual

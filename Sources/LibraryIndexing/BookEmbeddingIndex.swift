@@ -1,5 +1,4 @@
 import Foundation
-import LibraryIndexing
 import CryptoKit
 import AI
 import EPUB
@@ -17,42 +16,63 @@ import EPUB
 /// conceptual question, the answer is usually a few sentences inside a
 /// long chapter, not the whole chapter. Returning the specific
 /// paragraph keeps Claude's context lean and the citation specific.
-struct BookEmbeddingIndex {
+public struct BookEmbeddingIndex {
 
     /// One embedded paragraph. `chapterIdx` is the spine position
     /// (matches `BookKeywordIndex.Hit.chapterIndex`); `paragraphIdx`
     /// is the position within that chapter (0-based, in source
     /// order). `textHash` is a SHA-256 of the normalized paragraph
     /// text — used for invalidation when a paragraph is edited.
-    struct Paragraph: Sendable {
-        let chapterIdx: Int
-        let paragraphIdx: Int
-        let text: String
-        let textHash: String
-        let vector: [Float]
+    public struct Paragraph: Sendable {
+        public let chapterIdx: Int
+        public let paragraphIdx: Int
+        public let text: String
+        public let textHash: String
+        public let vector: [Float]
+
+        public init(
+            chapterIdx: Int,
+            paragraphIdx: Int,
+            text: String,
+            textHash: String,
+            vector: [Float]
+        ) {
+            self.chapterIdx = chapterIdx
+            self.paragraphIdx = paragraphIdx
+            self.text = text
+            self.textHash = textHash
+            self.vector = vector
+        }
     }
 
     /// One result of a cosine search. `score` is the cosine
     /// similarity in `[-1, 1]` (typically `[0, 1]` for normalized
     /// sentence embeddings); higher is more similar.
-    struct Hit: Sendable {
-        let chapterIdx: Int
-        let paragraphIdx: Int
-        let text: String
-        let score: Double
+    public struct Hit: Sendable {
+        public let chapterIdx: Int
+        public let paragraphIdx: Int
+        public let text: String
+        public let score: Double
+
+        public init(chapterIdx: Int, paragraphIdx: Int, text: String, score: Double) {
+            self.chapterIdx = chapterIdx
+            self.paragraphIdx = paragraphIdx
+            self.text = text
+            self.score = score
+        }
     }
 
     /// All embedded paragraphs in the book. Order matches the order
     /// produced by `ParagraphExtractor.extract` (spine order, then
     /// document order within each chapter).
-    let paragraphs: [Paragraph]
+    public let paragraphs: [Paragraph]
     /// The backend that produced these vectors. Stored so the
     /// retriever can re-embed the *query* with the same backend
     /// (otherwise the cosine compares vectors from different vector
     /// spaces, which is meaningless).
-    let backend: any EmbeddingBackend
+    public let backend: any EmbeddingBackend
 
-    init(paragraphs: [Paragraph], backend: any EmbeddingBackend) {
+    public init(paragraphs: [Paragraph], backend: any EmbeddingBackend) {
         self.paragraphs = paragraphs
         self.backend = backend
     }
@@ -64,7 +84,7 @@ struct BookEmbeddingIndex {
     /// expected book size (1k–5k paragraphs) is well below the
     /// threshold where any tree structure beats a brute force on
     /// modern CPUs.
-    func search(queryVector: [Float], topK: Int = 12) -> [Hit] {
+    public func search(queryVector: [Float], topK: Int = 12) -> [Hit] {
         guard !paragraphs.isEmpty, !queryVector.isEmpty else { return [] }
         var hits: [Hit] = []
         hits.reserveCapacity(paragraphs.count)
@@ -88,7 +108,7 @@ struct BookEmbeddingIndex {
     /// a finite-norm vector for non-empty input, and zero-vector
     /// inputs (the empty-text fallback in `NLSentenceEmbeddingBackend`)
     /// are rare and degrade gracefully (score 0 ranks last).
-    static func cosine(_ a: [Float], _ b: [Float]) -> Double {
+    public static func cosine(_ a: [Float], _ b: [Float]) -> Double {
         guard a.count == b.count else { return 0 }
         var dot: Double = 0
         var na: Double = 0
@@ -116,7 +136,7 @@ struct BookEmbeddingIndex {
     /// Throws if the backend fails to embed any paragraph; the
     /// caller can fall back to keyword-only retrieval and surface
     /// a banner.
-    static func build(
+    public static func build(
         for book: EPUBBook,
         backend: any EmbeddingBackend,
         cache: inout EmbeddingsSidecar
