@@ -120,15 +120,23 @@ func buildAnthropicMessages(
     currentUserPrompt: String
 ) -> [Message] {
     var out: [Message] = []
-    let lastAssistantIdx = history.lastIndex(where: { $0.role == .assistant })
+    // Find the most-recent assistant message WITH NON-EMPTY TEXT to
+    // mark as the cache breakpoint. An agentic turn can finalize
+    // with empty text (tool-call rounds only, no final answer text)
+    // — Anthropic rejects cache_control on empty text blocks with
+    // "cache_control cannot be set for empty text blocks", so we
+    // skip the empties and find the next eligible assistant turn.
+    // If none has non-empty text, the multi-turn breakpoint just
+    // doesn't fire this round; the system-prompt breakpoint still
+    // covers everything before history.
+    let breakpointIdx = history.lastIndex(where: { msg in
+        msg.role == .assistant
+            && !msg.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    })
     for (i, m) in history.enumerated() {
         let role: Message.Role = m.role == .user ? .user : .assistant
-        if i == lastAssistantIdx {
-            // Mark this assistant turn as the cache breakpoint —
-            // every turn's prefix through here is cached for the
-            // 5-minute TTL window; the next send extends the cache
-            // by moving the marker to its own most-recent assistant
-            // turn. Wrapped in `.blocks(...)` because `cache_control`
+        if i == breakpointIdx {
+            // Wrapped in `.blocks(...)` because `cache_control`
             // attaches per content block, not on plain-string content.
             out.append(Message(role: role, content: .blocks([
                 .text(m.text, cacheControl: CacheControl(type: .ephemeral))
