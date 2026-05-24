@@ -5182,6 +5182,270 @@ be rebuilt automatically on the magic-byte rejection).
 
 ---
 
+## R-CLI-Capable — Make humanist-cli reach app-feature parity where it's reasonable
+
+**Status**: Foundation in place (LibraryIndexing target, commits
+`31d7b65`, `d878e90`, `749a23e`, `28257a0`, `baaecd2`). The CLI can
+now drive sidecar IO + per-book reindexing because the indexing
+primitives moved out of the @MainActor app target into a shared
+library. This entry plans the rest of the surface — which Humanist
+features make sense to expose via CLI, and a sequenced path to get
+them there.
+
+### Premise
+
+The Humanist app pairs heavy UI (Reader, WYSIWYG editor, drag-drop
+library, chat panes) with a lot of non-UI machinery (conversion,
+indexing, dedupe, retrieval, export). The non-UI machinery is what
+benefits from CLI exposure: overnight runs without keeping a window
+open, SSH-from-elsewhere workflows, shell-pipeline composition,
+scripted bulk ops. The UI is intentionally out of scope — anything
+that's fundamentally interactive (browsing chapters, dragging
+columns, picking from a panel) stays in the app.
+
+Goal: the CLI should be **as capable as is reasonable** — every
+unattended workflow doable in the app should be doable headless,
+unless the cost of getting there is disproportionate to the value.
+
+### Fit criteria
+
+A feature is a **good CLI fit** when:
+- It doesn't require visual feedback during execution
+- It's long-running / unattended-friendly (or fast enough to script)
+- It composes with shell pipelines (single-purpose, machine-readable
+  output mode available)
+- The UI version is essentially a button that fires a job
+
+A feature is a **bad CLI fit** when:
+- It's inherently interactive (Reader pagination, WYSIWYG editing)
+- It requires drag/drop, multi-pane comparison, visual region
+  selection (re-OCR a paragraph region)
+- It's purely UX exploration (Surface-me-something, Pre-reading
+  briefing) where the value IS the UI moment
+
+### Currently shipped (CLI)
+
+- `convert` — PDF → EPUB / MD / DOCX / HTML / TXT / searchable PDF
+- `compare` — diff two EPUBs chapter / paragraph
+- `compare-corpus` — local-only regression harness
+- `validate` — epubcheck-equivalent
+- `library-dedupe` — content-identical EPUB cleanup
+- `clear-outdated` — surgical sidecar clear by backend prefix
+- `reindex` — headless rebuild via `BookSidecarBuilder`
+
+### Phase 1 — easy wins (no refactor needed)
+
+Pure data-layer / catalog ops. CLI already has LibraryIndexing + can
+read `library.json` raw via JSONSerialization (the
+`library-dedupe` / `reindex` posture).
+
+- **`list-books [--backend X] [--format json|table]`** — dump
+  catalog rows enriched with per-book sidecar state (which backend,
+  what dim, last-built when, was-fallback). Power-user replacement
+  for "scroll the Library window."
+- **`broken-links [--apply]`** — find catalog entries pointing at
+  missing EPUBs (the two orphans the reindex smoke-test surfaced:
+  "How Did Marx Invent the Symptom?", "Gilded Lilies and Liberal
+  Guilt"). Dry-run by default; `--apply` removes the dead rows
+  after backing up `library.json`.
+- **`show-book <id-or-path>`** — printout for one book: title,
+  author, languages, chapter tree (from `BookHierarchyIndex`),
+  top-20 entities by mention count, sidecar metadata. Useful for
+  debugging "why isn't this book showing up in chat retrieval?"
+- **`sidecar-stats`** — per-backend tallies (how many books on
+  Gemini vs Apple vs Voyage, total bytes per backend), version
+  distribution, count of fallback-marked sidecars. Like the
+  Settings "Index cache" row but with the per-backend breakdown.
+- **`test-key --backend voyage|gemini`** — fire one probe request
+  against the chosen backend's API key (the same shape as the
+  Settings "Test connection" button) and print success / failure.
+  Useful when bulk-reindex 401s and you want to confirm it's the
+  key not a transient.
+
+### Phase 2 — federated-index ops (small refactor)
+
+Refactor first: move into LibraryIndexing the federated types that
+currently live in Humanist:
+- `LibraryEmbeddingIndex`
+- `LibraryEntityIndex`
+- `LibraryKeywordIndex`
+- `FederatedIndexCache`
+- `LibraryConceptGraph` + `LibraryConceptGraphCache`
+- `ConceptStopwords` + `ConceptAliases`
+
+None of these are @MainActor or SwiftUI-coupled; the move is
+mechanical (`public` pass + module imports), same shape as the
+Phase 0 refactor. After it lands:
+
+- **`search "<query>" [--top-k N] [--backend X] [--format json|table]`**
+  — run federated retrieval, print citations with paragraph
+  excerpts. The headless equivalent of typing in library chat
+  without spending Anthropic / Ollama tokens — pure retrieval.
+- **`federated-stats`** — federated cache fingerprint, build date,
+  backend, indexed / unindexed / backend-mismatch counts. Visible
+  diagnostic for "is the cache fresh?"
+- **`build-federated [--force]`** — pre-build the federated cache
+  so the first chat send after a backend switch doesn't pay the
+  40s rebuild. Headless warm-up.
+- **`concept "<name>" [--limit N]`** — print book coverage for a
+  concept (the Concepts sidebar's detail view, as text). Top books
+  by mention count, related concepts by co-occurrence.
+- **`concept-graph [--top N] [--format json]`** — full graph dump
+  (currently only available as a gated test probe). Useful for
+  exporting the rollup to analyze elsewhere.
+
+### Phase 3 — headless retrieval-driven chat (bigger refactor)
+
+Refactor first: extract a non-UI `ChatEngine` from
+`LibraryChatViewModel` / `BookChatViewModel`. The view-models
+currently fuse retrieval + system-prompt construction + Anthropic
+API calls + tool dispatch + transcript update + SwiftUI publishing.
+A clean engine is just the first four; the SwiftUI piece stays
+behind. This is the heaviest refactor in this entry — comparable
+in scope to the LibraryIndexing extraction but trickier because
+chat state is more entangled.
+
+After it lands:
+
+- **`ask "<question>" [--scope library|book:<id>] [--backend X] [--out file]`**
+  — single-shot chat: retrieve → generate → print answer with
+  citations. Cloud or Ollama. Useful for shell scripts that need
+  a quick Q&A against the library without launching the app.
+- **`chat [--scope ...] [--interactive]`** — REPL-style chat
+  session. Lower-priority than `ask`; the app's chat pane is the
+  better UI for multi-turn conversations.
+- **Export chat transcript** — `humanist-cli chat-export
+  <transcript-id> --format markdown|json`. The app stores
+  transcripts already; expose them headlessly.
+
+Treat this phase as "do if there's pull." Phase 1 + 2 likely
+satisfy most CLI workflows; Phase 3 is the cherry-on-top for users
+who script around the library.
+
+### Phase 4 — catalog + export + admin ops
+
+Mostly small refactors (move `LibraryExporter`, `EPUBImporter`
+import path, `LibraryAutoCollections` classifier off @MainActor
+where they aren't already).
+
+- **`import <epub-path> [--copy|--reference]`** — headless
+  equivalent of File → Import EPUB. Useful when adding a batch of
+  EPUBs from a download directory in one shell command.
+- **`export --books <ids-or-glob> --out <dir> [--format zip|folder]`**
+  — bundle selected books + metadata for sharing. The app's
+  `LibraryExporter` already does this; CLI just needs a thin
+  wrapper.
+- **`backfill-hashes`** — populate `sourceContentHashes` for
+  legacy catalog entries (R-Library-Dedupe Phase 2 cleanup that's
+  currently manual).
+- **`classify-genre`** — run the auto-collection classifier on
+  uncategorized entries. Mirrors the in-app backfill but doesn't
+  require opening the Library window.
+- **`annotation-export --book <id> --format markdown|json`** — dump
+  annotations for one book. Useful for moving notes into other
+  systems (Obsidian, Roam, plain markdown).
+
+### Out of scope (UI-bound, not worth CLI exposure)
+
+These features either fundamentally require interaction or are
+worth so little headless that the cost of exposing them isn't
+justified:
+
+- **Reader** — paginated reading is the UI.
+- **WYSIWYG editor** — visual editing is the whole point.
+- **Source / preview / WYSIWYG split panes** — multi-view UI.
+- **Region re-OCR** — needs visual region selection.
+- **Settings** — every CLI command exposes equivalent flags.
+- **Surface-me-something / Pre-reading briefing** — the UX moment
+  IS the value.
+- **Drag-and-drop import** — works via `import <path>` in CLI,
+  just not visually. (The CLI version is fine; the drag/drop is
+  the app affordance.)
+- **Job queue UI** — the CLI runs sync or backgrounded by the
+  shell; in-app queue is the UI for the same idea.
+
+### Sequencing
+
+1. **Phase 1 first.** Each command is independent + fits in ~30
+   min to a couple hours. Ship them as separate commits so each
+   is invocable / verifiable on its own.
+2. **Phase 2 refactor + commands.** The federated-index move is
+   bigger than each Phase-1 command but smaller than the original
+   LibraryIndexing extraction (the types are smaller and don't
+   cross-depend as deeply). Ship the move first as one commit,
+   then add the commands incrementally.
+3. **Phase 4 (admin) before Phase 3 (chat).** Admin ops are
+   immediately useful and a much smaller refactor. The chat
+   engine extraction is the big-ticket item; defer until we
+   actually need headless `ask`.
+4. **Phase 3 only if there's demand.** "Run one CLI question, get
+   one answer back" is a real workflow but the in-app chat
+   already serves the same use case for an attended user. Pull
+   the trigger when scripting around the library starts feeling
+   constrained.
+
+### Cross-cutting concerns
+
+- **Machine-readable output**. Every new command supports
+  `--format json` alongside the default human-readable text. Lets
+  CLI output compose with `jq`, downstream scripts, and CI
+  fixtures.
+- **Bundle ID flag.** Already added on `reindex` as
+  `--app-bundle-id <id>` (default `com.tcarmody.Humanist`) so the
+  CLI's keychain lookup finds the app's keys. New commands that
+  hit keychain (test-key, ask, anything that calls Voyage /
+  Gemini) inherit the same flag.
+- **Catalog override.** Every catalog-reading command takes
+  `--catalog <path>` (matching `library-dedupe` + `reindex`) so
+  users on share-across-machines mode can point at their iCloud
+  catalog explicitly.
+- **Embeddings root override.** Every sidecar-touching command
+  takes `--store-root <path>` (matching `clear-outdated` +
+  `reindex`).
+- **README updates.** `Sources/HumanistCLI/README.md` gains a
+  section per new subcommand. Keep examples runnable verbatim.
+- **No tests required for thin CLI wrappers.** Most subcommands
+  are thin shells around library functions that already have
+  unit-test coverage. Add CLI-level tests only when there's
+  argument-parsing logic or composition that wouldn't be covered
+  by the underlying library tests.
+
+### Dependencies
+
+- **Phase 0 (done)**: LibraryIndexing extraction (commits
+  `31d7b65`, `d878e90`). Phase 1 commands need nothing more.
+- **Phase 2**: federated-type move (small refactor, no behavior
+  change).
+- **Phase 3**: `ChatEngine` extraction from view-models (bigger
+  refactor; coordinate with `R-Chat-Reinstate-Polish` if that's
+  in flight to avoid stepping on the same files).
+- **Phase 4**: small per-feature moves (LibraryExporter,
+  classifier) into a shared lib (could be LibraryIndexing or a
+  separate `LibraryAdmin` target if the surface grows enough).
+
+### What "as capable as reasonable" looks like
+
+When this entry is done, a power user can:
+
+- Convert a directory of PDFs to EPUB (`convert`)
+- Import the EPUBs to the library (`import`)
+- Backfill content hashes + auto-classify genres (`backfill-hashes`,
+  `classify-genre`)
+- Build all embedding sidecars against their chosen backend
+  (`reindex`)
+- Pre-build the federated cache (`build-federated`)
+- Query the library headless (`search`, `ask`)
+- Export selected books for sharing (`export`)
+- Audit / cleanup (`broken-links`, `library-dedupe`,
+  `clear-outdated`)
+- Diagnose (`sidecar-stats`, `federated-stats`, `test-key`,
+  `show-book`)
+
+All without opening the app. The app remains the right surface
+for reading, editing, browsing, and chatting interactively.
+
+---
+
 ## R-EPUB-Import — Bring existing EPUBs into the library
 
 **Status**: v1 shipped. File → Import EPUB into Library… (⇧⌘I)
