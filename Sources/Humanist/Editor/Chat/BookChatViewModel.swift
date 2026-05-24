@@ -691,12 +691,26 @@ final class BookChatViewModel: ObservableObject {
 
             switch chosenBackend {
             case .cloudHaiku, .cloudSonnet:
-                await self.runCloudSend(
-                    userPrompt: userPrompt, allowedHits: hits,
+                await self.runCurrentBookCloudSendAgentic(
+                    userPrompt: userPrompt,
+                    initialHits: hits,
+                    bm25: bm25,
+                    embeddings: embeddingIndexSnapshot,
+                    hierarchy: hierarchySnapshot,
+                    entities: entitySnapshot,
+                    style: style,
                     model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
                 )
             case .localOllama:
-                await self.runOllamaSend(userPrompt: userPrompt, allowedHits: hits)
+                await self.runCurrentBookOllamaSendAgentic(
+                    userPrompt: userPrompt,
+                    initialHits: hits,
+                    bm25: bm25,
+                    embeddings: embeddingIndexSnapshot,
+                    hierarchy: hierarchySnapshot,
+                    entities: entitySnapshot,
+                    style: style
+                )
             }
         }
         streamTask?.cancel()
@@ -991,6 +1005,470 @@ final class BookChatViewModel: ObservableObject {
             replaceDraftWithError(
                 id: draftId, message: error.localizedDescription
             )
+        }
+    }
+
+    // MARK: - Per-book agentic loop (R-Chat-Agentic Phase 2)
+
+    /// Per-book chat's cloud agentic loop. Same iteration shape as
+    /// `runLibraryCloudSendAgentic` but with per-book tools:
+    /// search_book / expand_chapter / list_chapter_titles. No
+    /// TurnBookRegistry because there's only one book — citations
+    /// are `[chapter:N para:M]`.
+    private func runCurrentBookCloudSendAgentic(
+        userPrompt: String,
+        initialHits: [HybridRetriever.Hit],
+        bm25: BookKeywordIndex,
+        embeddings: BookEmbeddingIndex?,
+        hierarchy: BookHierarchyIndex?,
+        entities: BookEntityIndex?,
+        style: HybridRetriever.Style,
+        model: CloudModel
+    ) async {
+        defer {
+            isThinking = false
+            streamTask = nil
+        }
+        var accumulatedHits: [HybridRetriever.Hit] = initialHits
+        let topKDefault = self.maxRetrievedParagraphs
+        let rrfK = self.rrfK
+        let maxParaChars = self.maxParagraphChars
+        let spineCount = book.spine.count
+
+        let trimmed = trimChatHistory(
+            Array(messages.dropLast()), maxTurns: maxHistoryTurns
+        )
+        var apiMessages = buildAnthropicMessages(
+            history: trimmed,
+            currentUserPrompt: userPrompt
+        )
+        let draftId = appendDraftAssistant()
+        let maxIterations = agenticMaxIterations
+        var iteration = 0
+        let toolDescriptors: [Tool] = [
+            BookChatTools.searchBookTool,
+            BookChatTools.expandChapterTool,
+            BookChatTools.listChapterTitlesTool,
+        ]
+
+        do {
+            while true {
+                let request = AnthropicMessageRequest(
+                    model: model,
+                    maxTokens: useLongFormSynthesis ? 2500 : 1500,
+                    system: .cached(systemPrompt, ttl: .oneHour),
+                    messages: apiMessages,
+                    thinking: .disabled,
+                    tools: maxIterations > 0 ? toolDescriptors : nil
+                )
+                let response = try await client.send(request)
+                try Task.checkCancellation()
+
+                var textChunks: [String] = []
+                var toolCalls: [(id: String, name: String, inputJSON: Data)] = []
+                for block in response.content {
+                    switch block {
+                    case .text(let s): textChunks.append(s)
+                    case .toolUse(let id, let name, let json):
+                        toolCalls.append((id, name, json))
+                    case .unknown: break
+                    }
+                }
+                let combinedText = textChunks.joined()
+                if !combinedText.isEmpty {
+                    appendToDraft(id: draftId, text: combinedText)
+                    isThinking = false
+                }
+
+                if toolCalls.isEmpty || iteration >= maxIterations {
+                    finalizeDraft(id: draftId, allowedHits: accumulatedHits)
+                    return
+                }
+
+                var assistantBlocks: [ContentBlock] = []
+                for block in response.content {
+                    switch block {
+                    case .text(let s):
+                        assistantBlocks.append(.text(s, cacheControl: nil))
+                    case .toolUse(let id, let name, let json):
+                        assistantBlocks.append(.toolUse(id: id, name: name, inputJSON: json))
+                    case .unknown: break
+                    }
+                }
+                apiMessages.append(Message(
+                    role: .assistant, content: .blocks(assistantBlocks)
+                ))
+
+                var resultBlocks: [ContentBlock] = []
+                for call in toolCalls {
+                    let resultText: String
+                    let isError: Bool
+                    let peekQuery = Self.previewToolQuery(for: call.inputJSON)
+                    toolStatus = Self.bookToolStatusLabel(
+                        name: call.name, peek: peekQuery
+                    )
+                    do {
+                        switch call.name {
+                        case "search_book":
+                            let (text, hits) = try await dispatchSearchBook(
+                                call: call,
+                                bm25: bm25,
+                                embeddings: embeddings,
+                                hierarchy: hierarchy,
+                                entities: entities,
+                                style: style,
+                                rrfK: rrfK,
+                                topKDefault: topKDefault,
+                                maxParaChars: maxParaChars
+                            )
+                            accumulatedHits.append(contentsOf: hits)
+                            resultText = text
+                        case "expand_chapter":
+                            resultText = try dispatchExpandChapter(call: call)
+                        case "list_chapter_titles":
+                            resultText = dispatchListChapterTitles(
+                                hierarchy: hierarchy,
+                                spineCount: spineCount
+                            )
+                        default:
+                            throw PerBookToolError.unknownTool(call.name)
+                        }
+                        isError = false
+                    } catch {
+                        resultText = "\(call.name) failed: \(error.localizedDescription)"
+                        isError = true
+                    }
+                    toolStatus = nil
+                    resultBlocks.append(.toolResult(
+                        toolUseID: call.id,
+                        content: resultText,
+                        isError: isError
+                    ))
+                }
+                apiMessages.append(Message(
+                    role: .user, content: .blocks(resultBlocks)
+                ))
+                iteration += 1
+            }
+        } catch is CancellationError {
+            toolStatus = nil
+            removeDraft(id: draftId)
+            return
+        } catch let error as AnthropicAPIError {
+            toolStatus = nil
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
+        } catch {
+            toolStatus = nil
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
+        }
+    }
+
+    /// Per-book chat's Ollama streaming agentic loop. Mirrors the
+    /// cloud version above but uses `OllamaClient.chatAgenticStream`
+    /// for token-level deltas on the final-answer round. Same
+    /// dispatcher reuse, same iteration cap.
+    private func runCurrentBookOllamaSendAgentic(
+        userPrompt: String,
+        initialHits: [HybridRetriever.Hit],
+        bm25: BookKeywordIndex,
+        embeddings: BookEmbeddingIndex?,
+        hierarchy: BookHierarchyIndex?,
+        entities: BookEntityIndex?,
+        style: HybridRetriever.Style
+    ) async {
+        defer {
+            isThinking = false
+            streamTask = nil
+        }
+        var accumulatedHits: [HybridRetriever.Hit] = initialHits
+        let topKDefault = self.maxRetrievedParagraphs
+        let rrfK = self.rrfK
+        let maxParaChars = self.maxParagraphChars
+        let spineCount = book.spine.count
+
+        let trimmed = trimChatHistory(
+            Array(messages.dropLast()), maxTurns: maxHistoryTurns
+        )
+        var convo: [OllamaClient.AgenticMessage] = [
+            .system(systemPrompt)
+        ]
+        for prior in trimmed {
+            switch prior.role {
+            case .user:
+                convo.append(.user(prior.text))
+            case .assistant:
+                convo.append(.assistant(text: prior.text, toolCalls: []))
+            }
+        }
+        convo.append(.user(userPrompt))
+
+        let toolDescriptors: [OllamaClient.ToolDescriptor] = [
+            Self.ollamaTool(from: BookChatTools.searchBookTool),
+            Self.ollamaTool(from: BookChatTools.expandChapterTool),
+            Self.ollamaTool(from: BookChatTools.listChapterTitlesTool),
+        ]
+        let maxIterations = agenticMaxIterations
+        let draftId = appendDraftAssistant()
+        var iteration = 0
+
+        do {
+            while true {
+                var roundText = ""
+                var roundToolCalls: [OllamaClient.ToolCall] = []
+                let stream = ollama.chatAgenticStream(
+                    model: ollamaModel,
+                    messages: convo,
+                    tools: maxIterations > 0 ? toolDescriptors : []
+                )
+                for try await event in stream {
+                    try Task.checkCancellation()
+                    switch event {
+                    case .textDelta(let delta):
+                        roundText += delta
+                        appendToDraft(id: draftId, text: delta)
+                        isThinking = false
+                    case .toolCalls(let calls):
+                        roundToolCalls = calls
+                    case .done:
+                        break
+                    }
+                }
+
+                if roundToolCalls.isEmpty || iteration >= maxIterations {
+                    finalizeDraft(id: draftId, allowedHits: accumulatedHits)
+                    return
+                }
+
+                convo.append(.assistant(
+                    text: roundText, toolCalls: roundToolCalls
+                ))
+
+                for call in roundToolCalls {
+                    let triple: (id: String, name: String, inputJSON: Data) = (
+                        call.id, call.name, call.argumentsJSON
+                    )
+                    let peekQuery = Self.previewToolQuery(for: call.argumentsJSON)
+                    toolStatus = Self.bookToolStatusLabel(
+                        name: call.name, peek: peekQuery
+                    )
+                    let resultText: String
+                    do {
+                        switch call.name {
+                        case "search_book":
+                            let (text, hits) = try await dispatchSearchBook(
+                                call: triple,
+                                bm25: bm25,
+                                embeddings: embeddings,
+                                hierarchy: hierarchy,
+                                entities: entities,
+                                style: style,
+                                rrfK: rrfK,
+                                topKDefault: topKDefault,
+                                maxParaChars: maxParaChars
+                            )
+                            accumulatedHits.append(contentsOf: hits)
+                            resultText = text
+                        case "expand_chapter":
+                            resultText = try dispatchExpandChapter(call: triple)
+                        case "list_chapter_titles":
+                            resultText = dispatchListChapterTitles(
+                                hierarchy: hierarchy,
+                                spineCount: spineCount
+                            )
+                        default:
+                            resultText = "Unknown tool: \(call.name)"
+                        }
+                    } catch {
+                        resultText = "\(call.name) failed: \(error.localizedDescription)"
+                    }
+                    toolStatus = nil
+                    convo.append(.toolResult(
+                        name: call.name, content: resultText
+                    ))
+                }
+
+                iteration += 1
+            }
+        } catch is CancellationError {
+            toolStatus = nil
+            removeDraft(id: draftId)
+            return
+        } catch let error as OllamaError {
+            toolStatus = nil
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
+        } catch {
+            toolStatus = nil
+            replaceDraftWithError(
+                id: draftId, message: error.localizedDescription
+            )
+        }
+    }
+
+    // MARK: - Per-book tool dispatchers
+
+    /// `search_book` — re-runs the per-book hybrid retriever with a
+    /// new query. Drops the alias-matching / hierarchy / mention-
+    /// expansion machinery the initial-pass uses; the agentic model
+    /// has dedicated tools (`list_chapter_titles`, `expand_chapter`)
+    /// for the structural moves, so search_book stays focused on
+    /// "find paragraphs that match this query."
+    private func dispatchSearchBook(
+        call: (id: String, name: String, inputJSON: Data),
+        bm25: BookKeywordIndex,
+        embeddings: BookEmbeddingIndex?,
+        hierarchy: BookHierarchyIndex?,
+        entities: BookEntityIndex?,
+        style: HybridRetriever.Style,
+        rrfK: Double,
+        topKDefault: Int,
+        maxParaChars: Int
+    ) async throws -> (text: String, hits: [HybridRetriever.Hit]) {
+        guard call.name == "search_book" else {
+            throw PerBookToolError.unknownTool(call.name)
+        }
+        let args = try JSONDecoder().decode(
+            BookChatTools.SearchBookArgs.self, from: call.inputJSON
+        )
+        let toolQuery = args.query
+        let toolTopK = args.topK ?? topKDefault
+
+        let queryVector: [Float]?
+        if style != .bm25, let embeddings {
+            queryVector = await embedQuery(
+                toolQuery, using: embeddings.backend
+            )
+        } else {
+            queryVector = nil
+        }
+        let entityMatches: [(chapterIdx: Int, paragraphIdx: Int)] =
+            entities.map {
+                Self.entityMatchesForBookTool(
+                    query: toolQuery, entities: $0
+                )
+            } ?? []
+
+        var retriever = HybridRetriever(
+            style: style,
+            bm25: bm25,
+            embeddings: embeddings,
+            queryVector: queryVector
+        )
+        retriever.entityMatches = entityMatches
+        retriever.rrfK = rrfK
+        let hits = retriever.search(query: toolQuery, topK: toolTopK)
+
+        let bridged = hits.map {
+            BookChatTools.HybridRetrieverHitLike(
+                chapterIdx: $0.chapterIdx,
+                paragraphIdx: $0.paragraphIdx,
+                text: $0.text
+            )
+        }
+        let text = BookChatTools.renderSearchBookResult(
+            query: toolQuery,
+            hits: bridged,
+            maxParaChars: maxParaChars
+        )
+        return (text, hits)
+    }
+
+    /// `expand_chapter` — return the full text of one chapter.
+    /// Chapter numbers in the tool args are 1-based (what the user
+    /// sees); we convert to 0-based for the internal spine lookup.
+    /// Returns an error message if the chapter doesn't exist or
+    /// resolves to a non-text resource.
+    private func dispatchExpandChapter(
+        call: (id: String, name: String, inputJSON: Data)
+    ) throws -> String {
+        guard call.name == "expand_chapter" else {
+            throw PerBookToolError.unknownTool(call.name)
+        }
+        let args = try JSONDecoder().decode(
+            BookChatTools.ExpandChapterArgs.self, from: call.inputJSON
+        )
+        let internalIdx = args.chapter - 1
+        guard internalIdx >= 0, internalIdx < book.spine.count else {
+            return "expand_chapter(\(args.chapter)) is out of range. The book has \(book.spine.count) chapters; call list_chapter_titles to see the table of contents."
+        }
+        guard let text = chapterTextForExpansion(internalIdx) else {
+            return "expand_chapter(\(args.chapter)) couldn't load the chapter text — the resource may not be text-based."
+        }
+        let title = chapterTitle(forChapterIndex: internalIdx)
+            ?? "Chapter \(args.chapter)"
+        // chapterTextForExpansion already applies maxExpansionChars;
+        // detect truncation by comparing against the raw resource
+        // length so the model knows when text was cut.
+        let truncated = text.count >= Self.maxExpansionChars
+        return BookChatTools.renderExpandChapterResult(
+            chapterIdx: internalIdx,
+            title: title,
+            text: text,
+            truncated: truncated
+        )
+    }
+
+    /// `list_chapter_titles` — render the book's TOC. Works even
+    /// when the hierarchy index is empty (falls back to "Chapter N"
+    /// placeholders so the model still gets the count).
+    private func dispatchListChapterTitles(
+        hierarchy: BookHierarchyIndex?,
+        spineCount: Int
+    ) -> String {
+        BookChatTools.renderListChapterTitlesResult(
+            hierarchy: hierarchy,
+            chapterCount: spineCount
+        )
+    }
+
+    /// Entity-match helper for the `search_book` agentic dispatcher.
+    /// `nonisolated static` so the dispatcher can call it from the
+    /// MainActor context without an actor hop.
+    private nonisolated static func entityMatchesForBookTool(
+        query: String, entities: BookEntityIndex
+    ) -> [(chapterIdx: Int, paragraphIdx: Int)] {
+        let canonicals = entities.entitiesMatching(query: query)
+        var out: [(chapterIdx: Int, paragraphIdx: Int)] = []
+        for canonical in canonicals {
+            let anchors = entities.anchors(for: canonical)
+            for anchor in anchors {
+                out.append((anchor.chapterIdx, anchor.paragraphIdx))
+            }
+        }
+        return out
+    }
+
+    /// Tool-status label for the per-book agentic loop.
+    /// Distinguishes the three tools so the user can see what the
+    /// model is actually doing.
+    private nonisolated static func bookToolStatusLabel(
+        name: String, peek: String
+    ) -> String {
+        switch name {
+        case "search_book":
+            return "Searching: \"\(peek)\"…"
+        case "expand_chapter":
+            return "Expanding chapter \(peek)…"
+        case "list_chapter_titles":
+            return "Listing chapters…"
+        default:
+            return "\(name)…"
+        }
+    }
+
+    private enum PerBookToolError: Error, LocalizedError {
+        case unknownTool(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unknownTool(let name):
+                return "Unknown tool: \(name)"
+            }
         }
     }
 
@@ -2973,26 +3451,55 @@ final class BookChatViewModel: ObservableObject {
         Quote brief passages when they directly support the answer; \
         cite their location with the marker form above.
 
+        TOOL USE — three tools are available; reach for the one that \
+        matches the question shape.
+
+          • `search_book(query, top_k?)` runs the same hybrid \
+            retriever the initial slice came from. Call it when the \
+            initial paragraphs don't cover the question, when you \
+            want to broaden via a rephrased query, or when a \
+            follow-up turn pivots topics within the same book.
+
+          • `expand_chapter(chapter)` returns the full text of one \
+            chapter (1-based number). Call it when the user asks \
+            about a specific chapter ("what's in chapter 3?", "the \
+            preface"), when search_book surfaces a paragraph and you \
+            want the surrounding context, or when an initial-slice \
+            hit looks clipped at the chapter boundary.
+
+          • `list_chapter_titles()` returns the book's table of \
+            contents. Call it when the user asks structural \
+            questions or when you need to map a vague chapter \
+            reference (e.g. "the discipline chapter") to a numbered \
+            chapter for expand_chapter.
+
+        Structural questions (chapter scope, TOC, "what's in X") \
+        deserve the structural tools BEFORE you compose. Don't \
+        guess at a chapter's contents from the initial slice when \
+        you can expand it.
+
         META-QUESTIONS — questions about your own context, retrieval \
         scope, or what you can see. Examples: "is this answer based on \
         just this chapter or the whole book?", "which chapters did you \
         look at?", "do you have access to the full text?", "how was \
         this retrieved?". Answer these honestly and concretely using \
-        the retrieval-scope line and chapter list at the top of each \
-        message's context block:
+        the retrieval-scope line, the chapter list at the top of each \
+        message's context block, AND any tool calls you've made this \
+        turn:
 
         - You always receive a RETRIEVAL SCOPE summary in the user \
           message ("Retrieval scope: N paragraphs across M chapters …"). \
           Use that to describe what your most recent answer was based on.
         - You receive a table of contents covering the WHOLE book; \
           retrieved paragraphs are a SUBSET selected by the user's \
-          interface as the most relevant to the question. You don't \
-          have access to the full text of un-retrieved chapters.
+          interface as the most relevant to the question. You can \
+          reach for any un-retrieved chapter via `expand_chapter`.
         - When the answer drew on paragraphs from one chapter, say so \
           ("Based on chapter N only"). When it spanned multiple \
           chapters, name them. When relevant context might exist in \
-          chapters that weren't retrieved, say so explicitly so the \
-          user can ask a more targeted follow-up.
+          chapters that weren't retrieved, either call \
+          `expand_chapter` to pull them or tell the user explicitly \
+          so they can ask a more targeted follow-up.
         - Meta-questions don't need `[chapter:N]` citations — they're \
           about the conversation, not the book.
 
