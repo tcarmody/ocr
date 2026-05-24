@@ -33,8 +33,11 @@ enum FederatedIndexCache {
 
     /// Magic + format-version prefix. Bump the trailing byte and
     /// older caches get rejected on load and rebuilt cleanly.
+    /// Version `\x02` adds a length-prefixed `bookAuthor` field
+    /// after `bookTitle` in each source, supporting the
+    /// `PRIMARY SOURCES FIRST` rendered-context block.
     private static let magic: [UInt8] = [
-        0x48, 0x55, 0x4D, 0x41, 0x4E, 0x43, 0x41, 0x01  // "HUMANCA\x01"
+        0x48, 0x55, 0x4D, 0x41, 0x4E, 0x43, 0x41, 0x02  // "HUMANCA\x02"
     ]
 
     /// Per-call payload returned to the chat VM on a cache hit.
@@ -240,6 +243,10 @@ enum FederatedIndexCache {
         for source in payload.sources {
             try w.writeString(source.epubURL.path)
             try w.writeString(source.bookTitle)
+            // Empty string encodes nil — the decode side maps the
+            // empty case back to nil rather than `Optional("")` so
+            // a missing author doesn't read as "by " in renders.
+            try w.writeString(source.bookAuthor ?? "")
             try w.writeU32(UInt32(source.paragraphs.count))
             for p in source.paragraphs {
                 try w.writeI32(Int32(p.chapterIdx))
@@ -301,6 +308,8 @@ enum FederatedIndexCache {
         for _ in 0..<sourceCount {
             let epubPath = try r.readString()
             let bookTitle = try r.readString()
+            let rawAuthor = try r.readString()
+            let bookAuthor: String? = rawAuthor.isEmpty ? nil : rawAuthor
             let pCount = Int(try r.readU32())
             var paragraphs: [EmbeddingsSidecar.Entry] = []
             paragraphs.reserveCapacity(pCount)
@@ -322,6 +331,7 @@ enum FederatedIndexCache {
             sources.append(LibraryEmbeddingIndex.Source(
                 epubURL: URL(fileURLWithPath: epubPath),
                 bookTitle: bookTitle,
+                bookAuthor: bookAuthor,
                 paragraphs: paragraphs
             ))
         }

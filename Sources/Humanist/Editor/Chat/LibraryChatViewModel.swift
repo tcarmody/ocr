@@ -684,14 +684,25 @@ final class LibraryChatViewModel: ObservableObject {
             """
         }
         var bookIndex: [URL: Int] = [:]
-        var orderedBooks: [(url: URL, title: String)] = []
+        var orderedBooks: [(url: URL, title: String, author: String?)] = []
         for hit in hits where bookIndex[hit.epubURL] == nil {
             bookIndex[hit.epubURL] = orderedBooks.count
-            orderedBooks.append((url: hit.epubURL, title: hit.bookTitle))
+            orderedBooks.append((
+                url: hit.epubURL,
+                title: hit.bookTitle,
+                author: hit.bookAuthor
+            ))
         }
         var out = "Books in scope:\n"
         for (idx, book) in orderedBooks.enumerated() {
-            out += "[book:\(idx)] \(book.title)\n"
+            // Author is what makes `PRIMARY SOURCES FIRST` actionable
+            // — the model couldn't tell "Discipline and Punish" from
+            // "Foucault: A Critical Reader" by title alone.
+            if let author = book.author, !author.isEmpty {
+                out += "[book:\(idx)] \"\(book.title)\" — \(author)\n"
+            } else {
+                out += "[book:\(idx)] \"\(book.title)\"\n"
+            }
         }
         out += "\nRelevant paragraphs:\n\n"
         for hit in hits {

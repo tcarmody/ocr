@@ -1366,6 +1366,7 @@ final class BookChatViewModel: ObservableObject {
     private struct ResolvedLibraryHit: Sendable {
         let epubURL: URL
         let bookTitle: String
+        let bookAuthor: String?
         let chapterIdx: Int
         let paragraphIdx: Int
         let text: String
@@ -1429,6 +1430,7 @@ final class BookChatViewModel: ObservableObject {
                 out.append(ResolvedLibraryHit(
                     epubURL: hit.epubURL,
                     bookTitle: hit.bookTitle,
+                    bookAuthor: hit.bookAuthor,
                     chapterIdx: hit.chapterIdx,
                     paragraphIdx: hit.paragraphIdx,
                     text: text,
@@ -1449,6 +1451,7 @@ final class BookChatViewModel: ObservableObject {
             out.append(ResolvedLibraryHit(
                 epubURL: hit.epubURL,
                 bookTitle: hit.bookTitle,
+                bookAuthor: hit.bookAuthor,
                 chapterIdx: hit.chapterIdx,
                 paragraphIdx: hit.paragraphIdx,
                 text: paragraph.text,
@@ -1496,14 +1499,23 @@ final class BookChatViewModel: ObservableObject {
         // list. The order doesn't affect retrieval but does affect
         // the [book:N] index the model sees.
         var bookIndex: [URL: Int] = [:]
-        var orderedBooks: [(url: URL, title: String)] = []
+        var orderedBooks: [(url: URL, title: String, author: String?)] = []
         for hit in hits where bookIndex[hit.epubURL] == nil {
             bookIndex[hit.epubURL] = orderedBooks.count
-            orderedBooks.append((url: hit.epubURL, title: hit.bookTitle))
+            orderedBooks.append((
+                url: hit.epubURL,
+                title: hit.bookTitle,
+                author: hit.bookAuthor
+            ))
         }
         var out = "Books in scope:\n"
         for (idx, book) in orderedBooks.enumerated() {
-            out += "[book:\(idx)] \(book.title)\n"
+            // Author is the signal `PRIMARY SOURCES FIRST` acts on.
+            if let author = book.author, !author.isEmpty {
+                out += "[book:\(idx)] \"\(book.title)\" — \(author)\n"
+            } else {
+                out += "[book:\(idx)] \"\(book.title)\"\n"
+            }
         }
         out += "\nRelevant paragraphs:\n\n"
         for hit in hits {

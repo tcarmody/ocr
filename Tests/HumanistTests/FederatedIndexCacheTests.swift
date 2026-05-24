@@ -37,13 +37,15 @@ final class FederatedIndexCacheTests: XCTestCase {
         let payload = makePayload(
             dimension: 8,
             sources: [
-                ("alpha", "/tmp/alpha.epub", [
+                ("alpha", "Alpha Author", "/tmp/alpha.epub", [
                     para(chapter: 0, idx: 1, hash: "a1", text: "alpha p1",
                          vec: Array(repeating: 0.1, count: 8)),
                     para(chapter: 1, idx: 0, hash: "a2", text: nil,
                          vec: Array(repeating: -0.2, count: 8))
                 ]),
-                ("beta", "/tmp/beta.epub", [
+                // Author nil — exercises the empty-string round-trip
+                // path that decodes back to `nil`, not `Optional("")`.
+                ("beta", nil, "/tmp/beta.epub", [
                     para(chapter: 0, idx: 0, hash: "b1", text: "beta only para",
                          vec: Array(repeating: 0.7, count: 8))
                 ])
@@ -77,8 +79,11 @@ final class FederatedIndexCacheTests: XCTestCase {
 
         XCTAssertEqual(r.sources.count, 2)
         XCTAssertEqual(r.sources[0].bookTitle, "alpha")
+        XCTAssertEqual(r.sources[0].bookAuthor, "Alpha Author")
         XCTAssertEqual(r.sources[0].epubURL.path, "/tmp/alpha.epub")
         XCTAssertEqual(r.sources[0].paragraphs.count, 2)
+        XCTAssertNil(r.sources[1].bookAuthor,
+                     "empty author must round-trip back to nil, not Optional(\"\")")
         XCTAssertEqual(r.sources[0].paragraphs[0].textHash, "a1")
         XCTAssertEqual(r.sources[0].paragraphs[0].text, "alpha p1")
         XCTAssertEqual(r.sources[0].paragraphs[0].vector,
@@ -165,7 +170,7 @@ final class FederatedIndexCacheTests: XCTestCase {
         let payload = makePayload(
             dimension: 4,
             sources: [
-                ("alpha", "/tmp/alpha.epub", [
+                ("alpha", nil, "/tmp/alpha.epub", [
                     para(chapter: 0, idx: 0, hash: "h", text: "x",
                          vec: [0.1, 0.2, 0.3, 0.4])
                 ])
@@ -274,7 +279,12 @@ final class FederatedIndexCacheTests: XCTestCase {
 
     private func makePayload(
         dimension: Int,
-        sources: [(title: String, path: String, paragraphs: [EmbeddingsSidecar.Entry])],
+        sources: [(
+            title: String,
+            author: String?,
+            path: String,
+            paragraphs: [EmbeddingsSidecar.Entry]
+        )],
         mentions: [String: [LibraryEntityIndex.LibraryAnchor]],
         displayNames: [String: String],
         entityIndexedCount: Int
@@ -283,6 +293,7 @@ final class FederatedIndexCacheTests: XCTestCase {
             LibraryEmbeddingIndex.Source(
                 epubURL: URL(fileURLWithPath: tuple.path),
                 bookTitle: tuple.title,
+                bookAuthor: tuple.author,
                 paragraphs: tuple.paragraphs
             )
         }

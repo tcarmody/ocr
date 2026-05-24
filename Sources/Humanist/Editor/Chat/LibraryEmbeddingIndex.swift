@@ -24,9 +24,14 @@ struct LibraryEmbeddingIndex: Sendable {
     /// One book's contribution to the federated index. Vectors come
     /// from the sidecar; `epubURL` is the book on disk so the
     /// retriever can open it lazily for paragraph text on a hit.
+    /// `bookAuthor` carries the catalog entry's author when known;
+    /// rendered alongside the title in the chat context so the
+    /// `PRIMARY SOURCES FIRST` clause has a signal to act on
+    /// (otherwise the model has to guess authorship from titles).
     struct Source: Sendable {
         let epubURL: URL
         let bookTitle: String
+        let bookAuthor: String?
         let paragraphs: [EmbeddingsSidecar.Entry]
     }
 
@@ -38,6 +43,7 @@ struct LibraryEmbeddingIndex: Sendable {
     struct Hit: Sendable {
         let epubURL: URL
         let bookTitle: String
+        let bookAuthor: String?
         let chapterIdx: Int
         let paragraphIdx: Int
         let textHash: String
@@ -106,6 +112,7 @@ struct LibraryEmbeddingIndex: Sendable {
             sources.append(Source(
                 epubURL: entry.epubURL,
                 bookTitle: entry.title,
+                bookAuthor: entry.author,
                 paragraphs: sidecar.paragraphs
             ))
             indexed += 1
@@ -189,6 +196,7 @@ struct LibraryEmbeddingIndex: Sendable {
                     hit: Hit(
                         epubURL: source.epubURL,
                         bookTitle: source.bookTitle,
+                        bookAuthor: source.bookAuthor,
                         chapterIdx: entry.chapterIdx,
                         paragraphIdx: entry.paragraphIdx,
                         textHash: entry.textHash,
