@@ -50,10 +50,10 @@ struct ConceptDetailHost: View {
                 ProgressView()
             } else {
                 ContentUnavailableView(
-                    "Pick a concept",
+                    "Pick a topic",
                     systemImage: "tag",
                     description: Text(
-                        "Select a concept on the left to see which books mention it."
+                        "Select a topic on the left to see which books mention it."
                     )
                 )
             }

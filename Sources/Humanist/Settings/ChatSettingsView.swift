@@ -213,7 +213,7 @@ struct ChatSettingsView: View {
                     TextField("ollama tag", text: $ollamaModel)
                         .textFieldStyle(.roundedBorder)
                 }
-                Text("Runs locally via Ollama — no API key, no per-token cost, no network egress. Default \"qwen3.5:9b\" needs ~10 GB RAM and supports tool use, so library chat can call `search_concept` / `search_library` to broaden retrieval. Alternatives: \"gemma4:26b\" (~20 GB, better synthesis, no tool use), \"qwen3.5:4b\" (~5 GB, faster but unreliable tool use), \"qwen3.5:2b\" (~3 GB, no agentic retrieval). Pull with `ollama pull <tag>`.")
+                Text("Runs locally via Ollama — no API key, no per-token cost, no network egress. Default \"qwen3.5:9b\" needs ~10 GB RAM and supports tool use, so library chat can call `search_topic` / `search_library` to broaden retrieval. Alternatives: \"gemma4:26b\" (~20 GB, better synthesis, no tool use), \"qwen3.5:4b\" (~5 GB, faster but unreliable tool use), \"qwen3.5:2b\" (~3 GB, no agentic retrieval). Pull with `ollama pull <tag>`.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

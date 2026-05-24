@@ -81,7 +81,7 @@ final class LibraryChatViewModel: ObservableObject {
     private var ollamaModel: String {
         // Same defaults switch as BookChatViewModel — qwen3.5:9b
         // ships with tool support so the agentic loop's
-        // search_concept / search_library calls actually fire.
+        // search_topic / search_library calls actually fire.
         let raw = UserDefaults.standard.string(forKey: "humanist.chat.ollamaModel")
             ?? ""
         return raw.isEmpty ? "qwen3.5:9b" : raw
@@ -859,7 +859,7 @@ final class LibraryChatViewModel: ObservableObject {
                     thinking: .disabled,
                     tools: maxIterations > 0
                         ? [LibraryChatTools.searchLibraryTool,
-                           LibraryChatTools.searchConceptTool]
+                           LibraryChatTools.searchTopicTool]
                         : nil
                 )
                 let response = try await client.send(request)
@@ -928,8 +928,8 @@ final class LibraryChatViewModel: ObservableObject {
                     let resultText: String
                     let isError: Bool
                     let peekQuery = Self.previewQuery(for: call.inputJSON)
-                    toolStatus = call.name == "search_concept"
-                        ? "Looking up concept: \"\(peekQuery)\"…"
+                    toolStatus = call.name == "search_topic"
+                        ? "Looking up topic: \"\(peekQuery)\"…"
                         : "Searching: \"\(peekQuery)\"…"
                     do {
                         switch call.name {
@@ -950,8 +950,8 @@ final class LibraryChatViewModel: ObservableObject {
                             )
                             accumulatedHits.append(contentsOf: hits)
                             resultText = text
-                        case "search_concept":
-                            resultText = try await dispatchSearchConcept(
+                        case "search_topic":
+                            resultText = try await dispatchSearchTopic(
                                 call: call,
                                 registry: registry,
                                 backend: backend
@@ -1093,12 +1093,12 @@ final class LibraryChatViewModel: ObservableObject {
         return (text, resolvedHits)
     }
 
-    /// Dispatcher for `search_concept` (R-Chat-Cross-Corpus
+    /// Dispatcher for `search_topic` (R-Chat-Cross-Corpus
     /// Phase 3). Pulls the `LibraryConceptGraph` from the
     /// process-lifetime cache — first invocation in a session
     /// builds it (~40s on a 2k-book library), subsequent ones
     /// return instantly. Then renders the book-level coverage
-    /// for the requested concept via `renderConceptToolResult`,
+    /// for the requested concept via `renderTopicToolResult`,
     /// extending the turn registry so the surfaced books get
     /// stable `[book:N]` indices alongside any books
     /// `search_library` already registered this turn.
@@ -1107,16 +1107,16 @@ final class LibraryChatViewModel: ObservableObject {
     /// with `dispatchSearchLibrary`; it would be needed if we
     /// added a vector-based concept fuzzy-match path (rather
     /// than the current string-based one).
-    private func dispatchSearchConcept(
+    private func dispatchSearchTopic(
         call: (id: String, name: String, inputJSON: Data),
         registry: LibraryChatTools.TurnBookRegistry,
         backend: any EmbeddingBackend
     ) async throws -> String {
-        guard call.name == "search_concept" else {
+        guard call.name == "search_topic" else {
             throw LibraryChatToolError.unknownTool(call.name)
         }
         let args = try JSONDecoder().decode(
-            LibraryChatTools.SearchConceptArgs.self, from: call.inputJSON
+            LibraryChatTools.SearchTopicArgs.self, from: call.inputJSON
         )
         let bookLimit = args.bookLimit ?? 8
         guard let library = self.library else {
@@ -1138,8 +1138,8 @@ final class LibraryChatViewModel: ObservableObject {
                 authorByURL[entry.epubURL] = author
             }
         }
-        return LibraryChatTools.renderConceptToolResult(
-            concept: args.concept,
+        return LibraryChatTools.renderTopicToolResult(
+            topic: args.topic,
             graph: graph,
             registry: registry,
             bookLimit: bookLimit,
@@ -1205,7 +1205,7 @@ final class LibraryChatViewModel: ObservableObject {
 
     /// Ollama agentic loop — local-model equivalent of
     /// `runCloudSendAgentic`. Same dispatcher reuse (search_library
-    /// + search_concept), same per-turn registry, same iteration
+    /// + search_topic), same per-turn registry, same iteration
     /// cap. Non-streaming for v1 — the tool round-trips need
     /// the full assistant turn (text + tool_calls) before the loop
     /// can decide whether to dispatch or finalize, so streaming
@@ -1263,7 +1263,7 @@ final class LibraryChatViewModel: ObservableObject {
 
         let toolDescriptors: [OllamaClient.ToolDescriptor] = [
             Self.ollamaTool(from: LibraryChatTools.searchLibraryTool),
-            Self.ollamaTool(from: LibraryChatTools.searchConceptTool),
+            Self.ollamaTool(from: LibraryChatTools.searchTopicTool),
         ]
         let maxIterations = agenticMaxIterations
 
@@ -1320,8 +1320,8 @@ final class LibraryChatViewModel: ObservableObject {
                         call.id, call.name, call.argumentsJSON
                     )
                     let peekQuery = Self.previewQuery(for: call.argumentsJSON)
-                    toolStatus = call.name == "search_concept"
-                        ? "Looking up concept: \"\(peekQuery)\"…"
+                    toolStatus = call.name == "search_topic"
+                        ? "Looking up topic: \"\(peekQuery)\"…"
                         : "Searching: \"\(peekQuery)\"…"
                     let resultText: String
                     do {
@@ -1343,8 +1343,8 @@ final class LibraryChatViewModel: ObservableObject {
                             )
                             accumulatedHits.append(contentsOf: hits)
                             resultText = text
-                        case "search_concept":
-                            resultText = try await dispatchSearchConcept(
+                        case "search_topic":
+                            resultText = try await dispatchSearchTopic(
                                 call: triple,
                                 registry: registry,
                                 backend: backend
@@ -1653,36 +1653,36 @@ final class LibraryChatViewModel: ObservableObject {
         preamble shows an author with many books and you don't see \
         most of them in the slice, that means cosine retrieval \
         ranked other paragraphs higher this round — NOT that the \
-        books are absent. Reach for `search_concept` or \
+        books are absent. Reach for `search_topic` or \
         `search_library` to surface them before claiming the corpus \
         doesn't cover something.
 
         NAMED-ENTITY PROTOCOL — when the user's question contains \
-        any named author, work, place, or concept (Foucault, \
+        any named author, work, place, or topic (Foucault, \
         *Discipline and Punish*, Heidegger, mirror stage, Plato, \
         Athens, etc.), follow this protocol BEFORE composing your \
         answer:
 
           1. List every named entity in the user's question.
-          2. For EACH named entity, call `search_concept(<name>)`. \
+          2. For EACH named entity, call `search_topic(<name>)`. \
              Do not skip an entity because some paragraphs about it \
              already appear in the initial slice — the slice only \
              surfaced a few books, and you need book-level coverage \
              to answer well.
-          3. After all `search_concept` calls return, optionally \
+          3. After all `search_topic` calls return, optionally \
              call `search_library` to pull specific paragraph text \
-             from books the concept results surfaced but the \
+             from books the topic results surfaced but the \
              initial slice missed.
           4. Compose the answer only after retrieval for every \
              named entity is complete.
 
         FAILURE MODE TO AVOID — when the user asks you to compare \
-        two or more named entities (authors, works, concepts), the \
+        two or more named entities (authors, works, topics), the \
         wrong move is to write a detailed account of whichever \
         entity happened to dominate the initial slice and say "I \
         don't have information about the others." That is almost \
         always false: the absent entities are in the library; you \
-        just haven't queried for them. ALWAYS call `search_concept` \
+        just haven't queried for them. ALWAYS call `search_topic` \
         for every named entity in a comparison question before \
         writing a single sentence of the answer.
 
@@ -1697,14 +1697,14 @@ final class LibraryChatViewModel: ObservableObject {
             secondary commentary came back, or when the user pivots \
             topics in a follow-up.
 
-          • `search_concept(concept, book_limit?)` looks up a named \
+          • `search_topic(topic, book_limit?)` looks up a named \
             entity (person, place, work, idea) in the library's \
             entity index and returns **book-level coverage** — which \
             books mention it, how many times, in which chapters. Use \
             it when the user asks "which of my books most engage with \
             X?", when you want a corpus-level view before zooming in, \
             or when comparing how different books treat the same \
-            concept. Follow up with `search_library` if you need \
+            topic. Follow up with `search_library` if you need \
             specific paragraph text from one of the surfaced books.
 
         Each tool result extends the master Books-in-scope list \

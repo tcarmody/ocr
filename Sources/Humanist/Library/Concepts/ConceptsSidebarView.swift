@@ -73,7 +73,7 @@ struct ConceptsSidebarView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Concepts")
+                Text("Topics")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -88,11 +88,11 @@ struct ConceptsSidebarView: View {
                     Image(systemName: "arrow.triangle.2.circlepath")
                 }
                 .buttonStyle(.borderless)
-                .help("Rebuild concept index from per-book sidecars.")
+                .help("Rebuild topic index from per-book sidecars.")
                 .disabled(buildState == .building)
             }
             if graph != nil {
-                TextField("Search concepts", text: $searchText)
+                TextField("Search topics", text: $searchText)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.small)
             }
@@ -110,7 +110,7 @@ struct ConceptsSidebarView: View {
             VStack(spacing: 10) {
                 ProgressView()
                 Text(buildState == .building
-                     ? "Building concept index…"
+                     ? "Building topic index…"
                      : "Preparing…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -125,7 +125,7 @@ struct ConceptsSidebarView: View {
             VStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
-                Text("Couldn't build concept index")
+                Text("Couldn't build topic index")
                     .font(.callout.weight(.semibold))
                 Text(message)
                     .font(.caption)
@@ -139,7 +139,7 @@ struct ConceptsSidebarView: View {
             if let graph {
                 conceptList(graph)
             } else {
-                Text("No concepts yet.")
+                Text("No topics yet.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -153,8 +153,8 @@ struct ConceptsSidebarView: View {
         if rows.isEmpty {
             VStack(spacing: 8) {
                 Text(searchText.isEmpty
-                     ? "No concepts cleared the breadth floor."
-                     : "No concepts match \"\(searchText)\".")
+                     ? "No topics cleared the breadth floor."
+                     : "No topics match \"\(searchText)\".")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

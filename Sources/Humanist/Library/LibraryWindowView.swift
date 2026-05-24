@@ -1880,8 +1880,8 @@ struct LibraryWindowView: View {
             } label: {
                 Image(systemName: "tag")
             }
-            .help("Browse concepts across your library")
-            .accessibilityLabel("Browse concepts across your library")
+            .help("Browse topics across your library")
+            .accessibilityLabel("Browse topics across your library")
             .disabled(library.entries.isEmpty)
 
             // Chat-pane button — same triple-duty action as before

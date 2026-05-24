@@ -120,7 +120,7 @@ struct LibraryConceptGraph: Sendable {
     ///   .canonical(for:)` before pair generation so synonyms
     ///   like america/united states merge into one row.
     /// - **`bookCount ≥ 2`** is NOT applied here; the full
-    ///   concept dictionary is preserved for the `search_concept`
+    ///   concept dictionary is preserved for the `search_topic`
     ///   tool (Phase 3) which may want long-tail hits. The
     ///   sidebar / breadth-ranking surface uses
     ///   `significantConcepts()` instead.
@@ -353,7 +353,7 @@ struct LibraryConceptGraph: Sendable {
     /// `minBookCount` books, sorted by breadth. Filters out the
     /// long tail of single-book NLTagger hits that dominate
     /// `concepts.count` but carry no cross-book signal. The full
-    /// concept dictionary stays available for the `search_concept`
+    /// concept dictionary stays available for the `search_topic`
     /// chat tool, which may want long-tail lookups.
     func significantConcepts(minBookCount: Int = 2) -> [ConceptStats] {
         conceptsByBreadth().filter { $0.bookCount >= minBookCount }

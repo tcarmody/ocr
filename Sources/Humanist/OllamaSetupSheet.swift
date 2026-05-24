@@ -64,7 +64,7 @@ struct OllamaSetupSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Set Up Local Chat")
                 .font(.title2.bold())
-            Text("Local chat runs on your machine via Ollama — no API key, no per-token cost, no data leaves your Mac. The default is Qwen 3.5 9B: a dense 9 B-parameter model with built-in tool-call support, so library chat can fan out via `search_concept` / `search_library` to span the whole corpus on multi-author questions. Smaller siblings (`qwen3.5:4b`, `qwen3.5:2b`) trade tool-use reliability for speed and disk; the older `gemma4:26b` MoE has stronger synthesis but no tool use, so it answers from the initial retrieval slice only.")
+            Text("Local chat runs on your machine via Ollama — no API key, no per-token cost, no data leaves your Mac. The default is Qwen 3.5 9B: a dense 9 B-parameter model with built-in tool-call support, so library chat can fan out via `search_topic` / `search_library` to span the whole corpus on multi-author questions. Smaller siblings (`qwen3.5:4b`, `qwen3.5:2b`) trade tool-use reliability for speed and disk; the older `gemma4:26b` MoE has stronger synthesis but no tool use, so it answers from the initial retrieval slice only.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -29,19 +29,23 @@ enum LibraryChatTools {
         }
     }
 
-    /// JSON arguments for `search_concept` — the
-    /// R-Chat-Cross-Corpus Phase 3 tool. Looks up book-level
-    /// coverage for a named concept (entity / person / place) in
-    /// the federated `LibraryConceptGraph` and surfaces ranked
-    /// books with mention counts + chapter spans. Different
-    /// shape from `search_library`: that's per-paragraph
-    /// retrieval, this is per-book coverage.
-    struct SearchConceptArgs: Decodable {
-        let concept: String
+    /// JSON arguments for `search_topic` — the R-Chat-Cross-Corpus
+    /// Phase 3 tool. Looks up book-level coverage for a named topic
+    /// (entity / person / place / theme) in the federated
+    /// `LibraryConceptGraph` and surfaces ranked books with mention
+    /// counts + chapter spans. Different shape from `search_library`:
+    /// that's per-paragraph retrieval, this is per-book coverage.
+    ///
+    /// Wire field is `topic` to match the user-facing vocabulary;
+    /// the underlying data structure is still
+    /// `LibraryConceptGraph` (named-entity rollup, not LDA-style
+    /// topic modeling).
+    struct SearchTopicArgs: Decodable {
+        let topic: String
         let bookLimit: Int?
 
         private enum CodingKeys: String, CodingKey {
-            case concept
+            case topic
             case bookLimit = "book_limit"
         }
     }
@@ -53,49 +57,48 @@ enum LibraryChatTools {
     /// without touching this one. `cacheControl` is set so the
     /// tools-block prefix is cached alongside the system prompt
     /// across the multi-turn session.
-    /// `search_concept` tool descriptor. Complements
-    /// `search_library`: where that returns paragraph-level hits
-    /// from cosine + BM25 + entity fusion, this returns
-    /// **book-level coverage** for a named concept — useful when
-    /// the user asks "which of my books most engage with X?"
-    /// rather than "what does X mean?" The model can chain a
-    /// follow-up `search_library` if it wants specific
-    /// paragraphs from one of the surfaced books.
-    static let searchConceptTool: Tool = {
+    /// `search_topic` tool descriptor. Complements `search_library`:
+    /// where that returns paragraph-level hits from cosine + BM25 +
+    /// entity fusion, this returns **book-level coverage** for a
+    /// named topic — useful when the user asks "which of my books
+    /// most engage with X?" rather than "what does X mean?" The
+    /// model can chain a follow-up `search_library` if it wants
+    /// specific paragraphs from one of the surfaced books.
+    static let searchTopicTool: Tool = {
         let schemaJSON = """
         {
           "type": "object",
           "properties": {
-            "concept": {
+            "topic": {
               "type": "string",
-              "description": "Concept or named entity to look up (e.g. 'Foucault', 'phenomenology', 'mirror stage', 'Plato'). Matched case-insensitively against the library's named-entity index, with built-in aliases collapsing synonyms (e.g. 'America' resolves to 'United States')."
+              "description": "Topic, named entity, or theme to look up (e.g. 'Foucault', 'phenomenology', 'mirror stage', 'Plato'). Matched case-insensitively against the library's named-entity index, with built-in aliases collapsing synonyms (e.g. 'America' resolves to 'United States')."
             },
             "book_limit": {
               "type": "integer",
               "description": "Max books to return. Defaults to 8; raise to 20 for broader sweeps."
             }
           },
-          "required": ["concept"]
+          "required": ["topic"]
         }
         """
         return Tool(
-            name: "search_concept",
+            name: "search_topic",
             description: """
-                Look up a concept or named entity across the user's library \
+                Look up a topic or named entity across the user's library \
                 and return book-level coverage: which books mention this \
-                concept, how many times, and which chapters. Each surfaced \
+                topic, how many times, and which chapters. Each surfaced \
                 book gets a [book:N] index that you can cite. Useful when:
 
                   • the user asks "which books in my library most engage with X?"
                   • you want a corpus-level view before zooming into paragraphs
-                  • you're comparing how different books treat the same concept
+                  • you're comparing how different books treat the same topic
 
-                Returns: ranked book list + related concepts (by co-occurrence). \
+                Returns: ranked book list + related topics (by co-occurrence). \
                 For specific paragraph text from one of these books, follow up \
-                with search_library using a query that includes the concept + \
+                with search_library using a query that includes the topic + \
                 the book title.
 
-                If the concept isn't in the entity index, the result will tell \
+                If the topic isn't in the entity index, the result will tell \
                 you — try a synonym (the alias map handles common ones) or fall \
                 back to search_library for free-text retrieval.
                 """,
@@ -225,21 +228,21 @@ enum LibraryChatTools {
         return out
     }
 
-    /// Render a `search_concept` tool result as the text body
-    /// the model reads on its next turn. Resolves `concept`
+    /// Render a `search_topic` tool result as the text body
+    /// the model reads on its next turn. Resolves `topic`
     /// against the graph with an alias-aware fuzzy match (exact
     /// canonical → alias-canonicalized → displayName-contains),
     /// extends the registry with the surfaced books so their
     /// [book:N] indices stay stable across follow-up tool calls,
-    /// and surfaces related concepts so the model can pivot.
-    static func renderConceptToolResult(
-        concept: String,
+    /// and surfaces related topics so the model can pivot.
+    static func renderTopicToolResult(
+        topic: String,
         graph: LibraryConceptGraph,
         registry: TurnBookRegistry,
         bookLimit: Int = 8,
         authorLookup: (URL) -> String? = { _ in nil }
     ) -> String {
-        let raw = concept
+        let raw = topic
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let canonical = ConceptAliases.canonical(for: raw)
@@ -262,7 +265,7 @@ enum LibraryChatTools {
 
         guard let stats else {
             return """
-            search_concept("\(concept)") found no matching concept in the \
+            search_topic("\(topic)") found no matching topic in the \
             library's entity index. Try a synonym (the alias map covers \
             common ones like america/united states) or fall back to \
             search_library for free-text retrieval.
@@ -295,7 +298,7 @@ enum LibraryChatTools {
             )
         }
 
-        var out = "search_concept(\"\(stats.displayName)\") matched "
+        var out = "search_topic(\"\(stats.displayName)\") matched "
             + "\(stats.bookCount) book\(stats.bookCount == 1 ? "" : "s") "
             + "across the library, \(stats.totalMentions) total mentions.\n\n"
 
@@ -317,7 +320,7 @@ enum LibraryChatTools {
 
         let related = graph.related(to: stats.canonical, limit: 6)
         if !related.isEmpty {
-            out += "\n\nRelated concepts (paragraphs where they co-occur with \(stats.displayName)):\n"
+            out += "\n\nRelated topics (paragraphs where they co-occur with \(stats.displayName)):\n"
             for entry in related {
                 let display = graph.concepts[entry.concept]?.displayName
                     ?? entry.concept
@@ -356,7 +359,7 @@ enum LibraryChatTools {
             out += """
             (No matching paragraphs were found across the user's \
             library on the initial pass. Call `search_library` with a \
-            rephrased query, or `search_concept` if the user named an \
+            rephrased query, or `search_topic` if the user named an \
             author / person / work, before concluding the corpus \
             doesn't cover this.)
             """
@@ -382,7 +385,7 @@ enum LibraryChatTools {
         // PASS, not the whole library. Without this, the model
         // treats the slice as the entire universe and won't
         // broaden via the tools.
-        out += "Books surfaced in this initial pass (call search_library / search_concept to surface more):\n"
+        out += "Books surfaced in this initial pass (call search_library / search_topic to surface more):\n"
         for (i, entry) in registry.ordered.enumerated() {
             if let author = entry.author, !author.isEmpty {
                 out += "[book:\(i)] \"\(entry.title)\" — \(author)\n"

@@ -2,10 +2,13 @@ import SwiftUI
 import LibraryIndexing
 
 /// Modal sheet that surfaces the federated concept graph for
-/// occasional browsing. Replaces the inline HSplitView pane the
-/// Concepts feature shipped in originally — concept browsing isn't
-/// part of the moment-to-moment library workflow, so it lives
-/// behind a sparkles-style button rather than taking up permanent
+/// occasional browsing. User-facing label is **Topics**; the
+/// underlying data structure stays `LibraryConceptGraph` in code
+/// since it's a per-entity rollup from NER, not a topic-modeling
+/// pipeline. Replaces the inline HSplitView pane the feature
+/// shipped in originally — topic browsing isn't part of the
+/// moment-to-moment library workflow, so it lives behind a
+/// sparkles-style button rather than taking up permanent
 /// horizontal real estate alongside collections / chat.
 ///
 /// Layout: list of significant concepts on the left, detail on the
@@ -54,7 +57,7 @@ struct ConceptsSheet: View {
             Image(systemName: "tag.fill")
                 .foregroundStyle(HumanistTheme.accent)
                 .imageScale(.large)
-            Text("Concepts in your library")
+            Text("Topics in your library")
                 .font(.headline)
             Spacer()
         }

@@ -163,7 +163,7 @@ struct ConceptDetailView: View {
     @ViewBuilder
     private var relatedSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Related concepts")
+            Text("Related topics")
                 .font(.callout.weight(.semibold))
             // Wrapping flex layout via macOS 26's flow layout. Each
             // chip carries the co-occurrence count so the user can
