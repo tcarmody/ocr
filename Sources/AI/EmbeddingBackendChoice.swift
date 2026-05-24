@@ -59,4 +59,24 @@ public enum EmbeddingBackendChoice: String, CaseIterable, Identifiable, Sendable
         case .voyage, .gemini:  return true
         }
     }
+
+    /// Namespace prefix every concrete `identifier` for this
+    /// choice starts with. Used by Settings's "Clear outdated"
+    /// surface to flag sidecars built against a different
+    /// provider — model identifiers always start with the
+    /// provider name (`apple.nl.sentence.<lang>`,
+    /// `voyage.<model>`, `gemini.<model>.<dim>`,
+    /// `ollama.<model>`) so a starts-with check is sufficient
+    /// to detect cross-provider drift. Does NOT catch
+    /// within-provider model switches (e.g. Gemini-001 → 002
+    /// stays a "gemini." identifier) — those are rare enough
+    /// that `clearAll` is the right escape hatch.
+    public var identifierPrefix: String {
+        switch self {
+        case .appleNL: return "apple.nl."
+        case .ollama:  return "ollama."
+        case .voyage:  return "voyage."
+        case .gemini:  return "gemini."
+        }
+    }
 }

@@ -184,6 +184,61 @@ final class EmbeddingsSidecarStoreKeyingTests: XCTestCase {
         XCTAssertEqual(restored?.backendIdentifier, "legacy-round-trip")
     }
 
+    // MARK: - clearMismatched / countMismatched
+
+    func test_clearMismatched_removesOnlyOffPrefixSidecars() {
+        let store = makeStore()
+        let geminiID = UUID()
+        let appleID = UUID()
+        let gemini = EmbeddingsSidecar.empty(
+            backend: "gemini.embedding-001.3072", dimension: 3072
+        )
+        let apple = EmbeddingsSidecar.empty(
+            backend: "apple.nl.sentence.en", dimension: 512
+        )
+        store.write(gemini, for: anyEpubURL(), libraryID: geminiID)
+        store.write(apple, for: anyEpubURL(), libraryID: appleID)
+
+        XCTAssertEqual(
+            store.countMismatched(primaryPrefix: "gemini."), 1
+        )
+        let removed = store.clearMismatched(primaryPrefix: "gemini.")
+        XCTAssertEqual(removed, 1)
+
+        XCTAssertNotNil(
+            store.read(for: anyEpubURL(), libraryID: geminiID),
+            "On-prefix sidecar should survive"
+        )
+        XCTAssertNil(
+            store.read(for: anyEpubURL(), libraryID: appleID),
+            "Off-prefix sidecar should be gone"
+        )
+        XCTAssertEqual(
+            store.countMismatched(primaryPrefix: "gemini."), 0
+        )
+    }
+
+    func test_clearMismatched_keepsWithinProviderModelVariants() {
+        // Within-provider model switches (gemini-001 → 002) keep
+        // the same prefix; this clear path deliberately doesn't
+        // catch them — clearAll is the escape hatch. The federated
+        // build still surfaces them via its exact-identifier
+        // mismatch tally.
+        let store = makeStore()
+        let id = UUID()
+        let sidecar = EmbeddingsSidecar.empty(
+            backend: "gemini.embedding-001.768", dimension: 768
+        )
+        store.write(sidecar, for: anyEpubURL(), libraryID: id)
+        XCTAssertEqual(
+            store.countMismatched(primaryPrefix: "gemini."), 0
+        )
+        XCTAssertEqual(
+            store.clearMismatched(primaryPrefix: "gemini."), 0
+        )
+        XCTAssertNotNil(store.read(for: anyEpubURL(), libraryID: id))
+    }
+
     private func anyEpubURL() -> URL {
         tempDir.appendingPathComponent("any-book.epub")
     }

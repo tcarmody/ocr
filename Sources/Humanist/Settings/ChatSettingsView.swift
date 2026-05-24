@@ -98,6 +98,15 @@ struct ChatSettingsView: View {
     /// Bytes used by all embedding sidecars across the user's
     /// library. Refreshed on appear and after a clear.
     @State private var embeddingsCacheBytes: Int = 0
+    /// Number of sidecars whose `backendIdentifier` doesn't
+    /// start with the current `EmbeddingBackendChoice
+    /// .identifierPrefix` — books indexed against a different
+    /// provider than the one Settings is now showing as primary
+    /// (typically the Apple-NL safety net after a switch to
+    /// Gemini / Voyage). Surfaced in the "Clear outdated"
+    /// button so the user sees the count before clicking.
+    /// Refreshed on appear and after either clear.
+    @State private var outdatedIndexCount: Int = 0
 
     private var chatBackendBinding: Binding<ChatBackend> {
         Binding(
@@ -372,6 +381,20 @@ struct ChatSettingsView: View {
                     Text(formattedCacheSize)
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                    Button(outdatedButtonTitle) {
+                        let prefix = embeddingBackendBinding
+                            .wrappedValue.identifierPrefix
+                        _ = EmbeddingsSidecarStore()
+                            .clearMismatched(primaryPrefix: prefix)
+                        // Same reasoning as Clear all: the federated
+                        // snapshot is an aggregate of the per-book
+                        // sidecars we just removed, so invalidate it
+                        // too so the next chat send rebuilds without
+                        // resurrecting cleared rows.
+                        FederatedIndexCache.invalidate()
+                        refreshEmbeddingsCacheSize()
+                    }
+                    .disabled(outdatedIndexCount == 0)
                     Button("Clear all") {
                         _ = EmbeddingsSidecarStore().clearAll()
                         // Wipe the federated-index snapshot too —
@@ -384,7 +407,7 @@ struct ChatSettingsView: View {
                     }
                     .disabled(embeddingsCacheBytes == 0)
                 }
-                Text("Each indexed book caches its paragraph vectors here so the editor opens instantly the second time. Clearing forces a re-index on next open.")
+                Text("Each indexed book caches its paragraph vectors here so the editor opens instantly the second time. \"Clear outdated\" removes only the books that fell back to Apple's offline model (because the cloud backend errored at index time) so the next bulk index retries just those. \"Clear all\" forces a full re-index on next open.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -480,6 +503,15 @@ struct ChatSettingsView: View {
         }
     }
 
+    /// Label shown on the Clear-outdated button. Names the count
+    /// when there's something to retry, drops the count when
+    /// there isn't (the button disables in that case).
+    private var outdatedButtonTitle: String {
+        outdatedIndexCount == 0
+            ? "Clear outdated"
+            : "Clear outdated (\(outdatedIndexCount))"
+    }
+
     private var formattedCacheSize: String {
         ByteCountFormatter.string(
             fromByteCount: Int64(embeddingsCacheBytes),
@@ -552,11 +584,29 @@ struct ChatSettingsView: View {
 
     // MARK: - embedding cache
 
-    /// Recompute the on-disk size of the embeddings cache. Cheap (a
-    /// directory enumeration) so it's fine to call on every Settings
-    /// open.
+    /// Recompute the on-disk size of the embeddings cache and the
+    /// mismatched-sidecar count that drives the Clear-outdated
+    /// button. `totalBytes` is a `du`-style directory walk;
+    /// `countMismatched` reads each sidecar header just enough to
+    /// surface its `backendIdentifier`. Both are fine on every
+    /// Settings open; `countMismatched` takes a couple of seconds
+    /// on a 2k-book library which is acceptable for a panel the
+    /// user opens rarely. Wrapped in `Task.detached` so the UI
+    /// isn't blocked while the walks run.
     private func refreshEmbeddingsCacheSize() {
-        embeddingsCacheBytes = EmbeddingsSidecarStore().totalBytes()
+        let prefix = embeddingBackendBinding
+            .wrappedValue.identifierPrefix
+        Task.detached(priority: .userInitiated) {
+            let store = EmbeddingsSidecarStore()
+            let bytes = store.totalBytes()
+            let outdated = store.countMismatched(
+                primaryPrefix: prefix
+            )
+            await MainActor.run {
+                embeddingsCacheBytes = bytes
+                outdatedIndexCount = outdated
+            }
+        }
     }
 
     // MARK: - Voyage key + test

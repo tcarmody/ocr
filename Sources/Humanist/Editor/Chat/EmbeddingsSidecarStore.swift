@@ -336,6 +336,85 @@ struct EmbeddingsSidecarStore {
         return total
     }
 
+    /// Delete every sidecar whose `backendIdentifier` doesn't start
+    /// with `primaryPrefix` — the surgical alternative to
+    /// `clearAll`. Use case: the user has a fresh cloud backend
+    /// (Gemini, Voyage) and wants to upgrade any book whose sidecar
+    /// was built against a different provider (the Apple-NL safety
+    /// net, an older Voyage build before they switched) without
+    /// forcing a full library re-index. Returns the number of
+    /// sidecars deleted.
+    ///
+    /// Prefix matching (instead of exact identifier comparison)
+    /// because Settings doesn't async-construct a backend to read
+    /// its full identifier — it only knows the
+    /// `EmbeddingBackendChoice` and its `identifierPrefix`. Cross-
+    /// provider drift is caught; within-provider model switches
+    /// (e.g. Gemini-001 → 002 keep the `gemini.` prefix) are not —
+    /// `clearAll` is the escape hatch for those.
+    ///
+    /// Backend-identifier comparison (not the `wasFallback` flag)
+    /// because that flag doesn't round-trip through the binary
+    /// `.emb` format today. See `wasFallback` for the open work
+    /// item; the backend-identifier definition is also cleaner
+    /// user-facing semantics — "the books not on my current
+    /// primary provider."
+    ///
+    /// O(N) over every file under `baseDirectory`; each file is
+    /// read just enough to surface its `backendIdentifier`. On a
+    /// 2k-book library that's ~seconds.
+    @discardableResult
+    func clearMismatched(primaryPrefix: String) -> Int {
+        walkSidecarFiles { sidecar in
+            !sidecar.backendIdentifier.hasPrefix(primaryPrefix)
+        } action: { url in
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Count sidecars whose backend doesn't start with
+    /// `primaryPrefix`. Drives the Settings button's label so the
+    /// user sees how many books would be retried before they
+    /// click.
+    func countMismatched(primaryPrefix: String) -> Int {
+        walkSidecarFiles { sidecar in
+            !sidecar.backendIdentifier.hasPrefix(primaryPrefix)
+        } action: { _ in }
+    }
+
+    /// Walk every sidecar file under the store, decoding each one
+    /// just enough to evaluate `matches`. For matches, invoke
+    /// `action`. Returns the number of files that matched.
+    private func walkSidecarFiles(
+        matches: (EmbeddingsSidecar) -> Bool,
+        action: (URL) -> Void
+    ) -> Int {
+        guard let enumerator = FileManager.default.enumerator(
+            at: baseDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var matched = 0
+        for case let url as URL in enumerator {
+            let ext = url.pathExtension.lowercased()
+            guard ext == "emb" || ext == "json",
+                  let data = try? Data(contentsOf: url)
+            else { continue }
+            let sidecar: EmbeddingsSidecar?
+            if ext == "emb" {
+                sidecar = try? EmbeddingsSidecarBinaryFormat.decode(data)
+            } else {
+                sidecar = try? Self.decoder.decode(
+                    EmbeddingsSidecar.self, from: data
+                )
+            }
+            guard let sidecar, matches(sidecar) else { continue }
+            matched += 1
+            action(url)
+        }
+        return matched
+    }
+
     /// Total bytes used by all sidecars under the storage root.
     /// Surfaced in Settings so the user knows what they're carrying.
     /// Cheap to compute — directory enumeration with attribute
