@@ -34,21 +34,41 @@ public actor OllamaClient {
         self.config = config
     }
 
+    /// One conversation turn passed to `chat` / `chatStream` as
+    /// prior context. Maps 1:1 onto the wire-level `role` /
+    /// `content` Ollama expects.
+    public struct ChatHistoryMessage: Sendable {
+        public enum Role: String, Sendable {
+            case user, assistant
+        }
+        public let role: Role
+        public let content: String
+        public init(role: Role, content: String) {
+            self.role = role
+            self.content = content
+        }
+    }
+
     // MARK: - Public API
 
     /// One non-streaming chat round-trip. System + user prompt in,
-    /// assistant text out.
+    /// assistant text out. `history` carries prior turns when the
+    /// caller wants the model to see conversation context; defaults
+    /// empty so existing single-turn callers don't need to opt in.
     public func chat(
         model: String,
         system: String,
+        history: [ChatHistoryMessage] = [],
         userMessage: String
     ) async throws -> String {
+        var messages: [Message] = [Message(role: "system", content: system)]
+        for m in history {
+            messages.append(Message(role: m.role.rawValue, content: m.content))
+        }
+        messages.append(Message(role: "user", content: userMessage))
         let body = ChatRequestBody(
             model: model,
-            messages: [
-                Message(role: "system", content: system),
-                Message(role: "user", content: userMessage),
-            ],
+            messages: messages,
             stream: false
         )
         let request = try buildRequest(path: "/api/chat", body: body)
@@ -74,6 +94,7 @@ public actor OllamaClient {
     public nonisolated func chatStream(
         model: String,
         system: String,
+        history: [ChatHistoryMessage] = [],
         userMessage: String
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
@@ -81,6 +102,7 @@ public actor OllamaClient {
                 await self.runChatStream(
                     model: model,
                     system: system,
+                    history: history,
                     userMessage: userMessage,
                     continuation: continuation
                 )
@@ -92,15 +114,18 @@ public actor OllamaClient {
     private func runChatStream(
         model: String,
         system: String,
+        history: [ChatHistoryMessage],
         userMessage: String,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async {
+        var messages: [Message] = [Message(role: "system", content: system)]
+        for m in history {
+            messages.append(Message(role: m.role.rawValue, content: m.content))
+        }
+        messages.append(Message(role: "user", content: userMessage))
         let body = ChatRequestBody(
             model: model,
-            messages: [
-                Message(role: "system", content: system),
-                Message(role: "user", content: userMessage),
-            ],
+            messages: messages,
             stream: true
         )
         let request: URLRequest

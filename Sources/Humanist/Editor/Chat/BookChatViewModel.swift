@@ -549,9 +549,22 @@ final class BookChatViewModel: ObservableObject {
         let entitySnapshot = entityIndex
         let task = Task { [weak self] in
             guard let self else { return }
+            // Combine with the most recent prior user turn for the
+            // embedding so short follow-ups ("what about chapter 3?")
+            // carry topical signal — same shape as the library-scope
+            // path. Entity / structural matching keeps using the bare
+            // query so the user's CURRENT focus drives the boosts.
+            let priorUserQuery = await MainActor.run {
+                self.messages.dropLast().reversed()
+                    .first(where: { $0.role == .user })?.text
+            }
+            let queryForEmbedding: String = priorUserQuery
+                .map { "\($0)\n\n\(query)" } ?? query
             let queryVector: [Float]?
             if style != .bm25, let index = embeddingIndexSnapshot {
-                queryVector = await self.embedQuery(query, using: index.backend)
+                queryVector = await self.embedQuery(
+                    queryForEmbedding, using: index.backend
+                )
             } else {
                 queryVector = nil
             }
@@ -678,8 +691,16 @@ final class BookChatViewModel: ObservableObject {
                 }
                 return
             }
-            // Embed the query.
-            let queryVector = await self.embedQuery(query, using: backend)
+            // Embed the query. Combine with the most recent prior
+            // user turn so short follow-ups carry topical signal —
+            // see the matching block in `LibraryChatViewModel.send`.
+            let priorUserQuery = self.messages.dropLast().reversed()
+                .first(where: { $0.role == .user })?.text
+            let queryForEmbedding: String = priorUserQuery
+                .map { "\($0)\n\n\(query)" } ?? query
+            let queryVector = await self.embedQuery(
+                queryForEmbedding, using: backend
+            )
             guard let queryVector else {
                 await MainActor.run {
                     self.appendAndPersist(BookChatMessage(
@@ -769,13 +790,26 @@ final class BookChatViewModel: ObservableObject {
             isThinking = false
             streamTask = nil
         }
+        // Build API messages from prior turns + the context-laden
+        // current user prompt. `messages.dropLast()` strips the bare
+        // current-user message that `send()` already appended; we
+        // replace it with `userPrompt` (query + retrieved context)
+        // so the API has both context and conversation memory.
+        // Critical that this runs BEFORE `appendDraftAssistant`
+        // below — otherwise the empty draft would land in history.
+        var apiMessages: [Message] = []
+        for prior in messages.dropLast() {
+            apiMessages.append(Message(
+                role: prior.role == .user ? .user : .assistant,
+                content: .plain(prior.text)
+            ))
+        }
+        apiMessages.append(Message(role: .user, content: .plain(userPrompt)))
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: useLongFormSynthesis ? 2500 : 1500,
             system: .cached(systemPrompt, ttl: .oneHour),
-            messages: [
-                Message(role: .user, content: .plain(userPrompt))
-            ],
+            messages: apiMessages,
             thinking: .disabled
         )
         // Append an empty draft assistant message so the user sees
@@ -826,12 +860,22 @@ final class BookChatViewModel: ObservableObject {
             streamTask = nil
         }
         let model = ollamaModel
+        // History captured BEFORE appendDraftAssistant so the
+        // empty draft doesn't leak into the conversation we send.
+        var history: [OllamaClient.ChatHistoryMessage] = []
+        for prior in messages.dropLast() {
+            history.append(.init(
+                role: prior.role == .user ? .user : .assistant,
+                content: prior.text
+            ))
+        }
         let draftId = appendDraftAssistant()
         var sawFirstDelta = false
         do {
             let stream = ollama.chatStream(
                 model: model,
                 system: systemPrompt,
+                history: history,
                 userMessage: userPrompt
             )
             for try await delta in stream {
@@ -1479,13 +1523,22 @@ final class BookChatViewModel: ObservableObject {
             isThinking = false
             streamTask = nil
         }
+        // Build API messages from prior turns + the context-laden
+        // current user prompt. See `runCloudSend` for the full
+        // rationale; same shape, different system prompt.
+        var apiMessages: [Message] = []
+        for prior in messages.dropLast() {
+            apiMessages.append(Message(
+                role: prior.role == .user ? .user : .assistant,
+                content: .plain(prior.text)
+            ))
+        }
+        apiMessages.append(Message(role: .user, content: .plain(userPrompt)))
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: useLongFormSynthesis ? 2500 : 1500,
             system: .cached(libraryScopeSystemPrompt, ttl: .oneHour),
-            messages: [
-                Message(role: .user, content: .plain(userPrompt))
-            ],
+            messages: apiMessages,
             thinking: .disabled
         )
         do {
@@ -1527,10 +1580,18 @@ final class BookChatViewModel: ObservableObject {
             streamTask = nil
         }
         let model = ollamaModel
+        var history: [OllamaClient.ChatHistoryMessage] = []
+        for prior in messages.dropLast() {
+            history.append(.init(
+                role: prior.role == .user ? .user : .assistant,
+                content: prior.text
+            ))
+        }
         do {
             let raw = try await ollama.chat(
                 model: model,
                 system: libraryScopeSystemPrompt,
+                history: history,
                 userMessage: userPrompt
             )
             try Task.checkCancellation()
@@ -1676,6 +1737,16 @@ final class BookChatViewModel: ObservableObject {
         support the answer. If the supplied paragraphs don't \
         contain enough information to answer, say so plainly — \
         don't guess.
+
+        PRIMARY SOURCES FIRST — when a question concerns a particular \
+        author, thinker, or work, ground your answer in that author's \
+        own texts whenever they appear in the retrieved set. Treat \
+        books *about* the author as secondary commentary. Distinguish \
+        the two in your wording so the user can tell which is which \
+        ("In Discipline and Punish, Foucault writes…" vs "As one \
+        commentator puts it…"). If only secondary sources were \
+        retrieved, say so plainly before drawing on them — the user \
+        may want to re-query or surface the primary source explicitly.
 
         \(lengthGuidance)
         """

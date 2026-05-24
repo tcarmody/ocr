@@ -295,7 +295,20 @@ final class LibraryChatViewModel: ObservableObject {
                 }
                 return
             }
-            let queryVector = await self.embedQuery(query, using: backend)
+            // Use the most recent prior user turn as conversational
+            // context for the embedding. Without this, a short
+            // follow-up like "what about Lacan's own texts?" embeds
+            // against ~5 words and cosine search surfaces off-topic
+            // paragraphs. Entity / alias matching stays on the bare
+            // current query — those are intentionally precise to
+            // what the user just asked.
+            let priorUserQuery = self.messages.dropLast().reversed()
+                .first(where: { $0.role == .user })?.text
+            let queryForEmbedding: String = priorUserQuery
+                .map { "\($0)\n\n\(query)" } ?? query
+            let queryVector = await self.embedQuery(
+                queryForEmbedding, using: backend
+            )
             guard let queryVector else {
                 await MainActor.run {
                     self.appendAndPersist(BookChatMessage(
@@ -699,11 +712,25 @@ final class LibraryChatViewModel: ObservableObject {
             isThinking = false
             streamTask = nil
         }
+        // Build the API messages array from prior turns + the
+        // current context-laden user prompt. `messages.dropLast()`
+        // drops the bare current-user message that `send()` already
+        // appended; we replace it with the context-laden version
+        // below so the conversation history stays clean (older
+        // user turns carry their bare queries, not stale contexts).
+        var apiMessages: [Message] = []
+        for prior in messages.dropLast() {
+            apiMessages.append(Message(
+                role: prior.role == .user ? .user : .assistant,
+                content: .plain(prior.text)
+            ))
+        }
+        apiMessages.append(Message(role: .user, content: .plain(userPrompt)))
         let request = AnthropicMessageRequest(
             model: model,
             maxTokens: useLongFormSynthesis ? 2500 : 1500,
             system: .cached(systemPrompt, ttl: .oneHour),
-            messages: [Message(role: .user, content: .plain(userPrompt))],
+            messages: apiMessages,
             thinking: .disabled
         )
         do {
@@ -742,10 +769,19 @@ final class LibraryChatViewModel: ObservableObject {
             isThinking = false
             streamTask = nil
         }
+        // History: see the matching comment in `runCloudSend`.
+        var history: [OllamaClient.ChatHistoryMessage] = []
+        for prior in messages.dropLast() {
+            history.append(.init(
+                role: prior.role == .user ? .user : .assistant,
+                content: prior.text
+            ))
+        }
         do {
             let raw = try await ollama.chat(
                 model: ollamaModel,
                 system: systemPrompt,
+                history: history,
                 userMessage: userPrompt
             )
             try Task.checkCancellation()
@@ -911,6 +947,16 @@ final class LibraryChatViewModel: ObservableObject {
         brief passages with their citation when they directly support \
         the answer. If the supplied paragraphs don't contain enough \
         information, say so — don't guess.
+
+        PRIMARY SOURCES FIRST — when a question concerns a particular \
+        author, thinker, or work, ground your answer in that author's \
+        own texts whenever they appear in the retrieved set. Treat \
+        books *about* the author as secondary commentary. Distinguish \
+        the two in your wording so the user can tell which is which \
+        ("In Discipline and Punish, Foucault writes…" vs "As one \
+        commentator puts it…"). If only secondary sources were \
+        retrieved, say so plainly before drawing on them — the user \
+        may want to re-query or surface the primary source explicitly.
 
         \(lengthGuidance)
         """
