@@ -30,6 +30,7 @@ struct HumanistCLI: AsyncParsableCommand {
             ValidateCommand.self,
             LibraryDedupeCommand.self,
             ClearOutdatedCommand.self,
+            ReindexCommand.self,
         ],
         defaultSubcommand: ConvertCommand.self
     )
