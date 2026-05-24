@@ -206,7 +206,17 @@ enum FederatedIndexCache {
         dimension: Int,
         from url: URL = defaultCacheURL
     ) -> Payload? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        // Memory-map the cache file instead of reading the whole
+        // thing into a heap `Data`. On a 48 GB Gemini-3072 cache,
+        // the eager `Data(contentsOf:)` path spiked RSS by 8+ GB
+        // mid-load (sampled at t=70s on PID 1908) before the
+        // decoder pulled bytes out into Swift arrays. `.alwaysMapped`
+        // hands the bytes to the kernel's page cache; the decoder
+        // reads through `data.subdata(in:)` (which references the
+        // mapping) and only the working set stays resident.
+        guard let data = try? Data(
+            contentsOf: url, options: .alwaysMapped
+        ) else { return nil }
         let payload = try? decode(data: data)
         guard let payload else { return nil }
         guard payload.fingerprint == expectedFingerprint,
