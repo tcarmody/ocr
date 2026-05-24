@@ -4667,6 +4667,229 @@ real friction.
 
 ---
 
+## R-Chat-Cross-Corpus — Knowledge-graph layer + Disagreement detector (Chapter 3)
+
+**Status**: Scoped, not started. Chapter 3 of the chat-features
+"think big" roadmap (R-Chat-Agentic). Two features bundled because
+the disagreement detector consumes the knowledge-graph layer's
+co-occurrence rollup, but they ship in distinct phases so the
+graph is usable on its own if the detector turns out to be too
+expensive or noisy.
+
+### Premise
+
+`LibraryEntityIndex` already gives us per-entity anchor lists
+across the library. What it doesn't give us is **co-occurrence**
+(which entities appear together, in which books, how often) or
+**any notion of stance** (do the books *agree* about an entity?).
+The graph layer adds the first; the detector adds the second.
+
+### Phase 1 — Co-occurrence rollup (foundation)
+
+New type alongside `LibraryEntityIndex`:
+
+```swift
+struct LibraryConceptGraph: Sendable {
+    struct BookCoverage {
+        let epubURL: URL
+        let bookTitle: String
+        let mentionCount: Int       // total anchors in this book
+        let chapters: Set<Int>      // chapters where it appears
+    }
+    struct ConceptStats {
+        let canonical: String
+        let displayName: String
+        let totalMentions: Int
+        let bookCount: Int
+        let coverage: [BookCoverage]    // sorted by mentionCount desc
+    }
+    struct Edge: Hashable {
+        let a: String   // canonical
+        let b: String   // canonical, a < b
+    }
+    let concepts: [String: ConceptStats]
+    let coOccurrence: [Edge: Int]   // count of paragraphs where both appear
+}
+```
+
+Build pass: walk every paragraph in every book's sidecar, run
+`EntityExtractor` once per paragraph, for each pair of distinct
+canonical entities in that paragraph bump `coOccurrence[Edge(a, b)]`.
+At library scale (2k books × ~1500 paragraphs avg = ~3M paragraphs)
+this is the expensive bit — but it's the same NER work the
+existing per-book entity index already does. Reuse: cache the
+extracted entity-per-paragraph list in the sidecar so the rollup
+becomes a sparse-array sum rather than re-running NLTagger.
+
+Storage: in-memory only for Phase 1. Build alongside the federated
+entity index; flush together when the embedding backend changes.
+Persist sidecar-side once we've confirmed the format and size are
+stable (the coOccurrence map is the bulky part — capped to
+edges with count ≥ 2 keeps it manageable).
+
+### Phase 2 — Concept relevance UI
+
+New sidebar tab in the library window: **Concepts**. Search field
+at the top; below it a sorted list of `ConceptStats` showing
+`displayName`, `bookCount` / total books, `totalMentions`. Clicking
+a concept opens a detail pane:
+
+- **Bar chart**: books on the y-axis, mentionCount on the x-axis,
+  sorted descending. Top 20 by default; "Show all" expands.
+- **Click a bar** → open library chat with that book in scope and
+  the concept name pre-filled as the query.
+- **Related concepts** row: top 8 by `coOccurrence` count, each
+  a chip. Click a chip to navigate to its detail pane.
+
+This UI is the test for whether the graph is actually useful —
+if the user finds themselves browsing concepts to seed chat, the
+detector becomes worth building. If not, the data layer still
+earns its keep through tool-use (Phase 3).
+
+### Phase 3 — Concept tool for chat
+
+New `search_concept` tool exposed in library chat alongside
+`search_library`:
+
+```swift
+struct SearchConceptArgs: Decodable {
+    let concept: String         // free text, fuzzy-matched
+    let bookLimit: Int?         // default 8
+}
+```
+
+Returns a JSON-shaped tool_result with the top books by
+mentionCount for the concept plus a sample of anchor citations.
+Lets the model answer "which books in my library most engage with
+phenomenology?" directly instead of having to issue several
+embedding searches and synthesize. Cite anchors as
+`[book:N chapter:M para:K]` the same way `search_library` does;
+extend `TurnBookRegistry` to absorb the new book references.
+
+### Phase 4 — Disagreement detector (background)
+
+The hard part. Heuristic chain:
+
+1. **Candidate selection**: from `LibraryConceptGraph.concepts`,
+   pick entities where `bookCount ≥ 3` (meaningful sample) and
+   `totalMentions ≥ 20` (each book likely has a real position,
+   not a passing mention). Cap to top N (default 100) by
+   `bookCount * log(totalMentions)`.
+2. **Per-concept LLM judge**: for each candidate, pull the top
+   2-3 most representative passages from each of the top 4-6
+   books by mentionCount (representative = highest cosine to
+   the concept name embedding). Send to Haiku with a prompt
+   along the lines of "Do these passages express conflicting
+   views on `[concept]`? If yes, identify the disagreement in
+   one sentence and quote the specific lines." Haiku is the right
+   model here because the task is cheap, repetitive, and the
+   output is structured.
+3. **Verdict storage**: `DisagreementsStore` JSON sidecar in
+   the library bundle, keyed by concept canonical + content hash
+   of the input passages. Re-judging only happens if input
+   passages change (book added/removed/re-indexed). Each verdict
+   carries: concept, summary, supporting quotes with anchors,
+   judged-at timestamp, model used.
+
+Cost ceiling: 100 concepts × 1 Haiku call ≈ trivial in absolute
+terms; gate behind explicit user trigger anyway ("Run Tension
+Analysis…" menu item). Background run is opt-in only — no
+auto-trigger on library load.
+
+### Phase 5 — Tension cards UI
+
+Third sidebar tab in the library window: **Tensions**. Each
+verdict renders as a card:
+
+```
+┌─ Foucault ───────────────────────────────┐
+│ The two books take opposite positions on │
+│ whether discourse precedes power.        │
+│                                          │
+│ Book A ch.3: "Power emerges from… "      │
+│ Book B ch.1: "All power relations are…"  │
+│                                          │
+│ [Discuss in chat]  [Open Book A]  …      │
+└──────────────────────────────────────────┘
+```
+
+"Discuss in chat" opens library chat with the concept + both
+book references already in scope, asking the model to mediate.
+
+### Files to create
+
+- `Sources/Humanist/Editor/Chat/LibraryConceptGraph.swift` —
+  Phase 1 type + builder.
+- `Sources/Humanist/Editor/Chat/Concepts/ConceptsSidebarView.swift`
+  + `ConceptDetailView.swift` + `ConceptBarChart.swift` — Phase 2.
+- `Sources/Humanist/Editor/Chat/LibraryChatTools.swift` — add
+  `searchConceptTool` + dispatcher (Phase 3, in existing file).
+- `Sources/Humanist/Editor/Chat/DisagreementsStore.swift` +
+  `DisagreementJudge.swift` — Phase 4.
+- `Sources/Humanist/Editor/Chat/Tensions/TensionsSidebarView.swift`
+  + `TensionCardView.swift` — Phase 5.
+
+### Files to touch
+
+- `LibraryEntityIndex.swift` — expose the per-paragraph entity
+  list so the co-occurrence walker doesn't re-run NER (or move
+  the per-paragraph cache into the sidecar).
+- `BookEntityIndex.swift` — optionally extend `Anchor` with a
+  per-anchor entity list to avoid the re-extraction.
+- `EmbeddingsSidecar` schema — add optional `conceptGraph` field
+  for Phase 1 persistence (deferred from initial cut).
+- Library window scene — add the two new sidebar tabs.
+- Chat system prompts — mention the new `search_concept` tool.
+
+### Acceptance
+
+- **Phase 1**: `LibraryConceptGraph.build(libraryEntries:)` on
+  a 2k-book Gemini-indexed library completes in under 30s on
+  warm sidecar cache and produces non-empty `coOccurrence`.
+- **Phase 2**: typing "phenomenology" surfaces a ranked book
+  list with chart; clicking a bar opens chat scoped correctly.
+- **Phase 3**: a chat asking "which of my books most engage
+  with Foucault?" triggers `search_concept` and answers with
+  citations.
+- **Phase 4**: opt-in tension run on a curated 20-book subset
+  produces at least one judged-positive verdict the user
+  agrees with.
+- **Phase 5**: tension card "Discuss in chat" opens a working
+  chat with both books in scope.
+
+### Sequencing + when to stop
+
+Ship Phase 1 + 2 together; that's a self-contained increment
+that proves the graph layer is useful. **Stop and reassess
+before Phase 4** — the disagreement detector is the
+easiest part of this entry to over-engineer, and Phases 2 + 3
+may already cover the actual desire. The PLANS Tier-4 entry
+(line 4400) flagged the knowledge-graph view as speculative;
+this version is grounded in real chat utility, but the same
+"build only if needed" caution applies to the detector.
+
+### Dependencies
+
+- `R-Federated-Memory-Pass` Phase 1 shipped (done) — the
+  sidecar load path the rollup walks is now mmap'd, so the
+  build doesn't reintroduce the memory pressure that Chapter 2.5
+  is gated on.
+- `R-Chat-Agentic` Chapter 1 (done) — `TurnBookRegistry`,
+  `LibraryChatTools` module, and the agentic loop machinery
+  the `search_concept` tool plugs into.
+- `LibraryEntityIndex` (shipped) — Phase 1 builds on top of it.
+- `LibraryKeywordIndex` (shipped) — unchanged; concept search
+  is orthogonal to BM25.
+
+### Subsumes / supersedes
+
+- Tier-4 item 13 "Knowledge-graph view" — this entry replaces
+  the speculative force-directed-graph proposal with a
+  utility-first concept browser. The force-directed view stays
+  as a possible Phase 6 if the bar-chart UI feels limiting.
+
+---
+
 ## R-Chat-Reinstate-Polish — Restore features stripped during chat-hang debugging
 
 **Status**: Cued up, gated on validation. The chat scroll + hover
