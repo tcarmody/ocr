@@ -52,8 +52,23 @@ struct ChatMessageRow: View {
                 } else {
                     Text(message.text)
                         .font(.callout)
-                        .textSelection(.enabled)
+                        // textSelection off — matches the assistant-
+                        // side fix in `MarkdownMessageBody`; on
+                        // macOS 26 the SelectionOverlay backing the
+                        // NSTextField sets font on every layout pass
+                        // and pins the main thread on scroll. Copy
+                        // via the per-message context menu instead.
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contextMenu {
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(
+                                    message.text, forType: .string
+                                )
+                            } label: {
+                                Label("Copy Message", systemImage: "doc.on.doc")
+                            }
+                        }
                 }
             }
             .padding(10)

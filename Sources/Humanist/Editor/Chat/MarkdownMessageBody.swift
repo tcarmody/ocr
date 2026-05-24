@@ -57,16 +57,29 @@ struct MarkdownMessageBody: View {
         Text(cache.attributed)
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
-            // One textSelection on one Text — the whole point of
-            // the fold above. Reverting to per-block Text views
-            // would put the JetUI feedback loop back.
-            .textSelection(.enabled)
+            // textSelection deliberately OFF — even one Text with
+            // textSelection per message triggered a JetUI
+            // SelectionOverlay/setFont feedback loop on macOS 26
+            // that pinned the main thread on every scroll/hover.
+            // Trade: users can't drag-select assistant message
+            // text; copy via the per-message context menu (added
+            // alongside this change) is the path instead.
             .task(id: text) {
                 // Cancels-and-restarts on text change (streaming
                 // append cadence). The fold is pure-string work,
                 // safe to run on the MainActor at parse cost.
                 let folded = Self.foldToAttributedString(text)
                 cache = Cache(text: text, attributed: folded)
+            }
+            .contextMenu {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        text, forType: .string
+                    )
+                } label: {
+                    Label("Copy Message", systemImage: "doc.on.doc")
+                }
             }
     }
 
