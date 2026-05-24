@@ -14,6 +14,14 @@ struct ChatPaneView: View {
     /// paragraph was picked. Persisted across sends but not
     /// across editor reopen — debug state is ephemeral by design.
     @State private var showRetrievalDetail: Bool = false
+    /// One-shot pre-reading briefing — see `BookBriefingService`.
+    /// `@StateObject` so the published `briefing` deltas drive
+    /// the sheet's incremental render without us having to
+    /// re-issue the request when the sheet re-presents. Sheet
+    /// visibility is its own `@State` so the user can dismiss +
+    /// re-open without losing the prior briefing text.
+    @StateObject private var briefingService = BookBriefingService()
+    @State private var showBriefingSheet: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +38,35 @@ struct ChatPaneView: View {
             inputRow
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .sheet(isPresented: $showBriefingSheet) {
+            BookBriefingSheet(
+                service: briefingService,
+                bookTitle: vm.book.metadata.title ?? "this book",
+                author: vm.library?.entries.first {
+                    $0.epubURL.canonicalForFile
+                        == vm.epubURL.canonicalForFile
+                }?.author,
+                onRetry: { startBriefing() },
+                onDismiss: { showBriefingSheet = false }
+            )
+        }
+    }
+
+    /// Kick off a pre-reading briefing for the open book.
+    /// Idempotent — `BookBriefingService.start` cancels any
+    /// in-flight task and starts fresh so the user can hit
+    /// Retry from the sheet without leaking work.
+    private func startBriefing() {
+        let entry = vm.library?.entries.first {
+            $0.epubURL.canonicalForFile
+                == vm.epubURL.canonicalForFile
+        }
+        briefingService.start(
+            book: vm.book,
+            entry: entry,
+            bookTitle: vm.book.metadata.title ?? "this book",
+            library: vm.library
+        )
     }
 
     /// Library-scope deny-list banner. Mirrors the equivalent
@@ -125,6 +162,22 @@ struct ChatPaneView: View {
                 .accessibilityLabel(vm.useLongFormSynthesis
                       ? "Switch to short answers"
                       : "Switch to long-form answers")
+
+                // Pre-reading briefing — opens the sheet and
+                // kicks off the streaming send. See
+                // `BookBriefingService` for the prompt + front-
+                // matter extraction.
+                Button {
+                    showBriefingSheet = true
+                    if briefingService.briefing.isEmpty {
+                        startBriefing()
+                    }
+                } label: {
+                    Image(systemName: "text.book.closed")
+                }
+                .buttonStyle(.borderless)
+                .help("Pre-reading briefing: what this book is doing, what tradition it sits in, what to watch for")
+                .accessibilityLabel("Pre-reading briefing")
                 Button {
                     showRetrievalDetail.toggle()
                 } label: {

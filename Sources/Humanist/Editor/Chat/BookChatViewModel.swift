@@ -157,7 +157,12 @@ final class BookChatViewModel: ObservableObject {
     private let ollama: OllamaClient
     private let transcriptStore: ChatTranscriptStore
     private let embeddingsStore: EmbeddingsSidecarStore
-    private let epubURL: URL
+    /// Source EPUB URL. Module-internal (was `private`) so the
+    /// `ChatPaneView`'s briefing affordance can resolve the
+    /// matching `LibraryEntry` without round-tripping through
+    /// the VM. The chat path itself doesn't write this — set
+    /// once at init.
+    let epubURL: URL
 
     /// R-Library-Sync Phase B. Resolve the catalog entry's UUID
     /// for `epubURL` at each sidecar read/write so the file lands
