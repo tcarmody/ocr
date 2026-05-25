@@ -1390,6 +1390,50 @@ Drivers for the current ordering:
 12. **T-CI** (GitHub Actions running `swift test`). ~half day.
     Earns priority when a regression slips through that the
     test suite would have caught.
+12a. **C-CLI-Python — Python-port question (curiosity, parked)**.
+    Could `humanist-cli` be re-implemented in Python (or any
+    non-Swift language) instead of being a thin executable
+    target on top of the same Pipeline / OCR / EPUB / AI
+    modules the app uses?
+    **Short answer:** not the full CLI. The conversion path is
+    fundamentally Apple-framework-bound:
+    - PDFKit (PDFIngest) — rendering, embedded-text scoring,
+      two-up detection
+    - Apple Vision (OCR cascade Stage 1) — saliency, baseline OCR
+    - NaturalLanguage (NLTagger / NLEmbedding / NLLanguageRecognizer)
+      — entity extraction, on-device embeddings, language detect
+    - FoundationModels (AFM classifier, metadata extractor,
+      coherence pass, genre classifier, concept extractor) — every
+      "free on-device" inference path
+    - CoreGraphics / CoreImage — figure raster crops, image
+      preprocessing
+    Replicating these in Python (Tesseract-only OCR, scipy-style
+    image work, HTTP-only AI clients) would be a different
+    product, not the same engines.
+    **Useful subset that could port:** a thin Python "ops" CLI
+    that wraps just the cross-platform commands —
+    `library-dedupe`, `clear-outdated`, `reindex` against the
+    Cloud embedding backends (Gemini / Voyage; AFM and Apple NL
+    drop), `compare`, `validate` (epubcheck JAR wrapper). Plus a
+    headless **Cloud-only conversion** path that calls the same
+    Claude / Gemini page-OCR APIs and Surya sidecar the Swift
+    pipeline calls — useful for Linux CI / Docker / non-Mac
+    contributor workflows. It would NOT share engines with the
+    app (separate test surface, drift risk), so the maintenance
+    cost compounds.
+    **When this earns priority:** a concrete deployment need
+    arises that can't be solved with a Mac mini runner or
+    `gh-actions/macos-15` — e.g., the user wants Docker-image
+    distribution, headless Linux conversion at scale, or
+    contributor onboarding without a Mac. Until then the cost
+    (parallel implementation, drift risk, two test surfaces)
+    outweighs the benefit (~niche). If priority comes up,
+    sequence as: (1) Python `library-dedupe` / `clear-outdated`
+    against cloud backends — ~1 day, no engine duplication;
+    (2) Python `compare-corpus` driver — wraps the Swift CLI for
+    actual conversions, just orchestrates — ~half day;
+    (3) Cloud-only headless conversion via Claude Sonnet page OCR
+    — ~3-5 days, real engine duplication.
 13. **P-Surya-Pool, P-Vision-Concurrency, P-Shared-Memory**.
     Performance work — earns priority when "Surya is slow" is
     the bottleneck. Today it isn't.
