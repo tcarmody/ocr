@@ -1,7 +1,8 @@
 import Foundation
-import AI         // AppleFoundationModelClient
+import AI                 // AppleFoundationModelClient
 import EPUB
-import Pipeline  // BookGenreClassifier
+import LibraryIndexing    // BookConceptStore
+import Pipeline           // BookGenreClassifier, BookConceptExtractor
 
 /// R-Auto-Collections Phase 1. Generate `BookCollection` rows from
 /// `LibraryEntry` metadata — no model needed.
@@ -392,6 +393,98 @@ enum LibraryAutoCollections {
             of: "\\s+", with: " ", options: .regularExpression
         )
         return out
+    }
+
+    // MARK: - R-Topics Phase 2 concept-extraction backfill
+
+    struct ConceptExtractionResult: Sendable {
+        /// Books that didn't have a BookConceptStore payload at
+        /// loop start AND produced a non-empty AFM result on this
+        /// run. The sidecar build picks them up at the next index
+        /// rebuild — see `extractMissingConcepts` doc note.
+        let extracted: Int
+        /// Books visited where AFM either declined or returned an
+        /// empty list. No payload is written for these — the next
+        /// bulk run retries them. (Different posture than the
+        /// genre backfill's `.uncategorized` stamp; concept
+        /// extraction is genuinely informational, so an empty
+        /// result is less "stable answer" and more "try again
+        /// later.")
+        let declined: Int
+    }
+
+    /// R-Topics Phase 2. Walk the catalog, run
+    /// `BookConceptExtractor` on every entry that lacks a
+    /// `BookConceptStore` payload, persist the results. Each AFM
+    /// call is ~5-10s; a 444-book library takes ~40-75 minutes.
+    /// Cancellable mid-loop; partial progress survives because
+    /// each book's payload is written atomically as soon as the
+    /// AFM call returns.
+    ///
+    /// **Sidecar refresh note:** writing a payload doesn't itself
+    /// surface the concepts in the Topics rollup — the federated
+    /// view reads from the entity sidecar, which gets the
+    /// concepts folded in at sidecar-build time. So the practical
+    /// flow after a bulk extract is: run this command → run
+    /// "Build Missing Indexes" with `forceRebuild: true` (or
+    /// equivalent) so the sidecars pick up the new concepts.
+    /// We don't tightly couple the two so the user can split the
+    /// long-running passes across sessions.
+    @discardableResult
+    static func extractMissingConcepts(
+        library: LibraryStore,
+        progress: (@MainActor (Int, Int) -> Void)? = nil
+    ) async -> ConceptExtractionResult {
+        guard case .available = AppleFoundationModelClient.availability
+        else { return ConceptExtractionResult(extracted: 0, declined: 0) }
+        let storeDir = await MainActor.run {
+            LibraryStore.resolveLibraryStateDirectory()
+                .appendingPathComponent("Concepts", isDirectory: true)
+        }
+        let conceptStore = BookConceptStore(baseDirectory: storeDir)
+        let extractor = BookConceptExtractor()
+        // Target entries that don't yet have a payload. Bulk
+        // re-extraction (force every book regardless) is a v1.1
+        // if needed — for now, "missing concepts" is the only
+        // command surfaced.
+        let needsExtraction = library.entries.filter {
+            !conceptStore.hasPayload(libraryID: $0.id)
+        }
+        let total = needsExtraction.count
+        guard total > 0 else {
+            return ConceptExtractionResult(extracted: 0, declined: 0)
+        }
+        var extracted = 0
+        var declined = 0
+        for (idx, entry) in needsExtraction.enumerated() {
+            if Task.isCancelled { break }
+            await progress?(idx, total)
+            guard let book = try? EPUBBook.open(epubURL: entry.epubURL)
+            else { declined += 1; continue }
+            let samples = BookConceptExtractor.sampleChapters(from: book)
+            let result = await extractor.extract(
+                title: entry.title,
+                author: entry.author,
+                chapterSamples: samples
+            )
+            guard let concepts = result, !concepts.isEmpty else {
+                declined += 1
+                continue
+            }
+            let payload = BookConceptStore.Payload(
+                concepts: concepts,
+                generatedAt: Date(),
+                modelIdentifier: BookConceptExtractor.modelIdentifier
+            )
+            do {
+                try conceptStore.write(payload, libraryID: entry.id)
+                extracted += 1
+            } catch {
+                declined += 1
+            }
+        }
+        await progress?(total, total)
+        return ConceptExtractionResult(extracted: extracted, declined: declined)
     }
 
     // MARK: - Settings

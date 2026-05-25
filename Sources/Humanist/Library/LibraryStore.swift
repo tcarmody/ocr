@@ -131,6 +131,20 @@ final class LibraryStore: ObservableObject {
         return (dir.appendingPathComponent("library.json"), false)
     }
 
+    /// Directory holding library-state files (catalog + siblings).
+    /// Same three-way precedence as `resolveStoreURL`. Used by
+    /// satellite stores like `BookConceptStore` that root inside
+    /// the same library-state location:
+    ///
+    ///   * Cloud: `<root>/.humanist/`
+    ///   * Custom-local: `<localRoot>/.humanist/`
+    ///   * Application Support: `~/Library/Application Support/Humanist/`
+    ///
+    /// Created lazily — same posture as `resolveStoreURL`.
+    public nonisolated static func resolveLibraryStateDirectory() -> URL {
+        resolveStoreURL().url.deletingLastPathComponent()
+    }
+
     // MARK: - persistence
 
     private func load() {

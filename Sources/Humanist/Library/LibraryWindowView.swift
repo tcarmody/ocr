@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import EPUB  // EPUBBook + EPUBBookSaver + OPFReader.Metadata for the metadata dual-write
+import LibraryIndexing  // BookConceptStore for the Phase-2 concept-extract action
 
 /// R-Library. Browser window listing every EPUB the user has
 /// converted in this app. Sortable columns; language filter;
@@ -276,6 +277,19 @@ struct LibraryWindowView: View {
     /// progress failed when it actually finished.
     @State private var classifyClassifiedCount: Int = 0
     @State private var classifyDeclinedCount: Int = 0
+
+    /// R-Topics Phase 2. Progress state for the bulk concept-
+    /// extraction backfill. Same shape as the classify-genres
+    /// state; separate state vars so the two operations can run
+    /// + be cancelled independently. The sheet is a thin wrapper
+    /// over `LibraryAutoCollections.extractMissingConcepts`.
+    @State private var showConceptExtractProgress: Bool = false
+    @State private var conceptExtractCurrent: Int = 0
+    @State private var conceptExtractTotal: Int = 0
+    @State private var conceptExtractDone: Bool = false
+    @State private var conceptExtractTask: Task<Void, Never>?
+    @State private var conceptExtractedCount: Int = 0
+    @State private var conceptDeclinedCount: Int = 0
 
     /// Progress state for the OPF-metadata backfill that runs
     /// when the user clicks Refresh on a library with unstamped
@@ -716,6 +730,27 @@ struct LibraryWindowView: View {
                     showClassifyProgress = false
                 },
                 onDismiss: { showClassifyProgress = false }
+            )
+        }
+        .sheet(isPresented: $showConceptExtractProgress) {
+            AsyncWorkProgressSheet(
+                workingIcon: "rectangle.and.text.magnifyingglass",
+                workingTitle: "Extracting Concepts…",
+                doneTitle: "Concept Extraction Complete",
+                noopMessage: "No books needed concept extraction — every entry already has a saved concept list. Concepts re-extract automatically the next time you import a book that doesn't have a payload yet.",
+                progressLabel: { c, t in "Book \(c) of \(t)" },
+                doneSummary: { _, _ in
+                    conceptExtractDoneSummary
+                },
+                current: conceptExtractCurrent,
+                total: conceptExtractTotal,
+                done: conceptExtractDone,
+                onCancel: {
+                    conceptExtractTask?.cancel()
+                    conceptExtractTask = nil
+                    showConceptExtractProgress = false
+                },
+                onDismiss: { showConceptExtractProgress = false }
             )
         }
         .sheet(isPresented: $showExportProgress) {
@@ -1280,6 +1315,60 @@ struct LibraryWindowView: View {
             return "Tried \(d) book\(d == 1 ? "" : "s") — none could be classified. They've been stamped \"uncategorized\" so re-runs won't retry them. Clear the genre via Edit Metadata to retry individual books."
         case (let c, let d):
             return "Classified \(c) book\(c == 1 ? "" : "s"). \(d) couldn't be classified and were stamped \"uncategorized\" — re-runs won't retry them. Auto-collections refreshed."
+        }
+    }
+
+    /// R-Topics Phase 2. Same shape as `classifyDoneSummary` —
+    /// distinguishes "nothing to do" / "everyone extracted" /
+    /// "some declined" so the user gets honest end-of-run copy.
+    private var conceptExtractDoneSummary: String {
+        let c = conceptExtractedCount
+        let d = conceptDeclinedCount
+        switch (c, d) {
+        case (0, 0):
+            return "No books needed concept extraction."
+        case (let c, 0):
+            return "Extracted concepts for \(c) book\(c == 1 ? "" : "s"). Next step: run Build Missing Indexes so the sidecars pick up the new concepts and the Topics view surfaces them."
+        case (0, let d):
+            return "Tried \(d) book\(d == 1 ? "" : "s") — none produced a concept list (AFM declined or returned empty). The next bulk run retries them."
+        case (let c, let d):
+            return "Extracted concepts for \(c) book\(c == 1 ? "" : "s"). \(d) declined and will retry on the next run. Next step: run Build Missing Indexes so the sidecars pick up the new concepts."
+        }
+    }
+
+    /// Kick off the bulk concept-extraction backfill. Mirrors
+    /// `startClassifyMissingGenres`'s state-management shape so
+    /// the AsyncWorkProgressSheet has a consistent interface.
+    private func startExtractMissingConcepts() {
+        let storeDir = LibraryStore.resolveLibraryStateDirectory()
+            .appendingPathComponent("Concepts", isDirectory: true)
+        let store = BookConceptStore(baseDirectory: storeDir)
+        let missing = library.entries.filter {
+            !store.hasPayload(libraryID: $0.id)
+        }.count
+        conceptExtractCurrent = 0
+        conceptExtractTotal = missing
+        conceptExtractDone = false
+        conceptExtractedCount = 0
+        conceptDeclinedCount = 0
+        showConceptExtractProgress = true
+        guard missing > 0 else {
+            conceptExtractDone = true
+            return
+        }
+        conceptExtractTask?.cancel()
+        conceptExtractTask = Task {
+            let result = await LibraryAutoCollections.extractMissingConcepts(
+                library: library,
+                progress: { current, total in
+                    conceptExtractCurrent = current
+                    conceptExtractTotal = total
+                }
+            )
+            conceptExtractedCount = result.extracted
+            conceptDeclinedCount = result.declined
+            conceptExtractDone = true
+            conceptExtractTask = nil
         }
     }
 
@@ -1979,6 +2068,16 @@ struct LibraryWindowView: View {
                 .help(LibraryAutoCollections.isClassifierAvailable()
                       ? "Classify genres via Apple Foundation Models. Runs the closed-taxonomy classifier on every book that has no genre stamp OR that carries a legacy pre-refinement genre (philosophy / history / fictionLiterary) so the finer 2026-05-25 taxonomy propagates. Slow at library scale."
                       : "Apple Intelligence isn't available on this device — genre classification needs it.")
+                Button {
+                    startExtractMissingConcepts()
+                } label: {
+                    Image(systemName: "rectangle.and.text.magnifyingglass")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!LibraryAutoCollections.isClassifierAvailable())
+                .help(LibraryAutoCollections.isClassifierAvailable()
+                      ? "Extract intellectual concepts via Apple Foundation Models. Per-book AFM call (~5-10s); persisted to Concepts/<uuid>.json so subsequent imports + builds reuse the result. After extraction completes, run Build Missing Indexes to fold the concepts into the per-book sidecars so they surface in the Topics view."
+                      : "Apple Intelligence isn't available on this device — concept extraction needs it.")
                 Button {
                     newCollectionSheet = NewCollectionContext(memberIDs: [])
                 } label: {

@@ -232,14 +232,25 @@ final class LibraryIndexBuilder: ObservableObject {
         store: EmbeddingsSidecarStore,
         forceRebuild: Bool
     ) async throws -> BookSidecarBuilder.Outcome {
-        try await BookSidecarBuilder.buildIfNeeded(
+        // Union user-curated aliases with this book's AFM-extracted
+        // concepts (when present) so both feed the sidecar's
+        // alias-scan path and surface in the federated Topics
+        // rollup. Empty concept set when no payload exists yet
+        // (extractor never ran or declined).
+        let userAliases = AliasDictionaryStore().read().terms
+        let conceptStore = BookConceptStore(
+            baseDirectory: LibraryStore.resolveLibraryStateDirectory()
+                .appendingPathComponent("Concepts", isDirectory: true)
+        )
+        let bookConcepts = conceptStore.conceptTerms(libraryID: entry.id)
+        return try await BookSidecarBuilder.buildIfNeeded(
             epubURL: entry.epubURL,
             libraryID: entry.id,
             backend: backend,
             fallbackBackend: fallbackBackend,
             store: store,
             forceRebuild: forceRebuild,
-            aliasTerms: AliasDictionaryStore().read().terms
+            aliasTerms: userAliases.union(bookConcepts)
         )
     }
 

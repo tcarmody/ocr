@@ -1760,13 +1760,21 @@ final class BookChatViewModel: ObservableObject {
                 // Uses the same paragraphs the embedder already
                 // walked, so the I/O cost is just the NLTagger
                 // run itself.
-                // Fold the user's alias dictionary into the index
-                // build so curated concepts ("biopolitics",
-                // "deconstruction") get first-class anchor lists
-                // the Topics rollup can surface.
-                let aliasTerms = AliasDictionaryStore().read().terms
+                // Fold the user's alias dictionary AND this book's
+                // AFM-extracted concept payload into the index
+                // build so curated terms ("biopolitics") and AFM
+                // concepts ("speech act theory") both surface in
+                // the Topics rollup with paragraph anchors.
+                let userAliases = AliasDictionaryStore().read().terms
+                let bookConcepts: Set<String> = libraryID.map {
+                    BookConceptStore(
+                        baseDirectory: LibraryStore.resolveLibraryStateDirectory()
+                            .appendingPathComponent("Concepts", isDirectory: true)
+                    ).conceptTerms(libraryID: $0)
+                } ?? []
                 let entities = BookEntityIndex.build(
-                    from: snapshot, aliasTerms: aliasTerms
+                    from: snapshot,
+                    aliasTerms: userAliases.union(bookConcepts)
                 )
                 sidecar.entities = entities
                 // The chat pane always uses the resolved primary

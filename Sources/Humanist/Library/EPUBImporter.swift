@@ -480,6 +480,23 @@ final class EPUBImporter: ObservableObject {
             return entryID
         }
 
+        // 6.5. AFM concept extraction. Per-book, persisted, idempotent:
+        // skipped when a payload already exists for this library
+        // entry. Output strings get folded into the sidecar build's
+        // alias-scan path on step 7 so concepts appear in the
+        // federated Topics rollup with paragraph anchors attached.
+        // AFM-only (no Cloud equivalent yet); free + on-device;
+        // ~5-10s per book.
+        if let libraryID {
+            await runConceptExtraction(
+                on: book,
+                libraryID: libraryID,
+                title: title,
+                author: author
+            )
+        }
+        try Task.checkCancellation()
+
         // 7. Build the embedding sidecar so library chat sees the
         // book immediately. Skipped when no backend is available —
         // the catalog row stays, just without retrieval-time recall.
@@ -493,6 +510,17 @@ final class EPUBImporter: ObservableObject {
                 (backend.identifier.hasPrefix("apple") == false)
                     ? NLSentenceEmbeddingBackend(language: .english)
                     : nil
+            // Union user-curated aliases with this book's AFM-
+            // extracted concepts so the sidecar's alias-scan path
+            // catches both. Empty when no AFM payload exists yet
+            // (extractor declined / unavailable / never ran).
+            let userAliases = AliasDictionaryStore().read().terms
+            let bookConcepts: Set<String> = libraryID.map {
+                BookConceptStore(
+                    baseDirectory: LibraryStore.resolveLibraryStateDirectory()
+                        .appendingPathComponent("Concepts", isDirectory: true)
+                ).conceptTerms(libraryID: $0)
+            } ?? []
             _ = try await BookSidecarBuilder.buildIfNeeded(
                 epubURL: destination,
                 libraryID: libraryID,
@@ -500,7 +528,7 @@ final class EPUBImporter: ObservableObject {
                 fallbackBackend: fallback,
                 store: sidecarStore,
                 forceRebuild: false,
-                aliasTerms: AliasDictionaryStore().read().terms
+                aliasTerms: userAliases.union(bookConcepts)
             )
         }
 
@@ -682,6 +710,49 @@ final class EPUBImporter: ObservableObject {
             author: author,
             openingText: opening
         )
+    }
+
+    // MARK: - AFM concept extraction (R-Topics Phase 2)
+
+    /// Persist a per-book concept list to `BookConceptStore` so the
+    /// sidecar build's alias-scan path picks them up at step 7.
+    /// Idempotent — short-circuits when a payload already exists,
+    /// so re-imports don't pay the AFM cost twice. Same AFM
+    /// availability gate as chapter classification.
+    @MainActor
+    private static func runConceptExtraction(
+        on book: EPUBBook,
+        libraryID: UUID,
+        title: String,
+        author: String?
+    ) async {
+        let settings = AISettingsStore().load()
+        // Reuse the chapter-classification toggle — same on-device
+        // AFM gate, same cost model. A dedicated "extract concepts"
+        // toggle is a v1.1 if anyone wants finer control over which
+        // AFM passes run on import.
+        guard settings.localFeatures.localChapterClassification else { return }
+        guard case .available = AppleFoundationModelClient.availability
+        else { return }
+        let storeDir = LibraryStore.resolveLibraryStateDirectory()
+            .appendingPathComponent("Concepts", isDirectory: true)
+        let store = BookConceptStore(baseDirectory: storeDir)
+        // Skip when this book already has a payload — concept
+        // extraction is one-time-per-book unless the user
+        // explicitly re-extracts via the Library window.
+        if store.hasPayload(libraryID: libraryID) { return }
+        let samples = BookConceptExtractor.sampleChapters(from: book)
+        guard !samples.isEmpty else { return }
+        let extracted = await BookConceptExtractor().extract(
+            title: title, author: author, chapterSamples: samples
+        )
+        guard let concepts = extracted, !concepts.isEmpty else { return }
+        let payload = BookConceptStore.Payload(
+            concepts: concepts,
+            generatedAt: Date(),
+            modelIdentifier: BookConceptExtractor.modelIdentifier
+        )
+        try? store.write(payload, libraryID: libraryID)
     }
 
     // MARK: - AFM chapter classification
