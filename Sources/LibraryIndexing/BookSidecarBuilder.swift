@@ -31,13 +31,19 @@ public enum BookSidecarBuilder {
         case built(usedFallback: Bool, primaryError: String?)
     }
 
+    /// `aliasTerms` are user-curated concept seeds (from the app's
+    /// `AliasDictionary`) that `BookEntityIndex.build` folds into
+    /// the index alongside NER + statistical concepts. Optional so
+    /// CLI re-index paths that don't load the alias dictionary can
+    /// continue with empty (NER + statistical only).
     public static func buildIfNeeded(
         epubURL: URL,
         libraryID: UUID?,
         backend: any EmbeddingBackend,
         fallbackBackend: (any EmbeddingBackend)? = nil,
         store: EmbeddingsSidecarStore,
-        forceRebuild: Bool
+        forceRebuild: Bool,
+        aliasTerms: Set<String> = []
     ) async throws -> Outcome {
         // Cache check first — opening the EPUB is the heavy step;
         // we skip it when the persisted sidecar matches either the
@@ -82,7 +88,9 @@ public enum BookSidecarBuilder {
                 for: book, backend: backend, cache: &sidecar
             )
             sidecar.hierarchy = BookHierarchyIndex.build(from: book)
-            sidecar.entities = BookEntityIndex.build(from: book)
+            sidecar.entities = BookEntityIndex.build(
+                from: book, aliasTerms: aliasTerms
+            )
             // Primary succeeded — clear any sticky fallback flag a
             // prior build left behind, so the bulk-index skip logic
             // treats this sidecar as a goal-state primary build.
@@ -107,7 +115,9 @@ public enum BookSidecarBuilder {
                 for: book, backend: fallback, cache: &sidecar
             )
             sidecar.hierarchy = BookHierarchyIndex.build(from: book)
-            sidecar.entities = BookEntityIndex.build(from: book)
+            sidecar.entities = BookEntityIndex.build(
+                from: book, aliasTerms: aliasTerms
+            )
             // Mark so the next bulk re-index skips this book
             // instead of retrying a primary that already errored.
             // Cleared automatically the next time primary succeeds.

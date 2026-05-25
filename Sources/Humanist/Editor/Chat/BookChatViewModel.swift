@@ -1760,7 +1760,14 @@ final class BookChatViewModel: ObservableObject {
                 // Uses the same paragraphs the embedder already
                 // walked, so the I/O cost is just the NLTagger
                 // run itself.
-                let entities = BookEntityIndex.build(from: snapshot)
+                // Fold the user's alias dictionary into the index
+                // build so curated concepts ("biopolitics",
+                // "deconstruction") get first-class anchor lists
+                // the Topics rollup can surface.
+                let aliasTerms = AliasDictionaryStore().read().terms
+                let entities = BookEntityIndex.build(
+                    from: snapshot, aliasTerms: aliasTerms
+                )
                 sidecar.entities = entities
                 // The chat pane always uses the resolved primary
                 // backend (no fallback path here), so any sticky

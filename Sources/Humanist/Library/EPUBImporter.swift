@@ -499,7 +499,8 @@ final class EPUBImporter: ObservableObject {
                 backend: backend,
                 fallbackBackend: fallback,
                 store: sidecarStore,
-                forceRebuild: false
+                forceRebuild: false,
+                aliasTerms: AliasDictionaryStore().read().terms
             )
         }
 

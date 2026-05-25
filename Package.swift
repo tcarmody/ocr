@@ -194,6 +194,11 @@ let package = Package(
             dependencies: ["Humanist"],
             path: "Tests/HumanistTests"
         ),
+        .testTarget(
+            name: "LibraryIndexingTests",
+            dependencies: ["LibraryIndexing", "EPUB"],
+            path: "Tests/LibraryIndexingTests"
+        ),
     ],
     // Swift 6 strict concurrency mode. Per-pass debug state was
     // refactored from static-mutable singletons into return-value

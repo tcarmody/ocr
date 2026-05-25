@@ -238,7 +238,8 @@ final class LibraryIndexBuilder: ObservableObject {
             backend: backend,
             fallbackBackend: fallbackBackend,
             store: store,
-            forceRebuild: forceRebuild
+            forceRebuild: forceRebuild,
+            aliasTerms: AliasDictionaryStore().read().terms
         )
     }
 
