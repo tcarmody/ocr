@@ -134,6 +134,12 @@ struct ReaderChatPaneView: View {
                 .buttonStyle(.borderless)
                 .help("Export this transcript as Markdown (citations resolved) to the clipboard")
                 .accessibilityLabel("Export chat transcript")
+                Button { vm.clear() } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Clear this transcript (deletes the persisted chat)")
+                .accessibilityLabel("Clear chat transcript")
             }
         }
         .padding(.horizontal, 12)
