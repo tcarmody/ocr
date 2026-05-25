@@ -366,11 +366,11 @@ Storing chat / embedding state outside the EPUB keeps the file portable (a copy 
 - **P-Bilingual-FacingPage Phase (b)** — parallel chapter-tree reorganization. With Phase (a) shipped, a confirmed-bilingual book could emit two parallel chapter sequences in one EPUB (original-text spine + translation spine), a dual-tree TOC in nav.xhtml, and a "Jump to Facing Translation" editor command. Ship-or-revise after evaluating Phase (a)'s detected-bilingual rate on real Loeb material.
 - **R-Appearance Phase 2** — reader appearance customization on the same `@AppStorage` keys the chat surfaces already use. Inject font-family / font-size / color-scheme CSS into the reader's WKWebView so a single Settings change cascades through every reading surface. Phase 1 (chat) shipped; Phase 2 sketched in PLANS.
 - **R-Library-Migrate** — Settings wizard to move library.json + snapshots/ + Covers/ between locations (local ↔ cloud, or cloud → cloud). Embeddings stay local per Mac.
-- **R-Content-Aware-Rename** — rename split-chapter EPUBs from first-heading content rather than counter suffixes.
 - **L-Foundation-Models Phase 3** — on-device printed-TOC parsing.
 - **R-Library-Chat-Plus Tier 2 remainder** — pinned passages, ask-each-book mode.
+- **R-Chat-Agentic follow-ups** — cloud streaming during tool rounds (Ollama side shipped; cloud attempt reverted pending SSE trace logging + synthetic-event tests); `list_books_by_author` + `expand_paragraph_context` library tools.
 - **Q-Hard-Captures Tier 2/3** — code-block preservation, layout-aware figure caption snapping, polytonic Greek accuracy lift.
 - **Distribution polish** — Developer ID cert, notarization, DMG, GitHub Releases. See [RELEASES.md](RELEASES.md).
-- **P-Greek-Quality** — measure Tesseract polytonic-Greek CER against hand-corrected ground truth.
+- **R-Help Phase 2** — native Apple Help Book bundle so Help Viewer.app handles ⌘? with Spotlight-indexable search. Phase 1 (in-app Markdown + WKWebView, shipped `3dce0d5`) covers the content side; Phase 2 is the build-step wiring.
 
 Phase 9 (RTL / Hebrew / Syriac / Coptic) is deferred indefinitely — corpus doesn't justify the bidi-rendering and per-script accuracy lifts.

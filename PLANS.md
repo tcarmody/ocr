@@ -1307,32 +1307,21 @@ Drivers for the current ordering:
     otherwise tighten Phase (a)'s gates and ship only Phase (a).
     ~1.5–2 days for Phase (b) once green-lit.
 
-18. **P-Cascade-Parallel — bounded parallel pages in cascade
-    mode**. Today only the Cloud page-OCR path parallelizes
-    across pages; the cascade (Private mode + Cloud-cascade
-    mode) processes pages serially. Wrapping the cascade
-    page-loop in a bounded TaskGroup driven by the existing
-    `parallelPageOCRConcurrency` knob would cut wall time
-    ~2–3× on born-digital books and ~1.2–1.5× on Surya-heavy
-    books in bulk Private-mode runs. 4–6 hours of careful
-    refactoring across two phases — see the
-    [P-Cascade-Parallel](#p-cascade-parallel--bounded-parallel-pages-in-cascade-mode)
-    section below for the per-phase plan + state-change
-    inventory + risk list. Earns priority when bulk
-    Private-mode conversions feel slow.
-19. **C-Pipeline-File-Split — carve `PDFToEPUBPipeline.swift`
-    into per-concern files**. The pipeline file is 4500+ lines
-    and growing — navigable via grep but hostile to first-time
-    readers and to careful refactors. Split via Swift extensions
-    on `PDFToEPUBPipeline` into ~7 sibling files (cascade loop,
-    page-OCR dispatch, reflow, assemble, write-outputs, stats,
-    engine factories), with each commit a pure move so
-    correctness is diff-checkable. Pairs naturally with
-    P-Cascade-Parallel (its Phase A already extracts one of the
-    biggest chunks). ~1 day of mechanical work; the bulk is the
-    `private → internal` access-modifier sweep. See the
-    [C-Pipeline-File-Split](#c-pipeline-file-split--carve-pdftoepubpipelineswift-into-per-concern-files)
-    section for the proposed split + risk list.
+18. ~~**P-Cascade-Parallel — bounded parallel pages in cascade
+    mode**~~ shipped. Phase A (`19b9fbc`) extracted the
+    `processCascadePage` helper; Phase B (`9aee393`) wrapped
+    the cascade page-loop in a bounded TaskGroup driven by
+    `parallelPageOCRConcurrency`. The detailed section below
+    is retained for the per-phase plan + state-change
+    inventory in case a future regression needs the design
+    context.
+19. ~~**C-Pipeline-File-Split — carve `PDFToEPUBPipeline.swift`
+    into per-concern files**~~ shipped across 7 atomic commits
+    (`4d87739` → `65047f8`) plus the doc marker `97408b4`.
+    Pipeline file went from ~4500 lines to ~50%-size remainder,
+    with engine factories / stats / write-outputs / reflow /
+    assemble / cascade-loop / page-OCR-dispatch each in their
+    own sibling file via Swift extensions on `PDFToEPUBPipeline`.
 
 ### Earn when you need it
 
@@ -1368,14 +1357,30 @@ Drivers for the current ordering:
 11. **R-Library-Chat-Plus Tier 2 — pinned passages,
     ask-each-book mode**. Build if a research workflow makes
     these specifically painful.
-11a. **R-Chat-Agentic follow-ups** — streaming during tool
-    rounds, Ollama tool-use with capability detection, per-book
-    agentic loop with its own toolset (`search_book`,
-    `expand_chapter`), more library tools (`list_books_by_author`,
-    `expand_paragraph_context`). Each is ~half day to 1 day, all
-    independently shippable. Pick whichever matches current
-    friction. See `R-Chat-Agentic` for the full menu + the
-    Chapters 2–4 roadmap that goes beyond agentic retrieval.
+11a. **R-Chat-Agentic follow-ups** — partially shipped; what's
+    left:
+    - **Cloud streaming during tool rounds** — Ollama side
+      shipped (`009e6cc`); cloud attempt landed (`370100e`)
+      then reverted (`89d1424`) because the streamed-tool-use
+      blocks silently dropped events with the SSE parser
+      extension as written. Needs a fresh attempt with SSE
+      trace logging + synthetic-event unit tests before
+      relanding. ~half day.
+    - **More library tools** (`list_books_by_author`,
+      `expand_paragraph_context`) — `search_topic` already
+      shipped via R-Chat-Cross-Corpus Phase 3 (`f92a2b3`); the
+      other two are still on the table. Each unlocks queries
+      the current toolset handles awkwardly (author-roster,
+      quote-in-context). ~1 day each.
+
+    Shipped sub-items: ~~Ollama tool-use with capability
+    detection~~ (`c1a7562` + default-model bump `1e82c1b` to
+    `qwen3.5:9b`); ~~per-book agentic loop with its own toolset
+    (`search_book`, `expand_chapter`, `list_chapter_titles`)~~
+    (`546c75c`).
+
+    See `R-Chat-Agentic` for the full menu + the Chapters 2–4
+    roadmap that goes beyond agentic retrieval.
 12. **T-CI** (GitHub Actions running `swift test`). ~half day.
     Earns priority when a regression slips through that the
     test suite would have caught.
