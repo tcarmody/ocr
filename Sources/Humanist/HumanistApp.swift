@@ -290,6 +290,18 @@ struct HumanistApp: App {
             }
         }
 
+        // Help window. Single-instance scene (no `for:` value):
+        // picking a topic from Help → Humanist Help reuses the same
+        // window so the user doesn't accumulate one help window per
+        // topic. Toolbar / sidebar handle within-window navigation.
+        WindowGroup("Humanist Help", id: "humanist-help") {
+            HelpWindowView()
+                .frame(
+                    minWidth: 720, idealWidth: 920, minHeight: 480, idealHeight: 640
+                )
+                .humanistChrome()
+        }
+
         // Standard macOS Settings (⌘,) scene. TabView selection is
         // bound to @AppStorage so callers (e.g. the launcher's
         // ModeStrip badge) can pre-select a tab before invoking
@@ -861,17 +873,69 @@ private struct ShowReaderButton: View {
     }
 }
 
-/// Help > Show Welcome…. Pulled into its own `Commands` struct so
-/// the top-level `.commands` block can address it as a single slot.
+/// Help menu commands. Replaces the default macOS-supplied "App
+/// Help" item (which would route to an Apple Help Book we don't
+/// ship yet) with Humanist's own help: top-level *Humanist Help*
+/// (⌘?), per-topic shortcuts so the user can jump straight to a
+/// section, and the legacy *Show Welcome…* re-opener.
+///
+/// Uses `replacing: .help` so the default macOS-supplied "App
+/// Help" item (which would route to an unbundled Help Book) is
+/// removed cleanly — leaving the menu populated only by our items.
 struct HelpMenuCommands: Commands {
     var body: some Commands {
-        CommandGroup(after: .help) {
-            Button("Show Welcome…") {
-                NotificationCenter.default.post(
-                    name: .humanistShowWelcome, object: nil
-                )
+        CommandGroup(replacing: .help) {
+            HelpMenuContent()
+        }
+    }
+}
+
+/// Help menu content view. Pulled out so the @Environment
+/// openWindow handle has a SwiftUI View to attach to —
+/// `.environment` doesn't work directly inside a
+/// `CommandGroup`'s Commands closure.
+private struct HelpMenuContent: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Humanist Help") {
+            openHelp(at: nil)
+        }
+        .keyboardShortcut("?", modifiers: .command)
+
+        Divider()
+
+        // Per-topic shortcuts — same selection persistence as the
+        // help window's sidebar, so clicking a topic in the menu
+        // is identical to opening the help window and selecting
+        // that topic.
+        ForEach(HelpTopic.allCases) { topic in
+            Button(topic.displayTitle) {
+                openHelp(at: topic)
             }
         }
+
+        Divider()
+
+        Button("Show Welcome…") {
+            NotificationCenter.default.post(
+                name: .humanistShowWelcome, object: nil
+            )
+        }
+    }
+
+    /// Open (or reveal) the help window and optionally pre-select
+    /// a topic. The help window reads `humanist.help.selectedTopic`
+    /// from @AppStorage during render, so writing the topic before
+    /// opening means the first frame already has the right detail
+    /// pane.
+    private func openHelp(at topic: HelpTopic?) {
+        if let topic {
+            UserDefaults.standard.set(
+                topic.rawValue, forKey: "humanist.help.selectedTopic"
+            )
+        }
+        openWindow(id: "humanist-help")
     }
 }
 

@@ -58,6 +58,28 @@ else
     warn "CodeMirror assets not found at $CODEMIRROR_DIR — source editor will fall back to plain text"
 fi
 
+# SPM-emitted resource bundles. Each target with a `resources:` block
+# in Package.swift emits a `<ModuleName>_<TargetName>.bundle` directory
+# under `.build/<config>/`. At runtime `Bundle.module` for that target
+# looks for the bundle inside the executable's `Contents/Resources/`,
+# so the assembly step has to copy it in. Currently:
+#
+#   * Humanist_Humanist.bundle — Resources/Help/*.md for the in-app
+#     help system (HelpTopic.loadMarkdown)
+#   * Pipeline_Pipeline.bundle — Latin stem list for DictionaryCorrector
+#
+# Copy any *.bundle alongside the binary into Resources/. New
+# resource-bearing targets just need a Package.swift `resources:`
+# entry; this loop picks them up automatically.
+SPM_BUILD_DIR="$(dirname "$BIN")"
+shopt -s nullglob
+for spm_bundle in "$SPM_BUILD_DIR"/*.bundle; do
+    bundle_name="$(basename "$spm_bundle")"
+    cp -R "$spm_bundle" "$APP_RESOURCES/$bundle_name"
+    log "Copied SPM resource bundle: $bundle_name"
+done
+shopt -u nullglob
+
 # Bundle Tesseract + Leptonica + transitive image-format dylibs into
 # Contents/Frameworks/ so the app works on Macs without Homebrew.
 # Source-of-truth lookup chain is /opt/homebrew/opt/<pkg>/lib/ first

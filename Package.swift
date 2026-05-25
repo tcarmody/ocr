@@ -122,7 +122,13 @@ let package = Package(
         .executableTarget(
             name: "Humanist",
             dependencies: ["Pipeline", "AI", "PDFIngest", "LibraryIndexing"],
-            path: "Sources/Humanist"
+            path: "Sources/Humanist",
+            resources: [
+                // In-app help system. Markdown sources live under
+                // Sources/Humanist/Resources/Help/ and are loaded
+                // at runtime via Bundle.module by HelpTopic.
+                .copy("Resources/Help"),
+            ]
         ),
         // One-shot CLI for the Cloud-mode validation spike (PLANS.md
         // Tier 2 Phase 4). Compares CER of `.privateLocal` vs `.cloud`
