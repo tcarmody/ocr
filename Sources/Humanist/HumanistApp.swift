@@ -162,6 +162,21 @@ struct HumanistApp: App {
                     // call site.
                     OpenRouter.library = library
                 }
+                .task(priority: .utility) {
+                    // Pre-warm the LibraryConceptGraph in the
+                    // background so the Topics sheet opens
+                    // instantly when the user clicks the tag
+                    // toolbar button. Build is ~40s on a 2k-book
+                    // library; the on-demand path would otherwise
+                    // run that on every fresh launch + every time
+                    // the user closes and reopens the sheet
+                    // (cache is process-lifetime in-memory only).
+                    // Utility priority keeps it off the launcher
+                    // critical path; the actor in the cache
+                    // serializes against any concurrent on-demand
+                    // call so we never double-build.
+                    await prewarmConceptGraph(library: library)
+                }
         }
         .commands {
             FileOpenCommands()
@@ -871,6 +886,36 @@ private struct ShowReaderButton: View {
         }
         .keyboardShortcut("5", modifiers: .command)
     }
+}
+
+/// Background pre-warm of the federated library concept graph.
+/// Triggered from the launcher's `.task(priority: .utility)` so the
+/// Topics sheet opens instantly when the user clicks the tag
+/// toolbar button. Sequencing:
+///
+///   1. Empty-library short-circuit so fresh installs don't waste
+///      time resolving a backend they have no books to index.
+///   2. Resolve the embedding backend through the same
+///      `BackendResolver.resolveForChat` the chat panes use — the
+///      cache fingerprint includes the backend identifier, so we
+///      must match what the on-demand pathway will compute later.
+///   3. Hand off to `LibraryConceptGraphCache.shared.graph`. The
+///      cache's actor isolation serializes against any concurrent
+///      on-demand call, so a user who clicks the toolbar button
+///      mid-prewarm just awaits the same in-flight build.
+///
+/// Errors and a missing backend are swallowed silently — pre-warm
+/// is a UX optimization, not a load-bearing path. Failure here
+/// just degrades to the original on-demand behavior.
+@MainActor
+private func prewarmConceptGraph(library: LibraryStore) async {
+    guard !library.entries.isEmpty else { return }
+    let resolution = await BackendResolver.resolveForChat()
+    guard let backend = resolution.backend else { return }
+    _ = await LibraryConceptGraphCache.shared.graph(
+        libraryEntries: library.entries,
+        backendIdentifier: backend.identifier
+    )
 }
 
 /// Help menu commands. Replaces the default macOS-supplied "App
