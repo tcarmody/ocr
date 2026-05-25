@@ -96,19 +96,33 @@ final class BookBriefingService: ObservableObject {
         isStreaming = true
 
         let frontMatter = Self.extractFrontMatter(from: book)
-        let catalog = Self.renderCatalog(
-            library: library, currentBook: entry?.epubURL
-        )
         let author = entry?.author
-        let userPrompt = Self.buildUserPrompt(
-            bookTitle: bookTitle,
-            author: author,
-            frontMatter: frontMatter,
-            catalog: catalog
-        )
+        let currentBookURL = entry?.epubURL
 
+        // Resolve a catalog subset on a background task before
+        // starting the streaming send. The retrieval step is async
+        // (resolveForChat() + backend.embed() are both async) and
+        // can take a few hundred ms; doing it before the model call
+        // means the model only sees relevant cross-references rather
+        // than every book in the user's library. Falls back to the
+        // full catalog if the federated index isn't built yet —
+        // the framing in the prompt keeps that workable on cloud
+        // backends and the user can always run library chat once
+        // to seed the on-disk index.
         task = Task { [weak self] in
-            await self?.runSend(userPrompt: userPrompt)
+            guard let self else { return }
+            let catalog = await Self.selectCatalogCandidates(
+                library: library,
+                frontMatter: frontMatter,
+                currentBook: currentBookURL
+            )
+            let userPrompt = Self.buildUserPrompt(
+                bookTitle: bookTitle,
+                author: author,
+                frontMatter: frontMatter,
+                catalog: catalog
+            )
+            await self.runSend(userPrompt: userPrompt)
         }
     }
 
@@ -183,32 +197,48 @@ final class BookBriefingService: ObservableObject {
     /// Cached across runs so multiple briefings (e.g. user
     /// re-runs after the first response) share the system-prompt
     /// cache prefix and only pay for the user-message delta.
+    ///
+    /// **Important framing:** the SUBJECT of every briefing is the
+    /// single book the user is about to read. The library catalog
+    /// (when supplied) is purely a cross-reference list — do not
+    /// brief on the catalog itself. Local models in particular
+    /// have a habit of pivoting to "summarize this bibliography"
+    /// when the catalog text is large; the instructions below are
+    /// worded to head that off.
     private static let systemPrompt: String = """
-    You're writing a pre-reading briefing for the user before they \
-    open a book they haven't read. Given the book's front matter \
-    (preface / introduction / opening chapters) and a list of other \
-    books in their personal library, produce a briefing that helps \
-    them get the most out of the read.
+    You're writing a pre-reading briefing about ONE specific book \
+    the user is about to open. The book is identified at the top \
+    of the user's message and its front matter (preface / \
+    introduction / opening chapters) is supplied below that. Brief \
+    the user on THIS BOOK and nothing else.
+
+    Some messages also include a list of other books in the user's \
+    personal library, under a separate "Other books in my library" \
+    section. That list is provided ONLY as a pool of candidate \
+    cross-references. Do NOT brief on, summarize, categorize, or \
+    analyze the library list itself. Do NOT discuss "clusters" or \
+    "themes" of the user's reading list. The briefing is about the \
+    one book named at the top.
 
     Cover, in this order:
 
-    1. **What the book is doing**: the central argument or aim, \
-       in your own words, two or three sentences. Lean on the \
-       front matter — that's why it's supplied.
+    1. **What the book is doing**: the central argument or aim of \
+       the named book, in your own words, two or three sentences. \
+       Lean on the front matter — that's why it's supplied.
     2. **Tradition and stakes**: what intellectual lineage the \
-       book sits in, what debate or problem it engages with, why \
-       it mattered (or matters).
-    3. **Cross-references the user owns**: when the supplied \
-       catalog contains books that would meaningfully sharpen \
-       this read — a predecessor, an interlocutor, a respondent \
-       — call them out by exact title and author. Don't invent \
-       books that aren't in the catalog. Don't list every \
-       loosely-related book; pick at most two or three and say \
-       *why* each helps.
+       named book sits in, what debate or problem it engages with, \
+       why it mattered (or matters).
+    3. **Cross-references the user owns**: if a library catalog \
+       was supplied, pick at most two or three books from it that \
+       would meaningfully sharpen this specific read — a \
+       predecessor, an interlocutor, a respondent. Call them out \
+       by exact title and author. Don't invent books that aren't \
+       in the catalog. Don't list every loosely-related book. If \
+       no catalog was supplied, omit this section entirely.
     4. **What to watch for**: one or two concrete things to keep \
-       an eye on while reading. A central concept the author \
-       introduces, a structural feature of the argument, a \
-       common pitfall in reading this kind of book.
+       an eye on while reading the named book. A central concept \
+       the author introduces, a structural feature of the \
+       argument, a common pitfall in reading this kind of book.
 
     Tone: a colleague briefing a colleague before they sit down \
     with the book — substantive, specific, not promotional. \
@@ -217,9 +247,9 @@ final class BookBriefingService: ObservableObject {
     briefing to 4-5 well-developed paragraphs; if the book is \
     short or front matter sparse, a tighter briefing is fine.
 
-    Render in Markdown with the four sections above as bold inline \
-    headers (not separate h2s) so the briefing reads as one \
-    continuous note.
+    Render in Markdown with the section labels above as bold \
+    inline headers (not separate h2s) so the briefing reads as \
+    one continuous note.
     """
 
     private static func buildUserPrompt(
@@ -228,17 +258,30 @@ final class BookBriefingService: ObservableObject {
         frontMatter: String,
         catalog: String
     ) -> String {
-        var out = "I'm about to read **\(bookTitle)**"
+        // Lead with the book name + the task so the model's first
+        // attention pass lands on the subject before it sees the
+        // (potentially much larger) front matter or catalog dump.
+        // Local models in particular pivot to whatever's biggest
+        // unless the subject is restated unambiguously up front.
+        var out = "Please write a pre-reading briefing about ONE book: "
+        out += "**\(bookTitle)**"
         if let author, !author.isEmpty {
             out += " by \(author)"
         }
-        out += ". Brief me on it.\n\n"
-        out += "--- Front matter from the book ---\n\n"
+        out += ".\n\n"
+        out += "The briefing is about this book only — not about my library, "
+        out += "not about a reading list. Below is the book's own front matter "
+        out += "(opening chapters) for you to draw on.\n\n"
+        out += "=== FRONT MATTER OF \"\(bookTitle)\" ===\n\n"
         out += frontMatter
-        out += "\n\n--- Other books in my library (for cross-reference candidates) ---\n\n"
-        out += catalog.isEmpty
-            ? "(No other books are catalogued yet.)\n"
-            : catalog
+        out += "\n\n=== END FRONT MATTER ===\n"
+        if !catalog.isEmpty {
+            out += "\nFor cross-reference candidates only (these are NOT "
+            out += "the subject of the briefing — they are other books I "
+            out += "already own, which you may name in section 3 if any "
+            out += "would meaningfully sharpen the read of \"\(bookTitle)\"):\n\n"
+            out += catalog
+        }
         return out
     }
 
@@ -299,6 +342,116 @@ final class BookBriefingService: ObservableObject {
             } else {
                 lines.append("• \"\(entry.title)\"")
             }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Catalog selection (embedding-retrieved subset)
+
+    /// Number of distinct cross-reference candidates to surface.
+    /// Calibrated to a chunk small enough that the model treats the
+    /// list as candidates rather than as the subject of the briefing,
+    /// large enough that the actually-relevant 2-3 books the system
+    /// prompt asks for are likely to be in the pool.
+    private static let crossReferenceTopK = 40
+
+    /// Front-matter slice fed to the embedding backend as the
+    /// retrieval query. Capped well below the model's input limit
+    /// for any backend Humanist supports; the briefing's prompt
+    /// shape (preface / introduction / opening chapter) means the
+    /// first few thousand characters already carry the book's
+    /// argumentative thrust.
+    private static let queryDigestCharCap = 4000
+
+    /// Pick the cross-reference catalog the model sees. When the
+    /// user already has a federated library index on disk (built by
+    /// any library-scope chat session), embed the front-matter
+    /// digest with the current chat embedding backend and pull the
+    /// top-K nearest distinct books out of the index — the same
+    /// machinery library chat uses for retrieval, narrowed to one
+    /// book per hit.
+    ///
+    /// Falls back to the full alphabetical catalog when:
+    ///   * the library is nil or empty;
+    ///   * the embedding backend can't be resolved;
+    ///   * no fresh on-disk index exists for the resolved backend;
+    ///   * the embed call throws.
+    ///
+    /// We *never* trigger an index build from this path — first
+    /// briefings on a fresh library would otherwise block 30+
+    /// seconds while every book's sidecar gets loaded. The
+    /// fallback is the same shape the original briefing used, and
+    /// the framing in `buildUserPrompt` + `systemPrompt` keeps it
+    /// workable. Users on Ollama who want a small catalog should
+    /// run library chat once to seed the cache.
+    static func selectCatalogCandidates(
+        library: LibraryStore?,
+        frontMatter: String,
+        currentBook: URL?
+    ) async -> String {
+        guard let library, !library.entries.isEmpty else { return "" }
+        let fallback = { renderCatalog(library: library, currentBook: currentBook) }
+
+        let resolution = await BackendResolver.resolveForChat()
+        guard let backend = resolution.backend else { return fallback() }
+
+        let entries = library.entries
+        let fingerprint = FederatedIndexCache.fingerprint(
+            backendIdentifier: backend.identifier,
+            dimension: backend.dimension,
+            entries: entries
+        )
+        guard let payload = FederatedIndexCache.load(
+            expectedFingerprint: fingerprint,
+            backendIdentifier: backend.identifier,
+            dimension: backend.dimension
+        ) else {
+            return fallback()
+        }
+        let index = LibraryEmbeddingIndex(
+            sources: payload.sources,
+            backend: backend,
+            stats: payload.stats
+        )
+
+        let digest = String(frontMatter.prefix(queryDigestCharCap))
+        guard !digest.isEmpty else { return fallback() }
+        let queryVector: [Float]
+        do {
+            let vectors = try await backend.embed([digest])
+            guard let first = vectors.first, !first.isEmpty else {
+                return fallback()
+            }
+            queryVector = first
+        } catch {
+            return fallback()
+        }
+
+        // Search a wide paragraph window and collapse to distinct
+        // books in the rank order they emerge. 200 hits gives plenty
+        // of headroom — most books have many paragraphs in the
+        // index, so the same book recurring is the common case.
+        let excludeSet: Set<URL> = currentBook.map { [$0] } ?? []
+        let hits = index.search(
+            queryVector: queryVector,
+            topK: 200,
+            excluding: excludeSet
+        )
+        guard !hits.isEmpty else { return fallback() }
+
+        var seenPaths = Set<String>()
+        var lines: [String] = []
+        for hit in hits {
+            let key = hit.epubURL.canonicalForFile
+                .standardizedFileURL.path
+            if seenPaths.contains(key) { continue }
+            seenPaths.insert(key)
+            if let author = hit.bookAuthor, !author.isEmpty {
+                lines.append("• \"\(hit.bookTitle)\" — \(author)")
+            } else {
+                lines.append("• \"\(hit.bookTitle)\"")
+            }
+            if lines.count >= crossReferenceTopK { break }
         }
         return lines.joined(separator: "\n")
     }
