@@ -41,6 +41,7 @@ final class BookBriefingService: ObservableObject {
     @Published var error: String?
 
     private let client: AnthropicAPIClient
+    private let ollama: OllamaClient
     private var task: Task<Void, Never>?
 
     init() {
@@ -48,6 +49,26 @@ final class BookBriefingService: ObservableObject {
         self.client = AnthropicAPIClient(
             apiKeyProvider: { keyStore.read() }
         )
+        self.ollama = OllamaClient()
+    }
+
+    /// Resolve the current chat backend the same way `BookChatViewModel`
+    /// does — single UserDefaults key shared across all chat surfaces.
+    /// Briefing follows the user's choice so an Ollama-only user gets
+    /// a local briefing rather than a missingAPIKey error.
+    private var resolvedBackend: ChatBackend {
+        if let raw = UserDefaults.standard.string(forKey: "humanist.chat.backend"),
+           let b = ChatBackend(rawValue: raw) {
+            return b
+        }
+        return UserDefaults.standard.bool(forKey: "humanist.chat.useSonnet")
+            ? .cloudSonnet : .cloudHaiku
+    }
+
+    private var resolvedOllamaModel: String {
+        let raw = UserDefaults.standard.string(forKey: "humanist.chat.ollamaModel")
+            ?? ""
+        return raw.isEmpty ? "qwen3.5:9b" : raw
     }
 
     deinit { task?.cancel() }
@@ -104,23 +125,16 @@ final class BookBriefingService: ObservableObject {
             isStreaming = false
             task = nil
         }
-        let request = AnthropicMessageRequest(
-            model: .sonnet4_6,
-            maxTokens: 2000,
-            system: .cached(Self.systemPrompt, ttl: .oneHour),
-            messages: [Message(role: .user, content: .plain(userPrompt))],
-            thinking: .disabled
-        )
+        let backend = resolvedBackend
         do {
-            let stream = client.sendStream(request)
-            for try await event in stream {
-                try Task.checkCancellation()
-                switch event {
-                case .textDelta(let chunk):
-                    briefing += chunk
-                case .messageStop:
-                    break
-                }
+            switch backend {
+            case .cloudHaiku, .cloudSonnet:
+                try await runCloud(
+                    userPrompt: userPrompt,
+                    model: backend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                )
+            case .localOllama:
+                try await runOllama(userPrompt: userPrompt)
             }
         } catch is CancellationError {
             return
@@ -128,6 +142,39 @@ final class BookBriefingService: ObservableObject {
             error = err.localizedDescription
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    private func runCloud(userPrompt: String, model: CloudModel) async throws {
+        let request = AnthropicMessageRequest(
+            model: model,
+            maxTokens: 2000,
+            system: .cached(Self.systemPrompt, ttl: .oneHour),
+            messages: [Message(role: .user, content: .plain(userPrompt))],
+            thinking: .disabled
+        )
+        let stream = client.sendStream(request)
+        for try await event in stream {
+            try Task.checkCancellation()
+            switch event {
+            case .textDelta(let chunk):
+                briefing += chunk
+            case .messageStop:
+                break
+            }
+        }
+    }
+
+    private func runOllama(userPrompt: String) async throws {
+        let stream = ollama.chatStream(
+            model: resolvedOllamaModel,
+            system: Self.systemPrompt,
+            history: [],
+            userMessage: userPrompt
+        )
+        for try await chunk in stream {
+            try Task.checkCancellation()
+            briefing += chunk
         }
     }
 
