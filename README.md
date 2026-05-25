@@ -12,9 +12,13 @@ Native macOS app (macOS 26+) for turning PDFs and other documents into well-form
 
 - **And a real reader, too.** Opening an `.epub` defaults to a distraction-free reader window — three-column layout (TOC sidebar | reading pane | chat sidebar), scroll *or* paginated layout (CSS-columns; ←/→/space page navigation, "page N / M" indicator), and reading preferences (font face, line spacing, margins, System / Sepia / Dark themes) that live-update without a chapter reload. Position is persisted per-book (resumes at the exact sub-chapter offset you left at; survives reopen and crashes), and the Library window shows a *Reading* column with "Ch. N · 2 d ago"-style status per row. Bookmarks (⌘D), highlights (⌃⌘H), and passages-with-notes are unified in an annotations sidebar with copy-with-citation (⇧⌘C); right-click selected text for the same actions. Find-in-chapter (⌘F). The chat sidebar is the same engine as Library chat, locked to the current book — citations snap the reading pane to the cited paragraph. The Editor is one click away via *Edit Source…* (⌥⌘O); if you save in the Editor while the Reader is open, the Reader shows a "Book changed on disk — Reload" banner instead of silently going stale.
 
-- **Chats with one book or your whole library.** Hybrid retrieval (BM25 keyword + vector embedding + structural-hierarchy + named-entity) finds the right passages; the configured backend composes an answer with clickable citations that scroll directly to the cited paragraph. Markdown formatting in replies, model-suggested follow-up questions you can click to send, long-form synthesis toggle, retrieval-debug surface for diagnosing misfires.
+- **Chats with one book or your whole library.** Hybrid retrieval (BM25 keyword + vector embedding + structural-hierarchy + named-entity) finds the right passages; the configured backend composes an answer with clickable citations that **always open the cited book in the reader and snap to the paragraph cited** (regardless of which default surface you've chosen — citations are anchored navigation, not a chrome preference). Markdown formatting in replies, model-suggested follow-up questions you can click to send, long-form synthesis toggle, retrieval-debug surface for diagnosing misfires. Per-book chat also exposes a **pre-reading briefing** (closed-book toolbar glyph): one-shot streamed overview of *what the book is doing*, *the tradition it sits in*, *cross-references you already own*, and *what to watch for* — cross-references are embedding-retrieved from your federated library index (top-40 nearest neighbors, not the full catalog) so the briefing names books actually adjacent to the read. Briefings persist to `~/Library/Application Support/Humanist/Briefings/` so reopening is instant; a Retry button forces a regenerate when the cache should bust.
 
-- **Library-scope chat with first-class navigation.** The library window has its own chat pane that pulls across every indexed book. Cite a passage and one click opens that book in a new editor. Scope to a selection ("compare these five books on X"), save recurring scopes as named **collections** ("Foucault corpus"), exclude a book that keeps misfiring, or chat against your whole catalog. Bulk-index command pre-builds embeddings for every book in one go.
+- **Customizable chat appearance.** Settings → Chat → Appearance has three knobs that apply across all three chat surfaces (editor, library, reader): **font family** (System / Serif — New York on macOS 26), **font size** (Small / Medium / Large / Extra Large), and **color scheme** (Match System / Light / Dark — forces the chat panes regardless of the surrounding window). Changes propagate without a window relaunch.
+
+- **Library-scope chat with first-class navigation.** The library window has its own chat pane that pulls across every indexed book. Cite a passage and one click opens that book in the reader at the cited paragraph. Scope to a selection ("compare these five books on X"), save recurring scopes as named **collections** ("Foucault corpus"), exclude a book that keeps misfiring, or chat against your whole catalog. Bulk-index command pre-builds embeddings for every book in one go. **Tool-use chat** (agentic loop) is wired into both library scope and per-book scope: the model can call `search_library` / `search_topic` (library) or `search_book` / `expand_chapter` / `list_chapter_titles` (per-book) mid-conversation to fetch passages it didn't see in the first retrieval pass — same path on Cloud (Sonnet / Haiku) and on Ollama (qwen3.5:9b is the new default; gemma4:26b can't do tool calls).
+
+- **Topics index.** A library-wide concept rollup ("Topics") lives behind the toolbar tag button (sparkles-style sheet popup) — entity-map inversion across every indexed book surfaces the people / places / works that recur, with per-topic book counts and a one-click jump to the passages where each topic appears. Same data feeds the `search_topic` tool the library chat agentic loop can call.
 
 - **Organizes a personal library.** Every conversion is catalogued. Cover thumbnails, language filter, sortable columns, durable named **collections** as a sidebar, cross-book bulk find / replace, multi-selection that drives both bulk editing and chat scoping. **Auto-generated collections** — Print / Manuscript / Early Print / Digital buckets by conversion type; one per author with 3+ books in your library (threshold configurable); per-genre via an on-device closed-taxonomy AFM classifier covering humanities (Poetry, Drama, Fiction sub-genres, Philosophy, History, Religion, Linguistics, Arts) and technical material (Mathematics, Science sub-genres, Technology sub-genres including Computing, Social Science sub-genres). One click in the sidebar header to refresh from existing metadata; a separate Classify button (`wand.and.stars`) runs the genre classifier on books without a genre stamp. **Import existing EPUBs** (`⇧⌘I`, drag-drop, or a whole folder full of subfolders) that didn't come from a PDF conversion — anchors get injected, on-device AFM extracts title + author from the front matter when Apple Intelligence is available, the book lands in the Books folder, and it joins the federated chat right away. The catalog can also **sync across Macs** via a cloud folder: enable *Share library across machines* in Settings → Conversion and `library.json` + the alias dictionary move into `<output folder>/.humanist/`. Both Macs see the same books, same custom vocabulary, same per-book metadata + collection memberships. Embedding sidecars stay machine-local — each Mac builds its own — but a per-source-hash claim list on the shared catalog stops two Macs from converting the same Input/ PDF simultaneously. Auto-catalog on editor-open means every EPUB you open joins the library automatically.
 
@@ -153,6 +157,7 @@ Opening an `.epub` (Library double-click, File → Open, drag-drop, Recents) rou
 **Chat sidebar — current book only:**
 
 - Same `BookChatViewModel` + retrieval pipeline as the editor's chat pane, locked to `.currentBook` scope (no scope picker, no exclusion row, no federated-index status — those stay in the Library window's chat). Citation chips snap the reading pane to the cited spine index + paragraph anchor.
+- **Full chrome parity** with the editor and library chat surfaces: long-form synthesis toggle, pre-reading briefing, pop-out to dedicated `book-chat` window (read and chat side-by-side), retrieval-debug toggle, export, clear. Chat appearance (font / size / theme) follows the same `@AppStorage` keys as the other surfaces — change in Settings and all three update without relaunching.
 
 ## Chat-with-book
 
@@ -168,11 +173,15 @@ Each editor's chat pane and the dedicated library chat window share one engine. 
 - **Per-book chat** (`⌘5` in the editor) — scoped to the open EPUB. A scope picker flips between "Current book" and "Whole library" without leaving the editor.
 - **Library chat** (`⌘2` to show the Library, `⌘/` to reveal its chat pane) — first-class corpus chat. Citations carry the book + chapter, and one click opens the cited book in a new editor window. Multi-selection in the library table feeds a "Chat with Selected (n)" action that scopes the next session to those rows.
 
-**Per-conversation features:**
+**Per-conversation features (full chrome parity across editor / library / reader):**
 
 - **Markdown formatting** in replies (bold, italic, headings, lists, code, blockquotes, fenced code blocks)
 - **Suggested follow-ups** — model emits 2-3 next questions; one click sends as the next user turn
 - **Long-form synthesis toggle** — switches the system prompt + lifts maxTokens for a few-paragraph essay-shaped reply when the question warrants it
+- **Pre-reading briefing** (per-book surfaces only) — closed-book glyph streams a one-shot briefing; embedding-retrieved cross-references; persisted to disk so reopening is instant; Retry button regenerates
+- **Pop out to window** — `macwindow.badge.plus` opens the chat in the dedicated `book-chat` / `library-chat` window scene (smoother on long transcripts; the embedded pane stays put)
+- **Export transcript** — `square.and.arrow.up` writes the conversation as Markdown with resolved citations to the clipboard
+- **Clear transcript** — trash icon wipes the persisted transcript for this surface
 - **Per-book exclusion** — right-click any citation chip to remove that book from the rest of the conversation
 - **Retrieval debug surface** — toggle to show why each paragraph was picked (BM25 rank, embedding rank, hierarchy / entity matches)
 - **Tunable knobs** in Settings → AI → Advanced retrieval — RRF k, top-K, max paragraph chars
@@ -182,7 +191,7 @@ Each editor's chat pane and the dedicated library chat window share one engine. 
 
 - **Cloud (Haiku 4.5)** — fast, cheap (~$0.06/query at typical scope)
 - **Cloud (Sonnet 4.6)** — better synthesis on comparative questions (~$0.19/query)
-- **Local (Ollama)** — fully on-device (default Gemma 4 26B MoE; user can pick any local model)
+- **Local (Ollama)** — fully on-device. Default is **qwen3.5:9b** (~5 GB), which supports tool calls so the agentic loop's `search_book` / `search_topic` / `search_library` tools fire on local too. Existing setups keep their previously-chosen model via `@AppStorage`; only fresh installs see the new default. Picking any model in Settings → AI → Local Chat is supported, but tool-capable models (qwen3.5:9b, llama3.1:8b, etc.) are the right choice if you want the agentic retrieval path.
 
 ## Library
 
@@ -209,22 +218,26 @@ Four file-system utilities that work without opening any editor window:
 
 ## Command-line interface
 
-A second executable target — `humanist-cli` (currently 1.1.0) — exposes the same Pipeline and EPUB modules as a scriptable shell tool. Same engines, same conversion quality, no GUI surface.
+A second executable target — `humanist-cli` (currently 1.2.0) — exposes the same Pipeline and EPUB modules as a scriptable shell tool. Same engines, same conversion quality, no GUI surface.
 
 ```sh
 swift build --product humanist-cli -c release
 cp "$(swift build --show-bin-path -c release)/humanist-cli" ~/.local/bin/
 
-humanist-cli convert paper.pdf                     # default → paper.epub
-humanist-cli convert paper.pdf -f md               # markdown only
+humanist-cli convert paper.pdf                                # default → paper.epub
+humanist-cli convert paper.pdf -f md                          # markdown only
 humanist-cli convert book.pdf -f epub,md,html,docx -o ./out
-humanist-cli convert paper.docx -f md              # DOCX → MD, bypasses OCR
-humanist-cli convert book.pdf --private            # offline; AFM features on macOS 26+
-humanist-cli compare old.epub new.epub             # paragraph-level diff
-humanist-cli validate book.epub                    # epubcheck wrapper
+humanist-cli convert paper.docx -f md                         # DOCX → MD, bypasses OCR
+humanist-cli convert book.pdf --private                       # offline; AFM features on macOS 26+
+humanist-cli compare old.epub new.epub                        # paragraph-level diff
+humanist-cli compare-corpus --dir <corpus> --limit 3          # quality-regression harness
+humanist-cli validate book.epub                               # epubcheck wrapper
+humanist-cli library-dedupe                                   # content-hash dedupe report
+humanist-cli clear-outdated --backend gemini --apply          # delete sidecars off the current backend
+humanist-cli reindex --backend gemini --limit 5               # headless rebuild via BookSidecarBuilder
 ```
 
-Per-feature Cloud toggles are individual (`--no-claude-tables`, `--no-coherence-pass`, etc.); `--private` forces all off. API key reads from `$ANTHROPIC_API_KEY`. JSON output mode (`--json`) for CI / scripts. Full reference at [Sources/HumanistCLI/README.md](Sources/HumanistCLI/README.md).
+Per-feature Cloud toggles are individual (`--no-claude-tables`, `--no-coherence-pass`, etc.); `--private` forces all off. API key reads from `$ANTHROPIC_API_KEY`. JSON output mode (`--json`) for CI / scripts. Long-running `reindex` / `clear-outdated` cycles are safe to wrap in `caffeinate -i` so the Mac doesn't idle-sleep mid-job. Full reference at [Sources/HumanistCLI/README.md](Sources/HumanistCLI/README.md).
 
 ## Setup wizards
 
@@ -248,7 +261,7 @@ Cloud features only run when you flip Settings → AI → Processing Mode to Clo
 
 ```sh
 Scripts/run-app.sh          # release build + assemble .app + sign + open
-swift test                  # 1000+ unit tests across 104 test files
+swift test                  # 1600+ unit tests across 151 test files
 ```
 
 `Scripts/run-app.sh` is the only supported launch path. `swift run` / `swift build` produce a bare binary without the bundled `Resources/` directory — the editor's CodeMirror source pane and the Surya layout sidecar won't load.
@@ -283,8 +296,10 @@ ocr/
 ├── Package.swift
 ├── Sources/
 │   ├── Humanist/                    SwiftUI app — launcher, editor, library, settings, file tools, setup wizards
-│   │   ├── Editor/Chat/             22 files: per-book + library chat, BM25 + embedding + hierarchy + entity indexes,
-│   │   │                             alias dictionary, follow-up parser, Markdown rendering, retrieval debug
+│   │   ├── Editor/Chat/             31 files: per-book + library chat (with agentic tool-use loop), BM25 + embedding +
+│   │   │                             hierarchy + entity indexes, Topics rollup, alias dictionary, follow-up parser,
+│   │   │                             Markdown rendering, retrieval debug, briefing service + persistent store
+│   │   ├── Reader/                  Distraction-free reader window — TOC + reading pane + chat sidebar
 │   │   └── Library/                 Library window (browser + bulk index + chat pane)
 │   ├── HumanistCLI/                 `humanist-cli` executable — convert/compare/validate from the shell
 │   ├── Document/                    Canonical IR — Book / Chapter / Block / InlineRun / Footnote
@@ -295,9 +310,9 @@ ocr/
 │   │                                Includes shared protocol-conforming engines (Cloud + on-device)
 │   ├── EPUB/                        Book IR → EPUB 3 zipfile; XHTML / nav / OPF writers; in-memory editor model;
 │   │                                differ + validator
-│   └── AI/                          22 files: Anthropic + Ollama + Voyage + Gemini + Apple Foundation Models clients,
-│                                    embedding backends, settings, key stores
-├── Tests/                           1000+ unit tests across 104 test files
+│   └── AI/                          28 files: Anthropic + Ollama + Voyage + Gemini + Apple Foundation Models clients,
+│                                    streaming + agentic-loop wire shapes, embedding backends, settings, key stores
+├── Tests/                           1600+ unit tests across 151 test files
 ├── Resources/
 │   └── codemirror/                  Vendored CodeMirror 5 for the editor's source pane
 ├── Sidecars/
@@ -332,6 +347,7 @@ Editor / chat state that's user-scoped rather than book-scoped lives outside the
 |---|---|
 | `Chats/<sha256>.json` | Per-book chat transcript, keyed by canonical EPUB path. |
 | `Chats/library.json` | Library chat transcript (one per user). |
+| `Briefings/<sha256>.json` | Per-book cached pre-reading briefing (Markdown + generation timestamp + model identifier). Loaded synchronously on sheet reopen; user-invalidated via the Retry button. |
 | `Embeddings/<uuid>.json` | Per-book embedding sidecar — paragraph vectors + hierarchy index + entity index, keyed by library entry UUID. |
 | `Covers/<uuid>.jpg` | Per-entry cover override (when the user has replaced the EPUB's bundled cover). |
 | `aliases.json` | Per-library alias dictionary for entity retrieval. |
@@ -345,9 +361,10 @@ Storing chat / embedding state outside the EPUB keeps the file portable (a copy 
 
 ## Plans
 
-[PLANS.md](PLANS.md) tracks remaining work in detail with a top-of-doc Sequencing section anchoring priorities to current drivers. Shipped this cycle in addition to everything above: library chat performance (embeddings off iCloud → local disk, on-disk federated-index cache, packed-Float32 binary sidecar format), auto-scan / multi-Mac coordination (source-hash tombstones, in-flight claims to prevent two Macs converting the same PDF, source-hash backfill covering converted PDFs + legacy imports), chapter splitting (TOC-driven splitter with title-matching primary path that survives ambiguous page offsets, ratio-based level-override in the heuristic splitter for Part/Chapter hierarchies), R-Library-Rescan (re-scan an existing catalog row with the launcher's current settings, preserving manual title edits + collection memberships, with `.bak.epub` rollback), queue UX (always-visible Pause/Resume + a "Start paused on launch" preference), the library window's empty-state explainer for collection∩search misses, R-Library-Chat-Plus Tier 2 (citation + conversation export), L-Foundation-Models Phase 2.5 (on-device post-OCR cleanup), R-EPUB-Import coherence pass (text-node-only path), U-HIG-Pass (full Mac HIG / Liquid Glass conformance audit), Q-Hard-Captures Tier 1 (italic-skip, Vision-backfill batch, refused-fallback surface), T-Real-Corpus (`humanist-cli compare-corpus` regression harness), R-Split-Filename-Sanity (bounded chapter-split filename growth), R-Library-Dedupe (content-hash dedupe at import + scan, plus `humanist-cli library-dedupe`), P-Page-Provider-Choice (Gemini 2.5 Flash + Gemini 3 Flash preview alongside Claude Sonnet for page OCR; per-provider key store), P-Doc-OCR-Cascade (Google Cloud Vision `DOCUMENT_TEXT_DETECTION` as Stage 2.5 between Tesseract and Claude), Q-Refusal-Rate (per-page refusal classification — refused / empty / api-error — with provider tag, surfaced in stats panel + claude-pages.txt header), **P-Bundled-Tesseract** (libtesseract + libleptonica + 13 transitive image-format dylibs + eng/grc/lat/heb traineddata bundled inside the .app via weak-linked dylibs with `@rpath` resolution against `Contents/Frameworks/`; app boots even when dylibs are absent thanks to a `dlsym(RTLD_DEFAULT)` runtime gate, so Homebrew is no longer load-bearing for the default OCR path), **P-Bilingual-FacingPage Phase (a)** (Loeb Classical Library style facing-page bilingual detection via Unicode-script ratios for Greek/Hebrew + Latin function-word fingerprint + NLR; each page anchor gets a `data-facing-page` attribute pointing to its partner; per-book *Facing-page bilingual* override in the launcher's Per-job overrides for edge cases), and **R-Reader** (full distraction-free EPUB reader — three-column scene with TOC sidebar + reading pane + chat sidebar; scroll *and* paginated layouts; reading preferences popover with font face / line spacing / margins / theme; per-content-hash position persistence with sub-chapter scroll fraction; bookmarks + highlights + passages-with-notes via a unified `AnnotationStore` sidecar; copy-with-citation at paragraph granularity; right-click context menu with Highlight / Add Note… / Copy with Citation; edit-reader staleness banner when the editor saves over an open book; Library *Reading* column; *Find Missing Files in Library…* maintenance tool that flags missing or unopenable EPUBs with per-row review). Active items:
+[PLANS.md](PLANS.md) tracks remaining work in detail with a top-of-doc Sequencing section anchoring priorities to current drivers. Shipped this cycle in addition to everything above: **R-Briefing** (per-book pre-reading briefing with embedding-retrieved top-K cross-references against the federated library index, hardened "ONE book is the subject" framing so local models stay book-focused, on-disk caching at `Application Support/Humanist/Briefings/<sha256>.json` with Retry as the explicit invalidator, backend-aware routing through `ChatBackend` so Ollama users get a local briefing without `missingAPIKey`), **R-Chat-Parity** (full chrome parity across editor / library / reader chat surfaces — closed-book briefing glyph, pop-out-to-window, retrieval-detail, export, clear-transcript, all live in all three; chat appearance — font family / size / color scheme — shared via `@AppStorage` keys so a Settings change updates all surfaces without relaunching), **R-Citation-Open-Reader** (citation links from any chat surface force-open in the reader at the cited paragraph anchor regardless of the default-surface picker; reader observes `humanistOpenAtParagraph` and consumes a pending-jump on `load()` so the snap survives a cold book load), **R-Chat-Cross-Corpus Phases 1–3** (`LibraryConceptGraph` rollup over the entity index; Topics sidebar moved to a `sparkles`-style sheet popup behind the toolbar tag button; `Concepts` → `Topics` user-facing rename including the `search_topic` tool wire-name; `search_topic` agentic-loop tool in library chat), **R-Chat-Agentic** (per-book agentic loop with `search_book` / `expand_chapter` / `list_chapter_titles` on Cloud and Ollama; library chat's `search_library` / `search_topic` tools on both; default Ollama model bumped to qwen3.5:9b for tool-call support), **EPUBImporter idempotence fix** (File → Update Library from Output Folder no longer creates `<stem> (2).epub` duplicates when the source already sits at the canonical destination — the suffix-loop is short-circuited via a `base.canonicalForFile == source.canonicalForFile` check), **CLI sidecar lifecycle** (`humanist-cli clear-outdated --backend <choice>` deletes sidecars off the current backend; `humanist-cli reindex --backend <choice>` rebuilds via `BookSidecarBuilder`; both honor `--limit`, dry-run by default for clear-outdated). Older work shipped this cycle: library chat performance (embeddings off iCloud → local disk, on-disk federated-index cache, packed-Float32 binary sidecar format), auto-scan / multi-Mac coordination (source-hash tombstones, in-flight claims to prevent two Macs converting the same PDF, source-hash backfill covering converted PDFs + legacy imports), chapter splitting (TOC-driven splitter with title-matching primary path that survives ambiguous page offsets, ratio-based level-override in the heuristic splitter for Part/Chapter hierarchies), R-Library-Rescan (re-scan an existing catalog row with the launcher's current settings, preserving manual title edits + collection memberships, with `.bak.epub` rollback), queue UX (always-visible Pause/Resume + a "Start paused on launch" preference), the library window's empty-state explainer for collection∩search misses, R-Library-Chat-Plus Tier 2 (citation + conversation export), L-Foundation-Models Phase 2.5 (on-device post-OCR cleanup), R-EPUB-Import coherence pass (text-node-only path), U-HIG-Pass (full Mac HIG / Liquid Glass conformance audit), Q-Hard-Captures Tier 1 (italic-skip, Vision-backfill batch, refused-fallback surface), T-Real-Corpus (`humanist-cli compare-corpus` regression harness), R-Split-Filename-Sanity (bounded chapter-split filename growth), R-Library-Dedupe (content-hash dedupe at import + scan, plus `humanist-cli library-dedupe`), P-Page-Provider-Choice (Gemini 2.5 Flash + Gemini 3 Flash preview alongside Claude Sonnet for page OCR; per-provider key store), P-Doc-OCR-Cascade (Google Cloud Vision `DOCUMENT_TEXT_DETECTION` as Stage 2.5 between Tesseract and Claude), Q-Refusal-Rate (per-page refusal classification — refused / empty / api-error — with provider tag, surfaced in stats panel + claude-pages.txt header), **P-Bundled-Tesseract** (libtesseract + libleptonica + 13 transitive image-format dylibs + eng/grc/lat/heb traineddata bundled inside the .app via weak-linked dylibs with `@rpath` resolution against `Contents/Frameworks/`; app boots even when dylibs are absent thanks to a `dlsym(RTLD_DEFAULT)` runtime gate, so Homebrew is no longer load-bearing for the default OCR path), **P-Bilingual-FacingPage Phase (a)** (Loeb Classical Library style facing-page bilingual detection via Unicode-script ratios for Greek/Hebrew + Latin function-word fingerprint + NLR; each page anchor gets a `data-facing-page` attribute pointing to its partner; per-book *Facing-page bilingual* override in the launcher's Per-job overrides for edge cases), and **R-Reader** (full distraction-free EPUB reader — three-column scene with TOC sidebar + reading pane + chat sidebar; scroll *and* paginated layouts; reading preferences popover with font face / line spacing / margins / theme; per-content-hash position persistence with sub-chapter scroll fraction; bookmarks + highlights + passages-with-notes via a unified `AnnotationStore` sidecar; copy-with-citation at paragraph granularity; right-click context menu with Highlight / Add Note… / Copy with Citation; edit-reader staleness banner when the editor saves over an open book; Library *Reading* column; *Find Missing Files in Library…* maintenance tool that flags missing or unopenable EPUBs with per-row review). Active items:
 
 - **P-Bilingual-FacingPage Phase (b)** — parallel chapter-tree reorganization. With Phase (a) shipped, a confirmed-bilingual book could emit two parallel chapter sequences in one EPUB (original-text spine + translation spine), a dual-tree TOC in nav.xhtml, and a "Jump to Facing Translation" editor command. Ship-or-revise after evaluating Phase (a)'s detected-bilingual rate on real Loeb material.
+- **R-Appearance Phase 2** — reader appearance customization on the same `@AppStorage` keys the chat surfaces already use. Inject font-family / font-size / color-scheme CSS into the reader's WKWebView so a single Settings change cascades through every reading surface. Phase 1 (chat) shipped; Phase 2 sketched in PLANS.
 - **R-Library-Migrate** — Settings wizard to move library.json + snapshots/ + Covers/ between locations (local ↔ cloud, or cloud → cloud). Embeddings stay local per Mac.
 - **R-Content-Aware-Rename** — rename split-chapter EPUBs from first-heading content rather than counter suffixes.
 - **L-Foundation-Models Phase 3** — on-device printed-TOC parsing.
