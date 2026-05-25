@@ -5095,6 +5095,138 @@ Out-of-scope items remain out of scope:
 
 ---
 
+## R-Appearance — User-customizable styling for chat + reader
+
+**Status**: Phase 1 (chat) shipped 2026-05-25 (commit `85c92f4`).
+Phase 2 (reader) cued up; pick up when the chat half has had
+enough real use to validate the surface (font/size/theme picker
+in Settings) and inform reader-side design decisions.
+
+### Premise
+
+Chat and reader are the two surfaces where the user spends
+sustained reading time — they're where typography + theming
+matter most. The rest of the app (Library window, editor source
+view, conversion pipeline UIs) is task-oriented chrome where
+system defaults are fine. This entry covers user-tunable font,
+size, and theme controls for the two reading surfaces.
+
+The two surfaces split into separate workstreams because they're
+implemented in different rendering systems:
+- Chat is pure SwiftUI — appearance threads down as a resolved
+  font + colorScheme override.
+- Reader is WKWebView with the EPUB's own CSS — appearance has
+  to inject a user-CSS layer that overrides whatever the book
+  ships with.
+
+### Phase 1 — Chat appearance (shipped)
+
+Three knobs in Settings → Chat → Appearance:
+
+- **Font**: System (SF Pro) / Serif (system serif — New York on
+  macOS 26).
+- **Size**: Small (11pt) / Medium (13pt — matches the prior
+  `.callout` default) / Large (15pt) / Extra Large (17pt).
+  Discrete buckets with explicit point sizes; not relative to
+  Dynamic Type so chat typography is predictable.
+- **Theme**: Match System (default) / Light / Dark. The override
+  applies `.preferredColorScheme` on each chat pane root so the
+  chat surface can be forced independent of the surrounding
+  window.
+
+Applies to every chat surface (per-book chat in editor + reader,
+library chat, standalone chat windows). Changes propagate live
+without a window relaunch via `@AppStorage` binding in each
+pane view.
+
+Implementation lives at `Sources/Humanist/Editor/Chat/ChatAppearance.swift`:
+- `ChatAppearance.FontFamily` / `FontSize` / `ColorMode` enums
+  with displayNames + UserDefaults keys.
+- `ChatAppearance.resolve(family:size:mode:) -> Resolved` returns
+  pre-computed Font values for paragraphs, code, italic, and
+  three heading levels.
+- `MarkdownMessageBody` + `ChatMessageRow` accept
+  `appearance: Resolved?` (nil = pre-appearance defaults so any
+  unwired caller still renders identically).
+
+### Phase 2 — Reader appearance (cued up)
+
+Three corresponding knobs surfaced as an "Aa" popover in the
+reader window's toolbar (Books / Kindle convention) rather than
+in Settings — readers expect the typography controls within
+arm's reach while reading, not buried in Preferences:
+
+- **Font size**: 5-7 buckets, slider-style. Affects body text;
+  headings scale proportionally.
+- **Line height**: Compact / Comfortable (default) / Spacious.
+  The biggest readability lever after font size.
+- **Theme**: Light / Sepia / Dark / Match System. Distinct color
+  palette per theme — not just light/dark; sepia is a real
+  third option that long-form readers expect.
+- **Font family**: Serif (default — New York-equivalent for
+  long-form prose) / Sans-serif (system) / Reading optimized
+  (Charter or similar if available).
+
+Defer for v1: max line width, custom font picker beyond the
+three options above, per-book overrides.
+
+Implementation sketch:
+- New `ReaderStyleSheet.css` template that uses CSS variables
+  for every tunable: `--reader-font-family`, `--reader-font-size`,
+  `--reader-line-height`, `--reader-color-bg`, `--reader-color-fg`,
+  `--reader-color-accent` (links / citations).
+- Inject the user-CSS via a new `@layer humanist-user` after the
+  book's own stylesheet so we override without clobbering
+  book-specific styling (poetry indents, code blocks, etc.).
+- Live updates via `WKWebView.evaluateJavaScript` setting
+  `document.documentElement.style.setProperty('--reader-font-size',
+  '18px')` — no full re-render, instant feel.
+- Three theme presets baked into the CSS as variable assignments;
+  switching themes flips the active `:root[data-reader-theme="X"]`
+  selector.
+- "Aa" toolbar button → popover with the four controls; settings
+  persist to UserDefaults app-wide (most users want consistent
+  styling across books — per-book overrides are a deferred polish).
+
+Estimated effort: ~1 day including the popover UI, the CSS layer
++ variable plumbing, the JS bridge for live updates, and the
+fallback for books with stylesheets that resist overriding.
+
+### Phase 2 (chat) — deferred polish
+
+Items left out of the chat Phase 1 ship in case real use surfaces
+demand:
+
+- **Bubble color** override — currently bubbles use a fixed
+  semantic color (accent at low opacity for user, secondary at
+  low opacity for assistant). Could expose a small palette.
+- **Message density** — currently spacing is fixed. A
+  Compact / Comfortable / Spacious bucket would let users tune
+  scroll efficiency vs breathability.
+- **Per-role font overrides** — user-message Text is always
+  plain; assistant-message uses Markdown. Could let user pick
+  different fonts for each role (e.g., system sans for user,
+  serif for assistant to feel more "reading-like"). Probably
+  overkill for v1.
+
+### Cross-cutting decision
+
+A possible v3 unifies chat + reader appearance under one
+"Appearance" Settings tab with shared theme presets (chat themes
+that match the reader theme the user picks). For now they're
+deliberately separate — chat Settings holds chat appearance, the
+reader's toolbar holds reader appearance. The Apple convention
+favors per-surface controls over a unified pane.
+
+### Dependencies
+
+- None — `R-Federated-Memory-Pass` and chat hangs are unrelated.
+  Chat Phase 1 shipped without dependencies. Reader Phase 2 is
+  self-contained against the existing `ReaderViewModel` +
+  `WebReaderPane` surface.
+
+---
+
 ## R-Federated-Memory-Pass — Shrink the federated index footprint
 
 **Status**: Phase 1 shipped (commits `f4bebd8`, `3c984f1`,
