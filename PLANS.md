@@ -1191,26 +1191,32 @@ Drivers for the current ordering:
     `epub:type` alignment). Surfaces regressions in real
     conversions before tagging releases. See T-Real-Corpus
     section for the findings from the first mini-run.
-13. **R-Library-Migrate — Migrate-library wizard**. Settings
-    sheet that moves library.json + Embeddings/ + snapshots/
-    + Covers/ + aliases.json between locations (local
-    Application Support ↔ cloud-synced output root, or one
-    cloud root to another). Currently `R-Library-Sync`'s
-    "Share across machines" toggle only handles **first-
-    time activation** (`LibrarySyncMigration.runFull` copies
-    legacy SHA-keyed sidecars + aliases). There's no path
-    for: turning the toggle OFF after years of cloud usage
-    (leaves the existing Embeddings/ orphaned), moving the
-    output root to a different folder (the catalog points
-    at relative paths against the *old* root), or recovering
-    from a stuck/corrupted cloud catalog. Wizard steps:
-    (1) source vs. destination pickers, (2) pre-flight
-    space + permission check, (3) two-phase copy (catalog
-    first, then siblings) with a progress sheet that's safe
-    to cancel, (4) switchover (flip the toggle + update
-    `ConversionOutputResolver`), (5) post-flight verification
-    (entry count, file-presence sample, re-read round-trip).
-    ~1.5 days.
+13. ~~**R-Library-Migrate — Migrate-library wizard**~~ shipped.
+    `LibraryMigrationService` (pure FS operations + verification
+    + pre-flight) + `LibraryMigrationWizard` (5-step SwiftUI
+    sheet: Welcome → Pre-flight → Copying → Verification →
+    Done) + Settings → Conversion → Library sync wire-up.
+    Scope: catalog + alias dictionary + snapshots + cover
+    overrides. Embeddings stay machine-local per the existing
+    `R-Library-Sync` posture (iCloud Drive's metadata-coordinated
+    reads on tens of GB of small JSON files stall the
+    federated-index rebuild — each Mac builds its own
+    embedding sidecars from the shared catalog). All three move
+    scenarios work: local→cloud, cloud→local (new — the toggle
+    couldn't turn OFF cleanly before), cloud→cloud (new — moving
+    the output root to a different folder). Pre-flight surfaces
+    same-location, non-writable, existing-destination-catalog,
+    and free-space blockers; advisory notes for the embeddings-
+    stay-local + empty-source cases. Copy yields events for
+    per-phase progress; cancel before commit leaves UserDefaults
+    untouched so the old location stays authoritative. Commit
+    flips `shareLibraryAcrossMachines` + (when destination is
+    cloud) `outputFolderPath`; source files stay in place as a
+    backup until manual cleanup. 10 unit tests cover path
+    asymmetry (aliases.json lives in `Aliases/` subdir locally
+    vs `.humanist` root for cloud), pre-flight blockers, copy
+    round-trip including missing-aliases tolerance, and
+    verification's catalog-readability flag.
 14. ~~**U-Splitview-Frame-Clamp — Defensive clamp of restored
     NSSplitView frames**~~ shipped 2026-05-12. New
     `SplitViewFrameClamp` helper walks every UserDefaults key

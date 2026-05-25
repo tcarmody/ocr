@@ -35,6 +35,14 @@ struct ConversionSettingsView: View {
     /// root missing). Nil = no activation in flight.
     @State private var shareMigrationMessage: String?
 
+    /// R-Library-Migrate. Presents the multi-step wizard for
+    /// moving the library between Application Support and a
+    /// cloud-synced folder (or between two cloud folders).
+    /// Independent of the share-toggle flow above — the toggle
+    /// only handles first-time activation; the wizard handles all
+    /// three move scenarios (local→cloud, cloud→local, cloud→cloud).
+    @State private var showMigrationWizard: Bool = false
+
     // Conversion defaults — read by `QueueViewModel.init` on launch
     // to seed the launcher's per-conversion toggles. Same UserDefaults
     // domain is read by `Scripts/auto-scan-input.sh` to pass
@@ -197,6 +205,27 @@ struct ConversionSettingsView: View {
                     .foregroundStyle(HumanistTheme.accent)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Divider()
+            // R-Library-Migrate. Wizard entry point. Distinct from
+            // the toggle above: the toggle copies + flips on
+            // first-time activation but doesn't handle turning OFF,
+            // moving the output root to a new folder, or recovering
+            // from a stuck cloud catalog. The wizard handles all
+            // three scenarios with pre-flight checks + verification.
+            HStack {
+                Button("Migrate Library to a Different Location…") {
+                    showMigrationWizard = true
+                }
+                Spacer()
+            }
+            helpText("""
+                Walks through moving library.json + alias dictionary + snapshots + cover overrides between locations. Embedding sidecars stay machine-local; each Mac builds its own.
+                """)
+        }
+        .sheet(isPresented: $showMigrationWizard) {
+            LibraryMigrationWizard(onDismiss: {
+                showMigrationWizard = false
+            })
         }
     }
 
