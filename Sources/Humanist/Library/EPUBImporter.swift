@@ -869,7 +869,11 @@ final class EPUBImporter: ObservableObject {
     /// catalog row gets updated rather than duplicated), so the
     /// collision check only fires for *different* sources sharing
     /// a basename.
-    private static func destinationURL(
+    // Internal (not private) so the regression test for the
+    // "source already at canonical destination" case can exercise
+    // it without going through the full importer pipeline.
+    @MainActor
+    static func destinationURL(
         for source: URL,
         library: LibraryStore
     ) throws -> URL {
@@ -893,6 +897,20 @@ final class EPUBImporter: ObservableObject {
         if library.entries.contains(where: {
             $0.epubURL.canonicalForFile == baseCanonical
         }) {
+            return base
+        }
+
+        // "Source is already at the canonical destination." Common
+        // when File → Update Library from Output Folder walks the
+        // configured output root and re-discovers EPUBs already
+        // living in Books/. Without this check we'd see a file
+        // exists at `base` (it IS the source!), enter the
+        // collision-suffix loop, and write a duplicate at
+        // `<stem> (2).epub` while orphaning the original — exactly
+        // the duplication the user reported. Reuse `base` here so
+        // the importer repacks back to the source's own path; no
+        // duplicate file, no orphan.
+        if base.canonicalForFile == source.canonicalForFile {
             return base
         }
 
