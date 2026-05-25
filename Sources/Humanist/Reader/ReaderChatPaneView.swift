@@ -30,6 +30,12 @@ struct ReaderChatPaneView: View {
     /// container view (same cascade-avoidance pattern as
     /// ChatPaneView).
     @State private var showBriefingSheet: Bool = false
+    /// Pop the chat into the dedicated `book-chat` window scene —
+    /// same scene the editor's pop-out uses, keyed on the same
+    /// epubURL. Useful when the user wants to read in the reader
+    /// pane and chat in a side-by-side window without sacrificing
+    /// reading width.
+    @Environment(\.openWindow) private var openWindow
 
     // Chat appearance — same three knobs as the editor's
     // ChatPaneView; @AppStorage keys shared via ChatAppearance.Keys
@@ -113,6 +119,14 @@ struct ReaderChatPaneView: View {
             .buttonStyle(.borderless)
             .help("Pre-reading briefing: what this book is doing, what tradition it sits in, what to watch for")
             .accessibilityLabel("Pre-reading briefing")
+            Button {
+                openWindow(id: "book-chat", value: vm.epubURL)
+            } label: {
+                Image(systemName: "macwindow.badge.plus")
+            }
+            .buttonStyle(.borderless)
+            .help("Open this chat in its own window — read in the reader and chat side-by-side")
+            .accessibilityLabel("Open chat in window")
             Button {
                 showRetrievalDetail.toggle()
             } label: {
