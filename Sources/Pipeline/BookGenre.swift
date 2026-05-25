@@ -17,13 +17,52 @@ import Foundation
 ///     that fit the family but not a specific sub-genre (e.g.
 ///     `scienceGeneral` for popular-science cross-disciplinary
 ///     work).
+///
+/// 2026-05-25 — taxonomy refinement. Three previously-single-leaf
+/// top-levels (Philosophy, History, Literary Fiction) grew sub-
+/// genres because they swallowed too much of a research library:
+///   * **Philosophy** → 4 leaves by period (Ancient, Medieval,
+///     Early Modern, Modern). Modern collapses 19th–21st c. since
+///     splitting at WWII didn't earn its weight on classifier
+///     stability.
+///   * **History** → 7 leaves by region (Ancient pre-500 CE,
+///     Europe, Americas, Asia, Africa, Middle East, Global).
+///     Region is more useful in a research library than period;
+///     period stays in titles and metadata for filtering. Ancient
+///     is its own leaf because pre-500 CE history doesn't map
+///     cleanly to modern regions (Greco-Roman, ancient Near East,
+///     ancient China all collapse into "Ancient").
+///   * **Literary Fiction** → 8 leaves by first language
+///     (English, French, German, Russian, Hispanic, Italian, East
+///     Asian, Other). English is one bucket; non-English splits
+///     by language so each gets its own collection. Period
+///     sub-splits stay deferred to v2 if a single non-English
+///     bucket grows too crowded.
+/// Technology also gained a dedicated AI leaf — ML / LLMs / neural
+/// nets / classical AI no longer collapse into Computing.
+///
+/// **Legacy cases**: `philosophy`, `history`, `fictionLiterary`
+/// stay valid for Codable compatibility so previously-classified
+/// books decode cleanly. The classifier no longer returns them
+/// (they're removed from `LibraryGenreLabel`); the library's
+/// "Classify missing genres" command treats them as targets for
+/// re-classification so books gradually migrate to the finer
+/// taxonomy.
 public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
     // MARK: - Poetry / Drama
     case poetry
     case drama
 
     // MARK: - Fiction (sub-genres only — no top-level "fiction" case)
-    case fictionLiterary
+    case fictionLiterary  // LEGACY — superseded by language-specific leaves below
+    case fictionLiteraryEnglish
+    case fictionLiteraryFrench
+    case fictionLiteraryGerman
+    case fictionLiteraryRussian
+    case fictionLiteraryHispanic  // Spanish + Portuguese (European + Latin American)
+    case fictionLiteraryItalian
+    case fictionLiteraryEastAsian  // Chinese, Japanese, Korean
+    case fictionLiteraryOther
     case fictionFantasy
     case fictionScienceFiction
     case fictionMystery
@@ -42,14 +81,26 @@ public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
     case scienceGeneral       // popular science, multi-disciplinary
 
     // MARK: - Technology / Engineering
-    case technologyComputing  // programming, CS, software, AI
+    case technologyAI         // ML, LLMs, neural nets, classical AI, AI ethics / policy
+    case technologyComputing  // programming, software, CS theory, systems (non-AI)
     case technologyEngineering  // mechanical, electrical, civil
     case technologyGeneral
 
     // MARK: - Humanities
-    case philosophy
+    case philosophy  // LEGACY — superseded by period leaves below
+    case philosophyAncient       // pre-500 CE — Plato, Aristotle, Stoics, Neoplatonism
+    case philosophyMedieval      // 500-1500 — Aquinas, Anselm, Maimonides, Avicenna
+    case philosophyEarlyModern   // 1500-1800 — Descartes, Spinoza, Locke, Kant, Hume
+    case philosophyModern        // 1800-present — Hegel onward; analytic + continental
     case religion
-    case history
+    case history  // LEGACY — superseded by region leaves below
+    case historyAncient          // pre-500 CE — Greco-Roman, ancient Near East, ancient China
+    case historyEurope
+    case historyAmericas         // North + South + Caribbean
+    case historyAsia             // East + South + Central + Southeast (modern)
+    case historyAfrica
+    case historyMiddleEast       // modern (post-500 CE)
+    case historyGlobal           // world / cross-regional / comparative
     case biographyMemoir
     case linguistics
     case literaryCriticism  // close readings, author studies, period studies
@@ -72,17 +123,29 @@ public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
     // MARK: - Fallback
     case uncategorized
 
+    /// Legacy cases that the classifier no longer returns. The
+    /// library's "Classify missing genres" command re-runs AFM on
+    /// books carrying any of these so the taxonomy refinement
+    /// propagates without manual intervention. Kept as Codable
+    /// cases so existing catalogs decode cleanly.
+    public static let legacyCases: Set<BookGenre> = [
+        .philosophy, .history, .fictionLiterary,
+    ]
+
     // MARK: - Display
 
     /// Group label for the sidebar — collapses sub-genres back
     /// into their top-level family. Genres that have no
     /// sub-genres return their own display name (Poetry stays
-    /// "Poetry"; Philosophy stays "Philosophy").
+    /// "Poetry"; Religion stays "Religion").
     public var topLevel: String {
         switch self {
         case .poetry: return "Poetry"
         case .drama: return "Drama"
-        case .fictionLiterary, .fictionFantasy, .fictionScienceFiction,
+        case .fictionLiterary, .fictionLiteraryEnglish, .fictionLiteraryFrench,
+             .fictionLiteraryGerman, .fictionLiteraryRussian, .fictionLiteraryHispanic,
+             .fictionLiteraryItalian, .fictionLiteraryEastAsian, .fictionLiteraryOther,
+             .fictionFantasy, .fictionScienceFiction,
              .fictionMystery, .fictionRomance, .fictionHistorical,
              .fictionGeneral:
             return "Fiction"
@@ -90,12 +153,16 @@ public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
         case .sciencePhysics, .scienceChemistry, .scienceLifeSciences,
              .scienceEarthAstro, .scienceGeneral:
             return "Science"
-        case .technologyComputing, .technologyEngineering,
+        case .technologyAI, .technologyComputing, .technologyEngineering,
              .technologyGeneral:
             return "Technology"
-        case .philosophy: return "Philosophy"
+        case .philosophy, .philosophyAncient, .philosophyMedieval,
+             .philosophyEarlyModern, .philosophyModern:
+            return "Philosophy"
         case .religion: return "Religion"
-        case .history: return "History"
+        case .history, .historyAncient, .historyEurope, .historyAmericas,
+             .historyAsia, .historyAfrica, .historyMiddleEast, .historyGlobal:
+            return "History"
         case .biographyMemoir: return "Biography & Memoir"
         case .linguistics: return "Linguistics"
         case .literaryCriticism: return "Literary Criticism"
@@ -118,7 +185,15 @@ public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
     /// "Top-level: Leaf" collection naming.
     public var leafName: String {
         switch self {
-        case .fictionLiterary: return "Literary"
+        case .fictionLiterary: return "Literary (legacy)"
+        case .fictionLiteraryEnglish: return "Literary (English)"
+        case .fictionLiteraryFrench: return "Literary (French)"
+        case .fictionLiteraryGerman: return "Literary (German)"
+        case .fictionLiteraryRussian: return "Literary (Russian)"
+        case .fictionLiteraryHispanic: return "Literary (Hispanic)"
+        case .fictionLiteraryItalian: return "Literary (Italian)"
+        case .fictionLiteraryEastAsian: return "Literary (East Asian)"
+        case .fictionLiteraryOther: return "Literary (Other)"
         case .fictionFantasy: return "Fantasy"
         case .fictionScienceFiction: return "Science Fiction"
         case .fictionMystery: return "Mystery"
@@ -130,9 +205,23 @@ public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
         case .scienceLifeSciences: return "Life Sciences"
         case .scienceEarthAstro: return "Earth & Astronomy"
         case .scienceGeneral: return "General"
+        case .technologyAI: return "Artificial Intelligence"
         case .technologyComputing: return "Computing"
         case .technologyEngineering: return "Engineering"
         case .technologyGeneral: return "General"
+        case .philosophy: return "Philosophy (legacy)"
+        case .philosophyAncient: return "Ancient"
+        case .philosophyMedieval: return "Medieval"
+        case .philosophyEarlyModern: return "Early Modern"
+        case .philosophyModern: return "Modern"
+        case .history: return "History (legacy)"
+        case .historyAncient: return "Ancient"
+        case .historyEurope: return "Europe"
+        case .historyAmericas: return "Americas"
+        case .historyAsia: return "Asia"
+        case .historyAfrica: return "Africa"
+        case .historyMiddleEast: return "Middle East"
+        case .historyGlobal: return "Global"
         case .socialScienceEconomics: return "Economics"
         case .socialSciencePolitics: return "Politics"
         case .socialSciencePsychology: return "Psychology"
@@ -145,7 +234,7 @@ public enum BookGenre: String, CaseIterable, Sendable, Codable, Hashable {
     /// genres render as "Top-level: Leaf" so a flat sidebar list
     /// still reads grouped ("Fiction: Fantasy", "Science:
     /// Physics"); top-level genres without sub-levels render
-    /// just as the top-level name ("Poetry", "Philosophy").
+    /// just as the top-level name ("Poetry", "Religion").
     public var collectionName: String {
         if leafName == topLevel { return topLevel }
         return "\(topLevel): \(leafName)"

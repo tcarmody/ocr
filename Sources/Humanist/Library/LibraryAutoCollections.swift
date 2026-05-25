@@ -282,7 +282,17 @@ enum LibraryAutoCollections {
         guard case .available = AppleFoundationModelClient.availability
         else { return GenreClassificationResult(classified: 0, stampedUncategorized: 0) }
         let classifier = BookGenreClassifier()
-        let needsClassification = library.entries.filter { $0.genre == nil }
+        // Target entries with no genre AND entries carrying a legacy
+        // genre (philosophy / history / fictionLiterary — the
+        // pre-refinement catch-all leaves). Re-classifying legacy
+        // entries is how the 2026-05-25 taxonomy refinement
+        // propagates without a manual sweep. `.uncategorized` still
+        // stays put — it's the stamp the loop writes when the model
+        // declines, and re-running on those is futile.
+        let needsClassification = library.entries.filter { entry in
+            guard let genre = entry.genre else { return true }
+            return BookGenre.legacyCases.contains(genre)
+        }
         let total = needsClassification.count
         guard total > 0 else {
             return GenreClassificationResult(classified: 0, stampedUncategorized: 0)

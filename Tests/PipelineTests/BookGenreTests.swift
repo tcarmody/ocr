@@ -11,7 +11,12 @@ final class BookGenreTests: XCTestCase {
 
     func test_fiction_subgenres_share_one_topLevel() {
         let fictionCases: [BookGenre] = [
-            .fictionLiterary, .fictionFantasy, .fictionScienceFiction,
+            .fictionLiterary,  // legacy
+            .fictionLiteraryEnglish, .fictionLiteraryFrench,
+            .fictionLiteraryGerman, .fictionLiteraryRussian,
+            .fictionLiteraryHispanic, .fictionLiteraryItalian,
+            .fictionLiteraryEastAsian, .fictionLiteraryOther,
+            .fictionFantasy, .fictionScienceFiction,
             .fictionMystery, .fictionRomance, .fictionHistorical,
             .fictionGeneral
         ]
@@ -34,11 +39,37 @@ final class BookGenreTests: XCTestCase {
 
     func test_technology_subgenres_share_one_topLevel() {
         let cases: [BookGenre] = [
-            .technologyComputing, .technologyEngineering, .technologyGeneral
+            .technologyAI, .technologyComputing,
+            .technologyEngineering, .technologyGeneral
         ]
         for c in cases {
             XCTAssertEqual(c.topLevel, "Technology",
                 "\(c) should rollup to Technology")
+        }
+    }
+
+    func test_philosophy_periods_share_one_topLevel() {
+        let cases: [BookGenre] = [
+            .philosophy,  // legacy
+            .philosophyAncient, .philosophyMedieval,
+            .philosophyEarlyModern, .philosophyModern
+        ]
+        for c in cases {
+            XCTAssertEqual(c.topLevel, "Philosophy",
+                "\(c) should rollup to Philosophy")
+        }
+    }
+
+    func test_history_regions_share_one_topLevel() {
+        let cases: [BookGenre] = [
+            .history,  // legacy
+            .historyAncient, .historyEurope, .historyAmericas,
+            .historyAsia, .historyAfrica, .historyMiddleEast,
+            .historyGlobal
+        ]
+        for c in cases {
+            XCTAssertEqual(c.topLevel, "History",
+                "\(c) should rollup to History")
         }
     }
 
@@ -55,10 +86,13 @@ final class BookGenreTests: XCTestCase {
 
     func test_standalone_genres_are_their_own_topLevel() {
         // Single-level genres (no sub-genres). topLevel ==
-        // displayName-ish; leafName == topLevel.
+        // displayName-ish; leafName == topLevel. Philosophy and
+        // History were single-level pre-2026-05-25; they now have
+        // sub-genres so they're out of this list and validated
+        // separately above.
         let cases: [BookGenre] = [
-            .poetry, .drama, .mathematics, .philosophy, .religion,
-            .history, .linguistics, .arts, .reference, .education,
+            .poetry, .drama, .mathematics, .religion,
+            .linguistics, .arts, .reference, .education,
             .howTo, .travel, .children
         ]
         for c in cases {
@@ -71,8 +105,12 @@ final class BookGenreTests: XCTestCase {
 
     func test_subgenres_report_hasSubGenres_true() {
         XCTAssertTrue(BookGenre.fictionFantasy.hasSubGenres)
+        XCTAssertTrue(BookGenre.fictionLiteraryEnglish.hasSubGenres)
         XCTAssertTrue(BookGenre.sciencePhysics.hasSubGenres)
+        XCTAssertTrue(BookGenre.technologyAI.hasSubGenres)
         XCTAssertTrue(BookGenre.technologyComputing.hasSubGenres)
+        XCTAssertTrue(BookGenre.philosophyAncient.hasSubGenres)
+        XCTAssertTrue(BookGenre.historyEurope.hasSubGenres)
         XCTAssertTrue(BookGenre.socialScienceEconomics.hasSubGenres)
     }
 
@@ -81,10 +119,22 @@ final class BookGenreTests: XCTestCase {
     func test_collectionName_for_subgenre_uses_TopLevel_Leaf_format() {
         XCTAssertEqual(BookGenre.fictionFantasy.collectionName,
                        "Fiction: Fantasy")
+        XCTAssertEqual(BookGenre.fictionLiteraryEnglish.collectionName,
+                       "Fiction: Literary (English)")
         XCTAssertEqual(BookGenre.sciencePhysics.collectionName,
                        "Science: Physics")
+        XCTAssertEqual(BookGenre.technologyAI.collectionName,
+                       "Technology: Artificial Intelligence")
         XCTAssertEqual(BookGenre.technologyComputing.collectionName,
                        "Technology: Computing")
+        XCTAssertEqual(BookGenre.philosophyAncient.collectionName,
+                       "Philosophy: Ancient")
+        XCTAssertEqual(BookGenre.philosophyEarlyModern.collectionName,
+                       "Philosophy: Early Modern")
+        XCTAssertEqual(BookGenre.historyEurope.collectionName,
+                       "History: Europe")
+        XCTAssertEqual(BookGenre.historyMiddleEast.collectionName,
+                       "History: Middle East")
         XCTAssertEqual(BookGenre.socialScienceEconomics.collectionName,
                        "Social Science: Economics")
     }
@@ -92,9 +142,15 @@ final class BookGenreTests: XCTestCase {
     func test_collectionName_for_single_level_genre_is_plain() {
         XCTAssertEqual(BookGenre.poetry.collectionName, "Poetry")
         XCTAssertEqual(BookGenre.mathematics.collectionName, "Mathematics")
-        XCTAssertEqual(BookGenre.philosophy.collectionName, "Philosophy")
-        XCTAssertEqual(BookGenre.history.collectionName, "History")
+        XCTAssertEqual(BookGenre.religion.collectionName, "Religion")
         XCTAssertEqual(BookGenre.linguistics.collectionName, "Linguistics")
+    }
+
+    // MARK: - Legacy compatibility
+
+    func test_legacyCases_set_is_exactly_the_three_pre_refinement_leaves() {
+        XCTAssertEqual(BookGenre.legacyCases,
+                       Set([.philosophy, .history, .fictionLiterary]))
     }
 
     // MARK: - Coverage breadth
@@ -105,9 +161,15 @@ final class BookGenreTests: XCTestCase {
         // computing, math, science, etc." Verify each family is
         // present in the enum.
         XCTAssertTrue(BookGenre.allCases.contains(.mathematics))
+        XCTAssertTrue(BookGenre.allCases.contains(.technologyAI))
         XCTAssertTrue(BookGenre.allCases.contains(.technologyComputing))
         XCTAssertTrue(BookGenre.allCases.contains(.scienceLifeSciences))
-        XCTAssertTrue(BookGenre.allCases.contains(.philosophy))
+        XCTAssertTrue(BookGenre.allCases.contains(.philosophyAncient))
+        XCTAssertTrue(BookGenre.allCases.contains(.philosophyModern))
+        XCTAssertTrue(BookGenre.allCases.contains(.historyEurope))
+        XCTAssertTrue(BookGenre.allCases.contains(.historyGlobal))
+        XCTAssertTrue(BookGenre.allCases.contains(.fictionLiteraryEnglish))
+        XCTAssertTrue(BookGenre.allCases.contains(.fictionLiteraryOther))
         XCTAssertTrue(BookGenre.allCases.contains(.fictionFantasy))
         XCTAssertTrue(BookGenre.allCases.contains(.literaryCriticism))
         XCTAssertTrue(BookGenre.allCases.contains(.literaryTheory))
