@@ -43,12 +43,23 @@ public enum LibraryMigrationService {
     // MARK: - Location
 
     /// Resolved storage location for the library's user-state files.
-    /// Two cases mirror the existing R-Library-Sync mode split.
+    /// Three cases:
+    ///   * `.applicationSupport` — historical default; library lives
+    ///     under `~/Library/Application Support/Humanist/`.
+    ///   * `.customLocal(root:)` — user-picked local folder, library
+    ///     lives at `<root>/.humanist/`. Useful for external SSDs,
+    ///     dedicated library volumes, or putting the catalog
+    ///     somewhere directly accessible without diving into
+    ///     `~/Library/`. Doesn't flip the share-across-machines
+    ///     toggle — this is still single-Mac state.
+    ///   * `.cloudFolder(root:)` — multi-Mac cloud sync; library
+    ///     lives at `<root>/.humanist/`. Identical on-disk layout
+    ///     to `.customLocal`; the difference is purely UserDefaults
+    ///     state (`shareLibraryAcrossMachines = true`) which gates
+    ///     `relativePath` resolution in `LibraryStore`.
     public enum Location: Equatable, Sendable, Hashable {
-        /// Local mode — files live under
-        /// `~/Library/Application Support/Humanist/`.
         case applicationSupport
-        /// Cloud mode — files live under `<root>/.humanist/`.
+        case customLocal(root: URL)
         case cloudFolder(root: URL)
 
         /// Human-readable rendering for the wizard UI.
@@ -56,7 +67,7 @@ public enum LibraryMigrationService {
             switch self {
             case .applicationSupport:
                 return "~/Library/Application Support/Humanist"
-            case .cloudFolder(let root):
+            case .customLocal(let root), .cloudFolder(let root):
                 return root.appendingPathComponent(".humanist").path
             }
         }
@@ -71,7 +82,7 @@ public enum LibraryMigrationService {
                 return support.appendingPathComponent(
                     "Humanist", isDirectory: true
                 )
-            case .cloudFolder(let root):
+            case .customLocal(let root), .cloudFolder(let root):
                 return root.appendingPathComponent(
                     ".humanist", isDirectory: true
                 )
@@ -82,12 +93,12 @@ public enum LibraryMigrationService {
             rootDirectory.appendingPathComponent("library.json")
         }
 
-        /// Aliases path. The two modes use different sub-paths
-        /// historically: local mode lives under `Aliases/aliases.json`
-        /// (matches `AliasDictionaryStore.applicationSupportStoreURL`),
-        /// cloud mode lives at the `.humanist` root directly
-        /// (matches `AliasDictionaryStore.resolveStoreURL` cloud
-        /// branch). The wizard normalizes both into the destination's
+        /// Aliases path. Application Support uses a historical
+        /// `Aliases/` subdirectory; the two folder-rooted modes
+        /// (customLocal + cloudFolder) put `aliases.json` flat at
+        /// the `.humanist` root, matching
+        /// `AliasDictionaryStore.resolveStoreURL`'s cloud branch.
+        /// The wizard normalizes both into the destination's
         /// expected shape on copy.
         public var aliasesURL: URL {
             switch self {
@@ -95,7 +106,7 @@ public enum LibraryMigrationService {
                 return rootDirectory
                     .appendingPathComponent("Aliases", isDirectory: true)
                     .appendingPathComponent("aliases.json")
-            case .cloudFolder:
+            case .customLocal, .cloudFolder:
                 return rootDirectory.appendingPathComponent("aliases.json")
             }
         }
@@ -114,7 +125,11 @@ public enum LibraryMigrationService {
     }
 
     /// The library's current location, derived from UserDefaults.
-    /// The wizard prefills its "source" slot from this.
+    /// Precedence: cloud (when sharing is on + outputRoot exists)
+    /// > customLocal (when sharing is off + the local-root path is
+    /// set + the folder still exists) > applicationSupport (the
+    /// historical default). The wizard prefills its "source" slot
+    /// from this.
     @MainActor
     public static func current() -> Location {
         let sharing = UserDefaults.standard.bool(
@@ -122,6 +137,16 @@ public enum LibraryMigrationService {
         )
         if sharing, let root = ConversionOutputResolver.currentRoot() {
             return .cloudFolder(root: root)
+        }
+        if let raw = UserDefaults.standard.string(
+            forKey: ConversionSettingsKeys.localLibraryRootPath
+        ), !raw.isEmpty {
+            let url = URL(fileURLWithPath: raw)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+               isDir.boolValue {
+                return .customLocal(root: url)
+            }
         }
         return .applicationSupport
     }
@@ -192,8 +217,10 @@ public enum LibraryMigrationService {
             switch destination {
             case .cloudFolder:
                 notes.append("Embedding sidecars stay machine-local. After the migration, this Mac's federated index rebuilds from local sidecars on the next library-chat send; other Macs sharing the destination will build their own indexes.")
+            case .customLocal:
+                notes.append("Embedding sidecars stay in Application Support. Single-Mac state — no cross-machine sync.")
             case .applicationSupport:
-                notes.append("Embedding sidecars stay where they are. Switching back to local mode doesn't reshape the per-book sidecar storage.")
+                notes.append("Embedding sidecars stay where they are. Switching back to Application Support doesn't reshape the per-book sidecar storage.")
             }
             return notes
         }
@@ -375,6 +402,17 @@ public enum LibraryMigrationService {
     /// Flip the user-defaults state so the next launch reads from
     /// `destination`. Called by the wizard after the user confirms
     /// the post-flight verification.
+    ///
+    /// State writes are mutually exclusive per case:
+    ///   * `.applicationSupport` — clears both customLocal and
+    ///     share toggle so we land back on the historical default.
+    ///   * `.customLocal(root)` — writes the localRootPath key and
+    ///     turns the share toggle off (single-Mac mode).
+    ///   * `.cloudFolder(root)` — writes outputFolderPath and turns
+    ///     the share toggle on (multi-Mac mode); clears
+    ///     localLibraryRootPath so a later "back to local" lands
+    ///     on Application Support unless the user actively re-
+    ///     picks a custom folder.
     @MainActor
     public static func commit(to destination: Location) {
         switch destination {
@@ -382,12 +420,25 @@ public enum LibraryMigrationService {
             UserDefaults.standard.set(
                 false, forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
             )
+            UserDefaults.standard.removeObject(
+                forKey: ConversionSettingsKeys.localLibraryRootPath
+            )
+        case .customLocal(let root):
+            UserDefaults.standard.set(
+                false, forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
+            )
+            UserDefaults.standard.set(
+                root.path, forKey: ConversionSettingsKeys.localLibraryRootPath
+            )
         case .cloudFolder(let root):
             UserDefaults.standard.set(
                 true, forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
             )
             UserDefaults.standard.set(
                 root.path, forKey: ConversionSettingsKeys.outputFolderPath
+            )
+            UserDefaults.standard.removeObject(
+                forKey: ConversionSettingsKeys.localLibraryRootPath
             )
         }
     }

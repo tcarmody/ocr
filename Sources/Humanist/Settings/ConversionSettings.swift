@@ -42,6 +42,18 @@ public enum ConversionSettingsKeys {
     /// `~/Library/Application Support/Humanist/` per machine.
     public static let shareLibraryAcrossMachines = "humanist.library.shareAcrossMachines"
 
+    /// R-Library-Migrate. Optional override for the local-mode
+    /// library store location. When unset (the default), the local
+    /// catalog + siblings live under
+    /// `~/Library/Application Support/Humanist/`. When set, they
+    /// live under `<storedPath>/.humanist/` instead — useful for
+    /// external SSDs, dedicated library volumes, or
+    /// `~/Documents/...` setups where the user wants direct access
+    /// to the catalog files without diving into Library.
+    /// Consulted only when `shareLibraryAcrossMachines` is OFF
+    /// (cloud mode takes precedence and routes via outputFolderPath).
+    public static let localLibraryRootPath = "humanist.library.localRootPath"
+
     /// R-Auto-Collections. Minimum book count for an author to
     /// generate an auto-author collection. A 1000-book library
     /// wants probably 5+; a 50-book library wants 2+. Default 3.

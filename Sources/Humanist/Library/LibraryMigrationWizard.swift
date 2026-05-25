@@ -153,7 +153,7 @@ struct LibraryMigrationWizard: View {
         currentlyAt: LibraryMigrationService.Location
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            // "Back to local" option — disabled when already local.
+            // "Application Support" option — disabled when already there.
             HStack(spacing: 10) {
                 radioButton(selected: destination == .applicationSupport) {
                     destination = .applicationSupport
@@ -169,10 +169,32 @@ struct LibraryMigrationWizard: View {
                 }
                 Spacer()
             }
+            // Custom local folder — single-Mac, but user-picked
+            // location (external SSD, ~/Documents/My Library/, etc.).
+            HStack(alignment: .top, spacing: 10) {
+                radioButton(selected: destinationIsCustomLocal) {
+                    if case .customLocal = destination { return }
+                    pickFolder(forCloud: false)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Custom folder (this Mac only)")
+                        .font(.callout)
+                    Text(customLocalDestinationLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Button("Choose folder…") { pickFolder(forCloud: false) }
+                        .controlSize(.small)
+                }
+                Spacer()
+            }
+            .padding(.top, 4)
+            // Cloud-synced folder — multi-Mac.
             HStack(alignment: .top, spacing: 10) {
                 radioButton(selected: destinationIsCloud) {
                     if case .cloudFolder = destination { return }
-                    pickCloudFolder()
+                    pickFolder(forCloud: true)
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Cloud-synced folder")
@@ -182,7 +204,7 @@ struct LibraryMigrationWizard: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .truncationMode(.middle)
-                    Button("Choose folder…") { pickCloudFolder() }
+                    Button("Choose folder…") { pickFolder(forCloud: true) }
                         .controlSize(.small)
                 }
                 Spacer()
@@ -196,6 +218,11 @@ struct LibraryMigrationWizard: View {
         return false
     }
 
+    private var destinationIsCustomLocal: Bool {
+        if case .customLocal = destination { return true }
+        return false
+    }
+
     private var cloudDestinationLabel: String {
         if case .cloudFolder(let root) = destination {
             return root.appendingPathComponent(".humanist").path
@@ -203,16 +230,29 @@ struct LibraryMigrationWizard: View {
         return "Pick a folder you sync via iCloud Drive, Dropbox, or SyncThing."
     }
 
-    private func pickCloudFolder() {
+    private var customLocalDestinationLabel: String {
+        if case .customLocal(let root) = destination {
+            return root.appendingPathComponent(".humanist").path
+        }
+        return "Pick a local folder — external SSD, ~/Documents/My Library/, etc."
+    }
+
+    private func pickFolder(forCloud: Bool) {
         let panel = NSOpenPanel()
-        panel.title = "Choose the cloud-synced folder"
-        panel.message = "Humanist will write library.json + siblings under <chosen folder>/.humanist/."
+        panel.title = forCloud
+            ? "Choose the cloud-synced folder"
+            : "Choose a local folder"
+        panel.message = forCloud
+            ? "Humanist will write library.json + siblings under <chosen folder>/.humanist/. The catalog stays in sync with other Macs that share this folder."
+            : "Humanist will write library.json + siblings under <chosen folder>/.humanist/. Single-machine — no cross-Mac sync."
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Use This Folder"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        destination = .cloudFolder(root: url)
+        destination = forCloud
+            ? .cloudFolder(root: url)
+            : .customLocal(root: url)
     }
 
     // MARK: - Pre-flight
@@ -676,6 +716,7 @@ struct LibraryMigrationWizard: View {
     ) -> String {
         switch loc {
         case .applicationSupport: return "internaldrive"
+        case .customLocal:        return "folder"
         case .cloudFolder:        return "icloud"
         }
     }
@@ -685,6 +726,7 @@ struct LibraryMigrationWizard: View {
     ) -> String {
         switch loc {
         case .applicationSupport: return "Local — Application Support"
+        case .customLocal:        return "Local — custom folder"
         case .cloudFolder:        return "Cloud — shared folder"
         }
     }

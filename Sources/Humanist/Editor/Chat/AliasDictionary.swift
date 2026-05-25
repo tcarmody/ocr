@@ -96,12 +96,17 @@ struct AliasDictionaryStore {
         }
     }
 
-    /// Resolve the alias dictionary location. R-Library-Sync
-    /// Phase B: when "Share library across machines" is on + an
-    /// output root is configured, the dictionary lives at
-    /// `<outputRoot>/.humanist/aliases.json` so the same custom
-    /// vocabulary applies on every Mac. Otherwise the historical
-    /// Application Support path.
+    /// Resolve the alias dictionary location. Three-way precedence
+    /// matches `LibraryStore.resolveStoreURL`:
+    ///   1. `shareLibraryAcrossMachines` ON + outputRoot configured →
+    ///      `<outputRoot>/.humanist/aliases.json` (cloud sync).
+    ///   2. `localLibraryRootPath` set + folder exists →
+    ///      `<localRoot>/.humanist/aliases.json` (R-Library-Migrate
+    ///      customLocal — same folder-rooted layout as cloud, just
+    ///      without the share-across-machines flag).
+    ///   3. Otherwise →
+    ///      `~/Library/Application Support/Humanist/Aliases/aliases.json`
+    ///      (historical default; note the `Aliases/` subdir).
     static func resolveStoreURL() -> URL {
         if UserDefaults.standard.bool(
             forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
@@ -113,6 +118,22 @@ struct AliasDictionaryStore {
                 at: dir, withIntermediateDirectories: true
             )
             return dir.appendingPathComponent("aliases.json")
+        }
+        if let raw = UserDefaults.standard.string(
+            forKey: ConversionSettingsKeys.localLibraryRootPath
+        ), !raw.isEmpty {
+            let root = URL(fileURLWithPath: raw)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir),
+               isDir.boolValue {
+                let dir = root.appendingPathComponent(
+                    ".humanist", isDirectory: true
+                )
+                try? FileManager.default.createDirectory(
+                    at: dir, withIntermediateDirectories: true
+                )
+                return dir.appendingPathComponent("aliases.json")
+            }
         }
         let support = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask

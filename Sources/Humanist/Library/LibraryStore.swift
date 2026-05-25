@@ -82,10 +82,18 @@ final class LibraryStore: ObservableObject {
         load()
     }
 
-    /// Resolve where library.json should live. Honors the
-    /// `shareAcrossMachines` Settings toggle: when on + an output
-    /// root is configured, returns `<outputRoot>/.humanist/library.json`.
-    /// Otherwise the historical Application Support location.
+    /// Resolve where library.json should live. Three-way precedence:
+    ///   1. `shareAcrossMachines` ON + outputRoot configured →
+    ///      `<outputRoot>/.humanist/library.json` (cloud mode;
+    ///      sharing flag returned as true so the entry-resolution
+    ///      path uses relativePath rewriting).
+    ///   2. `localLibraryRootPath` set + folder exists →
+    ///      `<localRoot>/.humanist/library.json` (R-Library-Migrate
+    ///      customLocal mode; single-Mac state, no relativePath
+    ///      rewriting).
+    ///   3. Otherwise →
+    ///      `~/Library/Application Support/Humanist/library.json`
+    ///      (historical default).
     nonisolated static func resolveStoreURL() -> (url: URL, sharing: Bool) {
         let shareEnabled = UserDefaults.standard.bool(
             forKey: ConversionSettingsKeys.shareLibraryAcrossMachines
@@ -98,6 +106,20 @@ final class LibraryStore: ObservableObject {
                 at: dir, withIntermediateDirectories: true
             )
             return (dir.appendingPathComponent("library.json"), true)
+        }
+        if let raw = UserDefaults.standard.string(
+            forKey: ConversionSettingsKeys.localLibraryRootPath
+        ), !raw.isEmpty {
+            let root = URL(fileURLWithPath: raw)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir),
+               isDir.boolValue {
+                let dir = root.appendingPathComponent(".humanist", isDirectory: true)
+                try? FileManager.default.createDirectory(
+                    at: dir, withIntermediateDirectories: true
+                )
+                return (dir.appendingPathComponent("library.json"), false)
+            }
         }
         let support = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask

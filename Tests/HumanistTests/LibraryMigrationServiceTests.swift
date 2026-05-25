@@ -53,6 +53,38 @@ final class LibraryMigrationServiceTests: XCTestCase {
         XCTAssertEqual(loc.coversURL.lastPathComponent, "Covers")
     }
 
+    func test_customLocal_paths_match_cloudFolder_layout() {
+        // customLocal and cloudFolder share an on-disk layout —
+        // both root at <picked>/.humanist/ with flat aliases.json,
+        // snapshots/, Covers/ inside. Only the UserDefaults state
+        // differs (shareAcrossMachines flag). Verify the URL
+        // accessors confirm the shared layout.
+        let custom = LibraryMigrationService.Location.customLocal(root: tempDir)
+        let cloud  = LibraryMigrationService.Location.cloudFolder(root: tempDir)
+        XCTAssertEqual(custom.rootDirectory, cloud.rootDirectory)
+        XCTAssertEqual(custom.catalogURL, cloud.catalogURL)
+        XCTAssertEqual(custom.aliasesURL, cloud.aliasesURL)
+        XCTAssertEqual(custom.snapshotsURL, cloud.snapshotsURL)
+        XCTAssertEqual(custom.coversURL, cloud.coversURL)
+    }
+
+    func test_customLocal_displayPath_mentions_dot_humanist() {
+        let loc = LibraryMigrationService.Location.customLocal(root: tempDir)
+        XCTAssertTrue(loc.displayPath.contains(".humanist"))
+    }
+
+    func test_customLocal_distinct_from_cloudFolder_in_equality() {
+        // The two cases hash and compare separately even at the same
+        // root — current() relies on the share toggle to disambiguate
+        // them, but Location values themselves stay distinct so the
+        // wizard renders the right destination row in the status
+        // strip.
+        let root = tempDir!
+        let custom = LibraryMigrationService.Location.customLocal(root: root)
+        let cloud  = LibraryMigrationService.Location.cloudFolder(root: root)
+        XCTAssertNotEqual(custom, cloud)
+    }
+
     func test_applicationSupport_aliases_path_uses_Aliases_subdir() {
         // Local mode: aliases live at
         // ~/Library/Application Support/Humanist/Aliases/aliases.json
@@ -242,6 +274,89 @@ final class LibraryMigrationServiceTests: XCTestCase {
             events.contains(.finishedAliases(copied: false)),
             "missing aliases file should be reported as copied=false, not failure"
         )
+    }
+
+    // MARK: - Commit
+
+    /// `commit(to:)` writes UserDefaults to make the destination
+    /// authoritative on the next launch. The test sets a known
+    /// pre-state, commits, asserts the written keys, then restores
+    /// the pre-state so other tests + the running app aren't
+    /// disturbed.
+    func test_commit_to_applicationSupport_clears_share_and_localRoot_keys() throws {
+        let defaults = UserDefaults.standard
+        let shareKey = ConversionSettingsKeys.shareLibraryAcrossMachines
+        let localKey = ConversionSettingsKeys.localLibraryRootPath
+        let savedShare = defaults.bool(forKey: shareKey)
+        let savedLocal = defaults.string(forKey: localKey)
+        defer {
+            defaults.set(savedShare, forKey: shareKey)
+            if let savedLocal { defaults.set(savedLocal, forKey: localKey) }
+            else { defaults.removeObject(forKey: localKey) }
+        }
+
+        // Pre-state: customLocal set, sharing on.
+        defaults.set(true, forKey: shareKey)
+        defaults.set("/Volumes/example", forKey: localKey)
+
+        LibraryMigrationService.commit(to: .applicationSupport)
+        XCTAssertFalse(defaults.bool(forKey: shareKey),
+            "applicationSupport commit should turn share toggle off")
+        XCTAssertNil(defaults.string(forKey: localKey),
+            "applicationSupport commit should clear local root override")
+    }
+
+    func test_commit_to_customLocal_writes_local_root_and_clears_share_toggle() throws {
+        let defaults = UserDefaults.standard
+        let shareKey = ConversionSettingsKeys.shareLibraryAcrossMachines
+        let localKey = ConversionSettingsKeys.localLibraryRootPath
+        let savedShare = defaults.bool(forKey: shareKey)
+        let savedLocal = defaults.string(forKey: localKey)
+        defer {
+            defaults.set(savedShare, forKey: shareKey)
+            if let savedLocal { defaults.set(savedLocal, forKey: localKey) }
+            else { defaults.removeObject(forKey: localKey) }
+        }
+
+        defaults.set(true, forKey: shareKey)
+
+        let pick = tempDir.appendingPathComponent("mylibrary", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: pick, withIntermediateDirectories: true
+        )
+        LibraryMigrationService.commit(to: .customLocal(root: pick))
+        XCTAssertFalse(defaults.bool(forKey: shareKey),
+            "customLocal commit should turn share toggle off (single-Mac state)")
+        XCTAssertEqual(defaults.string(forKey: localKey), pick.path)
+    }
+
+    func test_commit_to_cloudFolder_sets_share_toggle_and_clears_local_root() throws {
+        let defaults = UserDefaults.standard
+        let shareKey = ConversionSettingsKeys.shareLibraryAcrossMachines
+        let outputKey = ConversionSettingsKeys.outputFolderPath
+        let localKey = ConversionSettingsKeys.localLibraryRootPath
+        let savedShare = defaults.bool(forKey: shareKey)
+        let savedOutput = defaults.string(forKey: outputKey)
+        let savedLocal = defaults.string(forKey: localKey)
+        defer {
+            defaults.set(savedShare, forKey: shareKey)
+            if let savedOutput { defaults.set(savedOutput, forKey: outputKey) }
+            else { defaults.removeObject(forKey: outputKey) }
+            if let savedLocal { defaults.set(savedLocal, forKey: localKey) }
+            else { defaults.removeObject(forKey: localKey) }
+        }
+
+        defaults.set("/Volumes/old-custom", forKey: localKey)
+
+        let cloud = tempDir.appendingPathComponent("cloud", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: cloud, withIntermediateDirectories: true
+        )
+        LibraryMigrationService.commit(to: .cloudFolder(root: cloud))
+        XCTAssertTrue(defaults.bool(forKey: shareKey))
+        XCTAssertEqual(defaults.string(forKey: outputKey), cloud.path)
+        XCTAssertNil(defaults.string(forKey: localKey),
+            "cloud commit should clear any prior customLocal override")
     }
 
     // MARK: - Verification
