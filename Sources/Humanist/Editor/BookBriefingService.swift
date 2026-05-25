@@ -42,14 +42,36 @@ final class BookBriefingService: ObservableObject {
 
     private let client: AnthropicAPIClient
     private let ollama: OllamaClient
+    private let store: BookBriefingStore
     private var task: Task<Void, Never>?
 
-    init() {
+    /// The book this service is currently briefing on. Stamped by
+    /// `start(...)` so `runSend` knows where to persist the result
+    /// without threading the URL through every internal call.
+    private var currentEpubURL: URL?
+
+    /// True when the briefing currently in `briefing` was loaded
+    /// from on-disk cache rather than freshly streamed. Surfaced
+    /// to the sheet header so the user knows the text is older
+    /// (and can hit Retry to regenerate). Internal to the service;
+    /// the sheet reads it via the `@Published` projection below.
+    @Published private(set) var loadedFromCache: Bool = false
+    /// Timestamp of the cached briefing, when one was loaded. nil
+    /// during fresh generation or before any briefing exists.
+    @Published private(set) var generatedAt: Date?
+    /// Backend identifier of the cached briefing, when one was
+    /// loaded. Lets the sheet show "produced by Sonnet" / "by
+    /// Qwen 3.5 9B" so the user can decide to regenerate against
+    /// a different model.
+    @Published private(set) var generatedBy: String?
+
+    init(store: BookBriefingStore = BookBriefingStore()) {
         let keyStore = AnthropicAPIKeyStore()
         self.client = AnthropicAPIClient(
             apiKeyProvider: { keyStore.read() }
         )
         self.ollama = OllamaClient()
+        self.store = store
     }
 
     /// Resolve the current chat backend the same way `BookChatViewModel`
@@ -88,11 +110,35 @@ final class BookBriefingService: ObservableObject {
         book: EPUBBook,
         entry: LibraryEntry?,
         bookTitle: String,
-        library: LibraryStore?
+        library: LibraryStore?,
+        epubURL: URL,
+        forceRefresh: Bool = false
     ) {
         task?.cancel()
-        briefing = ""
         error = nil
+        currentEpubURL = epubURL
+
+        // Cache fast-path: when a briefing has been persisted for
+        // this EPUB and the caller didn't ask for a refresh, hydrate
+        // the @Published text immediately so the sheet renders the
+        // saved Markdown without a re-stream. The user invalidates
+        // explicitly via the Retry button, which sets forceRefresh.
+        if !forceRefresh, let cached = store.read(for: epubURL) {
+            briefing = cached.briefing
+            generatedAt = cached.generatedAt
+            generatedBy = cached.backendIdentifier
+            loadedFromCache = true
+            isStreaming = false
+            return
+        }
+
+        // Fresh generation path. Wipe cached-metadata fields so the
+        // sheet header doesn't show stale "produced by X" while a
+        // new briefing streams in.
+        briefing = ""
+        loadedFromCache = false
+        generatedAt = nil
+        generatedBy = nil
         isStreaming = true
 
         let frontMatter = Self.extractFrontMatter(from: book)
@@ -154,8 +200,39 @@ final class BookBriefingService: ObservableObject {
             return
         } catch let err as AnthropicAPIError {
             error = err.localizedDescription
+            return
         } catch {
             self.error = error.localizedDescription
+            return
+        }
+
+        // Stream completed without error. Persist the briefing so
+        // the next time the sheet opens for this book the text is
+        // there immediately. Skip empty briefings (could happen
+        // if the model returned nothing); skip when currentEpubURL
+        // wasn't set (shouldn't happen via the normal call path,
+        // but a missing URL means we can't key the cache anyway).
+        guard !briefing.isEmpty, let url = currentEpubURL else { return }
+        let identifier = Self.backendIdentifier(
+            backend: backend,
+            ollamaModel: resolvedOllamaModel
+        )
+        store.write(briefing, for: url, backendIdentifier: identifier)
+        generatedAt = Date()
+        generatedBy = identifier
+        loadedFromCache = false
+    }
+
+    /// Display string for the cache payload's `backendIdentifier`
+    /// field. Kept short so the sheet header can render it inline
+    /// without truncation.
+    private static func backendIdentifier(
+        backend: ChatBackend, ollamaModel: String
+    ) -> String {
+        switch backend {
+        case .cloudHaiku:  return "claude-haiku-4-5"
+        case .cloudSonnet: return "claude-sonnet-4-6"
+        case .localOllama: return "ollama:\(ollamaModel)"
         }
     }
 

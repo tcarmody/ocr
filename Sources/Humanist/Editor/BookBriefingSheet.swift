@@ -32,26 +32,37 @@ struct BriefingSheetContainer: View {
             service: service,
             bookTitle: bookTitle,
             author: entry?.author,
-            onRetry: { start() },
+            onRetry: { start(forceRefresh: true) },
             onDismiss: onDismiss
         )
         .onAppear {
             // First mount → kick off the briefing once. Re-mounts
             // (sheet dismiss + reopen) reach this path too; the
             // service's `start` is idempotent and cancels any
-            // prior in-flight task.
+            // prior in-flight task. With caching, a saved briefing
+            // is hydrated synchronously and no streaming runs.
             if service.briefing.isEmpty && !service.isStreaming {
                 start()
             }
         }
     }
 
-    private func start() {
+    /// Briefing cache key. Falls back to the loaded EPUBBook's
+    /// own `sourceURL` when the library entry is nil (book opened
+    /// outside the catalog) — both forms canonicalize to the same
+    /// path for an indexed book.
+    private var briefingCacheKey: URL {
+        entry?.epubURL ?? book.sourceURL
+    }
+
+    private func start(forceRefresh: Bool = false) {
         service.start(
             book: book,
             entry: entry,
             bookTitle: bookTitle,
-            library: library
+            library: library,
+            epubURL: briefingCacheKey,
+            forceRefresh: forceRefresh
         )
     }
 }
@@ -106,8 +117,32 @@ struct BookBriefingSheet: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            // Cache provenance line. Shown only when the visible
+            // briefing came from disk so a fresh stream's header
+            // doesn't carry a misleading "saved earlier" badge.
+            // Two affordances at once: timestamp + model so the
+            // user can decide whether to Retry against a different
+            // backend.
+            if service.loadedFromCache,
+               let generatedAt = service.generatedAt,
+               let generatedBy = service.generatedBy {
+                Text(
+                    "Saved \(Self.cacheTimestampFormatter.localizedString(for: generatedAt, relativeTo: Date())) · \(generatedBy) · Retry to regenerate"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            }
         }
     }
+
+    /// Relative-time formatter for the cache provenance line.
+    /// "Saved 3 days ago" reads better than an ISO timestamp.
+    private static let cacheTimestampFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
 
     @ViewBuilder
     private func body(text: String) -> some View {
