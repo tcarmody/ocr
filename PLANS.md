@@ -1399,11 +1399,12 @@ Drivers for the current ordering:
     (`d1089f2`), Library `.toolbar` + `.searchable`
     (`1d13e48`), Liquid-Glass-Edges launcher background
     (`011f4d9`), A11y + keyboard-focus audit (this commit).
-    Out-of-scope items still pending: Launcher-Toolbar,
-    Settings audit, full Xcode-26 Liquid-Glass inspect pass.
-    Help Book Phase 1 (in-app Markdown + WKWebView) shipped
-    `3dce0d5`; native Apple Help Book integration tracked
-    under R-Help Phase 2 above.
+    Out-of-scope items still pending: Settings audit, full
+    Xcode-26 Liquid-Glass inspect pass. Help Book Phase 1
+    (in-app Markdown + WKWebView) shipped `3dce0d5`; native
+    Apple Help Book integration tracked under R-Help Phase 2
+    above. (U-HIG-Launcher-Toolbar shipped 2026-05-12; was
+    erroneously left on this list.)
 
 ### Deferred indefinitely
 
