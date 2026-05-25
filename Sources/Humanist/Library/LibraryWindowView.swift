@@ -683,7 +683,18 @@ struct LibraryWindowView: View {
             ConceptsSheet(
                 library: library,
                 onOpenBook: { url in
-                    OpenRouter.open(url, openWindow: openWindow)
+                    // Force reader mode regardless of the
+                    // double-click default — browsing topics is a
+                    // reading flow, not an editing flow. nil
+                    // paragraph index skips the jump-notification
+                    // side of openInReader; the reader window
+                    // opens at the user's last saved position.
+                    OpenRouter.openInReader(
+                        url: url,
+                        chapterIdx: 0,
+                        paragraphIdx: nil,
+                        openWindow: openWindow
+                    )
                 },
                 onDismiss: { showConceptsSheet = false }
             )
@@ -1321,6 +1332,10 @@ struct LibraryWindowView: View {
     /// R-Topics Phase 2. Same shape as `classifyDoneSummary` —
     /// distinguishes "nothing to do" / "everyone extracted" /
     /// "some declined" so the user gets honest end-of-run copy.
+    /// Concepts are wired end-to-end now: each extracted book's
+    /// sidecar entity index gets rebuilt with the new concepts in
+    /// the same pass, so the Topics sheet shows them immediately
+    /// on next open (no separate Build-Missing-Indexes step).
     private var conceptExtractDoneSummary: String {
         let c = conceptExtractedCount
         let d = conceptDeclinedCount
@@ -1328,11 +1343,11 @@ struct LibraryWindowView: View {
         case (0, 0):
             return "No books needed concept extraction."
         case (let c, 0):
-            return "Extracted concepts for \(c) book\(c == 1 ? "" : "s"). Next step: run Build Missing Indexes so the sidecars pick up the new concepts and the Topics view surfaces them."
+            return "Extracted concepts for \(c) book\(c == 1 ? "" : "s"). They'll appear in the Topics sheet on next open."
         case (0, let d):
             return "Tried \(d) book\(d == 1 ? "" : "s") — none produced a concept list (AFM declined or returned empty). The next bulk run retries them."
         case (let c, let d):
-            return "Extracted concepts for \(c) book\(c == 1 ? "" : "s"). \(d) declined and will retry on the next run. Next step: run Build Missing Indexes so the sidecars pick up the new concepts."
+            return "Extracted concepts for \(c) book\(c == 1 ? "" : "s") (they'll appear in Topics on next open). \(d) declined and will retry on the next run."
         }
     }
 

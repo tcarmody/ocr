@@ -37,10 +37,14 @@ struct ConceptsSheet: View {
                     selectedCanonical: $selectedCanonical,
                     library: library,
                     onOpenBook: { url in
-                        // Dismiss before opening so the sheet doesn't
-                        // sit in front of the editor/reader that the
-                        // book hand-off just brought to focus.
-                        onDismiss()
+                        // Keep the sheet open across book opens —
+                        // browsing topics is the user's loop here;
+                        // closing the sheet on every click forces a
+                        // 40s re-build (pre-warm has already gone)
+                        // to keep exploring. The reader window
+                        // opens behind the sheet, which is fine —
+                        // the user can drag the sheet aside or
+                        // close it explicitly when done browsing.
                         onOpenBook(url)
                     }
                 )

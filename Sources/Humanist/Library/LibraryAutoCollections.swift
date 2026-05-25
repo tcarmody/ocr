@@ -454,6 +454,12 @@ enum LibraryAutoCollections {
         guard total > 0 else {
             return ConceptExtractionResult(extracted: 0, declined: 0)
         }
+        // Snapshot the user's curated aliases once — re-reading
+        // per book would just hit the same on-disk file repeatedly.
+        // Union with each book's freshly-extracted concepts at the
+        // entity-index rebuild site below.
+        let userAliases = AliasDictionaryStore().read().terms
+        let sidecarStore = EmbeddingsSidecarStore()
         var extracted = 0
         var declined = 0
         for (idx, entry) in needsExtraction.enumerated() {
@@ -481,9 +487,38 @@ enum LibraryAutoCollections {
                 extracted += 1
             } catch {
                 declined += 1
+                continue
+            }
+            // End-to-end pass: re-run BookEntityIndex.build with
+            // the freshly-extracted concepts unioned into the
+            // alias-scan path, then patch the existing sidecar's
+            // entities field in place. WITHOUT this step, the
+            // sidecar's entity index stays unchanged, so the
+            // federated Topics rollup never sees the new
+            // concepts until the next full re-index (which would
+            // also re-embed every paragraph — slow, wasteful).
+            // Re-running just the entity index is cheap (~5s per
+            // book) and gets concepts onto the screen on the
+            // very next Topics-sheet open.
+            if var sidecar = sidecarStore.read(
+                for: entry.epubURL, libraryID: entry.id
+            ) {
+                let combined = userAliases.union(Set(concepts))
+                sidecar.entities = BookEntityIndex.build(
+                    from: book, aliasTerms: combined
+                )
+                sidecarStore.write(
+                    sidecar, for: entry.epubURL, libraryID: entry.id
+                )
             }
         }
         await progress?(total, total)
+        // Drop the federated concept-graph cache so the next
+        // Topics-sheet open rebuilds from the freshly-updated
+        // sidecars. The fingerprint would catch this anyway via
+        // mtime changes, but the explicit invalidate avoids any
+        // edge case where the OS coalesces mtime updates.
+        await LibraryConceptGraphCache.shared.invalidate()
         return ConceptExtractionResult(extracted: extracted, declined: declined)
     }
 
