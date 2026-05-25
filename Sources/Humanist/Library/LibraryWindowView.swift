@@ -1977,7 +1977,7 @@ struct LibraryWindowView: View {
                 .buttonStyle(.borderless)
                 .disabled(!LibraryAutoCollections.isClassifierAvailable())
                 .help(LibraryAutoCollections.isClassifierAvailable()
-                      ? "Classify missing genres via Apple Foundation Models. Runs the closed-taxonomy classifier on every book without a genre stamp; slow at library scale."
+                      ? "Classify genres via Apple Foundation Models. Runs the closed-taxonomy classifier on every book that has no genre stamp OR that carries a legacy pre-refinement genre (philosophy / history / fictionLiterary) so the finer 2026-05-25 taxonomy propagates. Slow at library scale."
                       : "Apple Intelligence isn't available on this device — genre classification needs it.")
                 Button {
                     newCollectionSheet = NewCollectionContext(memberIDs: [])
