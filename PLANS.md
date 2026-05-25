@@ -1341,6 +1341,30 @@ Drivers for the current ordering:
     bundle is fine. Earns priority when "first non-tester user"
     enters the picture or when tester install friction becomes
     real.
+10a. **R-Help Phase 2 — Apple Help Book**. Phase 1 shipped in
+    commit `3dce0d5`: six Markdown topics
+    (`Sources/Humanist/Resources/Help/*.md`) rendered in an
+    in-app WindowGroup via a hand-rolled Markdown→HTML
+    converter + WKWebView, wired to `Help → Humanist Help` (⌘?)
+    with per-topic shortcuts. **Phase 2 = native Help Viewer
+    integration**: a build-step renders the same .md sources
+    into AppleHelp-conformant HTML, assembles
+    `Contents/Resources/Humanist.help/` with the
+    `English.lproj/` index page + per-topic pages, runs
+    `helpindexer` to produce the search index, and sets
+    `CFBundleHelpBookFolder=Humanist.help` +
+    `CFBundleHelpBookName` in Info.plist. The Help menu's
+    *Humanist Help* item then routes through `NSApplication
+    .shared.showHelp(_:)` so Help Viewer.app handles it the way
+    it does for Pages / Numbers / Xcode (Spotlight-indexable
+    search inside the help, Cmd+? from any app context).
+    Single source of truth stays in the .md files; Phase 1's
+    in-app window can either be kept as a "lighter-weight
+    surface that doesn't spawn Help Viewer" or removed once
+    the Help Book lands — decide based on which feels right
+    after living with both for a week. ~half-day. Earns
+    priority when official-release polish becomes the active
+    driver (same trigger as P10).
 11. **R-Library-Chat-Plus Tier 2 — pinned passages,
     ask-each-book mode**. Build if a research workflow makes
     these specifically painful.
@@ -1375,9 +1399,11 @@ Drivers for the current ordering:
     (`d1089f2`), Library `.toolbar` + `.searchable`
     (`1d13e48`), Liquid-Glass-Edges launcher background
     (`011f4d9`), A11y + keyboard-focus audit (this commit).
-    Out-of-scope items still pending: Launcher-Toolbar, Help
-    Book, Settings audit, full Xcode-26 Liquid-Glass inspect
-    pass.
+    Out-of-scope items still pending: Launcher-Toolbar,
+    Settings audit, full Xcode-26 Liquid-Glass inspect pass.
+    Help Book Phase 1 (in-app Markdown + WKWebView) shipped
+    `3dce0d5`; native Apple Help Book integration tracked
+    under R-Help Phase 2 above.
 
 ### Deferred indefinitely
 
