@@ -111,7 +111,7 @@ final class BookBriefingService: ObservableObject {
         // to seed the on-disk index.
         task = Task { [weak self] in
             guard let self else { return }
-            let catalog = await Self.selectCatalogCandidates(
+            let catalog = await self.selectCatalogCandidates(
                 library: library,
                 frontMatter: frontMatter,
                 currentBook: currentBookURL
@@ -384,13 +384,31 @@ final class BookBriefingService: ObservableObject {
     /// the framing in `buildUserPrompt` + `systemPrompt` keeps it
     /// workable. Users on Ollama who want a small catalog should
     /// run library chat once to seed the cache.
-    static func selectCatalogCandidates(
+    func selectCatalogCandidates(
         library: LibraryStore?,
         frontMatter: String,
         currentBook: URL?
     ) async -> String {
         guard let library, !library.entries.isEmpty else { return "" }
-        let fallback = { renderCatalog(library: library, currentBook: currentBook) }
+
+        // Fallback policy diverges by chat backend:
+        //   * Cloud Sonnet/Haiku handle a 30 KB catalog with the
+        //     hardened framing; if no index is on disk yet, give
+        //     them the full catalog — better than no cross-refs.
+        //   * Local models (Qwen 9B) drift onto the catalog as the
+        //     subject even with the framing locked down. Suppress
+        //     the catalog entirely when no index is available so
+        //     the briefing stays book-focused; cross-refs come
+        //     back once the federated index is built (one library
+        //     chat session seeds it).
+        let backendIsLocal = resolvedBackend == .localOllama
+        let fallback: () -> String = {
+            backendIsLocal
+                ? ""
+                : Self.renderCatalog(
+                    library: library, currentBook: currentBook
+                )
+        }
 
         let resolution = await BackendResolver.resolveForChat()
         guard let backend = resolution.backend else { return fallback() }
@@ -414,7 +432,7 @@ final class BookBriefingService: ObservableObject {
             stats: payload.stats
         )
 
-        let digest = String(frontMatter.prefix(queryDigestCharCap))
+        let digest = String(frontMatter.prefix(Self.queryDigestCharCap))
         guard !digest.isEmpty else { return fallback() }
         let queryVector: [Float]
         do {
@@ -451,7 +469,7 @@ final class BookBriefingService: ObservableObject {
             } else {
                 lines.append("• \"\(hit.bookTitle)\"")
             }
-            if lines.count >= crossReferenceTopK { break }
+            if lines.count >= Self.crossReferenceTopK { break }
         }
         return lines.joined(separator: "\n")
     }
