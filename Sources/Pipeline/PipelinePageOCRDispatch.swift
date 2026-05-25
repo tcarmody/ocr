@@ -467,27 +467,26 @@ extension PDFToEPUBPipeline {
             apiKeyProvider: { apiKey },
             debugLogURL: debugLogURL
         )
-        let submitted: AnthropicBatchSubmitResponse
-        do {
-            submitted = try await batchClient.submit(
-                AnthropicBatchSubmitRequest(requests: batchRequests)
-            )
-        } catch {
-            // Batch submission failed entirely. Settle every
-            // Sonnet page's partial as the final pending so the
-            // assembly emits empty pages (anchor + figures only).
-            dispatchLog("submit threw: \(error) — settling partials")
-            for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
-                if let p = prepared[i] { pendingByIndex[i] = p.partial }
-            }
-            return
-        }
+
+        // Anthropic's Messages Batches API caps requests at 256 MB.
+        // A long book of typeset / scanned pages routinely blows
+        // through that (Habermas Vol.1, 277 pages, encoded to
+        // ~295 MB and hit 413). Greedy-pack into sub-batches under
+        // a conservative 180 MB threshold so the JSON envelope +
+        // boundary overhead stays well under the cap, then submit
+        // each chunk concurrently. Sub-batches share the same
+        // batch-job semantics; the merged results map still keys
+        // by customId so the parsing path downstream is unchanged.
+        let chunks = Self.chunkBatchRequestsBySize(
+            batchRequests, maxBodyBytes: 180_000_000
+        )
+        dispatchLog("partitioned \(batchRequests.count) requests into \(chunks.count) sub-batch(es)")
 
         // Tell the queue UI we've entered the poll-wait window so
         // it can swap the linear bar for an indeterminate spinner
-        // + a "Waiting for batch · usually <1 h" label. We re-emit
-        // the same page counts so the visible position doesn't
-        // jump; only `phase` changes.
+        // + a "Waiting for batch · usually <1 h" label. Emit
+        // once for the whole multi-chunk submission so the UI
+        // doesn't flicker per chunk.
         progress?(Progress(
             totalPages: totalPages,
             completedPages: baselineCount + preppedCount,
@@ -495,35 +494,50 @@ extension PDFToEPUBPipeline {
             phase: .batchWaiting
         ))
 
-        // Phase B continued: poll until done.
-        let final: AnthropicBatchStatusResponse
-        do {
-            final = try await batchClient.awaitCompletion(
-                batchId: submitted.id
-            )
-        } catch {
-            dispatchLog("awaitCompletion threw: \(error) — settling partials")
-            for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
-                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+        // Per-chunk submit → await → fetch, run concurrently via
+        // TaskGroup. A 277-page book splits into 2 chunks; both
+        // batches run in parallel on Anthropic's side so wall
+        // time isn't worse than a single big batch would have
+        // been. If any individual chunk throws, we settle just
+        // that chunk's partials and continue with the rest —
+        // partial coverage of a long book is strictly better
+        // than zero coverage.
+        var results: [AnthropicBatchResultLine] = []
+        let chunkOutcomes = await withTaskGroup(
+            of: ChunkOutcome.self
+        ) { group in
+            for chunk in chunks {
+                group.addTask {
+                    await Self.runChunk(
+                        chunk,
+                        client: batchClient,
+                        debugLogURL: debugLogURL
+                    )
+                }
             }
-            return
+            var collected: [ChunkOutcome] = []
+            for await outcome in group { collected.append(outcome) }
+            return collected
         }
-        guard let resultsURL = final.resultsUrl else {
-            dispatchLog("terminal status without results_url — settling partials as empty")
-            for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
-                if let p = prepared[i] { pendingByIndex[i] = p.partial }
+        for outcome in chunkOutcomes {
+            switch outcome {
+            case .success(let lines):
+                results.append(contentsOf: lines)
+            case .failed(let customIds, let reason):
+                dispatchLog("chunk failed (\(reason)) — settling \(customIds.count) partials")
+                for customId in customIds {
+                    guard let i = Self.pageIndexFromCustomId(customId),
+                          pendingByIndex[i] == nil,
+                          let p = prepared[i]
+                    else { continue }
+                    pendingByIndex[i] = p.partial
+                }
             }
-            return
         }
-        dispatchLog("succeeded — fetching results from \(resultsURL)")
-        let results: [AnthropicBatchResultLine]
-        do {
-            results = try await batchClient.fetchResults(from: resultsURL)
-        } catch {
-            dispatchLog("fetchResults threw: \(error) — settling partials")
-            for (i, _) in sonnetEntries where pendingByIndex[i] == nil {
-                if let p = prepared[i] { pendingByIndex[i] = p.partial }
-            }
+        if results.isEmpty {
+            // Every chunk failed — nothing to walk. Partials
+            // have already been settled by the per-chunk failure
+            // branch above.
             return
         }
 
@@ -808,6 +822,135 @@ extension PDFToEPUBPipeline {
     static func pageIndexFromCustomId(_ customId: String) -> Int? {
         guard customId.hasPrefix("page-") else { return nil }
         return Int(customId.dropFirst("page-".count))
+    }
+
+    // MARK: - Sub-batch chunking (Anthropic 256 MB cap)
+
+    /// Outcome of one chunk's submit → await → fetch pipeline.
+    /// Drives the merge loop in the dispatcher: success contributes
+    /// result lines; failure surfaces the custom_ids so the
+    /// dispatcher can settle just those pages' partials without
+    /// touching the chunks that succeeded.
+    enum ChunkOutcome: Sendable {
+        case success([AnthropicBatchResultLine])
+        case failed(customIds: [String], reason: String)
+    }
+
+    /// Greedy bin-packing partitioner. Iterates `requests` in input
+    /// order; each chunk accumulates requests until adding the next
+    /// would exceed `maxBodyBytes`, then opens a new chunk. A single
+    /// oversized request (larger than the cap on its own) gets its
+    /// own chunk regardless — Anthropic will reject it, but that's
+    /// strictly better than refusing to submit anything.
+    ///
+    /// Size estimate per request = sum of base64-encoded image
+    /// payloads + a small per-request constant for JSON envelope +
+    /// prompt + metadata. Base64 strings dominate the body weight
+    /// (the user's failed Habermas batch was ~95% image data), so
+    /// the estimate is accurate to within a percent or two.
+    static func chunkBatchRequestsBySize(
+        _ requests: [AnthropicBatchSubmitRequest.Request],
+        maxBodyBytes: Int
+    ) -> [[AnthropicBatchSubmitRequest.Request]] {
+        var chunks: [[AnthropicBatchSubmitRequest.Request]] = []
+        var current: [AnthropicBatchSubmitRequest.Request] = []
+        var currentBytes = 0
+        for request in requests {
+            let size = estimateRequestBodyBytes(request)
+            if !current.isEmpty,
+               currentBytes + size > maxBodyBytes {
+                chunks.append(current)
+                current = []
+                currentBytes = 0
+            }
+            current.append(request)
+            currentBytes += size
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
+    /// Per-request size estimate. Sums base64 character counts
+    /// across every image block in every message; adds 8 KB for
+    /// the JSON envelope (system prompt + structured-output
+    /// schema + per-block metadata).
+    private static func estimateRequestBodyBytes(
+        _ request: AnthropicBatchSubmitRequest.Request
+    ) -> Int {
+        var bytes = 8_192
+        for message in request.params.messages {
+            if case .blocks(let blocks) = message.content {
+                for block in blocks {
+                    if case .image(_, let data, _) = block {
+                        bytes += data.utf8.count
+                    } else if case .text(let s, _) = block {
+                        bytes += s.utf8.count
+                    }
+                }
+            }
+        }
+        return bytes
+    }
+
+    /// One chunk's submit → await → fetch cycle. Wraps each step
+    /// in a do/catch so a thrown error converts to a `.failed`
+    /// outcome carrying the chunk's custom_ids; the caller settles
+    /// just those pages' partials without affecting other chunks.
+    /// `debugLogURL` is captured by value so the closure stays
+    /// `Sendable` for TaskGroup use — the parent's nested
+    /// `dispatchLog` closure isn't Sendable.
+    static func runChunk(
+        _ chunk: [AnthropicBatchSubmitRequest.Request],
+        client: AnthropicBatchAPIClient,
+        debugLogURL: URL?
+    ) async -> ChunkOutcome {
+        let customIds = chunk.map(\.customId)
+        let submitted: AnthropicBatchSubmitResponse
+        do {
+            submitted = try await client.submit(
+                AnthropicBatchSubmitRequest(requests: chunk)
+            )
+        } catch {
+            return .failed(customIds: customIds, reason: "submit: \(error)")
+        }
+        let final: AnthropicBatchStatusResponse
+        do {
+            final = try await client.awaitCompletion(batchId: submitted.id)
+        } catch {
+            return .failed(customIds: customIds, reason: "awaitCompletion: \(error)")
+        }
+        guard let resultsURL = final.resultsUrl else {
+            return .failed(customIds: customIds, reason: "no results_url")
+        }
+        do {
+            let lines = try await client.fetchResults(from: resultsURL)
+            appendDispatchLog(
+                "chunk \(submitted.id) returned \(lines.count) results",
+                to: debugLogURL
+            )
+            return .success(lines)
+        } catch {
+            return .failed(customIds: customIds, reason: "fetchResults: \(error)")
+        }
+    }
+
+    /// Sendable equivalent of the dispatcher's nested
+    /// `dispatchLog` closure. Same log format ("[ISO8601] [dispatch]
+    /// message") so claude-batch.txt entries from concurrent chunks
+    /// interleave cleanly. No-op when `url` is nil.
+    private static func appendDispatchLog(
+        _ message: String, to url: URL?
+    ) {
+        guard let url else { return }
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] [dispatch] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url, options: .atomic)
+        }
     }
 
     // MARK: - Vision-backfill for batch refusals
