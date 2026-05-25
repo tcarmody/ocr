@@ -24,6 +24,12 @@ struct ReaderChatPaneView: View {
     /// editor's chat pane — useful when retrieval looks off and
     /// the user wants to see why each paragraph got picked.
     @State private var showRetrievalDetail: Bool = false
+    /// Mirrors the editor chat pane's briefing-sheet trigger.
+    /// Local @State so re-renders from the streaming
+    /// BookBriefingService stay contained inside the sheet's
+    /// container view (same cascade-avoidance pattern as
+    /// ChatPaneView).
+    @State private var showBriefingSheet: Bool = false
 
     // Chat appearance — same three knobs as the editor's
     // ChatPaneView; @AppStorage keys shared via ChatAppearance.Keys
@@ -58,6 +64,18 @@ struct ReaderChatPaneView: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .preferredColorScheme(resolvedAppearance.colorScheme)
+        .sheet(isPresented: $showBriefingSheet) {
+            BriefingSheetContainer(
+                book: vm.book,
+                bookTitle: vm.book.metadata.title ?? "this book",
+                entry: vm.library?.entries.first {
+                    $0.epubURL.canonicalForFile
+                        == vm.epubURL.canonicalForFile
+                },
+                library: vm.library,
+                onDismiss: { showBriefingSheet = false }
+            )
+        }
     }
 
     // MARK: - Chrome (top row above the transcript)
@@ -87,6 +105,14 @@ struct ReaderChatPaneView: View {
             .accessibilityLabel(vm.useLongFormSynthesis
                   ? "Switch to short answers"
                   : "Switch to long-form answers")
+            Button {
+                showBriefingSheet = true
+            } label: {
+                Image(systemName: "text.book.closed")
+            }
+            .buttonStyle(.borderless)
+            .help("Pre-reading briefing: what this book is doing, what tradition it sits in, what to watch for")
+            .accessibilityLabel("Pre-reading briefing")
             Button {
                 showRetrievalDetail.toggle()
             } label: {
