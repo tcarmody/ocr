@@ -322,8 +322,14 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
                     message: body.isEmpty ? nil : body
                 )
             }
-            let backoff = retryAfter
+            // Cap the wait at maxRetryWaitSeconds even when the
+            // server suggests longer. A 5-minute retryDelay hint
+            // multiplied across 15 sub-batches × 3 retries would
+            // otherwise stall the run for the better part of an
+            // hour on a single book.
+            let rawBackoff = retryAfter
                 ?? Self.exponentialBackoffSeconds(attempt: attempt)
+            let backoff = min(rawBackoff, Self.maxRetryWaitSeconds)
             try await Task.sleep(for: .seconds(backoff))
             attempt += 1
         }
@@ -422,6 +428,17 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         let base = pow(2.0, Double(attempt))
         return min(base, 30)
     }
+
+    /// Hard ceiling on the wait between a retryable failure and
+    /// the next attempt — including server-suggested `Retry-After`
+    /// / `retryDelay`. Google's 503 responses sometimes hint at
+    /// multi-minute waits; honoring those literally caused a
+    /// large book (~15 sub-batches × ~3 retries × 60s+ each) to
+    /// burn the better part of an hour stalled inside one entry.
+    /// Cap at 30s and let the per-book timeout (CLI / app) catch
+    /// truly persistent overload; the cool-off pass at the end
+    /// of a reindex run picks up the book on the second attempt.
+    private static let maxRetryWaitSeconds: Double = 30
 
     // MARK: - Wire types
 

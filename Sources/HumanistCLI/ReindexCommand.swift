@@ -4,6 +4,18 @@ import AI
 import EPUB
 import LibraryIndexing
 
+/// Thrown by `ReindexCommand.runWithTimeout` when a single book's
+/// processing exceeds the per-book deadline. localizedDescription
+/// contains the word "timed out" so the run-level transient-failure
+/// classifier (`Self.looksTransient`) picks it up for the
+/// end-of-run cool-off retry pass.
+struct ReindexBookTimedOut: LocalizedError {
+    let seconds: TimeInterval
+    var errorDescription: String? {
+        "timed out after \(Int(seconds))s — book exceeded the per-book deadline"
+    }
+}
+
 /// `humanist-cli reindex --backend <choice>` — headless equivalent
 /// of the Library window's "Build Missing Indexes" / "Rebuild All
 /// Indexes" toolbar. Walks the catalog, constructs the chosen
@@ -89,6 +101,12 @@ struct ReindexCommand: AsyncParsableCommand {
     )
     var retryCooloffSeconds: Int = 60
 
+    @Option(
+        name: .long,
+        help: "Maximum seconds a single book is allowed before the watchdog cancels it and the loop moves on. Default 180s — covers a healthy ~2000-paragraph book with cloud-embedding round-trips and even a few 429/503 retries. Stuck books get cancelled cleanly so one bad entry can't block a 2000-book run."
+    )
+    var perBookTimeoutSeconds: Int = 180
+
     func run() async throws {
         let catalogURL = try resolveCatalogURL()
         let storeURL = resolveStoreURL()
@@ -126,14 +144,18 @@ struct ReindexCommand: AsyncParsableCommand {
         for (index, entry) in entries.enumerated() {
             let prefix = "[\(index + 1)/\(totalCount)] \(entry.title)"
             do {
-                let outcome = try await BookSidecarBuilder.buildIfNeeded(
-                    epubURL: entry.epubURL,
-                    libraryID: entry.id,
-                    backend: backendInstance,
-                    fallbackBackend: nil,
-                    store: store,
-                    forceRebuild: force
-                )
+                let outcome = try await Self.runWithTimeout(
+                    seconds: TimeInterval(perBookTimeoutSeconds)
+                ) {
+                    try await BookSidecarBuilder.buildIfNeeded(
+                        epubURL: entry.epubURL,
+                        libraryID: entry.id,
+                        backend: backendInstance,
+                        fallbackBackend: nil,
+                        store: store,
+                        forceRebuild: force
+                    )
+                }
                 switch outcome {
                 case .skipped:
                     skipped += 1
@@ -176,14 +198,18 @@ struct ReindexCommand: AsyncParsableCommand {
                 for (i, candidate) in retryCandidates.enumerated() {
                     let prefix = "[retry \(i + 1)/\(retryCandidates.count)] \(candidate.entry.title)"
                     do {
-                        let outcome = try await BookSidecarBuilder.buildIfNeeded(
-                            epubURL: candidate.entry.epubURL,
-                            libraryID: candidate.entry.id,
-                            backend: backendInstance,
-                            fallbackBackend: nil,
-                            store: store,
-                            forceRebuild: force
-                        )
+                        let outcome = try await Self.runWithTimeout(
+                            seconds: TimeInterval(perBookTimeoutSeconds)
+                        ) {
+                            try await BookSidecarBuilder.buildIfNeeded(
+                                epubURL: candidate.entry.epubURL,
+                                libraryID: candidate.entry.id,
+                                backend: backendInstance,
+                                fallbackBackend: nil,
+                                store: store,
+                                forceRebuild: force
+                            )
+                        }
                         switch outcome {
                         case .skipped:
                             // Shouldn't happen on retry of a failed
@@ -311,6 +337,44 @@ struct ReindexCommand: AsyncParsableCommand {
     /// `LibraryEntry` shape (which is iCloud-sync aware, has
     /// genre / conversion-type / etc.). Only id + epubURL + title
     /// are needed for re-indexing.
+    /// Per-book watchdog. Mirrors `LibraryIndexBuilder.runWithTimeout`
+    /// in shape — pathological books that hang inside an embedding
+    /// call or a retry loop get cancelled at the deadline so the
+    /// outer loop moves on. Without this the CLI's `reindex` could
+    /// stall indefinitely on a single bad entry (the user reported
+    /// the run getting stuck after entry 1942 of 2250 because a
+    /// 503 retry compounded across sub-batches into a multi-minute
+    /// wait per chunk).
+    ///
+    /// On timeout, the work task is cancelled and the helper throws
+    /// `ReindexBookTimedOut` — surfaces in the failures list as
+    /// "timed out after Xs" and feeds the end-of-run retry pass
+    /// (Self.looksTransient catches the "timeout" substring).
+    static func runWithTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let work = Task<T, Error> { try await operation() }
+        let watchdog = Task<Void, Never> {
+            try? await Task.sleep(
+                nanoseconds: UInt64(seconds * 1_000_000_000)
+            )
+            work.cancel()
+        }
+        defer { watchdog.cancel() }
+        do {
+            return try await withTaskCancellationHandler {
+                try await work.value
+            } onCancel: {
+                work.cancel()
+                watchdog.cancel()
+            }
+        } catch is CancellationError {
+            if Task.isCancelled { throw CancellationError() }
+            throw ReindexBookTimedOut(seconds: seconds)
+        }
+    }
+
     /// Substring-based classifier for "this looks like a
     /// transient failure worth retrying after a cool-off."
     /// Cheap and string-matchy because `EmbeddingError`'s
