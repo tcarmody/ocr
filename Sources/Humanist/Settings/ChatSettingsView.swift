@@ -267,8 +267,20 @@ struct ChatSettingsView: View {
     private var chatAppearanceSection: some View {
         Section("Chat Appearance") {
             Picker("Font", selection: appearanceFontFamilyBinding) {
-                ForEach(ChatAppearance.FontFamily.allCases) { family in
-                    Text(family.displayName).tag(family)
+                // Group the picker into Sans-serif / Serif
+                // sections so the dropdown reads as a curated
+                // typography list rather than a flat enum dump.
+                // SwiftUI's menu-style Picker renders Section
+                // headers as separators inside the dropdown.
+                Section("Sans-serif") {
+                    ForEach(ChatAppearance.FontFamily.allCases.filter { !$0.isSerif }) { family in
+                        Text(family.displayName).tag(family)
+                    }
+                }
+                Section("Serif") {
+                    ForEach(ChatAppearance.FontFamily.allCases.filter(\.isSerif)) { family in
+                        Text(family.displayName).tag(family)
+                    }
                 }
             }
             Picker("Size", selection: appearanceFontSizeBinding) {
