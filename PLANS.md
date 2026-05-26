@@ -1372,26 +1372,98 @@ Drivers for the current ordering:
         points at it. Existing users see zero change in
         behavior until they create a second profile.
 
-    *Per-library scope (follows the profile's Location root):*
-      * `library.json` (catalog), `aliases.json`, `snapshots/`,
-        `Covers/` — already mode-aware; reuses
-        R-Library-Migrate's resolution helper.
-      * `Embeddings/` (machine-local even for cloud-shared
-        libraries, per existing posture), `Concepts/`,
-        `Briefings/`, `Chats/` (transcripts), reading
-        positions, annotations — all currently route through
-        `LibraryStore.resolveLibraryStateDirectory` (or
-        equivalent); generalize so each profile gets its own
-        subtree under the same root.
+    **Sharing model — three tiers, not strict isolation.**
 
-    *Machine-wide scope (stays in UserDefaults / Keychain):*
+    A naive "each library is a complete silo" design forces
+    re-converting / re-embedding / re-briefing whenever the same
+    book lives in two libraries. The existing storage shape
+    already hints at a better answer: most per-book state is
+    keyed by content-hash (reading positions, annotations) or
+    library-entry UUID (embeddings). The cleaner architecture
+    splits state into three tiers based on what the state is
+    *about*:
+
+    *Tier 1 — Book files (shared pool, refcounted):*
+      * Physical `.epub` files live in a shared pool, not under
+        any single library. The Books output folder (Settings →
+        Conversion → Output folder) becomes a shared resource;
+        each library's catalog row stores a path into it.
+      * Adding "this book" to a second library is a catalog
+        insert + content-hash lookup — no file copy, no
+        re-OCR, no re-conversion.
+      * Deletion needs refcounting: trashing a book from
+        Library A only deletes the file if no other library
+        still references it. Track via the per-source-hash
+        membership the catalog already records, plus a
+        per-library `bookID` set.
+
+    *Tier 2 — Per-book state, content-hash addressed (shared
+    automatically):*
+      * Embedding sidecars: today keyed by `libraryID` UUID;
+        switch primary key to content-hash so the same book's
+        vectors compute once + reuse across libraries. UUID
+        becomes a catalog-row ID only.
+      * Concept extraction payloads (`Concepts/<hash>.json`):
+        AFM output is deterministic per book — share by hash.
+      * Briefings (already content-hash addressed today): no
+        change.
+      * Reading positions (already content-hash addressed):
+        no change.
+      * Annotations (already content-hash addressed): no
+        change.
+      * Per-book chat transcripts: today keyed by canonical
+        EPUB path. Could go either way. v1 default: share by
+        content-hash (one reader, one ongoing conversation
+        with a given book — switching libraries doesn't reset
+        the chat history). User can opt into per-library
+        chat history later if a real use case surfaces.
+
+    *Tier 3 — Per-library state (the library *is* the data):*
+      * `library.json` (catalog) — which books are in this
+        library. The defining state of a library.
+      * Collections — user-curated groupings within this
+        library's catalog.
+      * Federated indexes (`LibraryConceptGraph`, federated
+        embedding index, Topics rollup) — derived from the
+        catalog's *subset* of books, so per-library by
+        definition.
+      * Library-scope chat transcripts (`Chats/library.json`)
+        — about this library's contents, partitioned per
+        profile.
+      * Alias dictionary — open question. Library-scoped
+        captures domain-specific vocabulary (a research
+        library has different aliases than a fiction
+        library); machine-wide is simpler. v1: library-scoped,
+        with a "Copy aliases from…" import to bootstrap a new
+        library's vocabulary.
+
+    *Tier 4 — Machine-wide (stays in UserDefaults / Keychain):*
       * API keys (Anthropic, Voyage, Gemini, Google Cloud
         Vision) — Keychain, shared across profiles.
       * Settings preferences: AI backend choice, chat
         appearance, reader appearance, conversion defaults.
-        Per-user typography + per-user AI plumbing; doesn't
-        partition by library.
+        Per-user typography + per-user AI plumbing.
       * The profile registry itself.
+      * Recents: tricky — partitioning per-library makes
+        "Recent" match the active catalog, but a single
+        unified Recents matches reader behavior. v1: machine-
+        wide unified, filtered against the active library's
+        catalog at render time (recent books not in the
+        active catalog appear greyed-out with a "Move to
+        active library" affordance).
+
+    **Net effect of the tiered model:**
+    - Storage: 1× per book regardless of how many libraries
+      contain it.
+    - AFM/embedding cost: paid once per book across all
+      libraries.
+    - Conceptual cost: refcounting on book deletion + a
+      catalog-row UUID separate from the content-hash
+      storage key.
+    - Implementation cost: ~half day on top of the v1
+      isolated estimate; the bigger ask is migrating
+      existing UUID-keyed sidecars to content-hash keys
+      (one-time migration step at first-launch).
 
     *Active-profile switch flow:*
       * **At launch:** hold ⌥ to pop a "Choose Library…"
@@ -1443,10 +1515,14 @@ Drivers for the current ordering:
       * R-Library-Migrate wizard — generalizes to "move this
         profile to a different location." Same code paths.
 
-    **Effort:** ~2-2.5 days for a clean v1. Most of the work
-    is the per-library state routing + window-close
-    coordination on switch; the profile registry + Settings
-    UI is straightforward.
+    **Effort:** ~2.5-3 days for the tiered-sharing v1. The
+    extra half-day over the isolated design buys content-hash
+    keying of embeddings/concepts (~30 min refactor +
+    migration step) and refcounted book-file deletion (~half
+    day including the "where else is this referenced" UI).
+    Most of the work is still per-library state routing +
+    window-close coordination on switch; the profile registry
+    + Settings UI is straightforward.
 
     **Trigger:** earns priority when a second concrete user
     arrives on the same Mac, OR when one user explicitly
