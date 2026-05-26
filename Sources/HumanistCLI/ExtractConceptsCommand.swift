@@ -114,6 +114,7 @@ struct ExtractConceptsCommand: AsyncParsableCommand {
 
         var extracted = 0
         var declined = 0
+        var errored = 0
         var failed: [(entry: CatalogEntry, error: String)] = []
         let started = Date()
 
@@ -121,7 +122,7 @@ struct ExtractConceptsCommand: AsyncParsableCommand {
             if Task.isCancelled { break }
             let prefix = "[\(idx + 1)/\(needsExtraction.count)] \(entry.title)"
             do {
-                let count = try await Self.runWithTimeout(
+                let outcome = try await Self.runWithTimeout(
                     seconds: TimeInterval(perBookTimeoutSeconds)
                 ) {
                     try await Self.processOne(
@@ -132,12 +133,17 @@ struct ExtractConceptsCommand: AsyncParsableCommand {
                         aliasTerms: aliasTerms
                     )
                 }
-                if count > 0 {
+                switch outcome {
+                case .extracted(let count):
                     extracted += 1
                     print("\(prefix) — extracted \(count) concepts")
-                } else {
+                case .declined:
                     declined += 1
-                    print("\(prefix) — AFM declined (no concepts)")
+                    print("\(prefix) — AFM declined (empty list, no error)")
+                case .errored(let message):
+                    errored += 1
+                    failed.append((entry, "AFM threw: \(message)"))
+                    print("\(prefix) — AFM ERROR: \(message)")
                 }
             } catch is CancellationError {
                 print("\(prefix) — cancelled, stopping run")
@@ -151,9 +157,10 @@ struct ExtractConceptsCommand: AsyncParsableCommand {
         let elapsed = Date().timeIntervalSince(started)
         print("")
         print("=== Extraction complete in \(Int(elapsed))s ===")
-        print("Extracted: \(extracted)")
-        print("Declined:  \(declined)")
-        print("Failed:    \(failed.count)")
+        print("Extracted:    \(extracted)")
+        print("Declined:     \(declined)")
+        print("AFM errors:   \(errored)")
+        print("Other failed: \(failed.count - errored)")
         if !failed.isEmpty {
             print("")
             print("First failures:")
@@ -166,26 +173,40 @@ struct ExtractConceptsCommand: AsyncParsableCommand {
         }
     }
 
+    /// Outcome of a single book's processing. Lets the loop
+    /// distinguish "AFM threw an error" (context window blown,
+    /// framework hiccup) from "AFM legitimately declined" (no
+    /// concepts) for honest per-book logging.
+    fileprivate enum BookOutcome {
+        case extracted(count: Int)
+        case declined
+        case errored(String)
+    }
+
     /// Per-book pipeline: AFM extract → persist payload → rebuild
     /// entity index with the new concepts unioned into the
-    /// alias-scan path → patch sidecar. Returns the concept count
-    /// (0 when AFM declined).
+    /// alias-scan path → patch sidecar.
     private static func processOne(
         entry: CatalogEntry,
         extractor: BookConceptExtractor,
         conceptStore: BookConceptStore,
         sidecarStore: EmbeddingsSidecarStore,
         aliasTerms: Set<String>
-    ) async throws -> Int {
+    ) async throws -> BookOutcome {
         let book = try EPUBBook.open(epubURL: entry.epubURL)
         let samples = BookConceptExtractor.sampleChapters(from: book)
-        guard !samples.isEmpty else { return 0 }
-        let result = await extractor.extract(
+        guard !samples.isEmpty else { return .declined }
+        let outcome = await extractor.extractWithDiagnostic(
             title: entry.title,
             author: entry.author,
             chapterSamples: samples
         )
-        guard let concepts = result, !concepts.isEmpty else { return 0 }
+        if let errorDescription = outcome.errorDescription {
+            return .errored(errorDescription)
+        }
+        guard let concepts = outcome.concepts, !concepts.isEmpty else {
+            return .declined
+        }
         let payload = BookConceptStore.Payload(
             concepts: concepts,
             generatedAt: Date(),
@@ -207,7 +228,7 @@ struct ExtractConceptsCommand: AsyncParsableCommand {
                 sidecar, for: entry.epubURL, libraryID: entry.id
             )
         }
-        return concepts.count
+        return .extracted(count: concepts.count)
     }
 
     private static func runWithTimeout<T: Sendable>(

@@ -59,9 +59,39 @@ public struct BookConceptExtractor: Sendable {
         author: String?,
         chapterSamples: [String]
     ) async -> [String]? {
+        let outcome = await extractWithDiagnostic(
+            title: title, author: author, chapterSamples: chapterSamples
+        )
+        return outcome.concepts
+    }
+
+    /// Result tuple returned by `extractWithDiagnostic`. Lets the
+    /// caller distinguish "AFM declined" (empty list, no error)
+    /// from "AFM threw" (context overflow, framework error,
+    /// cancellation). The CLI surfaces the diagnostic so users can
+    /// tell apart silent declines vs. context-window blowouts.
+    public struct ExtractionOutcome: Sendable {
+        public let concepts: [String]?
+        public let errorDescription: String?
+
+        public init(concepts: [String]?, errorDescription: String? = nil) {
+            self.concepts = concepts
+            self.errorDescription = errorDescription
+        }
+    }
+
+    public func extractWithDiagnostic(
+        title: String?,
+        author: String?,
+        chapterSamples: [String]
+    ) async -> ExtractionOutcome {
         try? Task.checkCancellation()
         guard case .available = AppleFoundationModelClient.availability
-        else { return nil }
+        else {
+            return ExtractionOutcome(
+                concepts: nil, errorDescription: "AFM unavailable"
+            )
+        }
         let prompt = Self.makePrompt(
             title: title, author: author, chapterSamples: chapterSamples
         )
@@ -70,9 +100,14 @@ public struct BookConceptExtractor: Sendable {
                 instructions: Self.instructions,
                 prompt: prompt
             )
-            return Self.canonicalize(response.concepts)
+            return ExtractionOutcome(
+                concepts: Self.canonicalize(response.concepts)
+            )
         } catch {
-            return nil
+            return ExtractionOutcome(
+                concepts: nil,
+                errorDescription: error.localizedDescription
+            )
         }
     }
 
@@ -84,10 +119,18 @@ public struct BookConceptExtractor: Sendable {
     /// `BookBriefingService.extractFrontMatter` — sample enough
     /// content to identify central concepts without blowing the
     /// AFM context window.
+    /// Sample sizes calibrated to fit AFM's effective context
+    /// window once instructions + @Generable schema + response
+    /// budget are accounted for. 15_000 chars was too aggressive
+    /// — AFM started declining on longer books (the 4K-token
+    /// input cap that some Foundation Model configurations
+    /// enforce). 350 × 30 chapters ≈ 10_500 chars worst case,
+    /// well clear of the wall while still giving the model 3×
+    /// more text per chapter than the v1 prompt's 200 chars.
     public static func sampleChapters(
         from book: EPUBBook,
-        perChapterChars: Int = 600,
-        totalCharsCap: Int = 15_000
+        perChapterChars: Int = 350,
+        totalCharsCap: Int = 9_000
     ) -> [String] {
         var out: [String] = []
         var total = 0
