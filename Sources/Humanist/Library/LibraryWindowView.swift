@@ -202,10 +202,16 @@ struct LibraryWindowView: View {
     /// resolved source PDF + the entry's EPUB so the confirmation
     /// dialog can name both. Nil when no rescan is in flight.
     @State private var rescanContext: RescanContext?
-    /// R-Library-Rescan. Surfaced when source-PDF resolution failed
-    /// (no probe site hit, file-picker pending). Non-nil triggers
-    /// the file-picker open-panel; the resulting URL is fed back
-    /// into `rescanContext`.
+    /// R-Library-Rescan. Two separate fields so the entry survives
+    /// the fileImporter's dismissal — SwiftUI clears the
+    /// `isPresented` binding before running the `onCompletion`
+    /// closure, so co-locating "is the picker showing?" and "what
+    /// entry are we picking for?" in the same Optional state used
+    /// to clear the entry mid-flight (the result handler then saw
+    /// nil and bailed out → user saw "selecting a file does
+    /// nothing"). Keep the Bool tied to presentation and the
+    /// entry alive until the result handler explicitly clears it.
+    @State private var showRescanPicker: Bool = false
     @State private var rescanPickerEntry: LibraryEntry?
     /// Surfaced when a rescan submission fails. Plain alert with
     /// the localized error string from the importer / queue path.
@@ -554,11 +560,16 @@ struct LibraryWindowView: View {
             // points us at the original. On success, hand back into
             // `rescanContext` so the confirmation dialog runs as
             // normal; cancel just clears the picker state.
+            //
+            // **Order-of-operations bug avoided here:** SwiftUI's
+            // fileImporter dismisses (calling the isPresented
+            // setter) BEFORE invoking onCompletion. Earlier the
+            // isPresented binding cleared rescanPickerEntry on
+            // dismiss, so onCompletion saw a nil entry and bailed.
+            // The entry now lives in a separate @State and is
+            // cleared inside onCompletion after we've captured it.
             .fileImporter(
-                isPresented: Binding(
-                    get: { rescanPickerEntry != nil },
-                    set: { if !$0 { rescanPickerEntry = nil } }
-                ),
+                isPresented: $showRescanPicker,
                 allowedContentTypes: [.pdf]
             ) { result in
                 guard let entry = rescanPickerEntry else { return }
@@ -992,7 +1003,13 @@ struct LibraryWindowView: View {
         // source would be obnoxious.
         if entries.count == 1, resolved.isEmpty,
            let onlyEntry = entries.first {
+            // Set the entry first so the fileImporter's
+            // onCompletion has it captured by the time the
+            // picker dismisses. The isPresented Bool flips
+            // after — order matters if SwiftUI ever schedules
+            // the present immediately on the same runloop tick.
             rescanPickerEntry = onlyEntry
+            showRescanPicker = true
             return
         }
         guard !resolved.isEmpty else { return }
