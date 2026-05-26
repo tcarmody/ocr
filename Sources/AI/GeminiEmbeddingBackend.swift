@@ -48,6 +48,23 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
     /// budget gating (we'd rather under-pace than over-pace).
     private static let charsPerTokenEstimate: Int = 4
 
+    /// `batchEmbedContents` server-side limit on items per request.
+    /// Gemini documents 100; sending more returns 400 Bad Request
+    /// ("at most 100 instances allowed per request"). Long books
+    /// routinely cross this — a 1500-paragraph book without
+    /// client-side chunking would hit a single request with 15×
+    /// the documented cap and fail outright.
+    private static let maxItemsPerRequest: Int = 100
+
+    /// Per-item input cap. Gemini's embedding models accept up to
+    /// 2048 tokens per instance; over the cap returns 400 for the
+    /// whole batch. Our paragraph extractor produces mostly short
+    /// items (median ~300 chars), but the occasional huge
+    /// blockquote / pre-formatted section can blow past the limit.
+    /// Truncate at 7500 chars (≈ 1875 tokens at 4 chars/token,
+    /// conservative buffer under the 2048 cap) before submission.
+    private static let maxCharsPerItem: Int = 7500
+
     /// Build a backend by probing the API to learn the output
     /// dimension. Throws `EmbeddingError.missingAPIKey` when no key
     /// is configured.
@@ -140,6 +157,42 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         guard let key = keyStore.read() else {
             throw EmbeddingError.missingAPIKey(provider: "Google AI Studio (Gemini)")
         }
+
+        // Truncate any over-length items before chunking. The
+        // truncation is per-item; chunking is per-batch. Both
+        // safety nets are needed: a single 50K-char paragraph
+        // would 400-out the whole batch even if the batch only
+        // had 10 items.
+        let truncated = texts.map { text -> String in
+            text.count > Self.maxCharsPerItem
+                ? String(text.prefix(Self.maxCharsPerItem))
+                : text
+        }
+
+        // Split into chunks of ≤ maxItemsPerRequest. Each chunk
+        // goes through the existing throttled-send path, which
+        // handles RPM/TPM rate-limiting + 429 retry across the
+        // whole sequence — the shared rate limiter ensures we
+        // don't burst over Google's per-minute budget even when
+        // a long book splits into 15+ sequential sub-batches.
+        // Sequential rather than concurrent because the rate
+        // limiter would just queue concurrent calls anyway, and
+        // sequential makes failure semantics + ordering simpler.
+        var allEmbeddings: [[Float]] = []
+        allEmbeddings.reserveCapacity(truncated.count)
+        for chunk in truncated.chunked(into: Self.maxItemsPerRequest) {
+            let chunkEmbeddings = try await embedOneChunk(chunk, apiKey: key)
+            allEmbeddings.append(contentsOf: chunkEmbeddings)
+        }
+        return allEmbeddings
+    }
+
+    /// Send one ≤ `maxItemsPerRequest`-sized chunk through
+    /// `batchEmbedContents`. Same shape as the v1 `embed(_:)` but
+    /// without the input-size check (caller already chunked).
+    private func embedOneChunk(
+        _ texts: [String], apiKey: String
+    ) async throws -> [[Float]] {
         let path = "/v1beta/models/\(model):batchEmbedContents"
         let url = baseURL.appendingPathComponent(path)
 
@@ -159,15 +212,9 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         var request = URLRequest(url: url, timeoutInterval: requestTimeout)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        // Google's docs prefer the `x-goog-api-key` header over
-        // the `?key=` query param — same auth, but the key isn't
-        // logged in URL-level traces.
-        request.addValue(key, forHTTPHeaderField: "x-goog-api-key")
+        request.addValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.httpBody = try Self.encoder.encode(body)
 
-        // Estimate input tokens for the TPM gate. Sum of all input
-        // text divided by `charsPerTokenEstimate`. Floors at 1 so a
-        // microscopic input still counts against the budget.
         let estimatedTokens = max(1, texts.reduce(0) {
             $0 + ($1.count / Self.charsPerTokenEstimate)
         })
@@ -183,8 +230,6 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         }
         do {
             let envelope = try Self.decoder.decode(ResponseBody.self, from: data)
-            // Gemini returns embeddings in input order — no `index`
-            // field to sort by. Trust the order.
             for entry in envelope.embeddings where dimension > 0 && entry.values.count != dimension {
                 throw EmbeddingError.dimensionMismatch(
                     expected: dimension, got: entry.values.count
@@ -425,4 +470,18 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         let d = JSONDecoder()
         return d
     }()
+}
+
+private extension Array {
+    /// Slice into contiguous sub-arrays of length ≤ `size`. Final
+    /// slice may be shorter. Used by `GeminiEmbeddingBackend.embed`
+    /// to partition large paragraph counts under the 100-items-
+    /// per-request server limit.
+    func chunked(into size: Int) -> [[Element]] {
+        precondition(size > 0, "chunk size must be positive")
+        guard !isEmpty else { return [] }
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
+    }
 }
