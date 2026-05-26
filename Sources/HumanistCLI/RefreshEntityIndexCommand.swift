@@ -153,15 +153,12 @@ struct RefreshEntityIndexCommand: AsyncParsableCommand {
             }
             return url
         }
-        let support = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        let url = support
-            .appendingPathComponent("Humanist", isDirectory: true)
-            .appendingPathComponent("library.json")
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        // Auto-detect via the app's UserDefaults — cloud-sync /
+        // customLocal / Application Support, same precedence as
+        // the running app.
+        guard let url = CLILibraryLocation.defaultCatalogURL() else {
             throw ValidationError(
-                "No catalog at \(url.path). Pass --catalog to point at your library.json."
+                "No catalog found via auto-detection. Pass --catalog to point at your library.json."
             )
         }
         return url
