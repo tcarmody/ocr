@@ -273,23 +273,29 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
                 throw EmbeddingError.decode("non-HTTP response")
             }
 
-            // Non-429: record this request in the token window so
-            // future calls (from any backend instance) account for
-            // the spend. Then hand back to the caller.
-            if http.statusCode != 429 {
+            // Non-retryable status: record this request in the
+            // token window so future calls (from any backend
+            // instance) account for the spend. Then hand back
+            // to the caller. The retryable set is 429
+            // (rate-limited) plus the transient 5xx server-
+            // overload codes (502 Bad Gateway, 503 Service
+            // Unavailable, 504 Gateway Timeout) — these are
+            // "try again later" responses, distinct from a
+            // 400/401/403/500 that indicates a permanent error.
+            if !Self.isRetryable(status: http.statusCode) {
                 await GeminiEmbeddingRateLimiter.shared.recordSuccess(
                     tokens: estimatedTokens
                 )
                 return (data, http)
             }
 
-            // 429: honor `Retry-After` if present (Google returns
-            // seconds as an integer or HTTP-date; we only parse
-            // integer seconds — date form is rare for this API).
-            // Otherwise fall back to exponential backoff. Don't
-            // record this attempt in the token window — the server
-            // rejected it, so the tokens didn't count against the
-            // user's actual budget either.
+            // Retryable failure: honor `Retry-After` if present
+            // (Google returns seconds as an integer or HTTP-date;
+            // we only parse integer seconds — date form is rare
+            // for this API). Otherwise fall back to exponential
+            // backoff. Don't record this attempt in the token
+            // window — the server rejected it, so the tokens
+            // didn't count against the user's actual budget.
             let body = String(data: data, encoding: .utf8) ?? "(non-UTF8 body)"
             // Prefer the structured retryDelay from the response
             // body (Google returns it under
@@ -299,20 +305,11 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             // message field, and finally to the HTTP header.
             let retryAfter = Self.retryAfterSecondsFromBody(data: data)
                 ?? Self.retryAfterSeconds(from: http)
-            // Diagnostic: every 429 logs the full response body so
-            // the specific Google quota dimension that fired
-            // (`quotaMetric`, `quotaId`, `quotaDimensions`) is
-            // captured for triage. `privacy: .public` on each
-            // interpolation — without it macOS Logger redacts
-            // string values as `<private>` in Console.app and we
-            // lose exactly the information we wanted. The body is
-            // Google's error JSON, no secrets; the retry-after
-            // value is a duration string; both are safe to log.
             let retryAfterDescription = retryAfter
                 .map { String(format: "%.1fs", $0) } ?? "absent"
             geminiEmbedLog.warning(
                 """
-                429 from Gemini embedding API \
+                \(http.statusCode) from Gemini embedding API \
                 (attempt \(attempt + 1)/\(self.maxRetriesOn429 + 1), \
                 estimated tokens=\(estimatedTokens), \
                 retry-after=\(retryAfterDescription, privacy: .public)). \
@@ -321,7 +318,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
             )
             if attempt >= maxRetriesOn429 {
                 throw EmbeddingError.serverError(
-                    status: 429,
+                    status: http.statusCode,
                     message: body.isEmpty ? nil : body
                 )
             }
@@ -329,6 +326,19 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
                 ?? Self.exponentialBackoffSeconds(attempt: attempt)
             try await Task.sleep(for: .seconds(backoff))
             attempt += 1
+        }
+    }
+
+    /// Status codes treated as retryable by `sendThrottled`.
+    /// 429 is the documented rate-limit response. 502/503/504
+    /// are transient server-overload signals — the request
+    /// would likely succeed on retry. 500 is intentionally
+    /// excluded because it indicates an unexpected internal
+    /// error: retrying spins the same broken state.
+    private static func isRetryable(status: Int) -> Bool {
+        switch status {
+        case 429, 502, 503, 504: return true
+        default: return false
         }
     }
 

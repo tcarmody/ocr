@@ -83,6 +83,12 @@ struct ReindexCommand: AsyncParsableCommand {
     )
     var appBundleID: String = "com.tcarmody.Humanist"
 
+    @Option(
+        name: .long,
+        help: "Seconds to wait between the main pass and a retry pass against transient failures (429 / 503 / network). Default 60s. Set 0 to skip the retry pass."
+    )
+    var retryCooloffSeconds: Int = 60
+
     func run() async throws {
         let catalogURL = try resolveCatalogURL()
         let storeURL = resolveStoreURL()
@@ -113,7 +119,7 @@ struct ReindexCommand: AsyncParsableCommand {
         var built = 0
         var skipped = 0
         var fellBack = 0
-        var failed: [(title: String, error: String)] = []
+        var failed: [(entry: CatalogEntry, error: String)] = []
         let totalCount = entries.count
         let started = Date()
 
@@ -145,8 +151,65 @@ struct ReindexCommand: AsyncParsableCommand {
                 print("\(prefix) — cancelled, stopping run")
                 break
             } catch {
-                failed.append((entry.title, error.localizedDescription))
+                failed.append((entry, error.localizedDescription))
                 print("\(prefix) — FAILED: \(error.localizedDescription)")
+            }
+        }
+
+        // End-of-run retry pass: re-try books whose failure looks
+        // transient (429 exhaustion, 503/502/504, network) after
+        // a cool-off. The per-backend retry already handled brief
+        // hiccups; this catches the case where the rate-limit
+        // window happens to span the whole main-pass duration so
+        // every retry-budget exhausts. Cool-off gives the server
+        // a chance to recover before we hammer it again.
+        if !failed.isEmpty, retryCooloffSeconds > 0 {
+            let retryCandidates = failed.filter { Self.looksTransient($0.error) }
+            if !retryCandidates.isEmpty {
+                print("")
+                print("=== End-of-run retry pass ===")
+                print("\(retryCandidates.count) book\(retryCandidates.count == 1 ? "" : "s") failed with transient-looking errors.")
+                print("Cooling off for \(retryCooloffSeconds)s before retrying…")
+                try? await Task.sleep(for: .seconds(retryCooloffSeconds))
+                var retrySucceeded = 0
+                var stillFailed: [(entry: CatalogEntry, error: String)] = []
+                for (i, candidate) in retryCandidates.enumerated() {
+                    let prefix = "[retry \(i + 1)/\(retryCandidates.count)] \(candidate.entry.title)"
+                    do {
+                        let outcome = try await BookSidecarBuilder.buildIfNeeded(
+                            epubURL: candidate.entry.epubURL,
+                            libraryID: candidate.entry.id,
+                            backend: backendInstance,
+                            fallbackBackend: nil,
+                            store: store,
+                            forceRebuild: force
+                        )
+                        switch outcome {
+                        case .skipped:
+                            // Shouldn't happen on retry of a failed
+                            // book but defensive — surface as "ok now"
+                            // so the user knows it's no longer broken.
+                            retrySucceeded += 1
+                            print("\(prefix) — already on backend (no-op)")
+                        case .built:
+                            retrySucceeded += 1
+                            print("\(prefix) — succeeded on retry")
+                        }
+                    } catch is CancellationError {
+                        print("\(prefix) — cancelled, stopping retry pass")
+                        break
+                    } catch {
+                        stillFailed.append((candidate.entry, error.localizedDescription))
+                        print("\(prefix) — STILL FAILED: \(error.localizedDescription)")
+                    }
+                }
+                // Replace the failed list with what's still broken
+                // after the retry pass, plus any non-transient
+                // failures we didn't re-try.
+                let nonTransient = failed.filter { !Self.looksTransient($0.error) }
+                failed = stillFailed + nonTransient
+                built += retrySucceeded
+                print("Retry pass recovered \(retrySucceeded) of \(retryCandidates.count).")
             }
         }
 
@@ -161,7 +224,7 @@ struct ReindexCommand: AsyncParsableCommand {
             print("")
             print("First failures:")
             for f in failed.prefix(10) {
-                print("  • \(f.title): \(f.error)")
+                print("  • \(f.entry.title): \(f.error)")
             }
             if failed.count > 10 {
                 print("  …and \(failed.count - 10) more.")
@@ -248,6 +311,36 @@ struct ReindexCommand: AsyncParsableCommand {
     /// `LibraryEntry` shape (which is iCloud-sync aware, has
     /// genre / conversion-type / etc.). Only id + epubURL + title
     /// are needed for re-indexing.
+    /// Substring-based classifier for "this looks like a
+    /// transient failure worth retrying after a cool-off."
+    /// Cheap and string-matchy because `EmbeddingError`'s
+    /// localizedDescription doesn't expose status codes
+    /// programmatically — but the canned messages it produces
+    /// for serverError / network errors contain stable markers
+    /// we can pattern-match against. False positives are
+    /// strictly safer than false negatives here: the retry
+    /// pass is bounded (single re-attempt per book), so
+    /// retrying a non-transient failure just produces the same
+    /// error and we surface it cleanly in the final report.
+    static func looksTransient(_ error: String) -> Bool {
+        let lowered = error.lowercased()
+        let transientMarkers = [
+            "429",          // explicit status code in EmbeddingError.serverError
+            "503",          // service unavailable
+            "502",          // bad gateway
+            "504",          // gateway timeout
+            "rate limit",   // generic rate-limit phrasing
+            "rate_limit",   // Anthropic / Google error.code form
+            "unavailable",  // 503 message body
+            "overloaded",   // Anthropic 529; Gemini occasionally too
+            "timeout",      // generic timeout
+            "timed out",    // URLSession-style
+            "the network",  // URLSession NSURLErrorDomain hints
+            "connection",   // generic connection error
+        ]
+        return transientMarkers.contains { lowered.contains($0) }
+    }
+
     private struct CatalogEntry: Sendable {
         let id: UUID
         let epubURL: URL
