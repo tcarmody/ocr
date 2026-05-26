@@ -69,9 +69,9 @@ struct ExtractConceptsCommand: AsyncParsableCommand {
 
     @Option(
         name: .long,
-        help: "Maximum seconds a single book is allowed before the watchdog cancels and moves on. Default 120s — AFM extraction + entity rebuild combined usually finishes well under this."
+        help: "Maximum seconds a single book is allowed before the watchdog cancels and moves on. Default 240s — accommodates the 2-4 AFM calls per book the chunked extractor fires, plus the entity-index rebuild. Set lower on short-book libraries; raise on books with many chapters."
     )
-    var perBookTimeoutSeconds: Int = 120
+    var perBookTimeoutSeconds: Int = 240
 
     func run() async throws {
         let catalogURL = try resolveCatalogURL()
@@ -194,12 +194,18 @@ struct ExtractConceptsCommand: AsyncParsableCommand {
         aliasTerms: Set<String>
     ) async throws -> BookOutcome {
         let book = try EPUBBook.open(epubURL: entry.epubURL)
-        let samples = BookConceptExtractor.sampleChapters(from: book)
-        guard !samples.isEmpty else { return .declined }
-        let outcome = await extractor.extractWithDiagnostic(
+        // Chunked extraction: cover more of the book by running
+        // AFM N times per book, each on a distinct chapter range.
+        // For a 30-chapter book: ~2-3 chunks. Each chunk fits
+        // comfortably inside AFM's input window, and the merge
+        // step dedupes overlapping concepts so a recurring
+        // through-line surfaces once with its earliest position.
+        let batches = BookConceptExtractor.sampleChapterBatches(from: book)
+        guard !batches.isEmpty else { return .declined }
+        let outcome = await extractor.extractMerged(
             title: entry.title,
             author: entry.author,
-            chapterSamples: samples
+            chapterBatches: batches
         )
         if let errorDescription = outcome.errorDescription {
             return .errored(errorDescription)

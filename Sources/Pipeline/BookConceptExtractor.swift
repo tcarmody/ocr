@@ -111,6 +111,64 @@ public struct BookConceptExtractor: Sendable {
         }
     }
 
+    /// Multi-pass extraction: run AFM once per batch, union the
+    /// results, dedupe in first-seen order, and cap at
+    /// `maxMergedConcepts`. Lets us cover MORE of the book than a
+    /// single context-window-bounded pass — each batch sees a
+    /// distinct range of chapters, so concepts that develop late
+    /// in a long book finally surface.
+    ///
+    /// Errors are aggregated, not fatal: a single chunk that
+    /// throws (context overflow on a pathological chapter, AFM
+    /// hiccup) still lets the other chunks contribute. The
+    /// returned `errorDescription` is non-nil only when EVERY
+    /// chunk failed.
+    ///
+    /// Concept ordering: first-seen across chunks. A concept that
+    /// appears in chunks 1, 2, AND 3 is positioned by chunk 1's
+    /// emission — gives early-book "thesis" concepts visual
+    /// priority over late-book asides, which matches reader
+    /// expectation.
+    public func extractMerged(
+        title: String?,
+        author: String?,
+        chapterBatches: [[String]],
+        maxMergedConcepts: Int = 30
+    ) async -> ExtractionOutcome {
+        guard !chapterBatches.isEmpty else {
+            return ExtractionOutcome(concepts: [])
+        }
+        var merged: [String] = []
+        var seen = Set<String>()
+        var errors: [String] = []
+        for (idx, batch) in chapterBatches.enumerated() {
+            try? Task.checkCancellation()
+            let outcome = await extractWithDiagnostic(
+                title: title, author: author, chapterSamples: batch
+            )
+            if let message = outcome.errorDescription {
+                errors.append("chunk \(idx + 1): \(message)")
+                continue
+            }
+            guard let concepts = outcome.concepts else { continue }
+            for concept in concepts {
+                guard !seen.contains(concept) else { continue }
+                seen.insert(concept)
+                merged.append(concept)
+                if merged.count >= maxMergedConcepts { break }
+            }
+            if merged.count >= maxMergedConcepts { break }
+        }
+        // Aggregate error only when no chunk produced anything.
+        let aggregateError = (merged.isEmpty && !errors.isEmpty)
+            ? "all chunks failed: \(errors.joined(separator: "; "))"
+            : nil
+        return ExtractionOutcome(
+            concepts: merged.isEmpty ? nil : merged,
+            errorDescription: aggregateError
+        )
+    }
+
     /// Build the chapter-sample digest from an open `EPUBBook`.
     /// Walks the spine in order, strips XHTML tags from each
     /// resource's text, slices the first `perChapterChars`
@@ -127,6 +185,13 @@ public struct BookConceptExtractor: Sendable {
     /// enforce). 350 × 30 chapters ≈ 10_500 chars worst case,
     /// well clear of the wall while still giving the model 3×
     /// more text per chapter than the v1 prompt's 200 chars.
+    ///
+    /// **For richer coverage of long books**, prefer
+    /// `sampleChapterBatches(...)` + `extractMerged(...)` which
+    /// runs AFM N times per book (each on a distinct chapter
+    /// range) and merges the results. This single-pass helper
+    /// stays available for short books / fast-path callers
+    /// where a 1× pass is enough.
     public static func sampleChapters(
         from book: EPUBBook,
         perChapterChars: Int = 350,
@@ -145,6 +210,63 @@ public struct BookConceptExtractor: Sendable {
             if total >= totalCharsCap { break }
         }
         return out
+    }
+
+    /// Multi-batch sampler. Walks every chapter in the spine,
+    /// slices the first `perChapterChars` of each, then greedy-
+    /// packs the slices into batches of ≤ `maxCharsPerBatch`.
+    /// Stops accepting new batches at `maxBatches` (drops content
+    /// from the tail end of the book — typically endnotes /
+    /// indices that we don't lose much by skipping).
+    ///
+    /// Default sizing:
+    ///   * 500 chars/chapter — 1.4× the single-pass extractor's
+    ///     350 char window, since each batch has dedicated AFM
+    ///     headroom.
+    ///   * 5_500 chars/batch — well clear of AFM's effective
+    ///     input cap (~4K tokens).
+    ///   * 4 batches max — caps per-book AFM cost at ~4× a
+    ///     single-pass extraction (~20s vs. ~5s on AFM
+    ///     wall-time). At 444 books × ~20s = ~2.5 hours for a
+    ///     full --force re-extract; ok for an unattended run.
+    ///
+    /// A 30-chapter book hits 2-3 batches; a 6-chapter essay
+    /// collection fits in 1; an 80-chapter annotated edition
+    /// hits the 4-batch ceiling + skips the final ~30 chapters.
+    public static func sampleChapterBatches(
+        from book: EPUBBook,
+        perChapterChars: Int = 500,
+        maxCharsPerBatch: Int = 5_500,
+        maxBatches: Int = 4
+    ) -> [[String]] {
+        var allSamples: [String] = []
+        for id in book.spine {
+            guard let resource = book.resourcesByID[id],
+                  let xhtml = resource.text else { continue }
+            let body = stripTags(xhtml)
+            guard !body.isEmpty else { continue }
+            allSamples.append(String(body.prefix(perChapterChars)))
+        }
+        guard !allSamples.isEmpty else { return [] }
+
+        var batches: [[String]] = []
+        var current: [String] = []
+        var currentChars = 0
+        for sample in allSamples {
+            if !current.isEmpty,
+               currentChars + sample.count > maxCharsPerBatch {
+                batches.append(current)
+                if batches.count >= maxBatches { return batches }
+                current = []
+                currentChars = 0
+            }
+            current.append(sample)
+            currentChars += sample.count
+        }
+        if !current.isEmpty, batches.count < maxBatches {
+            batches.append(current)
+        }
+        return batches
     }
 
     // MARK: - @Generable schema
