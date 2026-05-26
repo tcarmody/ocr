@@ -128,20 +128,19 @@ final class LibraryIndexBuilder: ObservableObject {
         skippedExistingCount = 0
         let store = EmbeddingsSidecarStore()
         let snapshot = entries
-        // Per-book fallback: if the requested backend errors on a
-        // whole book (Gemini 429 / quota exhaustion is the
-        // motivating case), retry that book with Apple's on-device
-        // NLEmbedding so the user gets *some* embedding rather
-        // than a hole in the library. The fallback sidecar is
-        // marked with Apple's backendIdentifier so subsequent
-        // re-indexes preserve it instead of looping back into the
-        // failing primary. Skip when the primary IS Apple
-        // NLEmbedding (no useful fallback to add) or when Apple
-        // doesn't provide an English sentence model on this OS.
-        let fallback: (any EmbeddingBackend)? =
-            (backend.identifier.hasPrefix("apple") == false)
-                ? NLSentenceEmbeddingBackend(language: .english)
-                : nil
+        // No Apple-NL fallback. Mixed-backend sidecars produce
+        // worse library-chat behavior than missing sidecars do:
+        // the federated index filters by backendIdentifier, so a
+        // Gemini-built sidecar and an Apple-NL sidecar can't be
+        // searched together — the mismatched book silently drops
+        // out of every chat result, which is more confusing than
+        // an explicit "this book failed to index" entry. Per-book
+        // failures now surface in `failures` instead of producing
+        // a sidecar the user can't actually retrieve against.
+        // Run the same backend across every book or accept the
+        // gaps; `humanist-cli reindex` already takes this posture
+        // and the app now matches.
+        let fallback: (any EmbeddingBackend)? = nil
         // Register with the shared coordinator so any chat send
         // attempted during the bulk run is told to wait. Released
         // in the task's completion block (and via the token's

@@ -500,16 +500,16 @@ final class EPUBImporter: ObservableObject {
         // 7. Build the embedding sidecar so library chat sees the
         // book immediately. Skipped when no backend is available —
         // the catalog row stays, just without retrieval-time recall.
-        // When the requested backend is cloud-backed (Gemini /
-        // Voyage / Ollama), pass Apple NLEmbedding as a per-book
-        // fallback so an import doesn't fail entirely when the
-        // cloud quota is exhausted; the book lands with an
-        // Apple-built sidecar that library chat can still use.
+        // No Apple-NL fallback: the federated library index filters
+        // by backendIdentifier so a Gemini-built sidecar can't be
+        // searched alongside an Apple-built one — the mismatched
+        // book silently drops out of library-chat results, which
+        // is worse than an explicit indexing failure. Import-time
+        // failures throw and surface in the queue / import-progress
+        // sheet; the user fixes the underlying backend issue
+        // (Gemini quota, missing key, Ollama daemon down) and
+        // re-imports.
         if let backend {
-            let fallback: (any EmbeddingBackend)? =
-                (backend.identifier.hasPrefix("apple") == false)
-                    ? NLSentenceEmbeddingBackend(language: .english)
-                    : nil
             // Union user-curated aliases with this book's AFM-
             // extracted concepts so the sidecar's alias-scan path
             // catches both. Empty when no AFM payload exists yet
@@ -525,7 +525,7 @@ final class EPUBImporter: ObservableObject {
                 epubURL: destination,
                 libraryID: libraryID,
                 backend: backend,
-                fallbackBackend: fallback,
+                fallbackBackend: nil,
                 store: sidecarStore,
                 forceRebuild: false,
                 aliasTerms: userAliases.union(bookConcepts)
