@@ -36,11 +36,19 @@ public struct BookConceptExtractor: Sendable {
         self.client = client
     }
 
-    /// Identifier for the model that generated a given payload.
-    /// Persisted in `BookConceptStore.Payload.modelIdentifier` so
-    /// a future bulk-re-extract can target older identifiers
-    /// (e.g. when a major AFM upgrade ships).
-    public static let modelIdentifier = "afm-on-device-1"
+    /// Identifier for the model + prompt revision that generated
+    /// a given payload. Persisted in
+    /// `BookConceptStore.Payload.modelIdentifier` so a future
+    /// bulk-re-extract can target older identifiers.
+    ///
+    /// History:
+    ///   * `afm-on-device-1` — initial prompt: 5-15 concepts,
+    ///     ~200 chars/chapter sample, restrictive "doesn't count"
+    ///     list.
+    ///   * `afm-on-device-2` (current) — broader prompt: 10-25
+    ///     concepts, 600 chars/chapter sample, includes
+    ///     medium-generic "big ideas" when central to the book.
+    public static let modelIdentifier = "afm-on-device-2"
 
     /// Extract concepts for one book. Returns nil when AFM is
     /// unavailable, when the model declines, or when the framework
@@ -78,8 +86,8 @@ public struct BookConceptExtractor: Sendable {
     /// AFM context window.
     public static func sampleChapters(
         from book: EPUBBook,
-        perChapterChars: Int = 200,
-        totalCharsCap: Int = 5_000
+        perChapterChars: Int = 600,
+        totalCharsCap: Int = 15_000
     ) -> [String] {
         var out: [String] = []
         var total = 0
@@ -100,7 +108,7 @@ public struct BookConceptExtractor: Sendable {
 
     @Generable
     struct BookConceptList {
-        @Guide(description: "5-15 intellectual concepts that this book engages with at length. Prefer specific intellectual terms over generic phrases. Examples of what to surface: 'will to power', 'deconstruction', 'liberalism', 'speech act theory', 'biopolitics', 'critical theory', 'phenomenological reduction', 'artificial intelligence', 'social contract', 'evolutionary fitness'. Skip generic phrases ('the self', 'history', 'thought', 'people', 'time'). Skip the names of specific people, places, or organizations — those are caught elsewhere. Output lowercase canonical forms. Empty when the book genuinely doesn't engage with identifiable intellectual concepts.")
+        @Guide(description: "10-25 intellectual concepts and 'big ideas' that this book engages with at length. Include both specific intellectual terms ('will to power', 'deconstruction', 'speech act theory', 'biopolitics', 'phenomenological reduction', 'artificial intelligence', 'evolutionary fitness') AND medium-generic concepts when they're central to the argument ('consciousness', 'autonomy', 'justice', 'memory', 'identity', 'freedom', 'power', 'authenticity', 'representation', 'meaning'). Skip only the most generic phrases ('the book', 'history', 'thought', 'people', 'time', 'the world', 'life', 'nature'). Skip the names of specific people, places, or organizations — those are caught by the entity index. Output lowercase canonical forms. Empty list when the book genuinely doesn't engage with identifiable intellectual concepts.")
         var concepts: [String]
     }
 
@@ -137,18 +145,21 @@ public struct BookConceptExtractor: Sendable {
     /// argument") or section labels ("introduction," "conclusion")
     /// that don't help the Topics view.
     static let instructions = """
-        You extract a list of intellectual concepts from a book. Output a JSON-shaped list of 5-15 lowercase canonical concept strings.
+        You extract a list of intellectual concepts and "big ideas" from a book. Output a JSON-shaped list of 10-25 lowercase canonical concept strings.
 
         What counts as a concept:
           * Named intellectual concepts: will to power, deconstruction, liberalism, biopolitics, hermeneutics, social contract, speech act, phenomenological reduction, critical theory, artificial intelligence, qualia, performativity, intersectionality.
-          * Theoretical frameworks: structuralism, post-structuralism, pragmatism, naturalism, existentialism, neoliberalism.
+          * Theoretical frameworks: structuralism, post-structuralism, pragmatism, naturalism, existentialism, neoliberalism, feminism, marxism.
+          * Medium-generic "big ideas" when they're central to the book's argument: consciousness, autonomy, justice, memory, identity, freedom, power, authenticity, representation, meaning, language, ethics, knowledge, perception, ideology, agency, embodiment, narrative.
           * Domain-specific terms that show up centrally in the book's argument.
 
         What does NOT count:
-          * Names of specific people, places, or organizations (those are extracted elsewhere).
-          * Generic phrases: "the self," "human nature," "thought," "history," "matter," "the book."
+          * Names of specific people, places, or organizations (those are extracted by the entity index).
+          * The most generic phrases that any book might mention: "the book," "history," "thought," "people," "time," "the world," "life," "nature."
           * Section labels: "introduction," "conclusion," "preface."
           * Single common nouns that aren't intellectual concepts: "table," "house," "person."
+
+        Prefer book-defining concepts over passing mentions. A medium-generic term like "consciousness" should appear only if the book's argument actually engages with it (e.g., a philosophy of mind text), not just because the word appears.
 
         Output lowercase canonical forms ("will to power" not "Will to Power"). Prefer 1-3 token phrases. Return an empty list when the book doesn't engage with identifiable intellectual concepts.
         """
