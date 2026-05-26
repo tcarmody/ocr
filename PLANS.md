@@ -1336,6 +1336,128 @@ Drivers for the current ordering:
     bundle is fine. Earns priority when "first non-tester user"
     enters the picture or when tester install friction becomes
     real.
+10b. **R-Multi-Library — Named profiles + active-library switcher**.
+    Today Humanist runs against exactly one library, resolved at
+    launch via `LibraryStore.resolveStoreURL`'s three-way
+    precedence (cloud > customLocal > Application Support). User
+    use cases that motivate multi-library:
+      * **Multiple users on one Mac** — each picks their own
+        active library on launch.
+      * **Single user separating contexts** — "Work" library
+        (research corpus) vs. "Personal" library (Loeb classics,
+        fiction reading) vs. "Teaching" library (course-prep
+        material). Each gets its own catalog + chat history +
+        Topics rollup.
+      * **Trying out a sandbox library** — import 20 books, see
+        how chat behaves, throw the library away without
+        disturbing the main one.
+
+    Multi-library is orthogonal to multi-Mac: each library
+    profile carries its own Location (cloud / customLocal /
+    Application Support), so a single library can be shared
+    across Macs *and* a single Mac can host multiple libraries.
+
+    **Design sketch:**
+
+    *Profile registry (machine-wide):*
+      * New UserDefaults key `humanist.libraries.profiles` holds
+        a JSON-encoded `[LibraryProfile]`. Each profile:
+        `{id: UUID, name: String, location: Location,
+        createdAt: Date, lastOpenedAt: Date}`.
+      * `humanist.libraries.activeProfileID: UUID` names the
+        currently-active library.
+      * Migration: on first launch with this feature, the
+        existing library state becomes a profile named "Default
+        Library" with the resolved Location; activeProfileID
+        points at it. Existing users see zero change in
+        behavior until they create a second profile.
+
+    *Per-library scope (follows the profile's Location root):*
+      * `library.json` (catalog), `aliases.json`, `snapshots/`,
+        `Covers/` — already mode-aware; reuses
+        R-Library-Migrate's resolution helper.
+      * `Embeddings/` (machine-local even for cloud-shared
+        libraries, per existing posture), `Concepts/`,
+        `Briefings/`, `Chats/` (transcripts), reading
+        positions, annotations — all currently route through
+        `LibraryStore.resolveLibraryStateDirectory` (or
+        equivalent); generalize so each profile gets its own
+        subtree under the same root.
+
+    *Machine-wide scope (stays in UserDefaults / Keychain):*
+      * API keys (Anthropic, Voyage, Gemini, Google Cloud
+        Vision) — Keychain, shared across profiles.
+      * Settings preferences: AI backend choice, chat
+        appearance, reader appearance, conversion defaults.
+        Per-user typography + per-user AI plumbing; doesn't
+        partition by library.
+      * The profile registry itself.
+
+    *Active-profile switch flow:*
+      * **At launch:** hold ⌥ to pop a "Choose Library…"
+        picker before any window mounts (mirrors Photos.app's
+        pattern). Without ⌥, last-used profile wins.
+      * **Mid-session:** Window menu → "Choose Library…" or a
+        dedicated library-picker menu bar item. Switch path:
+        prompt to confirm, close all editor/reader/queue
+        windows (carry warning if any have unsaved edits),
+        drop in-memory `LibraryStore` + `LibraryConceptGraph
+        Cache.shared` + federated-index cache + pre-warm
+        task, re-bind every `@EnvironmentObject library` site,
+        re-open the launcher. v1 simplification: closing
+        windows is the price of a mid-session switch.
+
+    *UI surfaces:*
+      * Settings → **Libraries** pane (new): list of profiles
+        with name + location + last-opened, CRUD actions
+        (rename, change location, delete, mark active).
+      * Active library name in the app menu (next to
+        "Humanist Help") so the user always knows which
+        library they're in.
+      * Library window title bar shows the library name as a
+        subtitle.
+
+    *Library deletion:*
+      * Two-option dialog: "Remove profile only" (data stays
+        on disk; user can re-add by pointing at the location)
+        vs. "Move all library files to Trash" (catalog +
+        siblings; embeddings stay since they're
+        machine-local).
+
+    *Cross-cutting concerns:*
+      * Recents (RecentsStore) — partition per-library so
+        "Recent Books" matches the active library's catalog.
+        Today it's machine-wide.
+      * Per-book chat transcripts + briefings — keyed by
+        canonical EPUB path today. If the same book lives in
+        two libraries (rare but possible), do they share or
+        diverge? v1: diverge (route via profile root). If a
+        recurring "shared transcripts across libraries"
+        request surfaces, add an opt-in.
+      * Reading positions + annotations — currently keyed by
+        content hash, machine-wide. The user is one reader so
+        keep these machine-wide regardless of library
+        (reading Tolstoy in Personal library, switching to
+        Work, opening Tolstoy again should resume at the same
+        chapter).
+      * R-Library-Migrate wizard — generalizes to "move this
+        profile to a different location." Same code paths.
+
+    **Effort:** ~2-2.5 days for a clean v1. Most of the work
+    is the per-library state routing + window-close
+    coordination on switch; the profile registry + Settings
+    UI is straightforward.
+
+    **Trigger:** earns priority when a second concrete user
+    arrives on the same Mac, OR when one user explicitly
+    wants to keep contexts separate (research-load /
+    research-archive boundary, classified vs. unclassified
+    material, course-by-course separation). Until then, the
+    R-Library-Migrate wizard lets a user manually swap
+    between library locations one at a time, which covers
+    the "I want to try a sandbox library" use case at the
+    cost of full app relaunch + Settings juggling.
+
 10a. **R-Help Phase 2 — Apple Help Book**. Phase 1 shipped in
     commit `3dce0d5`: six Markdown topics
     (`Sources/Humanist/Resources/Help/*.md`) rendered in an
