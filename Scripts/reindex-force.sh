@@ -24,11 +24,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/_lib.sh"
 
-if [[ $# -lt 1 ]]; then
-    die "usage: $0 <backend> [extra humanist-cli flags]"
+# Backend resolution:
+#   1. Explicit positional arg ($1) wins ($0 gemini → --backend gemini).
+#   2. Otherwise read humanist.chat.embeddingBackend from the app's
+#      UserDefaults — same key Settings → AI → Chat Retrieval writes —
+#      and translate from the Swift enum's rawValue to the CLI's
+#      --backend token (appleNL → apple; others are 1:1).
+#   3. If neither is set, fail with a usage hint that names the options.
+if [[ $# -ge 1 && "$1" =~ ^(apple|ollama|voyage|gemini)$ ]]; then
+    BACKEND="$1"
+    shift
+else
+    RAW="$(defaults read "$BUNDLE_ID" humanist.chat.embeddingBackend 2>/dev/null || true)"
+    case "$RAW" in
+        appleNL) BACKEND="apple" ;;
+        ollama|voyage|gemini) BACKEND="$RAW" ;;
+        "")
+            die "no backend configured. Pass one explicitly: $0 <apple|ollama|voyage|gemini>"
+            ;;
+        *)
+            die "unrecognized backend '$RAW' in Settings. Pass explicitly: $0 <apple|ollama|voyage|gemini>"
+            ;;
+    esac
+    log "Backend resolved from Settings → AI → Chat Retrieval: $BACKEND"
 fi
-BACKEND="$1"
-shift
 
 log "Building humanist-cli (release)…"
 swift build --product humanist-cli -c release

@@ -28,11 +28,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/_lib.sh"
 
-if [[ $# -lt 1 ]]; then
-    die "usage: $0 <backend> [extra humanist-cli reindex flags]"
+# Backend resolution mirrors reindex-force.sh: explicit positional
+# arg wins; falls back to the app's configured chat embedding
+# backend (Settings → AI → Chat Retrieval); errors out with a
+# usage hint when neither is set.
+if [[ $# -ge 1 && "$1" =~ ^(apple|ollama|voyage|gemini)$ ]]; then
+    BACKEND="$1"
+    shift
+else
+    RAW="$(defaults read "$BUNDLE_ID" humanist.chat.embeddingBackend 2>/dev/null || true)"
+    case "$RAW" in
+        appleNL) BACKEND="apple" ;;
+        ollama|voyage|gemini) BACKEND="$RAW" ;;
+        "")
+            die "no backend configured. Pass one explicitly: $0 <apple|ollama|voyage|gemini>"
+            ;;
+        *)
+            die "unrecognized backend '$RAW' in Settings. Pass explicitly: $0 <apple|ollama|voyage|gemini>"
+            ;;
+    esac
+    log "Backend resolved from Settings → AI → Chat Retrieval: $BACKEND"
 fi
-BACKEND="$1"
-shift
 
 log "Building humanist-cli (release)…"
 swift build --product humanist-cli -c release
