@@ -266,25 +266,38 @@ public struct BookConceptExtractor: Sendable {
     /// from the tail end of the book — typically endnotes /
     /// indices that we don't lose much by skipping).
     ///
-    /// Default sizing:
-    ///   * 500 chars/chapter — 1.4× the single-pass extractor's
-    ///     350 char window, since each batch has dedicated AFM
-    ///     headroom.
-    ///   * 5_500 chars/batch — well clear of AFM's effective
-    ///     input cap (~4K tokens).
-    ///   * 4 batches max — caps per-book AFM cost at ~4× a
-    ///     single-pass extraction (~20s vs. ~5s on AFM
-    ///     wall-time). At 444 books × ~20s = ~2.5 hours for a
-    ///     full --force re-extract; ok for an unattended run.
+    /// Default sizing rationale:
+    ///   * `perChapterChars: 600` — rich per-chapter signal.
+    ///     This is the "how much information per chapter"
+    ///     knob; bigger means the model sees more context for
+    ///     each chapter and surfaces concepts that don't appear
+    ///     in opening sentences. The previous 300-char default
+    ///     traded too much coverage for batch-count economy.
+    ///   * `maxCharsPerBatch: 3_500` — the AFM context-window
+    ///     ceiling. Load-bearing: don't raise without
+    ///     adaptive-retry headroom (token-dense content
+    ///     compresses worse than 4 chars/token). Each batch
+    ///     stays inside this ceiling regardless of per-chapter
+    ///     size by closing the batch when the next chapter
+    ///     would push over.
+    ///   * `maxBatches: 8` — double the previous 4 so longer
+    ///     books actually get covered. 8 batches × ~5s/batch
+    ///     AFM wall-time = ~40s/book worst case. At 444 books
+    ///     × 40s = ~5 hours for a full --force re-extract;
+    ///     fine for an unattended caffeinate'd run.
     ///
-    /// A 30-chapter book hits 2-3 batches; a 6-chapter essay
-    /// collection fits in 1; an 80-chapter annotated edition
-    /// hits the 4-batch ceiling + skips the final ~30 chapters.
+    /// Coverage:
+    ///   * 30-chapter book at 600 chars/chapter = 18K chars →
+    ///     ~5-6 batches → full coverage.
+    ///   * 60-chapter book = 36K chars → ~10-11 batches → hits
+    ///     the 8 ceiling, drops chapters 49-60. Most books that
+    ///     long have endnotes + index in the tail.
+    ///   * 6-chapter essay collection = 3.6K chars → 1-2 batches.
     public static func sampleChapterBatches(
         from book: EPUBBook,
-        perChapterChars: Int = 300,
+        perChapterChars: Int = 600,
         maxCharsPerBatch: Int = 3_500,
-        maxBatches: Int = 4
+        maxBatches: Int = 8
     ) -> [[String]] {
         var allSamples: [String] = []
         for id in book.spine {
