@@ -146,6 +146,14 @@ public struct BookEntityIndex: Sendable, Codable, Equatable {
         // single paragraph mentioning "biopolitics" should
         // register. Case-insensitive substring match.
         if !aliasTerms.isEmpty {
+            // Pre-lowercase each term once for the case-insensitive
+            // substring match. Preserve the original term as the
+            // display string so "Marxism" displays as "Marxism" and
+            // "critical theory" stays "critical theory" — bypasses
+            // the .capitalized title-casing that mangled multi-word
+            // concepts in the prior version. Two terms that differ
+            // only in case dedupe via the lowercase canonical key
+            // (first-seen wins for display).
             for item in items {
                 let lowered = item.text.lowercased()
                 let anchor = Anchor(
@@ -153,12 +161,14 @@ public struct BookEntityIndex: Sendable, Codable, Equatable {
                     paragraphIdx: item.paragraphIdx
                 )
                 for term in aliasTerms {
-                    guard !term.isEmpty, lowered.contains(term) else { continue }
-                    if mentions[term]?.last != anchor {
-                        mentions[term, default: []].append(anchor)
+                    guard !term.isEmpty else { continue }
+                    let canonical = term.lowercased()
+                    guard lowered.contains(canonical) else { continue }
+                    if mentions[canonical]?.last != anchor {
+                        mentions[canonical, default: []].append(anchor)
                     }
-                    if displayNames[term] == nil {
-                        displayNames[term] = term.capitalized
+                    if displayNames[canonical] == nil {
+                        displayNames[canonical] = term
                     }
                 }
             }

@@ -45,10 +45,14 @@ public struct BookConceptExtractor: Sendable {
     ///   * `afm-on-device-1` — initial prompt: 5-15 concepts,
     ///     ~200 chars/chapter sample, restrictive "doesn't count"
     ///     list.
-    ///   * `afm-on-device-2` (current) — broader prompt: 10-25
-    ///     concepts, 600 chars/chapter sample, includes
-    ///     medium-generic "big ideas" when central to the book.
-    public static let modelIdentifier = "afm-on-device-2"
+    ///   * `afm-on-device-2` — broader prompt: 10-25 concepts,
+    ///     600 chars/chapter sample, includes medium-generic
+    ///     "big ideas" when central to the book.
+    ///   * `afm-on-device-3` (current) — natural-case output (no
+    ///     forced lowercase), per-batch 15-30 concepts, per-book
+    ///     merged cap 80. Chunked extraction with adaptive
+    ///     halving on context overflow.
+    public static let modelIdentifier = "afm-on-device-3"
 
     /// Extract concepts for one book. Returns nil when AFM is
     /// unavailable, when the model declines, or when the framework
@@ -133,7 +137,7 @@ public struct BookConceptExtractor: Sendable {
         title: String?,
         author: String?,
         chapterBatches: [[String]],
-        maxMergedConcepts: Int = 60
+        maxMergedConcepts: Int = 80
     ) async -> ExtractionOutcome {
         guard !chapterBatches.isEmpty else {
             return ExtractionOutcome(concepts: [])
@@ -333,7 +337,7 @@ public struct BookConceptExtractor: Sendable {
 
     @Generable
     struct BookConceptList {
-        @Guide(description: "10-25 intellectual concepts and 'big ideas' that this book engages with at length. Include both specific intellectual terms ('will to power', 'deconstruction', 'speech act theory', 'biopolitics', 'phenomenological reduction', 'artificial intelligence', 'evolutionary fitness') AND medium-generic concepts when they're central to the argument ('consciousness', 'autonomy', 'justice', 'memory', 'identity', 'freedom', 'power', 'authenticity', 'representation', 'meaning'). Skip only the most generic phrases ('the book', 'history', 'thought', 'people', 'time', 'the world', 'life', 'nature'). Skip the names of specific people, places, or organizations — those are caught by the entity index. Output lowercase canonical forms. Empty list when the book genuinely doesn't engage with identifiable intellectual concepts.")
+        @Guide(description: "15-30 intellectual concepts and 'big ideas' that this book engages with at length. Include both specific intellectual terms ('will to power', 'deconstruction', 'speech act theory', 'biopolitics', 'phenomenological reduction', 'artificial intelligence', 'evolutionary fitness') AND medium-generic concepts when they're central to the argument ('consciousness', 'autonomy', 'justice', 'memory', 'identity', 'freedom', 'power', 'authenticity', 'representation', 'meaning'). Skip only the most generic phrases ('the book', 'history', 'thought', 'people', 'time', 'the world', 'life', 'nature'). Skip the names of specific people, places, or organizations — those are caught by the entity index. Use natural case: proper-noun-shaped concepts capitalized (Marxism, Buddhism, Romanticism, Christianity, Stoicism), common-noun-phrase concepts lowercase (consciousness, free will, critical theory, will to power). Empty list when the book genuinely doesn't engage with identifiable intellectual concepts.")
         var concepts: [String]
     }
 
@@ -370,11 +374,11 @@ public struct BookConceptExtractor: Sendable {
     /// argument") or section labels ("introduction," "conclusion")
     /// that don't help the Topics view.
     static let instructions = """
-        You extract a list of intellectual concepts and "big ideas" from a book. Output a JSON-shaped list of 10-25 lowercase canonical concept strings.
+        You extract a list of intellectual concepts and "big ideas" from a book. Output a JSON-shaped list of 15-30 concept strings in natural case.
 
         What counts as a concept:
           * Named intellectual concepts: will to power, deconstruction, liberalism, biopolitics, hermeneutics, social contract, speech act, phenomenological reduction, critical theory, artificial intelligence, qualia, performativity, intersectionality.
-          * Theoretical frameworks: structuralism, post-structuralism, pragmatism, naturalism, existentialism, neoliberalism, feminism, marxism.
+          * Theoretical frameworks (capitalize the -ism forms): Marxism, Stoicism, Existentialism, Buddhism, Romanticism, Structuralism, Pragmatism, Naturalism, Neoliberalism, Christianity, Hinduism.
           * Medium-generic "big ideas" when they're central to the book's argument: consciousness, autonomy, justice, memory, identity, freedom, power, authenticity, representation, meaning, language, ethics, knowledge, perception, ideology, agency, embodiment, narrative.
           * Domain-specific terms that show up centrally in the book's argument.
 
@@ -386,25 +390,29 @@ public struct BookConceptExtractor: Sendable {
 
         Prefer book-defining concepts over passing mentions. A medium-generic term like "consciousness" should appear only if the book's argument actually engages with it (e.g., a philosophy of mind text), not just because the word appears.
 
-        Output lowercase canonical forms ("will to power" not "Will to Power"). Prefer 1-3 token phrases. Return an empty list when the book doesn't engage with identifiable intellectual concepts.
+        Case convention: use natural English case. Capitalize proper-noun-shaped concepts (Marxism, Buddhism, Christianity, Stoicism, Romanticism). Lowercase common-noun-phrase concepts (consciousness, free will, critical theory, will to power, social contract). Don't title-case multi-word concepts. Prefer 1-3 token phrases. Return an empty list when the book doesn't engage with identifiable intellectual concepts.
         """
 
     // MARK: - Helpers
 
     /// Normalize whatever AFM returned: trim whitespace, lowercase,
-    /// drop empties, dedupe in input order. AFM is well-behaved
-    /// here but defending against minor format drift (extra
-    /// whitespace, mixed case from model variance) keeps the
-    /// downstream alias-scan path simple.
+    /// drop empties, dedupe case-insensitively in input order.
+    /// Preserves AFM's natural-case output ("Marxism" stays
+    /// "Marxism", "critical theory" stays "critical theory") so
+    /// downstream display gets the conventional form rather than
+    /// `.capitalized`-mangled multi-word concepts. The alias-scan
+    /// path lowercases both sides at match time, so the preserved
+    /// case doesn't affect coverage.
     private static func canonicalize(_ raw: [String]) -> [String] {
         var seen = Set<String>()
         var out: [String] = []
         for concept in raw {
             let trimmed = concept
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
-            seen.insert(trimmed)
+            guard !trimmed.isEmpty else { continue }
+            let key = trimmed.lowercased()
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
             out.append(trimmed)
         }
         return out
