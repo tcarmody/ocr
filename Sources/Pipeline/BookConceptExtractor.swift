@@ -133,7 +133,7 @@ public struct BookConceptExtractor: Sendable {
         title: String?,
         author: String?,
         chapterBatches: [[String]],
-        maxMergedConcepts: Int = 30
+        maxMergedConcepts: Int = 60
     ) async -> ExtractionOutcome {
         guard !chapterBatches.isEmpty else {
             return ExtractionOutcome(concepts: [])
