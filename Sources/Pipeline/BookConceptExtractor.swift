@@ -143,8 +143,17 @@ public struct BookConceptExtractor: Sendable {
         var errors: [String] = []
         for (idx, batch) in chapterBatches.enumerated() {
             try? Task.checkCancellation()
-            let outcome = await extractWithDiagnostic(
-                title: title, author: author, chapterSamples: batch
+            // Adaptive retry on context-window overflow: if AFM
+            // rejects this batch as too big, halve the sample
+            // content and try again. Books with token-dense content
+            // (math notation, code, CJK, image captions) sometimes
+            // overflow even at our conservative defaults because
+            // chars/token ratio varies widely; halving recovers
+            // the chunk without abandoning the book. Three attempts
+            // max — beyond that the content is too dense for any
+            // useful sample.
+            let outcome = await extractBatchWithAdaptiveRetry(
+                title: title, author: author, batch: batch
             )
             if let message = outcome.errorDescription {
                 errors.append("chunk \(idx + 1): \(message)")
@@ -167,6 +176,44 @@ public struct BookConceptExtractor: Sendable {
             concepts: merged.isEmpty ? nil : merged,
             errorDescription: aggregateError
         )
+    }
+
+    /// Try one batch; if AFM throws "Exceeded model context window
+    /// size", halve the per-sample content and retry. Up to two
+    /// retries (three total attempts) before giving up — each
+    /// halving cuts content roughly 50%, so attempt 3 sees ~25%
+    /// of the original chunk's content, enough signal to surface
+    /// the main concepts even on the densest material.
+    ///
+    /// Non-context-window errors (safety filters, network, etc.)
+    /// pass through immediately — halving wouldn't help those.
+    private func extractBatchWithAdaptiveRetry(
+        title: String?,
+        author: String?,
+        batch: [String]
+    ) async -> ExtractionOutcome {
+        var current = batch
+        var attempt = 0
+        while true {
+            let outcome = await extractWithDiagnostic(
+                title: title, author: author, chapterSamples: current
+            )
+            // Pass through on success.
+            if outcome.errorDescription == nil { return outcome }
+            // Only retry the context-window case; safety filters /
+            // other AFM errors won't benefit from a smaller input.
+            let isContextOverflow = (outcome.errorDescription ?? "")
+                .lowercased().contains("context window")
+            guard isContextOverflow, attempt < 2,
+                  !current.isEmpty
+            else { return outcome }
+            // Halve each sample's content. Preserves chapter
+            // coverage while shrinking the prompt's token weight.
+            current = current.map { sample in
+                String(sample.prefix(max(50, sample.count / 2)))
+            }
+            attempt += 1
+        }
     }
 
     /// Build the chapter-sample digest from an open `EPUBBook`.
@@ -235,8 +282,8 @@ public struct BookConceptExtractor: Sendable {
     /// hits the 4-batch ceiling + skips the final ~30 chapters.
     public static func sampleChapterBatches(
         from book: EPUBBook,
-        perChapterChars: Int = 500,
-        maxCharsPerBatch: Int = 5_500,
+        perChapterChars: Int = 300,
+        maxCharsPerBatch: Int = 3_500,
         maxBatches: Int = 4
     ) -> [[String]] {
         var allSamples: [String] = []
