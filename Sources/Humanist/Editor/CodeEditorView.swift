@@ -190,6 +190,23 @@ private struct CodeMirrorWebView: NSViewRepresentable {
             // pending request when ready.
             coordinator.lastScrollNonce = scrollRequest?.nonce ?? .min
             coordinator.pendingScrollAnchor = scrollRequest?.anchorId
+            // Seed the command-request nonce trackers to the current
+            // published values. EditorView wraps us in `.id(file.id)`,
+            // so a file switch destroys this CodeEditorView and
+            // creates a fresh Coordinator whose nonces start at
+            // `.min`. The published `formatRequest` / `replaceRequest`
+            // / etc. are never cleared, so without this seeding the
+            // first post-reset updateNSView would see "lastNonce
+            // (.min) != published nonce (N)" and re-execute the
+            // command against the just-loaded file — the source of
+            // the bug where one `<hr/>` insert showed up in every
+            // file the user visited next. scrollRequest is the
+            // exception above: cross-file alignment depends on it
+            // re-firing in the new file.
+            coordinator.lastFormatNonce = formatRequest?.nonce ?? .min
+            coordinator.lastReplaceNonce = replaceRequest?.nonce ?? .min
+            coordinator.lastReplacePageNonce = replacePageRequest?.nonce ?? .min
+            coordinator.lastSearchNonce = searchRequest?.nonce ?? .min
             return
         }
         // Same file, but the text changed externally (e.g. live preview
