@@ -145,6 +145,9 @@ private struct FormatNormalizationCommands: View {
         RouterButton("Convert Quotes to Smart Quotes") {
             $0.formatSmartQuotes()
         }
+        RouterButton("Normalize Typography") {
+            $0.formatNormalizeTypography()
+        }
         RouterButton(
             "Tidy Source", shortcut: "p",
             modifiers: [.command, .shift, .option]

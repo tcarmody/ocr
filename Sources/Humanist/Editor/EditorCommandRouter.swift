@@ -220,6 +220,19 @@ final class EditorCommandRouter: ObservableObject {
         vm.smartQuoteSourceText()
     }
 
+    /// Apply deterministic typography fixes document-wide — ligature
+    /// decomposition, `...` → `…`, `--` → `—`, en-dash between
+    /// digits. Routes to WYSIWYG when that pane is focused; same
+    /// dual-surface posture as `formatSmartQuotes`.
+    func formatNormalizeTypography() {
+        guard let vm = activeEditor() else { return }
+        if shouldDispatchToWYSIWYG(vm) {
+            vm.wysiwygCommand = WYSIWYGCommandRequest(.normalizeTypography)
+            return
+        }
+        vm.normalizeTypographySource()
+    }
+
     /// Insert a closing tag at the source pane's cursor for the most
     /// recently-opened unclosed tag.
     func insertClosingTag() {

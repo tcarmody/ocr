@@ -1586,6 +1586,19 @@ final class EditorViewModel: ObservableObject {
         sourceText = updated
     }
 
+    /// Apply deterministic typography fixes to the loaded source —
+    /// ligature decomposition, `...` → `…`, `--` → `—`, en-dash
+    /// between digits. Same whole-buffer assignment pattern as
+    /// `smartQuoteSourceText`: `TypographyNormalizer` skips
+    /// characters inside tags so attribute values stay byte-stable;
+    /// the standard dirty-tracking + preview-debounce pipeline picks
+    /// the edit up. No-op when nothing changes.
+    func normalizeTypographySource() {
+        let updated = XHTMLTypographyNormalizer.normalize(sourceText)
+        guard updated != sourceText else { return }
+        sourceText = updated
+    }
+
     /// Round-trip the loaded source through `XMLDocument` and re-emit
     /// with pretty-printed indentation. Fixes attribute ordering,
     /// normalises inter-tag whitespace, and re-indents the tree based

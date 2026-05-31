@@ -359,6 +359,13 @@ enum WYSIWYGCommand: Equatable {
     case link(String)
     case languageTag(String)
     case smartQuotes
+    /// Decompose Unicode ligatures and normalise dashes / ellipses
+    /// across every text node — mirrors
+    /// `TypographyNormalizer.normalize(_:)` on the source side. The
+    /// JS implementation skips text inside `<style>` / `<script>`
+    /// (none in a contenteditable body) and walks `Node.TEXT_NODE`
+    /// children only, so attribute values stay untouched.
+    case normalizeTypography
     /// Strip inline formatting from the selection. Maps to
     /// `document.execCommand('removeFormat')` + `unlink` so
     /// `<strong>`, `<em>`, links, font styling, etc. all clear
@@ -403,6 +410,8 @@ enum WYSIWYGCommand: Equatable {
             return "humanistWrapLang('\(escaped)')"
         case .smartQuotes:
             return "humanistSmartQuotes()"
+        case .normalizeTypography:
+            return "humanistNormalizeTypography()"
         case .removeFormatting:
             return "humanistRemoveFormatting()"
         }
@@ -677,6 +686,30 @@ private func renderEnvelope(
             t = t.replace(/"/g, '”');
             t = t.replace(/(^|[\\s\\(\\[\\{<—])'/g, '$1‘');
             t = t.replace(/'/g, '’');
+            n.nodeValue = t;
+          }
+          postEdit();
+        };
+        // Mirror of Swift's TypographyNormalizer.normalize for the
+        // WYSIWYG surface — decompose Unicode ligatures, normalise
+        // ellipsis / em-dash / en-dash. Walks `Node.TEXT_NODE`
+        // children only, so attribute values stay untouched. Lookbehind
+        // / lookahead require Safari 16+; WKWebView on macOS 26 ships
+        // a newer JavaScriptCore that supports them.
+        window.humanistNormalizeTypography = function() {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          for (const n of nodes) {
+            let t = n.nodeValue;
+            t = t.replace(/\\uFB00/g, 'ff');
+            t = t.replace(/\\uFB01/g, 'fi');
+            t = t.replace(/\\uFB02/g, 'fl');
+            t = t.replace(/\\uFB03/g, 'ffi');
+            t = t.replace(/\\uFB04/g, 'ffl');
+            t = t.replace(/(?<!\\.)\\.{3}(?!\\.)/g, '\\u2026');
+            t = t.replace(/(?<!-)--(?!-)/g, '\\u2014');
+            t = t.replace(/(?<=\\d)-(?=\\d)/g, '\\u2013');
             n.nodeValue = t;
           }
           postEdit();

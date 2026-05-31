@@ -96,6 +96,13 @@ struct WYSIWYGFormattingToolbar: View {
             ) {
                 send(.smartQuotes)
             }
+
+            iconButton(
+                "Normalize typography (dashes, ellipses, ligatures)",
+                systemImage: "textformat"
+            ) {
+                send(.normalizeTypography)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)

@@ -145,6 +145,17 @@ struct SourceFormattingToolbar: View {
                 vm.smartQuoteSourceText()
             }
 
+            // Same family as smart quotes — decompose Unicode
+            // ligatures and normalise dashes / ellipses across
+            // every text node. Skips characters inside tags, so
+            // attribute values stay byte-stable.
+            iconButton(
+                "Normalize typography (dashes, ellipses, ligatures)",
+                systemImage: "textformat"
+            ) {
+                vm.normalizeTypographySource()
+            }
+
             // Round-trip the buffer through XMLDocument and re-emit
             // with pretty-printed indentation. Fails loudly via
             // `vm.tidySourceError` when the buffer doesn't parse,
