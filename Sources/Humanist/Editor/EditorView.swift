@@ -233,6 +233,14 @@ struct EditorView: View {
                             }
                         }
                     )
+                    // Insert > Anchor… sheet (menu-path twin of the
+                    // source toolbar's anchor popover) and Tidy
+                    // Source parse-failure alert. Bundled into one
+                    // modifier — the surrounding modifier chain
+                    // already maxes out SwiftUI's expression
+                    // type-checker; adding two more loose modifiers
+                    // tips it past the limit.
+                    .modifier(EditorAuxSurfaces(vm: vm))
                     // Rename Chapter prompt. The view-model owns the
                     // pending rename's state (URL + original name +
                     // typed buffer); SwiftUI's `.alert(item:)` opens
@@ -847,6 +855,42 @@ struct EditorView: View {
             // Don't waste pane space on the empty-state placeholder
             // unless the user explicitly toggled PDF on.
         }
+    }
+}
+
+// MARK: - Aux surface bundle
+
+/// Carries the Anchor sheet + Tidy-failure alert. Both are recent
+/// additions and would otherwise extend the editor scene's main
+/// modifier chain past SwiftUI's type-checker budget. Anything
+/// future that's purely a `vm`-driven sheet or alert can land here
+/// too, instead of growing the top-level chain.
+private struct EditorAuxSurfaces: ViewModifier {
+    @ObservedObject var vm: EditorViewModel
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $vm.showAnchorSheet) {
+                AnchorInsertSheet(
+                    isPresented: $vm.showAnchorSheet,
+                    onSubmit: { id in vm.insertAnchor(id: id) }
+                )
+            }
+            .alert(
+                "Could not tidy source",
+                isPresented: Binding(
+                    get: { vm.tidySourceError != nil },
+                    set: { presented in
+                        if !presented { vm.tidySourceError = nil }
+                    }
+                ),
+                actions: { Button("OK", role: .cancel) {} },
+                message: {
+                    if let msg = vm.tidySourceError {
+                        Text(msg)
+                    }
+                }
+            )
     }
 }
 

@@ -145,6 +145,10 @@ private struct FormatNormalizationCommands: View {
         RouterButton("Convert Quotes to Smart Quotes") {
             $0.formatSmartQuotes()
         }
+        RouterButton(
+            "Tidy Source", shortcut: "p",
+            modifiers: [.command, .shift, .option]
+        ) { $0.tidySource() }
     }
 }
 
@@ -188,6 +192,11 @@ struct EditorInsertMenu: Commands {
                 modifiers: [.command, .shift, .option]
             ) { $0.insertFootnote() }
             RouterButton("Footnote Manager…") { $0.showFootnoteManager() }
+            Divider()
+            RouterButton(
+                "Anchor…", shortcut: "a",
+                modifiers: [.command, .shift, .option]
+            ) { $0.showAnchorSheet() }
         }
     }
 }

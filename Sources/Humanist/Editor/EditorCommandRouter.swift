@@ -232,6 +232,30 @@ final class EditorCommandRouter: ObservableObject {
         activeEditor()?.insertFootnote()
     }
 
+    /// Insert an empty named-anchor target at the cursor:
+    /// `<a id="…"></a>`. Source-pane-only — WYSIWYG already exposes
+    /// id editing through the element inspector, and a bare anchor
+    /// target has no visible rendering for contentEditable to drive.
+    func insertAnchor(id: String) {
+        activeEditor()?.insertAnchor(id: id)
+    }
+
+    /// Toggle the Insert > Anchor… sheet on the active editor. The
+    /// sheet collects the id and commits via `insertAnchor(id:)`.
+    func showAnchorSheet() {
+        guard let vm = activeEditor() else { return }
+        vm.showAnchorSheet = true
+    }
+
+    /// Round-trip the active editor's source through `XMLDocument`
+    /// and re-emit with pretty-printed indentation. Source-pane-only
+    /// — operates on the raw XHTML buffer, not the rendered DOM.
+    /// `EditorViewModel` surfaces parse failures through
+    /// `tidySourceError`; the view-layer alert dismisses them.
+    func tidySource() {
+        activeEditor()?.tidySource()
+    }
+
     /// Insert raw text at the source pane's cursor. Used by the
     /// Special Character picker so a chosen char goes straight into
     /// the document.

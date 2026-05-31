@@ -17,8 +17,10 @@ struct SourceFormattingToolbar: View {
     @ObservedObject var vm: EditorViewModel
     @State private var showingLinkPopover = false
     @State private var showingLanguagePopover = false
+    @State private var showingAnchorPopover = false
     @State private var linkURL = ""
     @State private var languageCode = ""
+    @State private var anchorID = ""
 
     var body: some View {
         HStack(spacing: 6) {
@@ -99,6 +101,16 @@ struct SourceFormattingToolbar: View {
                 linkPopover
             }
 
+            // Anchor target — pairs with Link…. Inserts an empty
+            // `<a id="…">` so other links can jump to this spot.
+            iconButton("Anchor…", systemImage: "bookmark") {
+                anchorID = ""
+                showingAnchorPopover = true
+            }
+            .popover(isPresented: $showingAnchorPopover, arrowEdge: .bottom) {
+                anchorPopover
+            }
+
             iconButton("Language tag…", systemImage: "globe") {
                 languageCode = ""
                 showingLanguagePopover = true
@@ -131,6 +143,17 @@ struct SourceFormattingToolbar: View {
                 systemImage: "text.quote"
             ) {
                 vm.smartQuoteSourceText()
+            }
+
+            // Round-trip the buffer through XMLDocument and re-emit
+            // with pretty-printed indentation. Fails loudly via
+            // `vm.tidySourceError` when the buffer doesn't parse,
+            // rather than mangling half-typed XHTML.
+            iconButton(
+                "Tidy source",
+                systemImage: "wand.and.stars"
+            ) {
+                vm.tidySource()
             }
         }
         .padding(.horizontal, 8)
@@ -189,6 +212,30 @@ struct SourceFormattingToolbar: View {
     }
 
     @ViewBuilder
+    private var anchorPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Insert anchor").font(.headline)
+            Text("Inserts `<a id=\"…\"></a>` at the cursor. Use as a jump target for `<a href=\"#…\">` links elsewhere in the book.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 280, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("anchor-id (e.g. intro, ch3-note-2)", text: $anchorID)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 280)
+                .onSubmit { commitAnchor() }
+            HStack {
+                Spacer()
+                Button("Cancel") { showingAnchorPopover = false }
+                Button("Insert") { commitAnchor() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(anchorID.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
     private var languagePopover: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Wrap with language tag").font(.headline)
@@ -234,5 +281,12 @@ struct SourceFormattingToolbar: View {
         guard !code.isEmpty else { return }
         vm.formatLanguageSpan(lang: code)
         showingLanguagePopover = false
+    }
+
+    private func commitAnchor() {
+        let id = anchorID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        vm.insertAnchor(id: id)
+        showingAnchorPopover = false
     }
 }

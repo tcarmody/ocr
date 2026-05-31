@@ -1179,6 +1179,18 @@ final class EditorViewModel: ObservableObject {
         )
     }
 
+    /// Insert an empty named-anchor target at the cursor:
+    /// `<a id="…"></a>`. Pairs with `formatLink(href:)` — Link goes
+    /// somewhere, Anchor is somewhere to link to. The id is escaped
+    /// for attribute context; whitespace-only ids are rejected by the
+    /// caller (sheet + popover both validate).
+    func insertAnchor(id: String) {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let escaped = Self.xhtmlEscape(trimmed)
+        formatInsert("<a id=\"\(escaped)\"></a>")
+    }
+
     /// Jump the source pane's cursor to a 1-based line number.
     /// Out-of-range numbers clamp at the bridge level.
     func gotoLine(_ line: Int) {
@@ -1222,6 +1234,17 @@ final class EditorViewModel: ObservableObject {
 
     /// Drives the Document > Chapter Manager sheet.
     @Published var showChapterManager: Bool = false
+
+    /// Drives the Insert > Anchor… sheet. Same pattern as
+    /// `showGotoLineSheet` — `EditorView` presents the sheet, and
+    /// committing it routes through `insertAnchor(id:)`.
+    @Published var showAnchorSheet: Bool = false
+
+    /// One-shot user-facing error from the source tidy pass —
+    /// populated when `XMLDocument` rejects the buffer. `EditorView`
+    /// surfaces this in an alert; clearing the value dismisses the
+    /// alert.
+    @Published var tidySourceError: String?
 
     /// Incremented by `equalizePanes()` so `EditorView` knows to
     /// resize all visible panes to equal widths.
@@ -1561,6 +1584,43 @@ final class EditorViewModel: ObservableObject {
         let updated = SmartQuoter.smartQuote(sourceText)
         guard updated != sourceText else { return }
         sourceText = updated
+    }
+
+    /// Round-trip the loaded source through `XMLDocument` and re-emit
+    /// with pretty-printed indentation. Fixes attribute ordering,
+    /// normalises inter-tag whitespace, and re-indents the tree based
+    /// on element depth — the "format this file" gesture every IDE
+    /// has. Whole-buffer assignment so the existing dirty-tracking +
+    /// preview-debounce pipeline picks the edit up.
+    ///
+    /// On parse failure publishes `tidySourceError` instead of
+    /// mangling the buffer — the source pane already permits
+    /// half-typed XHTML mid-edit, and silently rewriting it would
+    /// drop in-progress work. The view layer surfaces the error in
+    /// an alert.
+    ///
+    /// Caveat: pretty print reflows whitespace between elements but
+    /// leaves text-node content alone. `<pre>` blocks survive
+    /// byte-stable; everything else is re-indented.
+    func tidySource() {
+        guard !sourceText.isEmpty else { return }
+        guard let data = sourceText.data(using: .utf8) else {
+            tidySourceError = "Source is not valid UTF-8."
+            return
+        }
+        let doc: XMLDocument
+        do {
+            doc = try XMLDocument(
+                data: data,
+                options: [.nodePreserveCDATA, .nodeLoadExternalEntitiesNever]
+            )
+        } catch {
+            tidySourceError = error.localizedDescription
+            return
+        }
+        let pretty = doc.xmlString(options: [.nodePrettyPrint, .nodeCompactEmptyElement])
+        guard pretty != sourceText else { return }
+        sourceText = pretty
     }
 
     // MARK: - Correction trail actions (Cloud Phase 6)
