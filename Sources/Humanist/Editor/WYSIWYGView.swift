@@ -539,6 +539,49 @@ private func renderEnvelope(
           html = html.replace(/<p>\\s*(<br\\/>)?\\s*<\\/p>/gi, '');
           return html;
         }
+        // Strip inline-style artifacts that WebKit's contenteditable
+        // sprinkles into the DOM during edits and pastes — most
+        // visibly `<span style="font-family: var(--humanist-…); …">`
+        // built from the computed style of the surrounding context.
+        // Nothing in this codebase intentionally writes `style=""`,
+        // so the rule is "drop them all"; then unwrap any `<span>`
+        // left with zero attributes since a bare span carries no
+        // semantic meaning. Spans with `lang` / `xml:lang` / `id` /
+        // `class` survive (those are real, written by us or by the
+        // pipeline).
+        function cleanInlineArtifacts(root) {
+          for (const el of root.querySelectorAll('[style]')) {
+            el.removeAttribute('style');
+          }
+          for (const span of Array.from(root.querySelectorAll('span'))) {
+            if (span.attributes.length === 0) {
+              const parent = span.parentNode;
+              if (!parent) continue;
+              while (span.firstChild) {
+                parent.insertBefore(span.firstChild, span);
+              }
+              parent.removeChild(span);
+            }
+          }
+        }
+        // Run the same cleanup on pasted HTML before it lands in the
+        // DOM, so paste — the dominant source of styled-span junk —
+        // doesn't even momentarily display the cruft to the user.
+        // Falls back to text/plain when there's no HTML payload.
+        function sanitizePastedHTML(html) {
+          try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            if (!doc || !doc.body) return '';
+            for (const node of doc.body.querySelectorAll('script, style, link, meta')) {
+              node.remove();
+            }
+            cleanInlineArtifacts(doc.body);
+            return doc.body.innerHTML;
+          } catch (e) {
+            return '';
+          }
+        }
         function postEdit() {
           // Clone first so cleanup doesn't disturb the live DOM
           // (cursor / selection / undo stack).
@@ -549,6 +592,12 @@ private func renderEnvelope(
           for (const node of clone.querySelectorAll('script, style, link')) {
             node.remove();
           }
+          // Belt-and-suspenders: even with paste interception and
+          // styleWithCSS=false, WebKit can still mint styled spans
+          // when text merges across element boundaries (e.g.
+          // backspacing into the previous paragraph). Scrubbing the
+          // clone keeps the source buffer clean regardless.
+          cleanInlineArtifacts(clone);
           // Replace U+00A0 (non-breaking space) with a regular
           // space in every text node. WKWebView's contenteditable
           // injects NBSP for runs of regular spaces and at edge
@@ -700,6 +749,30 @@ private func renderEnvelope(
           // default `<div>` — keeps the source consistent with
           // the rest of the codebase's paragraph convention.
           try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (e) {}
+          // Push execCommand toward semantic tags over inline-CSS
+          // wrappers (e.g. `<strong>` instead of
+          // `<span style="font-weight: bold">`). Pairs with the
+          // cleanInlineArtifacts cleanup — together they prevent
+          // styled-span junk from accreting in the source buffer.
+          try { document.execCommand('styleWithCSS', false, false); } catch (e) {}
+          // Paste interception: pull text/html, sanitize through
+          // cleanInlineArtifacts (drops `style=""` everywhere,
+          // unwraps bare spans), then insertHTML. Falls back to
+          // text/plain when there's no HTML payload. Without this,
+          // paste is the dominant source of WebKit
+          // computed-style-preserving spans like
+          // `<span style="font-family: var(--humanist-…); …">`.
+          document.body.addEventListener('paste', function(e) {
+            const cd = e.clipboardData;
+            if (!cd) return;
+            e.preventDefault();
+            const html = cd.getData('text/html');
+            if (html && html.length > 0) {
+              document.execCommand('insertHTML', false, sanitizePastedHTML(html));
+            } else {
+              document.execCommand('insertText', false, cd.getData('text/plain') || '');
+            }
+          });
           document.body.addEventListener('input', scheduleEdit);
           // Focus tracking — drives EditorViewModel.wysiwygHasFocus
           // so the format menu routes commands to whichever pane
