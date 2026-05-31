@@ -1246,6 +1246,12 @@ final class EditorViewModel: ObservableObject {
     /// alert.
     @Published var tidySourceError: String?
 
+    /// One-shot user-facing summary from a footnote back-linking
+    /// pass — "Linked N references across M chapters." Set after
+    /// `linkFootnotesInCurrentFile()` / `linkFootnotesInAllChapters()`
+    /// completes; `EditorView` surfaces it in an alert.
+    @Published var footnoteLinkResult: String?
+
     /// Incremented by `equalizePanes()` so `EditorView` knows to
     /// resize all visible panes to equal widths.
     @Published private(set) var equalizePanesSignal: Int = 0
@@ -1634,6 +1640,71 @@ final class EditorViewModel: ObservableObject {
         let pretty = doc.xmlString(options: [.nodePrettyPrint, .nodeCompactEmptyElement])
         guard pretty != sourceText else { return }
         sourceText = pretty
+    }
+
+    /// Auto-link footnote refs in the current chapter to their
+    /// matching `<aside id="fn-N">` definitions, and append a
+    /// back-link inside each linked aside. See
+    /// `FootnoteBackLinker` for the heuristic; in short:
+    /// `<sup>N</sup>`, `[N]`, word-adjacent digits like `end.3`,
+    /// and Unicode superscripts get linked when N matches an
+    /// existing definition and the context isn't a structural
+    /// reference (page / chapter / section / etc.).
+    ///
+    /// Whole-buffer assignment so the existing dirty-tracking +
+    /// preview-debounce pipeline picks the edit up. Result count
+    /// goes into `footnoteLinkResult` for the alert.
+    func linkFootnotesInCurrentFile() {
+        let result = FootnoteBackLinker.linkFootnotes(in: sourceText)
+        if result.rewritten != sourceText {
+            sourceText = result.rewritten
+        }
+        footnoteLinkResult = result.links.isEmpty
+            ? "No footnote references found to link in this chapter."
+            : "Linked \(result.links.count) footnote reference\(result.links.count == 1 ? "" : "s") in this chapter."
+    }
+
+    /// Whole-book footnote linking. Iterates every XHTML chapter in
+    /// the working dir, applying `FootnoteBackLinker` to each.
+    /// Reads from the in-memory buffer when present (so in-progress
+    /// edits are part of the pass), writes back to the buffer + dirty
+    /// set so the next Save flushes the linked chapters to disk.
+    /// Currently-selected file's `sourceText` is updated in place.
+    func linkFootnotesInAllChapters() {
+        guard let book = book else { return }
+        flushSourceTextToBuffer()
+        let workingDir = book.workingDirectory
+        let urls = PackageSearch.textFileURLs(in: workingDir)
+            .filter { ["xhtml", "html", "htm"].contains($0.pathExtension.lowercased()) }
+        var totalLinks = 0
+        var filesTouched = 0
+        for url in urls {
+            let canonical = url.canonicalForFile
+            let current: String
+            if let buf = buffers[canonical] {
+                current = buf
+            } else if let data = try? Data(contentsOf: canonical),
+                      let text = String(data: data, encoding: .utf8) {
+                current = text
+            } else {
+                continue
+            }
+            let result = FootnoteBackLinker.linkFootnotes(in: current)
+            guard !result.links.isEmpty else { continue }
+            buffers[canonical] = result.rewritten
+            dirtyURLs.insert(canonical)
+            if selectedFile?.id.canonicalForFile == canonical {
+                sourceText = result.rewritten
+            }
+            totalLinks += result.links.count
+            filesTouched += 1
+        }
+        if totalLinks > 0 {
+            isDirty = true
+        }
+        footnoteLinkResult = totalLinks == 0
+            ? "No footnote references found to link across the book."
+            : "Linked \(totalLinks) footnote reference\(totalLinks == 1 ? "" : "s") across \(filesTouched) chapter\(filesTouched == 1 ? "" : "s"). Save (⌘S) to persist."
     }
 
     // MARK: - Correction trail actions (Cloud Phase 6)

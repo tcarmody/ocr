@@ -891,6 +891,21 @@ private struct EditorAuxSurfaces: ViewModifier {
                     }
                 }
             )
+            .alert(
+                "Link Footnotes",
+                isPresented: Binding(
+                    get: { vm.footnoteLinkResult != nil },
+                    set: { presented in
+                        if !presented { vm.footnoteLinkResult = nil }
+                    }
+                ),
+                actions: { Button("OK", role: .cancel) {} },
+                message: {
+                    if let msg = vm.footnoteLinkResult {
+                        Text(msg)
+                    }
+                }
+            )
     }
 }
 

@@ -213,9 +213,26 @@ struct EditorToolsMenu: Commands {
         CommandMenu("Tools") {
             ToolsMenuValidationCommands()
             Divider()
+            ToolsMenuFootnoteCommands()
+            Divider()
             ToolsMenuReOCRCommands()
             Divider()
             EditorCompareEPUBsCommand()
+        }
+    }
+}
+
+/// Auto-link footnote references to their `<aside id="fn-N">`
+/// definitions. Two scopes: current chapter only, or every XHTML
+/// file in the working dir. Multi-file pass marks linked chapters
+/// dirty so the next Save flushes them.
+private struct ToolsMenuFootnoteCommands: View {
+    var body: some View {
+        RouterButton("Link Footnotes in Chapter") {
+            $0.linkFootnotesInCurrentFile()
+        }
+        RouterButton("Link Footnotes in Whole Book…") {
+            $0.linkFootnotesInAllChapters()
         }
     }
 }

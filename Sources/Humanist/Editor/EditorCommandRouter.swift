@@ -327,6 +327,18 @@ final class EditorCommandRouter: ObservableObject {
         vm.showStyleSheet = true
     }
 
+    /// Tools > Link Footnotes in Current Chapter. See
+    /// `FootnoteBackLinker` for the heuristic.
+    func linkFootnotesInCurrentFile() {
+        activeEditor()?.linkFootnotesInCurrentFile()
+    }
+
+    /// Tools > Link Footnotes Across Whole Book. Same engine,
+    /// applied to every XHTML chapter in the working dir.
+    func linkFootnotesInAllChapters() {
+        activeEditor()?.linkFootnotesInAllChapters()
+    }
+
     // MARK: - private
 
     /// Pick the editor whose window is currently key. If none of the
