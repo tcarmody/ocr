@@ -9208,6 +9208,224 @@ two. ~1 day.
 Tiers 1-3 sub-items combined: ~4-5 days. None blocks others;
 sequence by which complaint surfaces next.
 
+### Editor-side post-processing — context
+
+The Q-items above run inside `PDFToEPUBPipeline` during
+conversion. The five items below are **editor-side** passes —
+they operate on an already-built EPUB, fired from the Format /
+Tools menu (or, eventually, the Library window's bulk-actions
+context menu). Useful for older conversions that pre-date a
+pipeline improvement, for EPUBs imported from outside Humanist,
+and as a "do it again now that the user has hand-edited" gesture
+after they've split chapters or rewritten passages.
+
+Already shipped editor surfaces (so the menu has something
+already, when one of the items below lands):
+
+- `Format > Convert Quotes to Smart Quotes` (`SmartQuoter`)
+- `Format > Normalize Typography` (Pipeline `TypographyNormalizer`
+  with a tag-aware wrapper)
+- `Format > Tidy Source` (`XMLDocument` pretty-print)
+- `Tools > Link Footnotes in Chapter` /
+  `Tools > Link Footnotes in Whole Book…`
+  (`FootnoteBackLinker`, commit `a13d352`)
+
+### Q-Footnote-Backlinks — Auto-link footnote refs to definitions
+
+**Status**: shipped (commit `a13d352`).
+`FootnoteBackLinker.linkFootnotes(in:)` walks an XHTML chapter,
+finds every `<aside id="fn-N">` definition, then scans body text
+for matching refs using four patterns in priority order:
+`<sup>N</sup>`, `[N]`, **word-immediately-adjacent digit**
+(`end.3` / `word3` — the case OCR'd books trip over when
+superscript styling was lost), and Unicode superscripts
+(`¹²³…`). Skip rules: digit inside a larger number (no part of
+`1939` matches `fn-3`), structure-word anti-context within ~16
+chars (`page`, `Chapter`, `Ch.`, `Section`, `§`, `vol.`,
+`Figure`, `Table`, `verse`, `line`), existing `<a>` wraps, and
+aside-internal occurrences. One link per definition, earliest
+match in document order wins. Idempotent — second pass is a
+no-op. 16 unit tests cover each pattern + skip case.
+
+Editor surfaces: `Tools > Link Footnotes in Chapter` (operates
+on the open file's `sourceText`); `Tools > Link Footnotes in
+Whole Book…` (iterates every XHTML in the working dir, reads
+from in-memory buffer when present so in-progress edits
+participate, marks linked chapters dirty so the next ⌘S
+persists). Result count surfaced in an alert (`vm.footnoteLinkResult`).
+No per-link revert UI in v1 — the user can hand-edit if a `3`
+was wrongly grabbed; revisit if real-world books push back.
+
+### Q-Paragraph-Reflow — Merge OCR-split paragraphs
+
+**Status**: proposed.
+
+OCR pipelines that emit one paragraph per visual line (Vision
+without layout analysis, older Tesseract runs, EPUBs imported
+from elsewhere) leave the user reading text that paragraph-breaks
+mid-sentence. Heuristic merge: walk paragraphs in order; when
+paragraph N ends without a terminal punctuation mark
+(`.`/`?`/`!`/`…`/closing quote-marks) AND paragraph N+1 starts
+with a lowercase letter (or starts with `and`/`or`/`but` etc.),
+merge them with a space.
+
+Risks: false positives on intentional mid-sentence breaks
+(verse, dialogue snippets, fragmented quotations) — these are
+real and noticeable when merged. Needs a review surface like
+the existing Cloud Phase 6 `CorrectionTrail` so the user can
+revert individual merges. Conservative defaults: only fire when
+both sides of the join are within the same chapter and both have
+> ~80 chars (so very short paragraphs that look like dialog stay
+intact).
+
+**Approach**: `ParagraphReflower.reflow(in:) -> ReflowResult`
+returning rewritten XHTML + list of `{atAnchor, beforeText,
+afterText, mergedText}` for the review trail. Editor surfaces
+mirror the footnote linker: `Tools > Reflow Paragraphs in
+Chapter` / `Tools > Reflow Paragraphs in Whole Book…`. Result
+goes into a sheet (not just an alert) — too many decisions to
+fit in a banner.
+
+**Effort**: ~2-3 days including the review sheet. Detection
+logic is small; the UI / revert plumbing is most of it.
+
+### Q-Data-Detectors — `NSDataDetector` semantic markup
+
+**Status**: proposed.
+
+Run each chapter's text through `NSDataDetector` for URLs,
+ISBNs, dates, phone numbers, addresses. Detected spans get
+wrapped:
+
+- URLs → `<a href="…">…</a>`
+- ISBNs → `<span class="isbn">…</span>` (optional: link to a
+  catalogue URL via a user-configured template)
+- Dates → `<time datetime="…">…</time>`
+- Addresses / phone numbers → semantic wrappers if they have
+  EPUB conventions, otherwise skip
+
+One Foundation API call per chapter. Cost is ~free. Reader
+delight: a URL printed in an academic footnote becomes tappable
+in the Reader.
+
+Risks: false positives on URL-like strings inside code blocks
+or quoted matter. Mitigation: skip text inside `<pre>` /
+`<code>` / `<aside class="footnote-source">`. Skip text already
+inside an `<a>` wrap (don't double-link).
+
+**Approach**: `DataDetectorWrapper.applyDetectors(in:)` →
+rewritten XHTML + per-detector counts. Tag-aware walker (same
+shape as `XHTMLTypographyNormalizer`). Editor surface:
+`Tools > Detect Links, Dates, ISBNs > Apply to Chapter` and
+`> Apply to Whole Book…`.
+
+**Effort**: ~1-2 days. `NSDataDetector` does all the hard
+work; tag-skipping wrapper is straightforward.
+
+### Q-Headings-Promote — Promote unsplit headings in un-Surya'd books
+
+**Status**: proposed.
+
+Chapters that bypassed Surya layout analysis (born-digital text
+extraction, EPUBs imported from outside Humanist) often have no
+`<h2>` / `<h3>` between paragraphs even when the source clearly
+intended section breaks. Heuristic: walk paragraphs; promote to
+`<h2>` (or `<h3>` based on length + capitalization) when ALL of:
+
+- Paragraph is short (< ~60 chars, no terminal `.`)
+- Paragraph is ALL CAPS, or Title Case with no terminal
+  punctuation, or matches `^[IVXLC]+\.` / `^\d+\.` (Roman /
+  arabic numbering)
+- Surrounding paragraphs are body-length (the candidate is
+  visually isolated)
+
+Skip when the chapter already has headings (assume the existing
+structure is intentional).
+
+Risks: false positives on figure captions, epigraphs, all-caps
+emphasis fragments. Conservative defaults catch this; users can
+revert per-promotion via the review sheet.
+
+**Approach**: `HeadingPromoter.promote(in:) -> PromoteResult`
+returning rewritten XHTML + list of promotions. Same review-sheet
+shape as Q-Paragraph-Reflow.
+
+**Effort**: ~2 days including review UI. Could share the
+review-sheet infrastructure with Q-Paragraph-Reflow if both
+land; cuts ~half a day per second item.
+
+### Q-LLM-Repunctuate — Local-LLM punctuation / capitalization repair
+
+**Status**: proposed. Highest ceiling, highest risk of the
+editor-side items.
+
+Run each chapter through a local model (Ollama / `mlx-llm`,
+likely a 7-13B quantized model) with a prompt of the form
+"Fix punctuation and capitalization in this passage. Do not
+change wording, do not summarize, do not insert any new
+content. Return the corrected text exactly." Useful for
+archival OCR where the OCR engine got the words right but the
+sentence boundaries / capitalization wrong.
+
+Risks:
+
+- Hallucinated content insertion. Mitigation: post-LLM
+  guardrail similar to `OCRChangeGuardrail` — accept only when
+  the edit distance is below a threshold AND no new content
+  words appear (whitelist: punctuation, capitalization, case
+  changes only).
+- Quality varies by model; small quantized models can drift
+  badly on long passages.
+- Cost: free per-call, but slow on Apple Silicon for a whole
+  book (~minutes per chapter at 7B). Mitigation: per-chapter
+  fire, not auto-on-save.
+
+**Approach**: New `OllamaPunctuationFixer` (under
+`Sources/AI/`?) handling the model dispatch. Chapter-level
+chunking; assemble per-chunk results. Apply guardrail before
+rewriting the buffer. Surface in a review sheet — every
+chapter-level decision is reviewable + revertible, since this
+is the riskiest pass.
+
+**Effort**: ~3-4 days including the guardrail + review UI.
+Assumes the existing Ollama plumbing in the chat path covers
+the model invocation. Risk: real-world quality may not warrant
+the surface area; gate on actual demand before building.
+
+### Q-Image-AltText — Apple Intelligence VLM-generated alt text
+
+**Status**: proposed. macOS 26-only feature.
+
+Figures extracted by the pipeline land in `OEBPS/images/` with
+either `alt="formula"` (math) or `alt="<caption text>"` (figure
+with caption) or no alt (figure without caption). The last
+bucket is an accessibility hole. macOS 26's on-device VLM
+(`ImageRequestHandler` + `ImagePlaygroundConcept`?) can
+describe an image in a sentence or two; we run it over each
+alt-less figure and write the result into the `<img alt="…">`.
+
+Risks:
+
+- VLM API surface area on macOS 26 needs verification; spike
+  it before committing to the design.
+- Description quality varies; charts and diagrams are harder
+  than photos. Mitigation: keep a "Regenerate Alt Text" button
+  on the figure in the editor so the user can re-run with
+  different prompting.
+- Privacy: on-device only, so this is fine — but documented
+  as such.
+
+**Approach**: New `OnDeviceAltTextGenerator` (under
+`Sources/AI/`?) wrapping the macOS 26 VLM. Iterate every
+`<img>` in the chapter, gate on `alt=""` / missing alt,
+generate description, rewrite. Editor surface:
+`Tools > Generate Alt Text for Figures > Current Chapter` /
+`Whole Book…`. Bulk-pass over the whole library should be a
+library-window command, not editor — that's a follow-up.
+
+**Effort**: ~3-4 days including the spike. Hard to estimate
+firmly until the macOS 26 VLM API is exercised.
+
 ## Versatile (more inputs, more outputs)
 
 ### V-PDF-Searchable — Searchable-PDF re-export
