@@ -1606,11 +1606,12 @@ final class EditorViewModel: ObservableObject {
     }
 
     /// Round-trip the loaded source through `XMLDocument` and re-emit
-    /// with pretty-printed indentation. Fixes attribute ordering,
-    /// normalises inter-tag whitespace, and re-indents the tree based
-    /// on element depth — the "format this file" gesture every IDE
-    /// has. Whole-buffer assignment so the existing dirty-tracking +
-    /// preview-debounce pipeline picks the edit up.
+    /// with pretty-printed indentation — the "format this file"
+    /// gesture every IDE has. Re-indents the tree by element depth but
+    /// keeps phrasing-level (inline) elements glued to their
+    /// surrounding text, so `<em>word</em>,` doesn't grow a stray space
+    /// before the comma. Whole-buffer assignment so the existing
+    /// dirty-tracking + preview-debounce pipeline picks the edit up.
     ///
     /// On parse failure publishes `tidySourceError` instead of
     /// mangling the buffer — the source pane already permits
@@ -1618,28 +1619,19 @@ final class EditorViewModel: ObservableObject {
     /// drop in-progress work. The view layer surfaces the error in
     /// an alert.
     ///
-    /// Caveat: pretty print reflows whitespace between elements but
-    /// leaves text-node content alone. `<pre>` blocks survive
-    /// byte-stable; everything else is re-indented.
+    /// Caveat: re-indentation reflows whitespace between block elements
+    /// but leaves text-node content alone. `<pre>` blocks and inline
+    /// runs survive byte-stable; block structure is re-indented. See
+    /// `XHTMLSourceTidier`.
     func tidySource() {
         guard !sourceText.isEmpty else { return }
-        guard let data = sourceText.data(using: .utf8) else {
-            tidySourceError = "Source is not valid UTF-8."
+        let outcome = XHTMLSourceTidier.tidy(sourceText)
+        if let error = outcome.error {
+            tidySourceError = error
             return
         }
-        let doc: XMLDocument
-        do {
-            doc = try XMLDocument(
-                data: data,
-                options: [.nodePreserveCDATA, .nodeLoadExternalEntitiesNever]
-            )
-        } catch {
-            tidySourceError = error.localizedDescription
-            return
-        }
-        let pretty = doc.xmlString(options: [.nodePrettyPrint, .nodeCompactEmptyElement])
-        guard pretty != sourceText else { return }
-        sourceText = pretty
+        guard let tidied = outcome.text, tidied != sourceText else { return }
+        sourceText = tidied
     }
 
     /// Auto-link footnote refs in the current chapter to their
