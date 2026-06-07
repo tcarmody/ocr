@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WebKit
+import UniformTypeIdentifiers
 import EPUB
 
 /// R-Reader. Standalone EPUB reading window. NavigationSplitView
@@ -753,6 +754,23 @@ struct ReaderView: View {
             .help("Highlight the selected text (⌃⌘H)")
             .keyboardShortcut("h", modifiers: [.command, .control])
 
+            Menu {
+                Button {
+                    exportMarksToFile()
+                } label: {
+                    Label("Save to File…", systemImage: "doc")
+                }
+                Button {
+                    exportMarksToClipboard()
+                } label: {
+                    Label("Copy to Clipboard", systemImage: "doc.on.clipboard")
+                }
+            } label: {
+                Label("Export Marks", systemImage: "square.and.arrow.up")
+            }
+            .help("Export highlights, notes, and bookmarks as Markdown")
+            .disabled(vm.annotations.isEmpty)
+
             Button {
                 vm.isPaginated.toggle()
             } label: {
@@ -1039,6 +1057,58 @@ struct ReaderView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Export marks
+
+    /// Build the Markdown export of every mark in reading order.
+    /// Resolves chapter titles from the TOC (first entry per spine
+    /// index wins) and the book's metadata for the title / byline.
+    private func marksMarkdown() -> String {
+        let titles = Dictionary(
+            vm.toc.entries.map { ($0.spineIndex, $0.title) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return AnnotationMarkdownExporter.markdown(
+            bookTitle: vm.displayTitle,
+            author: vm.book?.metadata.author,
+            annotations: sortedAnnotations(),
+            chapterTitles: titles
+        )
+    }
+
+    /// Save the marks export to a user-chosen `.md` file.
+    private func exportMarksToFile() {
+        guard !vm.annotations.isEmpty else {
+            showCopyToast("No marks to export.")
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "md") ?? .plainText
+        ]
+        panel.nameFieldStringValue =
+            AnnotationMarkdownExporter.defaultFilename(bookTitle: vm.displayTitle)
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try marksMarkdown().write(to: url, atomically: true, encoding: .utf8)
+            showCopyToast("Exported marks.")
+        } catch {
+            showCopyToast("Export failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Copy the marks export to the clipboard.
+    private func exportMarksToClipboard() {
+        guard !vm.annotations.isEmpty else {
+            showCopyToast("No marks to export.")
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(marksMarkdown(), forType: .string)
+        showCopyToast("Copied marks to clipboard.")
     }
 
     /// Handler for the ⌘D bookmark gesture. Builds a bookmark
