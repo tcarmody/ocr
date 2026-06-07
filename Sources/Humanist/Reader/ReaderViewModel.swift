@@ -648,14 +648,27 @@ final class ReaderViewModel: ObservableObject {
     func addBookmark(
         chapterIdx: Int, paragraphAnchorId: String?
     ) {
-        guard let hash = contentHash else { return }
+        guard contentHash != nil else { return }
         let bookmark = Annotation(
             chapterIdx: chapterIdx,
             paragraphAnchorId: paragraphAnchorId,
             kind: .bookmark
         )
         annotations.append(bookmark)
-        AnnotationStore.add(bookmark, forContentHash: hash)
+        persistAnnotations()
+    }
+
+    /// Persist the current in-memory `annotations` array as the
+    /// whole per-book bundle. The in-memory list is the single
+    /// source of truth; the store just mirrors it to disk. (We
+    /// used to load → mutate → save per change, which kept two
+    /// copies in lockstep and risked a disk-derived write
+    /// clobbering in-memory state.) No-op without a content hash.
+    private func persistAnnotations() {
+        guard let hash = contentHash else { return }
+        AnnotationStore.save(
+            AnnotationsBundle(contentHash: hash, annotations: annotations)
+        )
     }
 
     /// Add a highlight at the given selection. Used by Phase D
@@ -673,20 +686,24 @@ final class ReaderViewModel: ObservableObject {
         chapterIdx: Int,
         paragraphAnchorId: String?,
         selectedText: String,
-        selectionRange: Annotation.TextRange?
-    ) -> Annotation {
+        selectionRange: Annotation.TextRange?,
+        paragraphFingerprint: String? = nil
+    ) -> Annotation? {
+        // Guard the content hash up front (mirrors addBookmark) so
+        // we never create a phantom in-memory highlight that can't
+        // be persisted and silently vanishes on reload.
+        guard contentHash != nil else { return nil }
         let highlight = Annotation(
             id: id,
             chapterIdx: chapterIdx,
             paragraphAnchorId: paragraphAnchorId,
             selectedText: selectedText,
             selectionRange: selectionRange,
+            paragraphFingerprint: paragraphFingerprint,
             kind: .highlight
         )
         annotations.append(highlight)
-        if let hash = contentHash {
-            AnnotationStore.add(highlight, forContentHash: hash)
-        }
+        persistAnnotations()
         return highlight
     }
 
@@ -717,9 +734,7 @@ final class ReaderViewModel: ObservableObject {
         case .bookmark:
             break
         }
-        if let hash = contentHash {
-            AnnotationStore.update(annotations[idx], forContentHash: hash)
-        }
+        persistAnnotations()
     }
 
     /// Drop an annotation. The reader-side renderer (Phase D)
@@ -727,9 +742,7 @@ final class ReaderViewModel: ObservableObject {
     /// for the dropped id on next chapter re-render.
     func removeAnnotation(id: UUID) {
         annotations.removeAll { $0.id == id }
-        if let hash = contentHash {
-            AnnotationStore.remove(id: id, forContentHash: hash)
-        }
+        persistAnnotations()
     }
 
     // MARK: - Chat

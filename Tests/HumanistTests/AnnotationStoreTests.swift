@@ -65,6 +65,62 @@ final class AnnotationStoreTests: XCTestCase {
         XCTAssertEqual(loaded.annotations[2].note, "Apology, 38a")
     }
 
+    func test_paragraph_fingerprint_roundtrips() {
+        let hash = uniqueHash()
+        defer { cleanup(hash) }
+        let highlight = Annotation(
+            chapterIdx: 2,
+            paragraphAnchorId: "hu-p-2-4",
+            selectedText: "spade is turned",
+            selectionRange: Annotation.TextRange(
+                startOffset: 5, endOffset: 20
+            ),
+            paragraphFingerprint: "1a2b3c4d",
+            kind: .highlight
+        )
+        AnnotationStore.save(
+            AnnotationsBundle(contentHash: hash, annotations: [highlight])
+        )
+        let loaded = AnnotationStore.load(forContentHash: hash)
+        XCTAssertEqual(
+            loaded.annotations.first?.paragraphFingerprint, "1a2b3c4d"
+        )
+    }
+
+    /// A sidecar written before fingerprinting existed has no
+    /// `paragraphFingerprint` key; it must still decode (field is
+    /// an optional that defaults to nil), so upgrades don't drop
+    /// a reader's existing highlights.
+    func test_decodes_legacy_json_without_fingerprint() throws {
+        let hash = uniqueHash()
+        defer { cleanup(hash) }
+        guard let url = AnnotationStore.fileURL(forContentHash: hash) else {
+            XCTFail("Expected fileURL to resolve")
+            return
+        }
+        let legacy = """
+        {
+          "contentHash": "\(hash)",
+          "annotations": [
+            {
+              "id": "\(UUID().uuidString)",
+              "chapterIdx": 1,
+              "paragraphAnchorId": "hu-p-1-2",
+              "selectedText": "bedrock",
+              "kind": "highlight",
+              "createdAt": "2024-01-01T00:00:00Z",
+              "updatedAt": "2024-01-01T00:00:00Z"
+            }
+          ]
+        }
+        """
+        try legacy.write(to: url, atomically: true, encoding: .utf8)
+        let loaded = AnnotationStore.load(forContentHash: hash)
+        XCTAssertEqual(loaded.annotations.count, 1)
+        XCTAssertNil(loaded.annotations.first?.paragraphFingerprint)
+        XCTAssertEqual(loaded.annotations.first?.selectedText, "bedrock")
+    }
+
     // MARK: - Missing / corrupt files
 
     func test_load_returns_empty_bundle_for_missing_hash() {

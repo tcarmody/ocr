@@ -59,6 +59,14 @@ public struct Annotation: Codable, Equatable, Identifiable, Sendable {
     /// offset-based fallback when verbatim match fails. nil for
     /// bookmarks.
     public var selectionRange: TextRange?
+    /// Whitespace-insensitive fingerprint of the containing
+    /// paragraph's full text at capture time. Lets restore
+    /// relocate the highlight when paragraph indices shift (the
+    /// book was edited so `paragraphAnchorId`'s `hu-p-N-M` index
+    /// now points at a different paragraph). nil for bookmarks
+    /// and for annotations captured before fingerprinting
+    /// existed — those fall back to the raw anchor id.
+    public var paragraphFingerprint: String?
     /// Optional user-written note. nil → plain bookmark or
     /// highlight; non-empty → annotation kind = `.passage`.
     public var note: String?
@@ -72,6 +80,7 @@ public struct Annotation: Codable, Equatable, Identifiable, Sendable {
         paragraphAnchorId: String? = nil,
         selectedText: String? = nil,
         selectionRange: TextRange? = nil,
+        paragraphFingerprint: String? = nil,
         note: String? = nil,
         kind: Kind,
         createdAt: Date = Date(),
@@ -82,6 +91,7 @@ public struct Annotation: Codable, Equatable, Identifiable, Sendable {
         self.paragraphAnchorId = paragraphAnchorId
         self.selectedText = selectedText
         self.selectionRange = selectionRange
+        self.paragraphFingerprint = paragraphFingerprint
         self.note = note
         self.kind = kind
         self.createdAt = createdAt
