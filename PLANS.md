@@ -3950,6 +3950,43 @@ notification on `EditorViewModel.save()` completion; Reader observes
 and shows an inline "Book changed on disk — Reload" banner. Never
 auto-reload (would lose the user's place mid-paragraph).
 
+### R-Reader-Stable-Position-Key — reading position survives edits
+
+**Status**: deferred.
+
+**Context**. Annotations were re-keyed off the EPUB's package
+identifier (`OPFReader.Metadata.bookID` → `AnnotationKey.resolve`,
+commit `dda0a58`) because the old whole-file content-hash key minted a
+new sidecar on every Editor save (a repack changes the bytes), which
+scattered a book's marks across N orphaned files. `ReadingPositionStore`
+was **left on the content-hash key** in that pass, so the saved
+chapter/scroll-fraction still resets every time the book is edited.
+
+**Goal**. Reading position survives editor saves / re-OCR / repacking
+the same way annotations now do.
+
+**Approach**. Re-key `ReadingPositionStore` to `AnnotationKey.resolve(
+bookID:contentHash:)`, with the same first-open migration (adopt the
+legacy content-hash record when the stable-key one is missing).
+
+**Risk / the catch**. The Library's reading-progress column
+(`LibraryWindowView.readingProgressText` / `readingProgressCell`) reads
+`ReadingPositionStore.load(forContentHash:)` using a hash it computes
+for the row. It does **not** open the EPUB to read `dc:identifier`
+(too expensive per-row during a table render). So re-keying position
+breaks that lookup unless the book's `bookID` is available to the
+Library cheaply. Options: (a) stamp `bookID` onto `LibraryEntry` at
+import/open time (mirrors the existing `recordEPUBContentHash` /
+`linkedSourcePDFPath` caching) and have the progress cell resolve the
+stable key from it; (b) keep a content-hash → stable-key alias the
+progress cell can follow; (c) dual-read (try stable key, fall back to
+content hash). (a) is the clean one and composes with the annotation
+fix.
+
+**Effort**. ~half a day: store + migration mirror the annotation change
+(small); most of the work is threading `bookID` onto `LibraryEntry`
+and updating the progress-column resolution + a test.
+
 ### Open sub-questions to confirm before Phase 1
 
 - ⌘5 is the natural next slot after Queue (⌘4). Unreserved per
