@@ -81,12 +81,32 @@ final class EditorCommandRouter: ObservableObject {
         recompute()
     }
 
-    /// Drop a registration. Called from `EditorView.onDisappear`.
+    /// Called from `EditorView.onDisappear`. Intentionally does NOT
+    /// remove the registration: SwiftUI fires `onDisappear` not only
+    /// on a genuine window close but also during transient view-subtree
+    /// teardown — e.g. when another window of the same
+    /// `WindowGroup(for: URL.self)` scene (a Reader on the same book)
+    /// becomes key. Removing a still-alive editor here would strand it
+    /// with Save greyed out and no unsaved-changes prompt on close
+    /// until an `onAppear` happened to re-bind it. Genuinely-closed
+    /// editors are reclaimed in `pruneDeadEditors()` once the window's
+    /// `@StateObject` deallocates and the weak ref goes nil.
     func unbind(_ vm: EditorViewModel) {
-        let id = ObjectIdentifier(vm)
-        bound.removeValue(forKey: id)
-        observers.removeValue(forKey: id)
+        pruneDeadEditors()
         recompute()
+    }
+
+    /// Drop registrations whose `EditorViewModel` has deallocated.
+    /// This is the real cleanup path now that `unbind(_:)` doesn't
+    /// remove live editors — a closed editor's weak ref goes nil when
+    /// its window's `@StateObject` is released, and we reclaim the
+    /// dictionary slot + Combine subscription here.
+    private func pruneDeadEditors() {
+        let dead = bound.filter { $0.value.vm == nil }.map(\.key)
+        for id in dead {
+            bound.removeValue(forKey: id)
+            observers.removeValue(forKey: id)
+        }
     }
 
     /// Trigger Save on the active editor. No-op when none is focused.
@@ -347,6 +367,7 @@ final class EditorCommandRouter: ObservableObject {
     /// a fallback — the common case is a single editor whose window
     /// is key when ⌘S fires.
     private func activeEditor() -> EditorViewModel? {
+        pruneDeadEditors()
         let live = bound.values.compactMap(\.vm)
         // Single editor → no ambiguity.
         if live.count == 1 { return live.first }

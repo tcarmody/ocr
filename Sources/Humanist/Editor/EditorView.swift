@@ -652,9 +652,9 @@ struct EditorView: View {
                 onCursorParagraphChanged: { id in vm.didMoveCursorToParagraph(id) }
             )
             .id(file.id)
-            .onChange(of: vm.sourceText) { _, _ in
-                vm.didEditSourceText()
-            }
+            // Dirty-tracking is driven by `EditorViewModel.sourceText`'s
+            // didSet, not a view-level onChange — so edits still track
+            // when this pane isn't mounted. See the property's docs.
         } else if vm.selectedFile != nil {
             VStack {
                 Text("Binary file").foregroundStyle(.secondary)

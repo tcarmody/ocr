@@ -62,7 +62,22 @@ final class EditorViewModel: ObservableObject {
     /// SwiftUI-friendly way to keep edits flowing through the view
     /// hierarchy. Updates also write through to `buffers` + dirty
     /// tracking so Save flushes the right files.
-    @Published var sourceText: String = ""
+    ///
+    /// Dirty-tracking is driven from this `didSet` rather than the
+    /// Source pane's `.onChange(of:)`. The pane (and any view-level
+    /// hook) isn't always mounted — WYSIWYG-only layouts, or
+    /// transient SwiftUI view-subtree teardown in multi-window
+    /// sessions — and a dropped hook would leave edits silently
+    /// untracked: Save greyed out, and no unsaved-changes prompt on
+    /// close. A `didSet` fires on every assignment, so an edit from
+    /// any surface (source pane, WYSIWYG write-back, format command)
+    /// marks the document dirty regardless of which panes are on
+    /// screen. `didEditSourceText` is internally idempotent (it
+    /// no-ops when the buffer already matches), so programmatic
+    /// loads don't spuriously dirty the document.
+    @Published var sourceText: String = "" {
+        didSet { didEditSourceText() }
+    }
 
     /// Bumps after each debounced write of the current source buffer
     /// to the working directory. The preview pane watches this to
@@ -2617,10 +2632,12 @@ final class EditorViewModel: ObservableObject {
     }
 
     /// Mirror `sourceText` back into the buffer + dirty set on every
-    /// keystroke. Called by the EditorView's `.onChange(of: vm.sourceText)`
-    /// hook because @Published doesn't expose a willSet/didSet path
-    /// from outside the type and we want the dirty bit to track
-    /// real-time edits.
+    /// keystroke. Invoked from `sourceText`'s `didSet`, so it runs for
+    /// every assignment regardless of which panes are mounted. The
+    /// buffer-compare guard makes it idempotent: a programmatic load
+    /// (which sets `buffers[url]` before assigning `sourceText`) finds
+    /// them equal and leaves the document clean, while a real edit
+    /// differs and marks it dirty.
     func didEditSourceText() {
         guard let url = selectedFile?.id else { return }
         if buffers[url] != sourceText {
