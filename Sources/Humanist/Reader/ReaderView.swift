@@ -2148,12 +2148,24 @@ private struct WebReaderPane: NSViewRepresentable {
         /// gestures.
         ///
         /// Falls back through three wrap strategies:
-        ///   1. `surroundContents` — works when the selection
-        ///      doesn't cross element boundaries (the common
-        ///      case for inline-text highlights).
-        ///   2. `extractContents` + `insertNode` — works for
-        ///      cross-element ranges (selections spanning
-        ///      `<em>` boundaries, etc.).
+        ///   1. Paragraph-scoped wrap (preferred): when the
+        ///      selection starts inside a known `hu-p-N-M`
+        ///      paragraph, clamp the whole highlight to that
+        ///      paragraph's text and wrap only its text nodes
+        ///      via a tree-walker — the same strategy the
+        ///      restore path uses. This keeps the wrap inline
+        ///      and inside one paragraph even when the user
+        ///      over-drags into the inter-paragraph whitespace.
+        ///      (Wrapping the raw selection there makes
+        ///      `surroundContents` throw and the
+        ///      `extractContents` fallback pull a block `<p>`
+        ///      into an inline span — which renders as an empty
+        ///      sliver with stray vertical padding instead of a
+        ///      highlight.)
+        ///   2. Raw-range wrap (fallback): no paragraph context
+        ///      (selection started outside a `hu-p` element).
+        ///      `surroundContents`, else `extractContents` +
+        ///      `insertNode`.
         ///   3. Skip wrapping — annotation still persists; the
         ///      restore path uses text-match to wrap on the
         ///      next chapter open.
@@ -2166,32 +2178,92 @@ private struct WebReaderPane: NSViewRepresentable {
                 return null;
               }
               var range = sel.getRangeAt(0);
-              var text = range.toString();
-              if (!text) return null;
-              // Find containing hu-p-N-M paragraph.
-              var node = range.commonAncestorContainer;
-              while (node) {
-                if (node.nodeType === 1 && node.id
-                    && /^hu-p-\\d+-\\d+$/.test(node.id)) {
-                  break;
+              var rawText = range.toString();
+              if (!rawText) return null;
+
+              function paraOf(n) {
+                while (n) {
+                  if (n.nodeType === 1 && n.id
+                      && /^hu-p-\\d+-\\d+$/.test(n.id)) {
+                    return n;
+                  }
+                  n = n.parentNode;
                 }
-                node = node.parentNode;
+                return null;
               }
-              var anchorId = node ? node.id : null;
-              // Compute char offsets within the paragraph's
-              // flat textContent.
-              var startOffset = -1, endOffset = -1;
-              if (node) {
-                var preRange = document.createRange();
-                preRange.setStart(node, 0);
-                preRange.setEnd(range.startContainer, range.startOffset);
-                startOffset = preRange.toString().length;
-                endOffset = startOffset + text.length;
+
+              // Wrap [start, end) of root's flat textContent in
+              // `wrapper`, touching only text nodes so the span
+              // stays inline. Returns false if the offsets don't
+              // resolve to a range.
+              function wrapTextRange(root, start, end, wrapper) {
+                var walker = document.createTreeWalker(
+                  root, NodeFilter.SHOW_TEXT
+                );
+                var cursor = 0;
+                var startNode, startOff, endNode, endOff;
+                while (walker.nextNode()) {
+                  var nn = walker.currentNode;
+                  var len = nn.textContent.length;
+                  if (startNode === undefined && cursor + len > start) {
+                    startNode = nn;
+                    startOff = start - cursor;
+                  }
+                  if (cursor + len >= end) {
+                    endNode = nn;
+                    endOff = end - cursor;
+                    break;
+                  }
+                  cursor += len;
+                }
+                if (!startNode || !endNode) return false;
+                var r = document.createRange();
+                r.setStart(startNode, startOff);
+                r.setEnd(endNode, endOff);
+                try {
+                  r.surroundContents(wrapper);
+                } catch (e1) {
+                  try {
+                    wrapper.appendChild(r.extractContents());
+                    r.insertNode(wrapper);
+                  } catch (e2) {
+                    return false;
+                  }
+                }
+                return true;
               }
-              // Wrap the selection.
+
               var wrapper = document.createElement('span');
               wrapper.className = 'hu-highlight';
               wrapper.setAttribute('data-annotation-id', '\(idString)');
+
+              // Preferred: clamp to the paragraph the selection
+              // begins in so an over-drag past the last character
+              // can't reach into the inter-paragraph gap.
+              var para = paraOf(range.startContainer);
+              if (para) {
+                var content = para.textContent;
+                var preRange = document.createRange();
+                preRange.setStart(para, 0);
+                preRange.setEnd(range.startContainer, range.startOffset);
+                var startOffset = preRange.toString().length;
+                if (startOffset < 0) startOffset = 0;
+                var endOffset = startOffset + rawText.length;
+                if (endOffset > content.length) endOffset = content.length;
+                if (endOffset <= startOffset) return null;
+                var text = content.substring(startOffset, endOffset);
+                var ok = wrapTextRange(para, startOffset, endOffset, wrapper);
+                sel.removeAllRanges();
+                if (!ok) return null;
+                return JSON.stringify({
+                  text: text,
+                  anchorId: para.id,
+                  startOffset: startOffset,
+                  endOffset: endOffset,
+                });
+              }
+
+              // Fallback: wrap the raw range as-is.
               try {
                 range.surroundContents(wrapper);
               } catch (e1) {
@@ -2205,10 +2277,10 @@ private struct WebReaderPane: NSViewRepresentable {
               }
               sel.removeAllRanges();
               return JSON.stringify({
-                text: text,
-                anchorId: anchorId,
-                startOffset: startOffset,
-                endOffset: endOffset,
+                text: rawText,
+                anchorId: null,
+                startOffset: -1,
+                endOffset: -1,
               });
             })();
             """
