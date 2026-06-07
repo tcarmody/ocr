@@ -177,6 +177,14 @@ final class ReaderViewModel: ObservableObject {
     /// file moves and multi-machine syncs.
     @Published private(set) var contentHash: String?
 
+    /// Stable storage key for this book's annotations. Derived from the
+    /// EPUB's package identifier when present (so marks survive the
+    /// content-hash churn of editor saves / re-OCR), else the content
+    /// hash. Resolved alongside `contentHash` in
+    /// `restorePositionIfAvailable`; `nil` until then. See
+    /// `AnnotationKey`.
+    private var annotationStoreKey: String?
+
     /// Chat-sidebar visibility. Off by default — Cloud-mode chat
     /// costs API tokens per question, and the reader's posture is
     /// distraction-light; opt-in via the toolbar button (⌥⌘C). The
@@ -298,12 +306,13 @@ final class ReaderViewModel: ObservableObject {
             }
             self.reloadTrigger += 1
             self.bookChangedOnDisk = false
-            // Re-pull annotations — the editor's save shouldn't
-            // change the content-hash sidecar but a future
-            // sync conflict could.
-            if let hash = self.contentHash {
+            // Re-pull annotations under the stable key. The editor's
+            // save changes the content hash but not the book identity,
+            // so the marks key is unaffected; a sync conflict could
+            // still rewrite the sidecar, hence the refresh.
+            if let key = self.annotationStoreKey {
                 self.annotations = AnnotationStore.load(
-                    forContentHash: hash
+                    forContentHash: key
                 ).annotations
             }
         } catch {
@@ -430,12 +439,26 @@ final class ReaderViewModel: ObservableObject {
         OpenRouter.library?.recordEPUBContentHash(
             hash, forEPUB: url
         )
-        // Pull annotations off disk in the background so the
-        // sidebar list populates as soon as the content hash
-        // resolves. Cheap (small JSON; just this book's marks).
-        self.annotations = AnnotationStore.load(
-            forContentHash: hash
-        ).annotations
+        // Resolve the stable annotation key (book identity, not file
+        // bytes) and load marks under it. One-time migration: a book
+        // whose marks still live under the legacy content-hash key gets
+        // them adopted into the stable key on first open, so an editor
+        // save no longer orphans them.
+        let key = AnnotationKey.resolve(
+            bookID: self.book?.metadata.bookID, contentHash: hash
+        )
+        self.annotationStoreKey = key
+        var bundle = AnnotationStore.load(forContentHash: key)
+        if bundle.annotations.isEmpty, key != hash {
+            let legacy = AnnotationStore.load(forContentHash: hash)
+            if !legacy.annotations.isEmpty {
+                bundle = AnnotationsBundle(
+                    contentHash: key, annotations: legacy.annotations
+                )
+                AnnotationStore.save(bundle)
+            }
+        }
+        self.annotations = bundle.annotations
         guard !userHasNavigated else { return }
         guard let saved = ReadingPositionStore.load(
             forContentHash: hash
@@ -648,7 +671,7 @@ final class ReaderViewModel: ObservableObject {
     func addBookmark(
         chapterIdx: Int, paragraphAnchorId: String?
     ) {
-        guard contentHash != nil else { return }
+        guard annotationStoreKey != nil else { return }
         let bookmark = Annotation(
             chapterIdx: chapterIdx,
             paragraphAnchorId: paragraphAnchorId,
@@ -663,11 +686,12 @@ final class ReaderViewModel: ObservableObject {
     /// source of truth; the store just mirrors it to disk. (We
     /// used to load → mutate → save per change, which kept two
     /// copies in lockstep and risked a disk-derived write
-    /// clobbering in-memory state.) No-op without a content hash.
+    /// clobbering in-memory state.) No-op until the stable annotation
+    /// key has resolved.
     private func persistAnnotations() {
-        guard let hash = contentHash else { return }
+        guard let key = annotationStoreKey else { return }
         AnnotationStore.save(
-            AnnotationsBundle(contentHash: hash, annotations: annotations)
+            AnnotationsBundle(contentHash: key, annotations: annotations)
         )
     }
 
@@ -689,10 +713,10 @@ final class ReaderViewModel: ObservableObject {
         selectionRange: Annotation.TextRange?,
         paragraphFingerprint: String? = nil
     ) -> Annotation? {
-        // Guard the content hash up front (mirrors addBookmark) so
-        // we never create a phantom in-memory highlight that can't
-        // be persisted and silently vanishes on reload.
-        guard contentHash != nil else { return nil }
+        // Guard the storage key up front (mirrors addBookmark) so we
+        // never create a phantom in-memory highlight that can't be
+        // persisted and silently vanishes on reload.
+        guard annotationStoreKey != nil else { return nil }
         let highlight = Annotation(
             id: id,
             chapterIdx: chapterIdx,

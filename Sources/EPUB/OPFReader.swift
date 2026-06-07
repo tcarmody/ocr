@@ -46,6 +46,15 @@ public struct OPFReader {
         /// truncation.
         public let source: String?
 
+        /// The package's identity: the text of the `<dc:identifier>`
+        /// element referenced by `<package unique-identifier="…">`
+        /// (e.g. `urn:uuid:…` or `urn:isbn:…`). The editor preserves
+        /// this verbatim across saves, re-OCR, and repacking — unlike
+        /// the file's content hash, which changes on every byte edit —
+        /// so it's a stable per-book key for user data like
+        /// annotations. nil when the OPF declares no unique-identifier.
+        public let bookID: String?
+
         public init(
             title: String? = nil,
             author: String? = nil,
@@ -53,7 +62,8 @@ public struct OPFReader {
             year: String? = nil,
             publisher: String? = nil,
             isbn: String? = nil,
-            source: String? = nil
+            source: String? = nil,
+            bookID: String? = nil
         ) {
             self.title = title
             self.author = author
@@ -62,6 +72,7 @@ public struct OPFReader {
             self.publisher = publisher
             self.isbn = isbn
             self.source = source
+            self.bookID = bookID
         }
     }
 
@@ -153,11 +164,37 @@ public struct OPFReader {
         let publisher = firstText(doc: doc, localName: "publisher")
         let isbn = parseISBN(doc: doc)
         let source = firstText(doc: doc, localName: "source")
+        let bookID = parseBookID(doc: doc)
         return Metadata(
             title: title, author: author, language: language,
             year: year, publisher: publisher, isbn: isbn,
-            source: source
+            source: source, bookID: bookID
         )
+    }
+
+    /// The text of the `<dc:identifier>` whose `id` matches the
+    /// `<package unique-identifier="…">` reference — the book's stable
+    /// identity. Falls back to the first `<dc:identifier>` when the
+    /// package declares no unique-identifier or the referenced element
+    /// is missing, so a book without a formal unique-identifier still
+    /// yields a stable value when it carries any identifier at all.
+    private func parseBookID(doc: XMLDocument) -> String? {
+        let nodes = (try? doc.nodes(forXPath:
+            "//*[local-name()='identifier']")) ?? []
+        let uniqueID = packageUniqueIdentifierID(doc: doc)
+        var firstAny: String?
+        for n in nodes {
+            guard let el = n as? XMLElement else { continue }
+            let value = (el.stringValue ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            if firstAny == nil { firstAny = value }
+            if let uniqueID,
+               el.attribute(forName: "id")?.stringValue == uniqueID {
+                return value
+            }
+        }
+        return firstAny
     }
 
     private func firstText(doc: XMLDocument, localName: String) -> String? {
