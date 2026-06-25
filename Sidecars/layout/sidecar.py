@@ -135,6 +135,51 @@ _ocr_predictors = None  # tuple of (recognition, detection)
 _table_predictor = None
 
 
+# --- Version compatibility ---------------------------------------------------
+# This sidecar targets the Surya 1 predictor API (FoundationPredictor +
+# LayoutPredictor / RecognitionPredictor / DetectionPredictor /
+# TableRecPredictor), which spans surya-ocr 0.17–0.19. Surya 2
+# (surya-ocr >= 0.20) is a ground-up rewrite: a single VLM served by
+# vllm / llama.cpp via SuryaInferenceManager, with different output
+# schemas. Loading a predictor under 0.20 fails with a cryptic
+# ImportError (`surya.foundation` is gone), so we detect the version up
+# front and raise an actionable error instead.
+
+_FIRST_UNSUPPORTED = (0, 20)  # Surya 2
+
+
+def _surya_version() -> "tuple[int, int, str] | None":
+    """(major, minor, raw) parsed from `surya.__version__`, or None if
+    surya isn't importable / carries no version."""
+    try:
+        import surya  # type: ignore
+    except Exception:
+        return None
+    raw = getattr(surya, "__version__", "") or ""
+    nums: list[int] = []
+    for part in raw.split(".")[:2]:
+        digits = "".join(ch for ch in part if ch.isdigit())
+        nums.append(int(digits) if digits else 0)
+    while len(nums) < 2:
+        nums.append(0)
+    return (nums[0], nums[1], raw)
+
+
+def require_compatible_surya() -> None:
+    """Raise with an install hint when the installed surya-ocr is Surya
+    2 or newer (unsupported by this sidecar's predictor API)."""
+    info = _surya_version()
+    if info is None:
+        return  # import failures are reported by probe_environment
+    major, minor, raw = info
+    if (major, minor) >= _FIRST_UNSUPPORTED:
+        raise RuntimeError(
+            f"surya-ocr {raw} (Surya 2) is not supported by this build, "
+            f"which targets the Surya 1 predictor API. Reinstall a "
+            f"compatible version: uv tool install 'surya-ocr>=0.17,<0.20'"
+        )
+
+
 def get_layout_predictor():
     """Lazily construct Surya's LayoutPredictor (loads model weights).
 
@@ -147,6 +192,7 @@ def get_layout_predictor():
     """
     global _layout_predictor
     if _layout_predictor is None:
+        require_compatible_surya()
         from surya.foundation import FoundationPredictor  # type: ignore
         from surya.layout import LayoutPredictor          # type: ignore
         from surya.settings import settings               # type: ignore
@@ -165,6 +211,7 @@ def get_ocr_predictors():
     """
     global _ocr_predictors
     if _ocr_predictors is None:
+        require_compatible_surya()
         from surya.foundation import FoundationPredictor  # type: ignore
         from surya.detection import DetectionPredictor    # type: ignore
         from surya.recognition import RecognitionPredictor  # type: ignore
@@ -187,6 +234,7 @@ def get_table_predictor():
     """
     global _table_predictor
     if _table_predictor is None:
+        require_compatible_surya()
         from surya.table_rec import TableRecPredictor  # type: ignore
         _table_predictor = TableRecPredictor()
     return _table_predictor
@@ -202,6 +250,17 @@ def probe_environment() -> dict[str, Any]:
         import surya  # type: ignore
         info["surya"] = True
         info["surya_version"] = getattr(surya, "__version__", "unknown")
+        # Flag Surya 2+ so the Swift side can surface "reinstall a
+        # compatible surya-ocr" up front instead of waiting for the
+        # first op to fail with an ImportError.
+        ver = _surya_version()
+        supported = ver is None or (ver[0], ver[1]) < _FIRST_UNSUPPORTED
+        info["surya_supported"] = supported
+        if not supported:
+            info["surya_unsupported_reason"] = (
+                f"surya-ocr {ver[2]} is Surya 2; this build needs "
+                f"surya-ocr>=0.17,<0.20"
+            )
     except Exception as e:
         info["surya"] = False
         info["surya_error"] = str(e)

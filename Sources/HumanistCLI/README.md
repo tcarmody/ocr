@@ -145,7 +145,7 @@ Wraps `epubcheck` (`brew install epubcheck` first). Exit codes:
 
 The CLI inherits the same external dependencies as the SwiftUI app, with the same setup model — install when you need them, skip when you don't:
 
-- **Surya** (optional) — `uv tool install surya-ocr`. Without it, the cascade falls back to Vision-only.
+- **Surya** (optional) — `uv tool install 'surya-ocr>=0.17,<0.20'` (pinned below the Surya 2 rewrite). Without it, the cascade falls back to Vision-only.
 - **Tesseract** (optional) — `brew install tesseract tesseract-lang`. Without it, the classical-script tier of the cascade is unavailable.
 - **epubcheck** (optional) — `brew install epubcheck`. Required for `humanist-cli validate`.
 - **Anthropic API key** (optional) — set `ANTHROPIC_API_KEY` for Cloud features.

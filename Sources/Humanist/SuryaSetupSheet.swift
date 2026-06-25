@@ -10,9 +10,11 @@ import Layout
 ///      shows the install command for copy/paste (we don't run
 ///      arbitrary `curl | sh` programmatically). A "Check Again"
 ///      button re-detects after the user runs it in Terminal.
-///   2. Surya — runs `uv tool install surya-ocr` directly, since
-///      that's a known, safe, single-package install. Streams live
-///      output so the user can see progress.
+///   2. Surya — runs `uv tool install 'surya-ocr>=0.17,<0.20'`
+///      directly, since that's a known, safe, single-package install.
+///      Streams live output so the user can see progress. The pin
+///      holds below Surya 2 (0.20+), a VLM-backed rewrite the sidecar
+///      doesn't yet support.
 ///
 /// After successful install, asks the user to restart — because
 /// `SuryaConnection.shared` is a static-let initialized at launch
@@ -275,7 +277,17 @@ struct SuryaSetupSheet: View {
             var output = ""
             let process = Process()
             process.executableURL = URL(fileURLWithPath: uv)
-            process.arguments = ["tool", "install", "surya-ocr"]
+            // Pin below Surya 2 (surya-ocr 0.20). Surya 2 is a ground-up
+            // rewrite — single VLM served by vllm / llama.cpp instead of
+            // the in-process torch predictors this sidecar uses — and is
+            // not yet supported here. Without the pin, a fresh
+            // `uv tool install surya-ocr` pulls 0.20 and the layout
+            // sidecar fails to import `FoundationPredictor`. Lift the
+            // ceiling once the Surya 2 migration (S-Surya2-Migration)
+            // lands.
+            process.arguments = [
+                "tool", "install", "surya-ocr>=0.17,<0.20"
+            ]
 
             let pipe = Pipe()
             process.standardOutput = pipe
