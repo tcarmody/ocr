@@ -8454,10 +8454,55 @@ audience.
    server health check; `SuryaConnection.detect` accounts for the
    spawned server; keep the v1 path one release for fallback.
 
+### Backend bring-up — the open thread from the spike
+
+The 2026-06-25 spike stopped at "the Homebrew `llama.cpp` (b9780)
+can't run the Surya 2 Qwen-VL GGUF" and did **not** try building a
+known-good llama.cpp. That's the first thing to do on re-spike — don't
+just wait for Homebrew to fix itself.
+
+Diagnosis to carry forward (so we recognise success/failure fast):
+
+- The install is fine and the GGUF loads; the vision projector works —
+  the page image **is** encoded (`process_mtmd: encoding mtmd batch …
+  n_chunks = 1`, ~1800 image tokens). The failure is decode-side:
+  generation halts after **~13 tokens**, so OCR is empty and layout
+  degenerate (a single page-covering "PageHeader"). Reproduced on
+  Surya's own API, so it's not our code.
+- Root cause is the model's **SWA** (sliding-window attention) +
+  KV-cache / slot / context-checkpoint handling in that llama.cpp
+  build: `find_slot: non-consecutive token position` and `forcing full
+  prompt re-processing … SWA or hybrid/recurrent memory` (llama.cpp PR
+  #13194).
+- Separately, guided decoding 400s ("failed to parse grammar"), so
+  `SURYA_GUIDED_LAYOUT` had to be disabled — a second, independent
+  llama.cpp grammar incompatibility to re-check once decode works.
+
+Approach to have ready:
+
+- **Build llama.cpp from source (or pull a specific tagged release)**
+  and bisect for a build whose SWA / multimodal KV-cache handling runs
+  the Surya 2 GGUF cleanly — the "13-token truncation" is the signal to
+  watch. Point Surya at it via `LLAMA_CPP_BINARY=<path>` (the llamacpp
+  backend honours that env var) instead of relying on `brew`.
+- With a working build, re-test the levers the spike couldn't isolate:
+  `--image-min-tokens 1024` (the server warns Qwen-VL needs ≥1024 image
+  tokens — pass via `LLAMA_CPP_EXTRA_ARGS`), `SURYA_INFERENCE_PARALLEL=1`,
+  and re-enabling `SURYA_GUIDED_LAYOUT` to see whether the grammar path
+  also recovers.
+- If a from-source build is required, the deployment story must
+  **pin / bundle that exact llama.cpp** — it can't depend on whatever
+  Homebrew ships. Fold into "Backend UX + cutover"; it raises the bar
+  for shipping to non-technical users and is itself a NO-GO factor if a
+  redistributable build can't be produced.
+
 ### Re-spike trigger
 
 (a) a Homebrew / llama.cpp release runs the Surya 2 GGUF cleanly
-end-to-end, or (b) datalab ships a self-contained macOS runtime.
+end-to-end, (b) datalab ships a self-contained macOS runtime, or (c) we
+proactively attempt a from-source / pinned llama.cpp build per the
+"Backend bring-up" notes above — we don't have to wait passively for
+(a) or (b).
 
 ### Effort
 
