@@ -149,13 +149,22 @@ _FIRST_UNSUPPORTED = (0, 20)  # Surya 2
 
 
 def _surya_version() -> "tuple[int, int, str] | None":
-    """(major, minor, raw) parsed from `surya.__version__`, or None if
-    surya isn't importable / carries no version."""
+    """(major, minor, raw) for the installed surya-ocr, or None if it
+    can't be determined. Uses `importlib.metadata` — neither 0.17 nor
+    0.20 exposes `surya.__version__`, so the package metadata is the
+    only reliable source."""
+    raw = ""
     try:
-        import surya  # type: ignore
+        import importlib.metadata as _md
+        raw = _md.version("surya-ocr")
     except Exception:
+        try:
+            import surya  # type: ignore
+            raw = getattr(surya, "__version__", "") or ""
+        except Exception:
+            return None
+    if not raw:
         return None
-    raw = getattr(surya, "__version__", "") or ""
     nums: list[int] = []
     for part in raw.split(".")[:2]:
         digits = "".join(ch for ch in part if ch.isdigit())
@@ -247,13 +256,14 @@ def probe_environment() -> dict[str, Any]:
         "executable": sys.executable,
     }
     try:
-        import surya  # type: ignore
+        import surya  # type: ignore  # noqa: F401  (presence check)
         info["surya"] = True
-        info["surya_version"] = getattr(surya, "__version__", "unknown")
         # Flag Surya 2+ so the Swift side can surface "reinstall a
         # compatible surya-ocr" up front instead of waiting for the
-        # first op to fail with an ImportError.
+        # first op to fail with an ImportError. Version comes from
+        # package metadata; `surya.__version__` doesn't exist.
         ver = _surya_version()
+        info["surya_version"] = ver[2] if ver else "unknown"
         supported = ver is None or (ver[0], ver[1]) < _FIRST_UNSUPPORTED
         info["surya_supported"] = supported
         if not supported:
