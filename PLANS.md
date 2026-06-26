@@ -18,6 +18,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 ## Status snapshot (as of 2026-05-17)
 
 **Done from the original 10-phase plan**:
+
 - Phase 0: notarized python-build-standalone spike
 - Phase 1: walking skeleton (drop PDF → Vision OCR → EPUB)
 - Phase 2: embedded text extraction + quality scoring
@@ -32,6 +33,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 - Phase 8: side-by-side editor (PDF / source / preview, linked nav)
 
 **Done above the original plan** (quality + robustness):
+
 - Two-up scan detection + auto-split pipeline
 - Memory hardening (per-page autoreleasepool, periodic PDF reload,
   shared Surya sidecar singleton, editor deinit, drain sidecar
@@ -46,6 +48,7 @@ already exists from Cloud Phase 1 (commit `567d2c3`).
 
 **Done — Cloud-mode foundation** (Tier 2's first two phases of
 the hybrid Private + Cloud architecture):
+
 - **Cloud Phase 1**: Anthropic API plumbing in a new `AI` library
   target. Request / response types with prompt-caching support,
   `URLSessionTransport` behind a protocol so a future Batches
@@ -61,6 +64,7 @@ the hybrid Private + Cloud architecture):
   pass unchanged on `.privateLocal`.
 
 **Done — Cloud-mode hard-region OCR + post-OCR cleanup**:
+
 - **Cloud Phase 3** (commits `9a4adfd`, `567d2c3`): `ClaudeOCREngine`
   wired in as the cascade's final tier under `.cloud` mode. Sonnet
   vision; gated on `cloudFeatures.hardRegionOCR` + per-book
@@ -94,6 +98,7 @@ the hybrid Private + Cloud architecture):
   the file when the match is missing or ambiguous.
 
 **Done — Cloud-mode structural Haiku features (Cloud Phase 6 final pieces)**:
+
 - **Cloud Phase 6d — Semantic chapter classification** (commit
   `e985946`): per-chapter `epub:type` tagging via Haiku, with the
   English regex classifier as the offline fallback. Multilingual
@@ -105,6 +110,7 @@ the hybrid Private + Cloud architecture):
   authoritative-override Surya's heading reads.
 
 **Done — Cloud Phase 7**:
+
 - **First-run welcome sheet + README rewrite** (commit `e42253f`).
   Cloud-vs-Private explanation, API-key onboarding link, and a
   rewritten README that reflects the hybrid architecture.
@@ -116,7 +122,7 @@ entirely. One Sonnet call per page returns structured XHTML →
 `[Block]` + `[Footnote]` directly. Handles its own headings,
 footnotes, language spans, and footnote-ref linking. Surya layout
 still runs in parallel for figures + tables. Per-page checkpoint
-+ resume preserves extracted figures across interruptions.
+- resume preserves extracted figures across interruptions.
 ~$0.04/page (~$15–25/book) with the `Claude OCR ($$$)` toggle in
 the launcher; the legacy Vision→Sonnet cascade-tail is dev-only
 (`useCloudEnhancedOCR`) and not reachable from the UI. Private
@@ -124,6 +130,7 @@ Mode toggle (commit `8442e37`) forces empty CloudFeatures + empty
 key per-job, zero Claude traffic regardless of global Settings.
 
 **Done — Tier 1.5 (pre-flight intelligence)**:
+
 - **P-Lang-Detect** (commit `5a65827`): `DocumentProfiler` samples
   three evenly-spaced body pages of each dropped PDF, runs
   `NLLanguageRecognizer` on the embedded text, and emits a
@@ -134,7 +141,7 @@ key per-job, zero Claude traffic regardless of global Settings.
   recovers cleanly across crashes.
 - **P-Cloud-Cost** (commit `ddef56d`): `CostEstimator` produces a
   pre-flight call/dollar estimate keyed off the document profile
-  + enabled Cloud features + page count. Surfaced in the queue UI
+  - enabled Cloud features + page count. Surfaced in the queue UI
   before the job runs. Honors the page-OCR path's per-page Sonnet
   pricing when `useClaudePageOCR` is on (replacing the per-region
   hard-region-OCR + post-OCR-cleanup line items with a single
@@ -144,11 +151,12 @@ key per-job, zero Claude traffic regardless of global Settings.
   would do better (e.g. detected language ≠ picker language).
 
 **Done — R-Conversion-Summary** (commit `e17cde8`): Claude calls
-+ approximate cost surfaced per-job in the queue UI after each
+- approximate cost surfaced per-job in the queue UI after each
 conversion via the `ConversionStats` struct returned from
 `PDFToEPUBPipeline.convert()`.
 
 **Done — Pipeline / cascade refinements**:
+
 - Image preprocessing + adaptive DPI on scan-likely pages
   (commit `c5e01d9`).
 - DictionaryCorrector moved from per-region to post-reflow,
@@ -202,10 +210,11 @@ conversion via the `ConversionStats` struct returned from
   PDF + page-map sidecar.
 
 **Done — UX cleanups**:
+
 - Force OCR toggle bypassing the embedded-text trust path (commit
   `7654e68`).
 - Embedded-text scorer language gates: language-mismatch downgrade
-  + language-confidence floor + confusable allowlist
+  - language-confidence floor + confusable allowlist
   (`grc↔el`, `la↔Romance`, `chu↔Slavic`) (commit `7654e68`).
 - Conversion-stats summary calls out the trust verdict — "Trusted
   embedded PDF text on all N pages — OCR did not run" (commit
@@ -257,6 +266,7 @@ conversion via the `ConversionStats` struct returned from
   copying only images referenced by each part.
 
 **Done — Editor enhancements**:
+
 - Source editor formatting toolbar above the CodeMirror pane
   (commit `4292cf3`).
 - Smart quotes + spellcheck + find/replace (commit `55ee3aa`);
@@ -361,6 +371,7 @@ conversion via the `ConversionStats` struct returned from
   configured.
 
 **Done — Distribution prep (Phase 10 partial)**:
+
 - **Setup wizards for external dependencies** (commits `4e5163c`,
   `f91258d`, `bbea813`): rather than bundling Python + PyTorch +
   Surya weights (~1.8 GB), the .app ships at ~14 MB and walks the
@@ -379,7 +390,7 @@ conversion via the `ConversionStats` struct returned from
   `Scripts/build-app.sh` now pins to a specific Developer ID hash
   rather than relying on `security find-identity` heuristics that
   break with multiple matching certs. Hardened-runtime + timestamp
-  + deep flags added so the build is notarization-ready when a
+  - deep flags added so the build is notarization-ready when a
   proper Developer ID Application cert is available.
 - **`humanist-cli` executable** (commit `468b4d6`): full CLI
   exposing `convert`, `compare`, `validate` subcommands. Same
@@ -397,6 +408,7 @@ conversion via the `ConversionStats` struct returned from
 
 **Done — Swift 6 strict concurrency mode** (`C-Swift6-Migration`,
 in Tier 6 — full write-up there):
+
 - `Package.swift` is at `swiftLanguageModes: [.v6]`; the 822-test
   suite passes clean.
 - Partial cleanup landed earlier in commit `abaa918`
@@ -416,6 +428,7 @@ in Tier 6 — full write-up there):
   deinit-only `pdfPageObserver` token in `EditorViewModel`.
 
 **Done — Local chat backend**:
+
 - **Ollama + Gemma 4 26B MoE** (commit `bbea813`): chat-with-book
   pane gains a third backend alongside Cloud Haiku/Sonnet.
   `OllamaClient` (HTTP, non-streaming, 300 s timeout) hits
@@ -427,6 +440,7 @@ in Tier 6 — full write-up there):
   can configure local chat without flipping their global mode.
 
 **Done — Library workflow polish** (R-Library-Chat-Plus Tier 1):
+
 - **Chat with Selected**, **Suggested follow-ups**, **Long-form
   synthesis toggle**, **Per-book exclusion** (commit `7c2a879`):
   ad-hoc subset scoping, `[follow-ups]…[/follow-ups]` model
@@ -441,9 +455,10 @@ in Tier 6 — full write-up there):
   Selected" for "Chat with {Collection} (N)" when a collection
   is the active filter and no rows are selected. 15 new
   `LibraryStoreTests` cover the mutations + the legacy-load
-  + membership-pruning paths.
+  - membership-pruning paths.
 
 **Done — Auto-generated Collections Phase 1** (R-Auto-Collections):
+
 - **`BookConversionType`** enum (print / earlyPrint / manuscript
   / digital) stamped on `LibraryEntry.conversionType` at
   conversion (JobRunner) + import (EPUBImporter) time.
@@ -469,6 +484,7 @@ in Tier 6 — full write-up there):
 
 **Done — Auto-Collections Phase 2** (R-Auto-Collections /
 L-Foundation-Models Phase 4):
+
 - **`BookGenre`** enum (32 cases): poetry, drama; 7 fiction
   sub-genres (Literary / Fantasy / Sci-Fi / Mystery / Romance
   / Historical / General); mathematics; 5 science sub-genres
@@ -509,6 +525,7 @@ L-Foundation-Models Phase 4):
   legacy LibraryEntry decode without genre).
 
 **Done — Manuscript + Early Print OCR** (E-Vision-Modes v1):
+
 - **`ClaudePageOCREngine.Mode`**: three-way enum.
   `.typeset` (Sonnet 4.6, original Claude OCR path),
   `.earlyPrint(typeface:)` (Sonnet 4.6, normalizing-posture
@@ -552,6 +569,7 @@ L-Foundation-Models Phase 4):
   Print, German-specific blackletter conventions.
 
 **Done — Multi-machine sidecar + alias sync** (R-Library-Sync Phase B):
+
 - **`EmbeddingsSidecarStore` API change**: `libraryID: UUID?`
   parameter routes writes to UUID-keyed paths when set
   (sharing on → `<outputRoot>/.humanist/Embeddings/<uuid>.json`,
@@ -582,6 +600,7 @@ L-Foundation-Models Phase 4):
   aliases copy, idempotent re-runs).
 
 **Done — Multi-machine catalog portability** (R-Library-Sync Phase A):
+
 - **`relativePath` on `LibraryEntry`** — populated when the EPUB
   sits under the configured output root. Persisted alongside the
   absolute URL via `decodeIfPresent` so legacy catalogs round-
@@ -609,6 +628,7 @@ L-Foundation-Models Phase 4):
   states.
 
 **Done — Existing-EPUB on-ramp** (R-EPUB-Import v1):
+
 - **`EPUBImporter`** + **`ParagraphAnchorInjector`** +
   `ImportEPUBProgressSheet` + `BookSidecarBuilder` (split out
   from `LibraryIndexBuilder`): File → Import EPUB into Library…
@@ -637,6 +657,7 @@ L-Foundation-Models Phase 4):
   Chapter IR parser + round-trip fidelity work).
 
 **Done — Cloud Phase 5**:
+
 - **`ClaudeTableExtractor`**: Sonnet-driven table structure behind
   a new `TableExtractor` protocol. `SuryaTableExtractor` adopts
   the same protocol; under `.cloud` mode the pipeline tries
@@ -649,11 +670,13 @@ L-Foundation-Models Phase 4):
   Settings pane and the cost estimator's table line item.
 
 **Cloud-mode features remaining** (Tier 2):
+
 - **Cloud Phase 8** (deferred): per-book mode override for
   sensitive material when default is Cloud — partially obsoleted
   by the Private Mode toggle that already ships per-job override.
 
 **Done — Library chat performance (2026-05-13)**:
+
 - **Embeddings off iCloud** (commit `565203c`). The
   `EmbeddingsSidecarStore`'s `sharedRootEmbeddingsDir` path
   is gone; UUID-keyed sidecars always live in
@@ -684,7 +707,7 @@ L-Foundation-Models Phase 4):
 - **Binary sidecar format** (commit `a913e70`). New `.emb`
   format: 8-byte magic + version + JSON header (paragraph
   metadata + hierarchy + entities, debuggable with hex tools)
-  + packed Float32 vector blob. Defensive decoder rejects
+  - packed Float32 vector blob. Defensive decoder rejects
   short reads / bad magic / blob-size mismatch.
   `EmbeddingsBinaryUpgrade.runIfNeeded` ran on first launch
   and re-encoded every legacy `.json` sidecar to `.emb`,
@@ -697,6 +720,7 @@ L-Foundation-Models Phase 4):
   upgrade.
 
 **Done — Auto-scan / multi-Mac coordination (2026-05-13)**:
+
 - **Source-hash tombstones** (commit `d6be366`). New
   `LibraryStore.rejectedSourceHashes: Set<String>` —
   persisted in `library.json`, sync-friendly. The remove
@@ -732,6 +756,7 @@ L-Foundation-Models Phase 4):
   real data behind it.
 
 **Done — Chapter splitting (2026-05-13)**:
+
 - **TOC-driven splitter** (commit `71e0272`). New
   `TOCDrivenSplitter` runs ahead of `ChapterSplitter` when a
   parsed TOC is available. Walks each TOC entry to a block
@@ -769,6 +794,7 @@ L-Foundation-Models Phase 4):
   of the existing 8.
 
 **Done — R-Library-Rescan (2026-05-13)**:
+
 - **Source-PDF probe chain** (commit `0b7f601`). New
   `LibraryStore.locateSourcePDFForRescan(for: LibraryEntry)`
   walks cheap heuristics → OPF `<dc:source>` (requires
@@ -790,6 +816,7 @@ L-Foundation-Models Phase 4):
   edits.
 
 **Done — Queue UX (2026-05-13)**:
+
 - **Always-visible Pause/Resume + start-paused-on-launch
   preference** (commit `ea87fa1`). Dropped the
   `hasPendingWork` gate on the launcher's pause button —
@@ -801,6 +828,7 @@ L-Foundation-Models Phase 4):
   keeps a single source of truth. 4 new tests.
 
 **Done — Library window polish (2026-05-13)**:
+
 - **Empty-state explainer for collection ∩ search** (commit
   `7cb69cf`). When a populated library shows zero rows
   because the current filter chain (collection + search +
@@ -811,6 +839,7 @@ L-Foundation-Models Phase 4):
   table that previously looked like a data-load bug.
 
 **Done — P-Figure-Fallback: born-digital + scanned figure detection without Surya (2026-05-15)**:
+
 - **PDFImageXObjectDetector** in `PDFIngest`. Walks each page's
   CGPDFContentStream looking for `Do` operators referencing Image
   XObjects, tracks the CTM stack across `q`/`Q`/`cm`, and emits
@@ -842,6 +871,7 @@ L-Foundation-Models Phase 4):
   documented inline so users understand what they lose by skipping.
 
 **Done — P-Bundled-Tesseract: self-contained Tesseract distribution (2026-05-15)**:
+
 - **Weak-linked dylibs + dlsym runtime gate** (Phase A). Removed
   `link "tesseract"` / `link "leptonica"` directives from the
   CTesseract modulemap; added `-weak-ltesseract -weak-lleptonica`
@@ -881,6 +911,7 @@ L-Foundation-Models Phase 4):
   but is no longer the default path.
 
 **Done — Multi-provider page OCR + cascade Stage 2.5 + refusal-rate stats (2026-05-14)**:
+
 - **P-Page-Provider-Choice — Gemini Flash as alternative to Claude
   Sonnet for page OCR** (commits `e11722c`, `8625ed4`). New
   `PageOCREngine` protocol with two concrete impls:
@@ -928,6 +959,7 @@ L-Foundation-Models Phase 4):
   directly comparable.
 
 **Done — Facing-page bilingual detection + tagging (2026-05-17)**:
+
 - **P-Bilingual-FacingPage Phase (a) — detection + cross-link**
   (commits `4b03b6a`, `2319f2c`). New `BilingualLayoutDetector`
   runs post-OCR and classifies each page via a layered cascade:
@@ -969,6 +1001,7 @@ L-Foundation-Models Phase 4):
   detected-bilingual rate on the user's corpus.
 
 **Original-plan items still outstanding**:
+
 - Phase 10 — Distribution polish. Setup wizards (Surya / Tesseract /
   Ollama) ship in lieu of bundled runtimes, and the build script is
   notarization-ready, but the actual Developer ID cert + DMG
@@ -976,6 +1009,7 @@ L-Foundation-Models Phase 4):
   for the full operational walkthrough.
 
 **Original-plan items deferred indefinitely**:
+
 - Phase 9 — RTL / non-Latin classical scripts (Hebrew, Syriac,
   Coptic). Architecture supports adding them, but the user's
   working corpus doesn't need them often enough to justify the
@@ -994,6 +1028,7 @@ everything else is deferred indefinitely unless the situation
 changes.
 
 Drivers for the current ordering:
+
 - **Multi-Mac use is real**, not theoretical — the user is
   already running into pain wanting one library visible from
   two machines.
@@ -1120,7 +1155,7 @@ Drivers for the current ordering:
 
 ### Soon — pick up when the near-term cools
 
-6. ~~**R-Auto-Collections Phase 2 — Genre via AFM**~~ shipped.
+1. ~~**R-Auto-Collections Phase 2 — Genre via AFM**~~ shipped.
    `BookGenre` enum (32 cases — Poetry / Drama / Fiction (7
    sub-genres) / Mathematics / Science (5 sub-genres) /
    Technology (3 sub-genres including Computing) / six
@@ -1133,7 +1168,7 @@ Drivers for the current ordering:
    (`wand.and.stars` icon) walks the catalog with a progress
    sheet + cancel. "Auto: by Genre" sidebar section sorts by
    top-level then leaf so the flat list still reads grouped.
-7. ~~**R-Library-Chat-Plus Tier 2 — citation export +
+2. ~~**R-Library-Chat-Plus Tier 2 — citation export +
    conversation export**~~ shipped (commit `6c63714`).
    `ChatCitationFormatter` (Chicago note-style with graceful
    fallbacks) + "Export Transcript…" action on both chat panes.
@@ -1141,7 +1176,7 @@ Drivers for the current ordering:
    transcript shape. Pinned passages and ask-each-book mode
    remain in the "Earn when you need it" tier — useful but
    not load-bearing.
-8. ~~**R-EPUB-Import: Coherence pass on imports**~~ shipped
+3. ~~**R-EPUB-Import: Coherence pass on imports**~~ shipped
    2026-05-12 via Option B (text-node-only path —
    `CoherenceDigestSampler` + `XHTMLTextReplacer` +
    `EPUBImporter.runCoherencePass`). Skipped the doc's
@@ -1151,7 +1186,7 @@ Drivers for the current ordering:
    AFM-only on import (matches the metadata-extraction
    posture); 29 new tests + behavior-preserving refactor of
    `applyWithGuardrails`.
-9. ~~**L-Foundation-Models Phase 2.5**~~ shipped earlier
+4. ~~**L-Foundation-Models Phase 2.5**~~ shipped earlier
    (commit `0e93526`) but PLANS hadn't been updated. Discovered
    on 2026-05-12 while picking it up as the follow-on after
    item 8. The implementation is complete — `PostOCRProcessor`
@@ -1163,7 +1198,7 @@ Drivers for the current ordering:
    mockable; end-to-end behavior is verified by the Cloud-side
    tests since both impls share trigger gate + guardrail +
    return shape.
-10. ~~**R-Metadata-Online v1 + v1.5**~~ shipped earlier
+5. ~~**R-Metadata-Online v1 + v1.5**~~ shipped earlier
     (commits `2820d07`, `6363f30`, `d1e24b5`) but PLANS
     hadn't been updated. Discovered + corrected 2026-05-12.
     Open Library + Google Books sources, multi-source
@@ -1174,7 +1209,7 @@ Drivers for the current ordering:
     classical / manuscript material), v2 (bulk-mode
     multi-select lookup). See R-Metadata-Online section
     for scope.
-11. ~~**Q-Hard-Captures Tier 1**~~ shipped 2026-05-12
+6. ~~**Q-Hard-Captures Tier 1**~~ shipped 2026-05-12
     across three commits: Q-Italic-Skip (`7db9534`),
     Q-Vision-Backfill-Batch + Q-Refused-Fallback-Surface
     (`356edf5`). **New Tier 1 sub-item added 2026-05-12**:
@@ -1182,7 +1217,7 @@ Drivers for the current ordering:
     elevated from hypothetical to measured-at-0%-retention
     by the corpus harness's first mini-run. ~1.5 days
     estimated.
-12. ~~**T-Real-Corpus**~~ shipped 2026-05-12 as
+7. ~~**T-Real-Corpus**~~ shipped 2026-05-12 as
     `humanist-cli compare-corpus <dir>`. Harness that walks
     the user's local corpus of paired PDFs + publisher
     EPUBs, converts each PDF, and reports per-book metrics
@@ -1191,9 +1226,9 @@ Drivers for the current ordering:
     `epub:type` alignment). Surfaces regressions in real
     conversions before tagging releases. See T-Real-Corpus
     section for the findings from the first mini-run.
-13. ~~**R-Library-Migrate — Migrate-library wizard**~~ shipped.
+8. ~~**R-Library-Migrate — Migrate-library wizard**~~ shipped.
     `LibraryMigrationService` (pure FS operations + verification
-    + pre-flight) + `LibraryMigrationWizard` (5-step SwiftUI
+    - pre-flight) + `LibraryMigrationWizard` (5-step SwiftUI
     sheet: Welcome → Pre-flight → Copying → Verification →
     Done) + Settings → Conversion → Library sync wire-up.
     Scope: catalog + alias dictionary + snapshots + cover
@@ -1217,10 +1252,10 @@ Drivers for the current ordering:
     vs `.humanist` root for cloud), pre-flight blockers, copy
     round-trip including missing-aliases tolerance, and
     verification's catalog-readability flag.
-14. ~~**U-Splitview-Frame-Clamp — Defensive clamp of restored
+9. ~~**U-Splitview-Frame-Clamp — Defensive clamp of restored
     NSSplitView frames**~~ shipped 2026-05-12. New
     `SplitViewFrameClamp` helper walks every UserDefaults key
-    prefixed `NSSplitView Subview Frames ` on app launch,
+    prefixed `NSSplitView Subview Frames` on app launch,
     parses each persisted subview-frame string (six comma-
     separated fields: `x, y, w, h, isCollapsed, isHidden`),
     and removes the whole key when any subview's width or
@@ -1237,7 +1272,7 @@ Drivers for the current ordering:
     blanked the editor on 2026-05-12 (see
     `feedback_library_breaks_editor_rendering` memory for
     the original debugging path).
-15. ~~**R-Library-Dedupe — Content-hash dedupe on import AND
+10. ~~**R-Library-Dedupe — Content-hash dedupe on import AND
     scan**~~ shipped 2026-05-12. All four pieces landed
     together: (1) new `ContentHash` helper streams SHA-256
     in 64 KB chunks via CryptoKit; two new fields on
@@ -1260,7 +1295,7 @@ Drivers for the current ordering:
     stem exceeding 200 UTF-8 bytes as
     `<truncated>~<hash8>` — deterministic, codepoint-safe,
     fits the 255-byte APFS cap with headroom for `(N).epub`
-    + sync-conflict suffixes. (5) New `humanist-cli
+    - sync-conflict suffixes. (5) New `humanist-cli
     library-dedupe` command reads `library.json` via raw
     `JSONSerialization` (so unknown fields round-trip),
     hashes every catalog EPUB, groups identical content,
@@ -1268,7 +1303,7 @@ Drivers for the current ordering:
     moves redundant files to Trash via
     `FileManager.trashItem`, snapshots the catalog to
     `library.dedupe-backup.json`, and rewrites the entries
-    + every collection's `bookIDs`. 22 new tests across
+    - every collection's `bookIDs`. 22 new tests across
     `ContentHashTests`, `LibraryDedupeMutatorTests`, and
     `EPUBImporterTruncateTests` cover the hash primitive
     (streamed vs in-memory, known SHA-256 vector, missing
@@ -1283,7 +1318,7 @@ Drivers for the current ordering:
     catalog + collection rewritten correctly. See
     `feedback_library_breaks_editor_rendering` memory for
     how this pattern surfaced.
-16. ~~**R-Library-Rescan — Re-scan source PDF with new options**~~
+11. ~~**R-Library-Rescan — Re-scan source PDF with new options**~~
     shipped 2026-05-13 (commits `0b7f601`, `02b1f9a`). Library row
     context menu → "Re-scan with Current Settings…" → probe chain
     (cheap heuristics → OPF `<dc:source>` → `priorPaths`) auto-
@@ -1298,7 +1333,7 @@ Drivers for the current ordering:
     deferred — v1 uses the launcher's current settings; user
     configures options in the launcher first. Bulk re-scan for
     collection selections also deferred per original spec.
-17. **P-Bilingual-FacingPage Phase (b) — parallel chapter-tree
+12. **P-Bilingual-FacingPage Phase (b) — parallel chapter-tree
     reorganization**. Phase (a) (detection + `data-facing-page`
     cross-link tagging) shipped 2026-05-17 with the per-book
     *Facing-page bilingual* escape hatch. Phase (b) builds on
@@ -1313,7 +1348,7 @@ Drivers for the current ordering:
     otherwise tighten Phase (a)'s gates and ship only Phase (a).
     ~1.5–2 days for Phase (b) once green-lit.
 
-18. ~~**P-Cascade-Parallel — bounded parallel pages in cascade
+13. ~~**P-Cascade-Parallel — bounded parallel pages in cascade
     mode**~~ shipped. Phase A (`19b9fbc`) extracted the
     `processCascadePage` helper; Phase B (`9aee393`) wrapped
     the cascade page-loop in a bounded TaskGroup driven by
@@ -1321,7 +1356,7 @@ Drivers for the current ordering:
     is retained for the per-phase plan + state-change
     inventory in case a future regression needs the design
     context.
-19. ~~**C-Pipeline-File-Split — carve `PDFToEPUBPipeline.swift`
+14. ~~**C-Pipeline-File-Split — carve `PDFToEPUBPipeline.swift`
     into per-concern files**~~ shipped across 7 atomic commits
     (`4d87739` → `65047f8`) plus the doc marker `97408b4`.
     Pipeline file went from ~4500 lines to ~50%-size remainder,
@@ -1331,7 +1366,7 @@ Drivers for the current ordering:
 
 ### Earn when you need it
 
-10. **P10 distribution polish** (Developer ID + DMG +
+1. **P10 distribution polish** (Developer ID + DMG +
     Sparkle). For tester sharing, the current ad-hoc-signed
     bundle is fine. Earns priority when "first non-tester user"
     enters the picture or when tester install friction becomes
@@ -1341,14 +1376,14 @@ Drivers for the current ordering:
     launch via `LibraryStore.resolveStoreURL`'s three-way
     precedence (cloud > customLocal > Application Support). User
     use cases that motivate multi-library:
-      * **Multiple users on one Mac** — each picks their own
+      - **Multiple users on one Mac** — each picks their own
         active library on launch.
-      * **Single user separating contexts** — "Work" library
+      - **Single user separating contexts** — "Work" library
         (research corpus) vs. "Personal" library (Loeb classics,
         fiction reading) vs. "Teaching" library (course-prep
         material). Each gets its own catalog + chat history +
         Topics rollup.
-      * **Trying out a sandbox library** — import 20 books, see
+      - **Trying out a sandbox library** — import 20 books, see
         how chat behaves, throw the library away without
         disturbing the main one.
 
@@ -1360,13 +1395,13 @@ Drivers for the current ordering:
     **Design sketch:**
 
     *Profile registry (machine-wide):*
-      * New UserDefaults key `humanist.libraries.profiles` holds
+      - New UserDefaults key `humanist.libraries.profiles` holds
         a JSON-encoded `[LibraryProfile]`. Each profile:
         `{id: UUID, name: String, location: Location,
         createdAt: Date, lastOpenedAt: Date}`.
-      * `humanist.libraries.activeProfileID: UUID` names the
+      - `humanist.libraries.activeProfileID: UUID` names the
         currently-active library.
-      * Migration: on first launch with this feature, the
+      - Migration: on first launch with this feature, the
         existing library state becomes a profile named "Default
         Library" with the resolved Location; activeProfileID
         points at it. Existing users see zero change in
@@ -1384,14 +1419,14 @@ Drivers for the current ordering:
     *about*:
 
     *Tier 1 — Book files (shared pool, refcounted):*
-      * Physical `.epub` files live in a shared pool, not under
+      - Physical `.epub` files live in a shared pool, not under
         any single library. The Books output folder (Settings →
         Conversion → Output folder) becomes a shared resource;
         each library's catalog row stores a path into it.
-      * Adding "this book" to a second library is a catalog
+      - Adding "this book" to a second library is a catalog
         insert + content-hash lookup — no file copy, no
         re-OCR, no re-conversion.
-      * Deletion needs refcounting: trashing a book from
+      - Deletion needs refcounting: trashing a book from
         Library A only deletes the file if no other library
         still references it. Track via the per-source-hash
         membership the catalog already records, plus a
@@ -1399,19 +1434,19 @@ Drivers for the current ordering:
 
     *Tier 2 — Per-book state, content-hash addressed (shared
     automatically):*
-      * Embedding sidecars: today keyed by `libraryID` UUID;
+      - Embedding sidecars: today keyed by `libraryID` UUID;
         switch primary key to content-hash so the same book's
         vectors compute once + reuse across libraries. UUID
         becomes a catalog-row ID only.
-      * Concept extraction payloads (`Concepts/<hash>.json`):
+      - Concept extraction payloads (`Concepts/<hash>.json`):
         AFM output is deterministic per book — share by hash.
-      * Briefings (already content-hash addressed today): no
+      - Briefings (already content-hash addressed today): no
         change.
-      * Reading positions (already content-hash addressed):
+      - Reading positions (already content-hash addressed):
         no change.
-      * Annotations (already content-hash addressed): no
+      - Annotations (already content-hash addressed): no
         change.
-      * Per-book chat transcripts: today keyed by canonical
+      - Per-book chat transcripts: today keyed by canonical
         EPUB path. Could go either way. v1 default: share by
         content-hash (one reader, one ongoing conversation
         with a given book — switching libraries doesn't reset
@@ -1419,18 +1454,18 @@ Drivers for the current ordering:
         chat history later if a real use case surfaces.
 
     *Tier 3 — Per-library state (the library *is* the data):*
-      * `library.json` (catalog) — which books are in this
+      - `library.json` (catalog) — which books are in this
         library. The defining state of a library.
-      * Collections — user-curated groupings within this
+      - Collections — user-curated groupings within this
         library's catalog.
-      * Federated indexes (`LibraryConceptGraph`, federated
+      - Federated indexes (`LibraryConceptGraph`, federated
         embedding index, Topics rollup) — derived from the
         catalog's *subset* of books, so per-library by
         definition.
-      * Library-scope chat transcripts (`Chats/library.json`)
+      - Library-scope chat transcripts (`Chats/library.json`)
         — about this library's contents, partitioned per
         profile.
-      * Alias dictionary — open question. Library-scoped
+      - Alias dictionary — open question. Library-scoped
         captures domain-specific vocabulary (a research
         library has different aliases than a fiction
         library); machine-wide is simpler. v1: library-scoped,
@@ -1438,13 +1473,13 @@ Drivers for the current ordering:
         library's vocabulary.
 
     *Tier 4 — Machine-wide (stays in UserDefaults / Keychain):*
-      * API keys (Anthropic, Voyage, Gemini, Google Cloud
+      - API keys (Anthropic, Voyage, Gemini, Google Cloud
         Vision) — Keychain, shared across profiles.
-      * Settings preferences: AI backend choice, chat
+      - Settings preferences: AI backend choice, chat
         appearance, reader appearance, conversion defaults.
         Per-user typography + per-user AI plumbing.
-      * The profile registry itself.
-      * Recents: tricky — partitioning per-library makes
+      - The profile registry itself.
+      - Recents: tricky — partitioning per-library makes
         "Recent" match the active catalog, but a single
         unified Recents matches reader behavior. v1: machine-
         wide unified, filtered against the active library's
@@ -1466,10 +1501,10 @@ Drivers for the current ordering:
       (one-time migration step at first-launch).
 
     *Active-profile switch flow:*
-      * **At launch:** hold ⌥ to pop a "Choose Library…"
+      - **At launch:** hold ⌥ to pop a "Choose Library…"
         picker before any window mounts (mirrors Photos.app's
         pattern). Without ⌥, last-used profile wins.
-      * **Mid-session:** Window menu → "Choose Library…" or a
+      - **Mid-session:** Window menu → "Choose Library…" or a
         dedicated library-picker menu bar item. Switch path:
         prompt to confirm, close all editor/reader/queue
         windows (carry warning if any have unsaved edits),
@@ -1480,39 +1515,39 @@ Drivers for the current ordering:
         windows is the price of a mid-session switch.
 
     *UI surfaces:*
-      * Settings → **Libraries** pane (new): list of profiles
+      - Settings → **Libraries** pane (new): list of profiles
         with name + location + last-opened, CRUD actions
         (rename, change location, delete, mark active).
-      * Active library name in the app menu (next to
+      - Active library name in the app menu (next to
         "Humanist Help") so the user always knows which
         library they're in.
-      * Library window title bar shows the library name as a
+      - Library window title bar shows the library name as a
         subtitle.
 
     *Library deletion:*
-      * Two-option dialog: "Remove profile only" (data stays
+      - Two-option dialog: "Remove profile only" (data stays
         on disk; user can re-add by pointing at the location)
         vs. "Move all library files to Trash" (catalog +
         siblings; embeddings stay since they're
         machine-local).
 
     *Cross-cutting concerns:*
-      * Recents (RecentsStore) — partition per-library so
+      - Recents (RecentsStore) — partition per-library so
         "Recent Books" matches the active library's catalog.
         Today it's machine-wide.
-      * Per-book chat transcripts + briefings — keyed by
+      - Per-book chat transcripts + briefings — keyed by
         canonical EPUB path today. If the same book lives in
         two libraries (rare but possible), do they share or
         diverge? v1: diverge (route via profile root). If a
         recurring "shared transcripts across libraries"
         request surfaces, add an opt-in.
-      * Reading positions + annotations — currently keyed by
+      - Reading positions + annotations — currently keyed by
         content hash, machine-wide. The user is one reader so
         keep these machine-wide regardless of library
         (reading Tolstoy in Personal library, switching to
         Work, opening Tolstoy again should resume at the same
         chapter).
-      * R-Library-Migrate wizard — generalizes to "move this
+      - R-Library-Migrate wizard — generalizes to "move this
         profile to a different location." Same code paths.
 
     **Effort:** ~2.5-3 days for the tiered-sharing v1. The
@@ -1522,7 +1557,7 @@ Drivers for the current ordering:
     day including the "where else is this referenced" UI).
     Most of the work is still per-library state routing +
     window-close coordination on switch; the profile registry
-    + Settings UI is straightforward.
+    - Settings UI is straightforward.
 
     **Trigger:** earns priority when a second concrete user
     arrives on the same Mac, OR when one user explicitly
@@ -1788,7 +1823,7 @@ consistently across the book.
 ### Effort estimate
 
 ~3 days: extractor + associator + Block/XHTML/EPUB plumbing + tests
-+ corpus validation.
+- corpus validation.
 
 ### Dependencies
 
@@ -1869,10 +1904,11 @@ plumbing patterns.
 ## P-Math — Math / formula handling
 
 **Status**: cheap-path shipped end-to-end (2026-05-22).
-  * `.formula` regions take the raster path from Phase 6
+
+- `.formula` regions take the raster path from Phase 6
     (`a145dcc`) — `Block.figure` with `alt="formula"` or caption
     text. Always works, no math markup needed.
-  * Whole-page Cloud OCR (Claude Sonnet + Gemini Flash, shared
+- Whole-page Cloud OCR (Claude Sonnet + Gemini Flash, shared
     `baseSystemPrompt`) emits Unicode for inline math and MathML
     (`<math display="block" xmlns="…">…</math>`) for display
     equations (`c83312a`). The page-XHTML parser captures the
@@ -1881,7 +1917,7 @@ plumbing patterns.
     markup unmodified. Cleanup pass (P-LLM-Pass) operates on
     per-region text in cascade mode only — never sees whole-page
     MathML, so no stripping risk.
-  * `book.css` now ships math-aware styles (`2026-05-23`):
+- `book.css` now ships math-aware styles (`2026-05-23`):
     `math[display="block"]` centered with vertical margin, math
     font stack hint (STIX Two Math → Cambria Math → Latin Modern
     Math). WebKit-backed in-app Reader + WYSIWYG editor render
@@ -1919,26 +1955,27 @@ already wired as a Stage 2.5 document-OCR alternative
 MathML for math regions in math-heavy documents (purpose-built
 for "agentic document extraction"). Likely the best quality of
 the three options on dense aligned derivations.
-  * Reuses the existing `LandingAIAPIKeyStore` — no new
+
+- Reuses the existing `LandingAIAPIKeyStore` — no new
     keychain entry. User already has a single key configured
     for cascade Stage 2.5 + table extraction.
-  * `LandingAIMathExtractor` would conform to `MathExtractor`
+- `LandingAIMathExtractor` would conform to `MathExtractor`
     and route to the same `/v1/ade/parse` endpoint. Parser
     pulls the MathML out of the markdown body (look for
     `<math …>` substrings between paragraph delimiters).
-  * **Cost concern**: LandingAI bills per parse call, not per
+- **Cost concern**: LandingAI bills per parse call, not per
     region (~$0.03/call). At one call per `.formula` region
     that's ~6× Mathpix and ~10× Claude for sparse math. Likely
     only worth firing when the page has a high density of
     math regions; per-region dispatch is wasteful.
-  * Better unlock: **page-level routing** — when a page has
+- Better unlock: **page-level routing** — when a page has
     ≥ N `.formula` regions, send the WHOLE page through ADE
     once, parse out all the per-region MathML from the
     response. Amortizes the per-parse cost across multiple
     formulas. Without this, LandingAI-for-math is worse than
     cascade-Sonnet on cost without enough quality lift to
     justify it on the current corpus.
-  * Defer until: (a) a math-heavy book where cascade-Sonnet's
+- Defer until: (a) a math-heavy book where cascade-Sonnet's
     MathML is visibly wrong, AND (b) page-level routing
     designed so the parse call covers a useful batch of
     formulas. Until then, the existing LandingAI document-OCR
@@ -1954,21 +1991,22 @@ returns purpose-built MathML — measured better than Sonnet's
 vision-prompt path on complex aligned derivations,
 `\\begin{cases}` style multi-branch definitions, and dense
 subscript / superscript stacks.
-  * Keychain stores two-secret credentials (app_id + app_key);
+
+- Keychain stores two-secret credentials (app_id + app_key);
     JSON-encoded into a single `KeychainAPIKeyStore` slot to
     keep the parallel with existing single-secret stores.
-  * `MathpixAPIClient` is a minimal HTTP client (one endpoint,
+- `MathpixAPIClient` is a minimal HTTP client (one endpoint,
     no shared retry plumbing — single-call latency budget per
     formula, error → caller falls back to Claude).
-  * Factory wins over `ClaudeMathExtractor` when configured;
+- Factory wins over `ClaudeMathExtractor` when configured;
     on Mathpix decline / failure, falls through to Claude.
-  * Settings UI: secure-fields for both credentials + Test
+- Settings UI: secure-fields for both credentials + Test
     Connection button mirroring the LandingAI / Google Cloud
     Vision panes.
-  * Defer until: (a) user has real test credentials and (b) a
+- Defer until: (a) user has real test credentials and (b) a
     math-heavy book in the corpus to validate against. Effort
     estimate ~5-6 files / half-day once those are in place.
-  * Cost-per-formula (~$0.004) sits between cascade-Sonnet
+- Cost-per-formula (~$0.004) sits between cascade-Sonnet
     (~$0.001-$0.005) and LandingAI per-region (~$0.03);
     if quality on a hard math book ever forces a choice,
     Mathpix is the obvious default for per-region dispatch.
@@ -1998,18 +2036,19 @@ Surya's lossy text OCR for that region).
 **Tier 1 — Geometric heuristic (deterministic, no model cost).**
 Walk each page's regions; promote a `.text` / `.other` region
 to `.formula` when ALL of:
-  * Width < 70% of the page's dominant body-column width
+
+- Width < 70% of the page's dominant body-column width
     (display equations are typically centered with whitespace
     on both sides);
-  * Horizontal symmetry: `|leftMargin - rightMargin| / pageWidth
+- Horizontal symmetry: `|leftMargin - rightMargin| / pageWidth
     < 0.10` (centered, not flush left);
-  * Vertical extent ≤ 3 dominant line heights (display equations
+- Vertical extent ≤ 3 dominant line heights (display equations
     fit on 1-3 lines; longer "centered" things tend to be
     poems / blockquotes);
-  * Vertical gap above ≥ 0.5 line heights from the previous
+- Vertical gap above ≥ 0.5 line heights from the previous
     region (display equations sit between paragraphs, not
     inside them);
-  * Trailing equation-number pattern is a *signal-amplifier* but
+- Trailing equation-number pattern is a *signal-amplifier* but
     not required: a region ending in `(1)`, `(3.4)`, `(A.2)`
     promotes more aggressively (relax centering threshold).
 Cheap, deterministic, runs before OCR — promoted regions skip
@@ -2019,12 +2058,13 @@ extractor.
 **Tier 2 — Text-pattern heuristic (deterministic, post-OCR).**
 After Surya text OCR, scan each `.text` / `.other` region's
 recognized text. Promote to `.formula` when ANY of:
-  * `<math>…</math>` markup spans ≥ 60% of the region's total
+
+- `<math>…</math>` markup spans ≥ 60% of the region's total
     text length (the region is mostly math with prose framing);
-  * Single-line region whose text contains `=` AND ≤ 5 prose
+- Single-line region whose text contains `=` AND ≤ 5 prose
     words AND ≥ 1 LaTeX-style operator (`\sum`, `\int`, `_{...}`,
     `^{...}`, `\frac{...}{...}`);
-  * Single-line region whose text ends with `\([0-9]+(\.[0-9]+)?\)`
+- Single-line region whose text ends with `\([0-9]+(\.[0-9]+)?\)`
     AND contains math symbols (greek letters, integral signs,
     subscripts).
 On a Tier-2 promotion, **discard the lossy Surya text** for the
@@ -2063,38 +2103,39 @@ behind opt-in; same cost-justification posture as the
 
 ### Plumbing
 
-  * New `FormulaRegionPromoter.swift` static helper in
+- New `FormulaRegionPromoter.swift` static helper in
     `Sources/Pipeline/`. Two methods: `promoteGeometric(regions:
     pageBounds:) -> [LayoutRegion]` for Tier 1 (runs after
     Surya layout, before OCR dispatch), and `promoteByText(regions:
     observations:) -> [LayoutRegion]` for Tier 2 (runs after
     Surya OCR, before figure/math extraction).
-  * Insertion points in `PipelineCascadeLoop.processCascadePage`:
+- Insertion points in `PipelineCascadeLoop.processCascadePage`:
     Tier 1 between layout-detection and figure extraction;
     Tier 2 between OCR completion and the math-extractor loop.
-  * Promoted regions populate a diagnostic dict so the debug
+- Promoted regions populate a diagnostic dict so the debug
     log surfaces "page N region M: promoted .text → .formula
     by geometric heuristic" — the user audits decisions instead
     of guessing why a paragraph went missing.
-  * No CloudFeatures flag — heuristic promoters are free and
+- No CloudFeatures flag — heuristic promoters are free and
     deterministic; on by default whenever cascade mode runs.
     Tier 4 (when shipped) gets a flag.
 
 ### Effort estimate
 
-  * Tier 1 (geometric): ~2 hours including tests.
-  * Tier 2 (text-pattern): ~2 hours including tests.
-  * Diagnostic log integration: ~30 min.
-  * Total for Tiers 1+2 shipped: ~half day.
+- Tier 1 (geometric): ~2 hours including tests.
+- Tier 2 (text-pattern): ~2 hours including tests.
+- Diagnostic log integration: ~30 min.
+- Total for Tiers 1+2 shipped: ~half day.
 
 ### Expected impact
 
 For the Becker corpus (zero `.formula` regions today):
-  * Tier 1 should promote ~80% of the centered display equations
+
+- Tier 1 should promote ~80% of the centered display equations
     Surya saw as text (typical textbook geometry).
-  * Tier 2 catches the remaining inline-math-heavy regions
+- Tier 2 catches the remaining inline-math-heavy regions
     that Tier 1 missed because they sit inside wider paragraphs.
-  * Together: ~90-95% of equations route through the math
+- Together: ~90-95% of equations route through the math
     extractor and produce clean MathML, instead of relying on
     Surya's lossy text OCR + `InlineMathSplitter` rescue path.
 
@@ -2142,14 +2183,14 @@ nearby `.caption` region exists). The Sonnet whole-page-OCR
 prompt is explicit: "Image content; describe nothing." Gaps this
 creates:
 
-  * **Accessibility**: `alt="figure"` is screen-reader noise — a
+- **Accessibility**: `alt="figure"` is screen-reader noise — a
     VoiceOver user hears the word "figure" with no idea what's
     in the diagram.
-  * **Searchability**: chat-with-book / BM25 / embedding indexes
+- **Searchability**: chat-with-book / BM25 / embedding indexes
     have no text from inside diagrams. A user asking "what does
     the marriage market diagram show?" gets no hit because the
     diagram's content is invisible to retrieval.
-  * **OCR'd text in figures**: axis labels on charts, callouts
+- **OCR'd text in figures**: axis labels on charts, callouts
     on anatomical drawings, equation fragments embedded in
     diagrams — all lost.
 
@@ -2158,14 +2199,15 @@ creates:
 A `DiagramExtractor` protocol (mirrors `MathExtractor`,
 `TableExtractor`) that takes a cropped `.picture` region and
 asks Sonnet for one or more of:
-  * **Tier 1 — short alt text** (≤ 120 chars, screen-reader-
+
+- **Tier 1 — short alt text** (≤ 120 chars, screen-reader-
     ready). Replaces `alt="figure"` so VoiceOver reads something
     meaningful.
-  * **Tier 2 — longer description** (200–500 chars). Lives on
+- **Tier 2 — longer description** (200–500 chars). Lives on
     a per-figure metadata field, NOT in the visible chapter
     XHTML — feeds the chat / search index so RAG queries about
     diagram content land somewhere.
-  * **Tier 3 — labels list** (axis labels, callouts, legend
+- **Tier 3 — labels list** (axis labels, callouts, legend
     entries). Same posture as the description — indexable, not
     visible.
 
@@ -2177,6 +2219,7 @@ with optional fields, default to nil for backwards compat.
 ### Approach
 
 **Protocol shape**:
+
 ```swift
 public struct DiagramExtractionResult: Sendable {
     public let altText: String         // ≤ 120 chars
@@ -2205,57 +2248,61 @@ the prompt's user-turn context.
 
 **Prompt design**:
 The hard part. The prompt must produce:
-  * **Specific diagram type** — "bar chart" / "scatter plot" /
+
+- **Specific diagram type** — "bar chart" / "scatter plot" /
     "flowchart" / "anatomical illustration" / "photograph" /
     "schematic" — not generic "figure".
-  * **Salient content** — what's actually plotted / shown.
-  * **No preamble** — strip "This image shows…" / "The figure
+- **Salient content** — what's actually plotted / shown.
+- **No preamble** — strip "This image shows…" / "The figure
     depicts…" boilerplate.
-  * **No invention** — return empty string if image is unclear
+- **No invention** — return empty string if image is unclear
     or non-substantive (decorative ornaments, blank space).
 
 Sample target output for the Becker marriage-market diagram:
 `"Supply-demand chart with male/female populations on opposing axes, dotted lines marking optimal pairing curves"`
 
 **Cascade integration** (mirrors `P-Math-Cascade`):
-  * `CascadePageOutcome.diagramEntries: [(regionIndex: Int,
+
+- `CascadePageOutcome.diagramEntries: [(regionIndex: Int,
     result: DiagramExtractionResult)]`
-  * `mathExtractionsByKey`-style dict in `PDFToEPUBPipeline`
-  * Plumbed through `PipelineReflow.reflow` →
+- `mathExtractionsByKey`-style dict in `PDFToEPUBPipeline`
+- Plumbed through `PipelineReflow.reflow` →
     `RegionAwareReflow.reflow` → `reflowPage`
-  * Reflow's `.picture` branch (the existing figure-emit path)
+- Reflow's `.picture` branch (the existing figure-emit path)
     overrides the `alt` with `extraction.altText` when present;
     otherwise unchanged.
 
 **Settings UI**:
-  * New toggle in Settings → AI:
+
+- New toggle in Settings → AI:
     `cloudFeatures.diagramDescription` (default-off; opt-in like
     `postOCRCleanup`).
-  * Caption: "One Sonnet call per detected figure; generates
+- Caption: "One Sonnet call per detected figure; generates
     accessibility alt text and search-indexable description.
     ~$0.005–$0.02 per figure; a typical academic book has
     5–15 figures."
-  * No launcher-level toggle in v1 — Settings default is enough.
+- No launcher-level toggle in v1 — Settings default is enough.
 
 **Per-book cost shape**:
-  * Typical academic book: 5–15 figures × ~$0.01 = $0.05–$0.15
-  * Math/STEM heavy: 20–40 figures × ~$0.01 = $0.20–$0.40
-  * Picture-book / art history: 100+ figures × $0.01 = $1+ —
+
+- Typical academic book: 5–15 figures × ~$0.01 = $0.05–$0.15
+- Math/STEM heavy: 20–40 figures × ~$0.01 = $0.20–$0.40
+- Picture-book / art history: 100+ figures × $0.01 = $1+ —
     warrant a profile-warning if `figureDensityThreshold` fires
     AND `diagramDescription` is on.
 
 ### Effort estimate (Tier 1)
 
-  * `DiagramExtractor.swift` protocol + `DiagramExtractionResult`
+- `DiagramExtractor.swift` protocol + `DiagramExtractionResult`
     type: ~15 min.
-  * `ClaudeDiagramExtractor.swift` (mirrors `ClaudeMathExtractor`):
+- `ClaudeDiagramExtractor.swift` (mirrors `ClaudeMathExtractor`):
     prompt, API call, sanitization, budget gate. ~1 hour.
-  * Cascade-loop plumbing (CascadePageOutcome / pipeline /
+- Cascade-loop plumbing (CascadePageOutcome / pipeline /
     reflow): ~45 min.
-  * Settings UI toggle + caption text: ~15 min.
-  * Tests (sanitize, parse, end-to-end mock, caption-aware
+- Settings UI toggle + caption text: ~15 min.
+- Tests (sanitize, parse, end-to-end mock, caption-aware
     prompt): ~1 hour.
-  * Total: ~3.5 hours.
+- Total: ~3.5 hours.
 
 ### Tier 2/3 (deferred)
 
@@ -2263,14 +2310,15 @@ Tier 2 (description) and Tier 3 (labels) build on the v1
 protocol by extending the response shape and the result struct.
 The plumbing path is unchanged — only the prompt and the
 consumer of the optional fields change:
-  * Description lives on a new `Chapter.figureMetadata:
+
+- Description lives on a new `Chapter.figureMetadata:
     [assetId: FigureMetadata]` field, where `FigureMetadata`
     carries `description` + `labels`.
-  * Chat / search indexer pulls these into the retrieval corpus
+- Chat / search indexer pulls these into the retrieval corpus
     alongside paragraph text (treat description as a paragraph
     associated with the figure's page anchor).
-  * No visible-EPUB change; the chapter renders identically.
-  * Effort: another ~2 hours once Tier 1 is shipped and the
+- No visible-EPUB change; the chapter renders identically.
+- Effort: another ~2 hours once Tier 1 is shipped and the
     response shape is validated against real diagrams.
 
 ### Goal accessibility win even without Tier 2
@@ -2648,7 +2696,7 @@ individual Claude calls and let the user dial cost up or down.
 ## Per-feature model selection
 
 | Feature | Model | Why |
-|---|---|---|
+| --- | --- | --- |
 | Hard-region OCR (Cloud cascade Stage 2.5) | Google Cloud Vision `DOCUMENT_TEXT_DETECTION` | Classical OCR at ~$0.0015/call; absorbs most of the hard-region tail before falling through to Claude |
 | Hard-region OCR (Cloud cascade tail) | Sonnet 4.6 | Trusted as ground truth; multilingual + ancient scripts demand the strongest visual reasoning |
 | Page OCR (whole-page → XHTML) | User-selectable: Sonnet 4.6 (default; best on dense academic layouts), Gemini 2.5 Flash (~7–10× cheaper; GA), or Gemini 3 Flash preview (newer reasoning model; `thinking_level: minimal` pinned) | Manuscript mode hard-pins Opus regardless of pick. See P-Page-Provider-Choice in the shipped log. |
@@ -2666,7 +2714,7 @@ ground-truth content."**
 ## Cloud-migration phase status
 
 | Phase | What | Status |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Anthropic API plumbing (`AI` library: client + transport + key store + settings + Settings UI) | **Done** (commit `567d2c3`) |
 | 2 | `ProcessingMode` plumbed end-to-end into `PDFToEPUBPipeline.Options` + `JobRunner`; dispatch switches added at engine sites | **Done** (commit `0e00a76`) |
 | 3 | `ClaudeOCREngine` (Sonnet vision) wired in as the cascade's high-quality tier under `.cloud` | **Done** (commit `9a4adfd`) |
@@ -2738,6 +2786,7 @@ penny per book at Haiku rates.
 ### Scope (what's in / what's out)
 
 In:
+
 - `OCRPostProcessor` protocol with one impl: `ClaudePostProcessor`.
 - Per-region invocation gated on `OCRTextQualityScorer.combined`
   below a configurable floor (default 0.6).
@@ -2759,9 +2808,10 @@ In:
   per book (cost cap).
 
 Out:
+
 - LLM-driven layout decisions (use Surya for that).
 - LLM-driven language detection (already handled by NLLanguageRecognizer
-  + script-frequency analysis).
+  - script-frequency analysis).
 - Whole-document rewrites or stylistic edits — only character-level
   OCR corrections.
 
@@ -2809,6 +2859,7 @@ public struct CorrectionResult: Sendable {
 ```
 
 Two impls planned:
+
 - **`ClaudePostProcessor`** — wraps Anthropic API. Handles both
   passages mode and vision mode behind the same protocol.
 - **`MockPostProcessor`** — for tests. Returns canned corrections
@@ -2817,6 +2868,7 @@ Two impls planned:
 ### `ClaudePostProcessor` prompt design
 
 **Passages mode** (text-only):
+
 ```
 You are correcting OCR output. Fix obvious character-level OCR errors:
 ligature confusions (rn→m, cl→d, vv→w), missing diacritics for the
@@ -2873,6 +2925,7 @@ The processor doesn't run on every region. Gate stack:
 ### Guardrails
 
 The `ChangeGuardrail` rejects LLM output when:
+
 - **Edit distance > 30%** of original length: the model rewrote
   rather than corrected.
 - **Length delta > 25%**: a much longer or shorter result usually
@@ -2918,6 +2971,7 @@ rate limits on long pages.
 ### Settings UI
 
 New "OCR Correction (Claude)" pane:
+
 - "Enable post-OCR Claude correction" — master toggle
 - "Mode" — Passages (text-only) | Vision (multimodal, costlier)
 - "Trigger threshold" — slider for the quality floor (0-1)
@@ -3018,6 +3072,7 @@ way commercially-published EPUBs do.
 ### Backend choice
 
 Two implementations behind a `SemanticClassifier` protocol:
+
 - **`EnglishRegexClassifier`** — always available. Pattern table
   for common English roles. Fallback when no API key.
 - **`ClaudeHaikuClassifier`** — handles multilingual headings
@@ -3057,7 +3112,7 @@ handles the third.
 ## P-TOC-Parsing — Parse the printed TOC into an authoritative tree (Cloud Phase 6, Haiku)
 
 **Status**: shipped (commits `bd466f3`, `e3eb46c`). `TOCDetector`
-+ `TOCExtractor` + `ClaudeTOCParser` produce a structured TOC
+- `TOCExtractor` + `ClaudeTOCParser` produce a structured TOC
 tree with printed page numbers; `nav.xhtml` is driven by the
 parsed TOC when one is available, and TOC-derived chapter titles
 override Surya's heading reads. Full design history at
@@ -3070,6 +3125,7 @@ commercial books do), extract it, parse it into a structured
 tree of entries with their printed page numbers, then use it as
 the authoritative source for chapter / section / subsection
 structure. Beats heading-detection alone because:
+
 - TOCs encode hierarchy (Part → Chapter → Section)
 - TOCs have authoritative titles even when Surya OCR'd the
   page-1 heading wrong
@@ -3107,6 +3163,7 @@ structure. Beats heading-detection alone because:
 ### Failure-mode hierarchy
 
 The system degrades gracefully (per the existing design doc):
+
 1. **Best**: PDF outline + Claude parse + complete page map →
    fully aligned chapters with hierarchy.
 2. **Good**: text-scan TOC + Claude parse + partial page map →
@@ -3126,6 +3183,7 @@ the API client / Keychain / Settings pane are already in place.
 ### Risks
 
 Per the existing design doc:
+
 - Hallucinated TOC entries (validation step + monotonic-page check)
 - OCR'd TOC pages garbled (gate on Surya, fall back gracefully)
 - Printed-page resolution failure (interpolation + fall back)
@@ -3152,6 +3210,7 @@ glyph order for each script.
 ### Scope
 
 In:
+
 - `heb_best.traineddata` (Hebrew)
 - `syr_best.traineddata` (Syriac)
 - `cop_best.traineddata` (Coptic — Bohairic + Sahidic both rendered
@@ -3170,6 +3229,7 @@ In:
   original plan called this out — Noto Serif covers everything).
 
 Out:
+
 - Arabic (different vowel-marking / shaping concerns; bigger lift)
 - Devanagari / Sanskrit (different script family entirely; defer)
 - Coptic Sahidic vs Bohairic dialectal disambiguation — use the
@@ -3513,6 +3573,7 @@ Humanist/                          New row / column in the queue
 ### Effort
 
 ~1 day end-to-end:
+
 - ~2 hours: stats struct + `convert()` return-type plumbing
 - ~2 hours: queue UI changes
 - ~1 hour: per-model rate table + cost helper
@@ -3717,14 +3778,15 @@ existing growth can't trip the breakage either.
   fine in macOS / EPUB but get URL-encoded.)
 - Cap at 80 chars before extension. Truncate at the nearest
   word boundary so the title remains readable.
-- Collision-check: if `<slug>.xhtml` exists, append ` -2`,
-  ` -3`, etc. Same iteration as `nextAvailableResourceID`.
+- Collision-check: if `<slug>.xhtml` exists, append `-2`,
+  `-3`, etc. Same iteration as `nextAvailableResourceID`.
 
 ### Integration with existing chapter rename
 
 The editor already has a chapter rename surface
 (`pendingRename` state + alert sheet in `EditorView.swift`).
 The new "auto-rename to match content" command can:
+
 - Read the chapter's current first heading via
   `BookPackageEditor.previewHeading(for:)` (or similar new
   helper).
@@ -3834,7 +3896,7 @@ CSS-multicol layout, ⌥⌘P toggle, ←/→/space page nav,
 "page N / M" indicator. The reader is the default open
 target for `.epub` URLs, reachable via `Show Reader` (⌘5).
 Phase 4 (reading prefs popover + edit-reader staleness banner
-+ library "Continue reading" column) shipped 2026-05-19.
+- library "Continue reading" column) shipped 2026-05-19.
 R-Reader is complete.
 
 ### Decisions locked
@@ -3871,7 +3933,7 @@ Everything else is reuse.
 ### Reuse vs new
 
 | Concern | Reuse | New |
-|---|---|---|
+| --- | --- | --- |
 | EPUB load + spine + nav | `EPUBBook.open(epubURL:)`, `Resource.text`, `book.spine` | — |
 | Chapter rendering (scroll mode) | `WebPreviewPane` from `Editor/PreviewView.swift` — extract the WKWebView wrapper so reader and editor both consume it | thin wrapper that loads spine items one at a time |
 | Chapter rendering (paginated) | Same WKWebView host | `ReaderPaginator.swift` JS-bridge: applies `column-width: 100vw; height: 100vh`, measures `scrollWidth`, exposes `goToPage(n)` / `pageCount` / `currentPage` |
@@ -3931,25 +3993,25 @@ Each commit shippable on its own.
 
 **Phase 2 — Chat sidebar**
 
-5. **R-Reader-Chat-Pane** — `ReaderChatPaneView` (stripped-down
+1. **R-Reader-Chat-Pane** — `ReaderChatPaneView` (stripped-down
    `ChatPaneView`), `ReaderViewModel.ensureChatViewModel()`
    mirroring `EditorViewModel.ensureChatViewModel`. View menu toggle
-   + ⌥⌘C shortcut consistent with the editor. Citation chips snap
+   - ⌥⌘C shortcut consistent with the editor. Citation chips snap
    the reading pane to the cited chapter.
 
 **Phase 3 — Paginated layout**
 
-6. **R-Reader-Pagination** — `ReaderPaginator.swift` JS-bridge.
+1. **R-Reader-Pagination** — `ReaderPaginator.swift` JS-bridge.
    Settings → Reader pane: layout toggle (Scroll / Paginated), theme
    (System / Sepia / Dark), font family + size. ←/→/space page
    navigation; trackpad swipe via `NSEvent.swipeWithEvent` if cheap.
 
 **Phase 4 — Polish**
 
-7. **R-Reader-Reading-Prefs** — Font face picker (system reading
+1. **R-Reader-Reading-Prefs** — Font face picker (system reading
    fonts), line-spacing, margin width. Reuse editor preview's theme
    injection pattern (`<style>` overrides at chapter load).
-8. **R-Reader-Library-Continue** — Library window "Continue reading"
+2. **R-Reader-Library-Continue** — Library window "Continue reading"
    hover badge + double-click respects last position.
 
 ### Edit-Reader interaction
@@ -4129,8 +4191,8 @@ but multiplied by 8 + per-consumer call site updates.
 `newline: NSAttributedString` static lets. Conceptually immutable but
 NSFont/NSAttributedString aren't `Sendable`. Two clean options:
 
-  - Make them computed properties (~5 ns per access; trivial).
-  - Wrap in a `@unchecked Sendable` box that asserts immutability.
+- Make them computed properties (~5 ns per access; trivial).
+- Wrap in a `@unchecked Sendable` box that asserts immutability.
 
 Computed property is the cleaner fix. ~10 minutes.
 
@@ -4143,23 +4205,24 @@ The `pdfRef` issue is the deeper one. `LoadedPDF` is intentionally
 non-`Sendable` because PDFKit's `PDFDocument` isn't documented as
 thread-safe. Two paths:
 
-  - Mark `LoadedPDF: @unchecked Sendable`, defended by an invariant:
+- Mark `LoadedPDF: @unchecked Sendable`, defended by an invariant:
     "PDFKit access only ever happens on the pipeline actor's
     executor, so even when async-let creates concurrent child tasks,
     the actor's serializing executor prevents simultaneous PDFKit
     calls." Document the invariant in code so future changes don't
     silently break it. Cleanest if the invariant holds.
-  - Remove the concurrency entirely and fall back to serial Vision +
+- Remove the concurrency entirely and fall back to serial Vision +
     Surya per-page (loses the ~30% per-page speedup from
     P-Vision-Concurrency).
 
 Path 1 is right. ~1 hour including invariant write-up. The progress-
 callback `sending` issues should fall out from the same `@Sendable`
-+ explicit-capture-list passes.
+- explicit-capture-list passes.
 
 **Humanist / QueueViewModel (2 latent warnings → errors)**:
-  - `runner` captured in concurrently-executing code (line 263).
-  - `supportedLanguages` main-actor-isolated static accessed from
+
+- `runner` captured in concurrently-executing code (line 263).
+- `supportedLanguages` main-actor-isolated static accessed from
     nonisolated context (line 242).
 
 Both real problems. The first is a closure capturing a `var runner`
@@ -4171,6 +4234,7 @@ unisolated holder.
 ### Effort
 
 ~6 hours total broken down:
+
 - ~3 hours: RegionAwareReflow's 8 statics → return-value plumbing.
 - ~1 hour: DOCXWriter constants → computed properties.
 - ~1 hour: LoadedPDF + progress-callback Sending fixes; verify the
@@ -4205,7 +4269,7 @@ is now a hard compile-time constraint that can't regress.
 **Status**: shipped over commits `452daeb` (foundation), `a421161`
 (Ollama), and `1d4cb71` (Voyage + Gemini). Chat retrieval is now
 per-paragraph hybrid: BM25 chapters projected onto their paragraphs
-+ embedding cosine, fused via RRF (k=60). Default embedding backend
+- embedding cosine, fused via RRF (k=60). Default embedding backend
 is on-device Apple NLEmbedding (free, no setup); Ollama / Voyage /
 Gemini are wired alternatives. Per-book sidecar caches vectors
 under `~/Library/Application Support/Humanist/Embeddings/<sha256>.json`
@@ -4221,7 +4285,7 @@ math, paragraph extraction, sidecar round-trip, and RRF fusion.
   per-paragraph context rendering; Settings → AI → Chat Retrieval
   section with index-size readout + Clear button.
 - **Ollama backend** (`a421161`): `OllamaClient.embed(model:texts:)`
-  + `OllamaEmbeddingBackend` with daemon-probe-on-init for the
+  - `OllamaEmbeddingBackend` with daemon-probe-on-init for the
   dimension. `nomic-embed-text` is the recommended model.
 - **Voyage + Gemini backends** (`1d4cb71`): generalized
   `KeychainAPIKeyStore` so adding a third + fourth provider key was
@@ -4399,7 +4463,7 @@ New "Chat retrieval" subsection under Settings → AI → Book Chat:
 ### Cost / latency budget
 
 | Backend | Embed once | Embed re-edit | Per-query |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | NLEmbedding | ~1-2 min/book | ~50 ms/paragraph | ~10 ms |
 | Ollama (`nomic-embed-text`) | ~5-10 min/book | ~200 ms/paragraph | ~50 ms |
 | Voyage (`voyage-3`) | ~$0.005/book | ~$0.0001/paragraph | ~100 ms |
@@ -4426,6 +4490,7 @@ is a single call.
 ### Effort
 
 ~3-4 days end-to-end:
+
 - ~1 day: `BookEmbeddingIndex` with NLEmbedding backend (build,
   cache, query) + sidecar write/read.
 - ~0.5 day: `HybridRetriever` + RRF fusion + per-paragraph
@@ -4473,7 +4538,7 @@ piece landed so the design intent isn't lost to git history.
   rebuild option wipes and re-runs. Triggered from the Library
   window's circular-arrow menu ("Build Missing Indexes" /
   "Rebuild All Indexes"); progress sheet shows per-book progress
-  + failure list.
+  - failure list.
 - ~~**Per-book "Rebuild index" button"**~~ shipped. Circular-arrow
   button in the per-book chat pane header (`Editor → Chat`) calls
   `BookChatViewModel.rebuildIndex()` which wipes the book's
@@ -4600,6 +4665,7 @@ default UX rather than a tucked-away mode.
 ### Effort
 
 ~1-1.5 days end-to-end:
+
 - ~0.5 day: `LibraryChatViewModel` (factor or delegate).
 - ~0.5 day: library window layout — split view with collapsible
   chat pane, accessibility, dark-mode sanity, theme integration.
@@ -4675,7 +4741,7 @@ These shape the chat output for downstream use (research notes,
 citations, drafting). Not as universally useful as Tier 1; pick
 based on whether your workflow leans heavily on writing-up.
 
-6. ~~**Citation export**~~ shipped (commit `6c63714`).
+1. ~~**Citation export**~~ shipped (commit `6c63714`).
    `ChatCitationFormatter` turns `[book:N chapter:M]` markers
    into Chicago note-style strings — `Author, *Title*, "Chapter
    Title", ¶ N.` — with graceful fallbacks when fields are
@@ -4687,19 +4753,19 @@ based on whether your workflow leans heavily on writing-up.
    publisher / ISBN aren't surfaced through `LibraryEntry`
    today; formatter handles their absence and future enrichment
    slots in without changing the API.
-7. ~~**Conversation export**~~ shipped (commit `6c63714`).
+2. ~~**Conversation export**~~ shipped (commit `6c63714`).
    `ChatPaneView` and `LibraryChatPaneView` gained "Export
    Transcript…" actions that write Markdown via
    `ChatCitationFormatter.transcript`. Citations resolve through
    `LibraryStore.entries` to per-book metadata at export time.
    8 new `ChatCitationFormatterTests` cover the format-string
    matrix, bibliography dedup + numbering, and transcript shape.
-8. **Pinned passages** — when chat surfaces a passage worth
+3. **Pinned passages** — when chat surfaces a passage worth
    keeping, click a star on the citation to save it to a per-
    library "Quotes" pane (passage text + source book + chapter +
    the question that surfaced it). Becomes a chat-driven
    highlights file. ~1 day. Pairs naturally with Citation export.
-9. **Ask-each-book mode** — one query, one independent answer
+4. **Ask-each-book mode** — one query, one independent answer
    *per book in scope*. Different from today's RRF-merged answer;
    useful for surveys ("what does each of these books say about
    X?") rather than synthesis ("what does my library say about
@@ -4710,17 +4776,17 @@ based on whether your workflow leans heavily on writing-up.
 Genuinely useful but neither universally needed nor cheap. Skip
 unless one matches an actual recurring pain point.
 
-10. **Comparative-prompt presets** — saved system prompts the
+1. **Comparative-prompt presets** — saved system prompts the
     user picks per session ("primary-source quotation finder",
     "careful historian", "argumentative summary", "translation
     comparison"). Library of canned scholarly stances. ~half day.
     Worth building only if the user finds themselves rewriting
     the same prompt prefix repeatedly.
-11. **Multiple chat threads** — named threads ("Power chapter
+2. **Multiple chat threads** — named threads ("Power chapter
     research", "translation comparison") rather than one rolling
     transcript. ~1 day. Likely overkill for solo use; useful when
     the user is juggling several research projects in parallel.
-12. **Retrieval debug surface** — already in `R-Chat-Polish`.
+3. **Retrieval debug surface** — already in `R-Chat-Polish`.
     Hit `bm25Rank` / `embeddingRank` / `hierarchyMatched` /
     `entityMatched` are already on `HybridRetriever.Hit`; just
     needs a UI toggle. Critical when retrieval misfires and the
@@ -4732,7 +4798,7 @@ unless one matches an actual recurring pain point.
 Real engineering investment, uncertain payoff. Document for the
 runway; don't build unless a specific need surfaces.
 
-13. **Knowledge-graph view** — interactive graph of the
+1. **Knowledge-graph view** — interactive graph of the
     federated `LibraryEntityIndex`: people / places / concepts as
     nodes, co-occurrence as edges. Click a node to seed a chat
     about that entity. The data is already extracted; the new
@@ -4741,12 +4807,12 @@ runway; don't build unless a specific need surfaces.
     most actual research happens through targeted chat queries,
     not graph browsing. Build if the user finds themselves
     asking "what's near X in my library?" frequently.
-14. **Per-book chat history surfacing** — when reading a book in
+2. **Per-book chat history surfacing** — when reading a book in
     the editor, the chat pane shows "asked about this book in
     library chat: 7 times" with one-click recall. Cross-context
     recall. ~half day. Speculative value — depends on whether
     the user actually re-reads questions they already asked.
-15. **Multi-model A/B in library scope** — same query through
+3. **Multi-model A/B in library scope** — same query through
     Sonnet and Gemini (or any two backends) side-by-side. Useful
     when the user doesn't trust one model's reading on a hard
     question. ~1 day. Doubles per-query cost; skip unless model
@@ -5244,13 +5310,13 @@ book references already in scope, asking the model to mediate.
 - `Sources/Humanist/Editor/Chat/LibraryConceptGraph.swift` —
   Phase 1 type + builder.
 - `Sources/Humanist/Editor/Chat/Concepts/ConceptsSidebarView.swift`
-  + `ConceptDetailView.swift` + `ConceptBarChart.swift` — Phase 2.
+  - `ConceptDetailView.swift` + `ConceptBarChart.swift` — Phase 2.
 - `Sources/Humanist/Editor/Chat/LibraryChatTools.swift` — add
   `searchConceptTool` + dispatcher (Phase 3, in existing file).
 - `Sources/Humanist/Editor/Chat/DisagreementsStore.swift` +
   `DisagreementJudge.swift` — Phase 4.
 - `Sources/Humanist/Editor/Chat/Tensions/TensionsSidebarView.swift`
-  + `TensionCardView.swift` — Phase 5.
+  - `TensionCardView.swift` — Phase 5.
 
 ### Files to touch
 
@@ -5322,6 +5388,7 @@ to ~3 GB. All four stripped features restored + the two dead-code
 items resolved.
 
 Shipped commits (chronological):
+
 - `9db3a5b` — Delete dead `SelectableMessageText.swift`.
 - `3312ee3` — Restore block-level Markdown rendering in
   `MarkdownMessageBody` (revert d0911b6's single-Text fold).
@@ -5338,6 +5405,7 @@ feature per the original plan — multi-monitor / reference-while-
 reading is real UX value independent of the debug origins.
 
 Out-of-scope items remain out of scope:
+
 - Alias substring matching at library scope — sidecar-backed alias
   inverted index lives in R-Federated-Memory-Pass follow-ups.
 - LazyVStack measurement-cascade investigation — moot now that
@@ -5453,6 +5521,7 @@ size, and theme controls for the two reading surfaces.
 
 The two surfaces split into separate workstreams because they're
 implemented in different rendering systems:
+
 - Chat is pure SwiftUI — appearance threads down as a resolved
   font + colorScheme override.
 - Reader is WKWebView with the EPUB's own CSS — appearance has
@@ -5480,6 +5549,7 @@ without a window relaunch via `@AppStorage` binding in each
 pane view.
 
 Implementation lives at `Sources/Humanist/Editor/Chat/ChatAppearance.swift`:
+
 - `ChatAppearance.FontFamily` / `FontSize` / `ColorMode` enums
   with displayNames + UserDefaults keys.
 - `ChatAppearance.resolve(family:size:mode:) -> Resolved` returns
@@ -5511,6 +5581,7 @@ Defer for v1: max line width, custom font picker beyond the
 three options above, per-book overrides.
 
 Implementation sketch:
+
 - New `ReaderStyleSheet.css` template that uses CSS variables
   for every tunable: `--reader-font-family`, `--reader-font-size`,
   `--reader-line-height`, `--reader-color-bg`, `--reader-color-fg`,
@@ -5529,7 +5600,7 @@ Implementation sketch:
   styling across books — per-book overrides are a deferred polish).
 
 Estimated effort: ~1 day including the popover UI, the CSS layer
-+ variable plumbing, the JS bridge for live updates, and the
+- variable plumbing, the JS bridge for live updates, and the
 fallback for books with stylesheets that resist overriding.
 
 ### Phase 2 (chat) — deferred polish
@@ -5642,6 +5713,7 @@ be rebuilt automatically on the magic-byte rejection).
   the federated cache + cosine path goes away. ~1 week. Worth
   it if (a) library scales past current 2k-book range or (b)
   query latency at brute force becomes a felt problem.
+
 ### Caveats
 
 - The Phase 1 changes are all in `FederatedIndexCache` + the two
@@ -5693,6 +5765,7 @@ unless the cost of getting there is disproportionate to the value.
 ### Fit criteria
 
 A feature is a **good CLI fit** when:
+
 - It doesn't require visual feedback during execution
 - It's long-running / unattended-friendly (or fast enough to script)
 - It composes with shell pipelines (single-purpose, machine-readable
@@ -5700,6 +5773,7 @@ A feature is a **good CLI fit** when:
 - The UI version is essentially a button that fires a job
 
 A feature is a **bad CLI fit** when:
+
 - It's inherently interactive (Reader pagination, WYSIWYG editing)
 - It requires drag/drop, multi-pane comparison, visual region
   selection (re-OCR a paragraph region)
@@ -5749,6 +5823,7 @@ read `library.json` raw via JSONSerialization (the
 
 Refactor first: move into LibraryIndexing the federated types that
 currently live in Humanist:
+
 - `LibraryEmbeddingIndex`
 - `LibraryEntityIndex`
 - `LibraryKeywordIndex`
@@ -6170,6 +6245,7 @@ Phases per book:
    Imported book joins the federated index immediately.
 
 **`ParagraphAnchorInjector`** — XHTML-walking helper:
+
 - Parse via `XMLDocument` (already used elsewhere) or the same
   lightweight regex approach the existing chat pipeline uses
 - Walk `<p>` elements in document order
@@ -6412,7 +6488,7 @@ same file via the same UUID.
 ### Per-machine vs shared classification
 
 | File / state | Shared | Per-machine |
-|---|---|---|
+| --- | --- | --- |
 | `library.json` catalog + collections | ✓ | |
 | Per-EPUB sidecars in META-INF | ✓ (in EPUB) | |
 | Embedding + hierarchy + entity sidecars | ✓ | |
@@ -6649,6 +6725,7 @@ alongside Phase 1 (chapter classification) and Phase 2
 Phase 4: Genre classification**.
 
 **Scope**:
+
 - `BookGenre` enum: closed taxonomy with single-sublevel
   hierarchy. Draft top-level set (~15 cases):
   - poetry, drama, philosophy, religion, history,
@@ -6726,6 +6803,7 @@ needed).
 2026-05-12 after the user flagged.
 
 **What landed (v1, v1.5, cover follow-on)**:
+
 - `Sources/Humanist/Library/MetadataOnline/` — new directory
   housing the lookup surface.
 - `MetadataOnlineLookup.swift` — `MetadataQuery`,
@@ -6779,6 +6857,7 @@ needed).
   consistent.
 
 **Still pending**:
+
 - **v1.7 — Claude-search consolidator** (~½ day). For
   non-modern / classical / manuscript material the open APIs
   return weak hits. A Claude-backed `MetadataSource` impl
@@ -7303,6 +7382,7 @@ runs on-device.
 ### Effort
 
 ~4-5 days end-to-end:
+
 - ~1 day: `BookHierarchyIndex` (tree from nav.xhtml + sidecar
   read/write + schema bump migration).
 - ~1 day: `BookEntityIndex` via NLTagger + sidecar plumbing +
@@ -7314,7 +7394,7 @@ runs on-device.
 - ~0.5 day: Settings toggles + alias-dictionary UI for missed
   entities.
 - ~0.5 day: integration testing on real books (mixed contemporary
-  + classical content), threshold tuning.
+  - classical content), threshold tuning.
 
 ### When to ship
 
@@ -7422,7 +7502,7 @@ ship. If the spike confirms, implement as planned.
 ### Architecture
 
 Both modes are page-level OCR engines that bypass the `RegionCascade`
-+ Vision/Tesseract path. Each engine:
+- Vision/Tesseract path. Each engine:
 
 ```
 Sources/Pipeline/
@@ -7496,7 +7576,7 @@ into the global Cloud-feature toggles.
 Rough estimate (without spike-confirmed numbers):
 
 | Mode | Per-page cost | 200-page book | Latency |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Manuscript (Opus 4.7) | ~$0.05 | ~$10 | ~8-15 s/page |
 | Early Print (Gemini 3.1 Pro) | ~$0.04 | ~$8 | ~5-10 s/page |
 | Print (Sonnet 4.6, current) | ~$0.01 | ~$2 | ~3-5 s/page |
@@ -7840,6 +7920,7 @@ no-op-fallback) is a constructor-injection change, not a refactor.
 ### Effort
 
 Phase 1 alone: ~1-1.5 days end-to-end:
+
 - ~0.5 day: `AppleFoundationModelClient` + availability probe.
 - ~0.5 day: `AppleFoundationModelClassifier` + `Generable` enum
   for `epub:type`.
@@ -7895,6 +7976,7 @@ progress reporting stay serialized.
 
 Cut wall time on bulk Private-mode conversions by running 2–8
 cascade pages concurrently. Realistic gains on a 300-page book:
+
 - **No Surya** (born-digital, useHighAccuracyOCR off): ~2–3×
   speedup. Render + Vision + embedded-extract + Tesseract all
   parallelize cleanly across cores.
@@ -7915,6 +7997,7 @@ Three-phase plan.
 existing for-loop body's cascade branch (lines ~1875–2210 today)
 into a `nonisolated` instance method on `PDFToEPUBPipeline` that
 takes:
+
 - `pageIndex: Int`
 - `pdfURL: URL` (each task loads its own `LoadedPDF`; the
   periodic `pdf = try loader.load(pdfURL)` cache-drain pattern
@@ -7926,6 +8009,7 @@ takes:
 
 Returns a packed `CascadePageOutcome` struct holding everything
 the for-loop currently writes back to outer accumulators:
+
 - `pageObservations: PageObservations`
 - `verdict: EmbeddedTextQualityScorer.Verdict`
 - `figures: [FigureExtractor.ExtractedFigure]`
@@ -8031,29 +8115,29 @@ serial cascade conversion feel slow.
 monolith carved into seven sibling files via
 `extension PDFToEPUBPipeline { … }`:
 
-  - `PDFToEPUBPipeline.swift` (2367 lines) — Options + Progress
-    + properties + init + the `convert(...)` orchestrator +
+- `PDFToEPUBPipeline.swift` (2367 lines) — Options + Progress
+  - properties + init + the `convert(...)` orchestrator +
     shared helpers (regions, gap-fill, layout retry, etc.).
-  - `PipelineCascadeLoop.swift` (380 lines) — `CascadePageOutcome`
-    + `processCascadePage` (the per-page cascade body).
-  - `PipelinePageOCRDispatch.swift` (962 lines) — Cloud page-OCR
+- `PipelineCascadeLoop.swift` (380 lines) — `CascadePageOutcome`
+  - `processCascadePage` (the per-page cascade body).
+- `PipelinePageOCRDispatch.swift` (962 lines) — Cloud page-OCR
     path: `PendingPageOCR`, sync TaskGroup dispatch
     (`runPageOCRPage`), Batches API dispatch
     (`dispatchPageOCRViaBatch` + `preparePageForBatch`),
     debug dump (`writeClaudePageResponses`), chapter decision
     log writer.
-  - `PipelineAssembleBook.swift` (271 lines) — `AssembledBook` +
+- `PipelineAssembleBook.swift` (271 lines) — `AssembledBook` +
     `assembleBook` (reflow → Book via splitter dispatch +
     classification + coherence + metadata).
-  - `PipelineEngineFactories.swift` (411 lines) — `makeXxx`
+- `PipelineEngineFactories.swift` (411 lines) — `makeXxx`
     Cloud + AFM-fallback engine factory family,
     `CapturedResponseStore`, `ClaudeEngines` bundle.
-  - `PipelineWriteOutputs.swift` (175 lines) — `writeOutputs` +
+- `PipelineWriteOutputs.swift` (175 lines) — `writeOutputs` +
     sibling `.txt`/`.md`/`.html`/`.docx`/`.searchable.pdf`
     emission + cover-from-page-0 rasterizer.
-  - `PipelineReflow.swift` (131 lines) — `ReflowOutput` + the
+- `PipelineReflow.swift` (131 lines) — `ReflowOutput` + the
     `reflow` static helper.
-  - `PipelineStatsAggregation.swift` (102 lines) —
+- `PipelineStatsAggregation.swift` (102 lines) —
     `aggregateConversionStats` (per-page accumulators →
     `ConversionStats`).
 
@@ -8096,16 +8180,16 @@ files. Zero behavior change; pure carve-up.
   helper, `ReflowOutput`, paragraph reflow helpers, and the
   debug-log writer that consumes them.
 - **`PipelineAssembleBook.swift`** (~400 lines) — `assembleBook`
-  + `AssembledBook` + the splitter dispatch chain (PDF outline
+  - `AssembledBook` + the splitter dispatch chain (PDF outline
   → TOC-driven → heuristic) + classification dispatch.
 - **`PipelineWriteOutputs.swift`** (~200 lines) — `writeOutputs`
-  + sibling-file emission (txt/md/html/docx/searchable-pdf).
+  - sibling-file emission (txt/md/html/docx/searchable-pdf).
 - **`PipelineStatsAggregation.swift`** (~200 lines) — the
   per-page stats tally that produces `ConversionStats` at the
   end of `convert`.
 - **`PipelineEngineFactories.swift`** (~300 lines) — the
   `makeXxxClaudeEngine` factory family + `makePostProcessor`
-  + `makeCoherenceAnalyzer` + `makeMetadataExtractor` etc.
+  - `makeCoherenceAnalyzer` + `makeMetadataExtractor` etc.
   Highly mechanical — all share the gating-policy comment block.
 
 ### Risks
@@ -8458,6 +8542,7 @@ hits APFS's compressed pages and is fast enough.
 personal use.
 
 If ever distributed more widely:
+
 - Crash reporter (Sentry / Bugsnag / Apple's built-in).
 - Optional usage telemetry (gated on a Settings opt-in).
 
@@ -8579,7 +8664,7 @@ needed.
 ### Baseline 2026-05-12 — full 17-book O'Reilly corpus, Private mode
 
 | metric | value |
-|---|---|
+| --- | --- |
 | median Jaccard word similarity | **0.71** |
 | median character-count ratio | **0.94** |
 | mean `<code>` retention | **0.00** |
@@ -8754,6 +8839,7 @@ Shipped together since both refactored the same Library filter
 bar. The custom in-content `filterBar` `HStack` is gone;
 `LibraryWindowView.toolbarContent` is now a real `.toolbar`
 with:
+
 - `.navigation` placement: collections sidebar toggle
   (leading-edge view-toggle convention)
 - `.primaryAction` placement: language picker, bulk-edit
@@ -8950,6 +9036,7 @@ typically open the other right after.
 `humanist.settings.selectedTab` values still decode (the
 default-fallback path catches unknown values and returns
 `.editor`). 1036 tests pass.
+
 - **U-HIG-LiquidGlass-Inspect** — full Xcode-26 pass with
   `NSGlassEffectContainerView`, `NSSplitViewItemAccessoryViewController`
   for editor pane headers, `NSView.LayoutRegion` for corner
@@ -8998,16 +9085,16 @@ normalized, and returns up to 10 suggestions of the form
 `{wrong, right}`. Each suggestion is filtered by a guardrail
 (`shouldApply`):
 
-  * Length-ratio bound: `min(|wrong|, |right|) / max(...) ≥ 0.5`.
+- Length-ratio bound: `min(|wrong|, |right|) / max(...) ≥ 0.5`.
     Beyond that, the rewrite looks like a different word →
     reject.
-  * Document-occurrence floor: `wrong` must appear ≥ 3 times
+- Document-occurrence floor: `wrong` must appear ≥ 3 times
     in the assembled text. Single-occurrence candidates aren't
     worth a global rewrite + may be legitimate variation.
-  * No-collision: `right` must NOT already appear in the
+- No-collision: `right` must NOT already appear in the
     document. If it does, the document has both forms — applying
     a global rewrite would homogenize legitimate variants.
-  * Empty / equal: trivially rejected.
+- Empty / equal: trivially rejected.
 
 Surviving suggestions apply as case-sensitive global string
 replacements across every text-bearing run (and chapter titles).
@@ -9188,7 +9275,7 @@ Two-tier fix:
 1. **IR plumbing**: add `isCode` to `InlineRun`; add
    `.code(language:lines:)` to `Block`. Update XHTMLWriter
    to emit `<code>` / `<pre>` accordingly. Update Markdown
-   + text + DOCX + HTML sibling writers to honor the new
+   - text + DOCX + HTML sibling writers to honor the new
    block kind. ~1 day, mostly mechanical.
 2. **Detection**: where does the signal come from?
    - **Claude page OCR** (Sonnet / Opus, current `useClaudePageOCR`):
@@ -9319,6 +9406,7 @@ small text regions both occasionally misclassify legitimate
 1-2 line body fragments at page boundaries as chrome.
 
 Two tightenings:
+
 - **Header/footer**: require cross-page recurrence (a fragment
   that doesn't repeat near-verbatim on the previous or next
   page is body text, not chrome). The classifier already has
@@ -9630,7 +9718,7 @@ feature.
 `PlainTextWriter` and `MarkdownWriter` both walk a `Book` →
 `String`. PlainText: title + author header, chapter titles
 underlined with `=`, paragraphs flat, anchors skipped, figures
-+ tables summarized as bracketed lines, footnotes in a `Notes`
+- tables summarized as bracketed lines, footnotes in a `Notes`
 section per chapter. Markdown: `# title`, `*by author*`,
 `*year · publisher*`, `## chapter`, `### sub-section`,
 `![alt](images/...)` for figures, GitHub-flavored table
@@ -9733,20 +9821,20 @@ partial-batch recovery is the point. 12 dedicated tests.
 `dispatchPageOCRViaBatch(...)` plugs into the deferred-append
 slot the parallel TaskGroup uses. Three phases:
 
-  * **Phase A** (parallel TaskGroup): `preparePageForBatch`
+- **Phase A** (parallel TaskGroup): `preparePageForBatch`
     per page — trust check (returns final pending if `.trust`),
     else render + Surya layout + figure extraction + build
     Sonnet request via the new `pageEngine.buildBatchRequest`.
     Figure extraction runs here so page images don't need to
     stay alive across the batch wait.
-  * **Phase B** (single round-trip): reserve N budget calls
+- **Phase B** (single round-trip): reserve N budget calls
     upfront, build `AnthropicBatchSubmitRequest` with
     `custom_id = "page-NNNNN"` per page, submit, await
     completion, fetch results. Submission / poll / fetch
     failures fall through to "settle each page's partial as
     final" — empty pages emit instead of aborting the
     conversion.
-  * **Phase C**: walk results by `customId`, parse each via
+- **Phase C**: walk results by `customId`, parse each via
     `pageEngine.parseBatchMessage`, record usage on the
     budget, fill in the blocks/footnotes on the matching
     partial. Refused / errored / canceled / expired results
@@ -9782,25 +9870,26 @@ pole, Build-tier RPM accommodates 4-8 concurrent calls
 comfortably).
 
 Architecture (deferred-append):
-  * New `PendingPageOCR` struct captures everything one page's
+
+- New `PendingPageOCR` struct captures everything one page's
     page-OCR pass produces (anchor + blocks + footnotes +
     figures + verdict + bounds + sonnet-success flag).
-  * Per-page work extracted into `runPageOCRPage(...)` —
+- Per-page work extracted into `runPageOCRPage(...)` —
     handles E-Routing trust check, render, parallel Surya
     layout, the Sonnet call, and figure extraction. Throws
     only on cancellation; Sonnet failures absorb into
     `sonnetSucceeded == false` on the returned value.
-  * The `convert` for-loop's page-OCR branch now defers via
+- The `convert` for-loop's page-OCR branch now defers via
     `pageOCRPageIndices.append(i); continue` — no inline
     appends to the per-document accumulators.
-  * Checkpoint-restored pages also route through
+- Checkpoint-restored pages also route through
     `pageOCRPendingByIndex` so sparse-checkpoint cases
     (pages 0, 2, 4 done; 1, 3 fresh) still emit in document
     order.
-  * After the for-loop, a bounded TaskGroup dispatches
+- After the for-loop, a bounded TaskGroup dispatches
     `runPageOCRPage` for fresh indices; checkpoint-restored
     indices skip dispatch (they're already in the dict).
-  * Final assembly walks page-OCR indices in ascending order
+- Final assembly walks page-OCR indices in ascending order
     to populate `claudePageBlocks` / `claudePageAnchors` /
     `claudePageFootnotes` / `claudePageFigureAssets` (with
     sequential asset IDs assigned at assembly time) + write
@@ -9924,11 +10013,11 @@ subsequent round.
 
 ### Round 2 — Metadata + coherence (~2.5 days) — **shipped**
 
-4. ~~**Q-Metadata**~~ shipped — `ClaudeMetadataExtractor` runs
+1. ~~**Q-Metadata**~~ shipped — `ClaudeMetadataExtractor` runs
    one Haiku call over the front matter; `Book` gains `year` /
    `publisher` / `isbn` fields; OPF emits `<dc:date>`,
    `<dc:publisher>`, `<dc:identifier>urn:isbn:…`.
-5. ~~**Q-Coherence**~~ shipped — `ClaudeCoherenceAnalyzer`
+2. ~~**Q-Coherence**~~ shipped — `ClaudeCoherenceAnalyzer`
    runs one Haiku call over a digest of every chapter; returns
    up to 10 wrong→right pairs; guardrail rejects suggestions
    that fail length-ratio / occurrence-count / no-collision /
@@ -9944,15 +10033,15 @@ format round per user revision (2026-05-07): cost / speed wins
 amortize across every subsequent test cycle and Cloud-mode run,
 so it's worth eating the heavier lift earlier.
 
-6. ~~**E-Routing**~~ shipped (Tier 9 / Round 3) — page-OCR
+1. ~~**E-Routing**~~ shipped (Tier 9 / Round 3) — page-OCR
    path skips Sonnet on `.trust`-verdict pages.
-7. ~~**E-Batches**~~ shipped — AI primitives (step 1) +
+2. ~~**E-Batches**~~ shipped — AI primitives (step 1) +
    pipeline integration (step 2). 50% Sonnet token discount on
    page-OCR runs in exchange for async wall time (~1-5 min
    typical, capped at 24h). Routes through
    `dispatchPageOCRViaBatch` when `cloudFeatures.useBatchAPI`
    is on.
-8. ~~**E-Parallel**~~ shipped (Tier 9 / Round 3) —
+3. ~~**E-Parallel**~~ shipped (Tier 9 / Round 3) —
    `cloudFeatures.parallelPageOCRConcurrency` drives a bounded
    TaskGroup over the page-OCR loop via deferred-append
    architecture. Concurrency=1 preserves serial behavior;
@@ -9961,11 +10050,11 @@ so it's worth eating the heavier lift earlier.
 
 ### Round 4 — Output formats + ingestion options (~2 days) — **shipped**
 
-9. ~~**V-Outputs (txt + md)**~~ shipped — `PlainTextWriter` +
+1. ~~**V-Outputs (txt + md)**~~ shipped — `PlainTextWriter` +
    `MarkdownWriter` emit as siblings of the EPUB on conversion;
    `emitSiblingTextOutputs` toggle in launcher (default on).
    DOCX still deferred to Round 5.
-10. ~~**V-Trust-PerPage**~~ shipped — `PageRangeParser` + new
+2. ~~**V-Trust-PerPage**~~ shipped — `PageRangeParser` + new
     "Force OCR pages:" field in the launcher (1-based ranges,
     e.g. "1-20, 150-160"). Per-page gate replaces the global
     `forceOCR` check at every site; checkpoint resume respects
@@ -9977,10 +10066,10 @@ Substantial new flows; ship in whatever order matches actual
 demand. Conversion diff is the meta-tool — useful for
 validating Rounds 1-4 didn't regress anything.
 
-11. ~~**V-PDF-Searchable**~~ shipped (commit `30a9486`).
-12. ~~**V-Outputs (DOCX)**~~ shipped — `.docx` sibling via `NSAttributedString`/officeOpenXML; split into separate `.html + .docx` toggle from `.txt + .md`.
-13. ~~**O-Diff**~~ shipped — side-by-side chapter diff window.
-14. ~~**V-Refresh**~~ shipped (commits `991b1bb`, `0025c5b`).
+1. ~~**V-PDF-Searchable**~~ shipped (commit `30a9486`).
+2. ~~**V-Outputs (DOCX)**~~ shipped — `.docx` sibling via `NSAttributedString`/officeOpenXML; split into separate `.html + .docx` toggle from `.txt + .md`.
+3. ~~**O-Diff**~~ shipped — side-by-side chapter diff window.
+4. ~~**V-Refresh**~~ shipped (commits `991b1bb`, `0025c5b`).
 
 **Total**: ~26 days of work across 14 commits / features. Ships
 in roughly 3-4 person-weeks of focused effort if pursued
@@ -9996,6 +10085,7 @@ things in. The user's stated priorities are quality output + personal
 use; distribution is lower priority than correctness.
 
 **What's already done** (so they're off the runway):
+
 - **Tier 1**: figures, tables (Surya `TableRecPredictor` + Claude
   Sonnet + heuristic fallback), math (figure raster path).
 - **Tier 1.5**: `P-Lang-Detect`, `P-Cloud-Cost`, `P-Profile-Warnings`
