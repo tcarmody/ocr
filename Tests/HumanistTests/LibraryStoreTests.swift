@@ -65,6 +65,50 @@ final class LibraryStoreTests: XCTestCase {
             "addedAt must be preserved across re-conversion")
     }
 
+    // MARK: - recordEPUBContentHash + bookID (R-Reader-Stable-Position-Key)
+
+    func test_recordEPUBContentHash_stamps_hash_and_bookID() {
+        let store = makeStore()
+        let epub = makeEPUBStub(name: "book")
+        store.recordConversion(epubURL: epub, title: "Book", languages: ["en"])
+        store.recordEPUBContentHash(
+            "deadbeef", bookID: "urn:uuid:abc", forEPUB: epub
+        )
+        XCTAssertEqual(store.entries[0].epubContentHash, "deadbeef")
+        XCTAssertEqual(store.entries[0].epubBookID, "urn:uuid:abc")
+    }
+
+    func test_recordEPUBContentHash_without_bookID_leaves_it_nil() {
+        let store = makeStore()
+        let epub = makeEPUBStub(name: "book")
+        store.recordConversion(epubURL: epub, title: "Book", languages: ["en"])
+        store.recordEPUBContentHash("deadbeef", forEPUB: epub)
+        XCTAssertEqual(store.entries[0].epubContentHash, "deadbeef")
+        XCTAssertNil(store.entries[0].epubBookID)
+    }
+
+    /// A catalog written before this field must still decode (the
+    /// new key defaults to nil), so upgrades don't drop the library.
+    func test_libraryEntry_decodes_legacy_json_without_epubBookID() throws {
+        let legacy = """
+        {
+          "id": "\(UUID().uuidString)",
+          "epubURL": "file:///tmp/book.epub",
+          "title": "Legacy",
+          "languages": ["en"],
+          "addedAt": "2024-01-01T00:00:00Z",
+          "epubContentHash": "abc123"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let entry = try decoder.decode(
+            LibraryEntry.self, from: Data(legacy.utf8)
+        )
+        XCTAssertEqual(entry.epubContentHash, "abc123")
+        XCTAssertNil(entry.epubBookID)
+    }
+
     // MARK: - recordOpen
 
     func test_recordOpen_bumps_lastOpened() {

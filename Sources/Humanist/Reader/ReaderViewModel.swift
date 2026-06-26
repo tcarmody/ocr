@@ -432,12 +432,12 @@ final class ReaderViewModel: ObservableObject {
         }.value
         guard let hash else { return }
         self.contentHash = hash
-        // Stamp the hash onto the library row so the Library
-        // window's reading-progress column can find this
-        // book's saved position without re-hashing the EPUB.
+        // Stamp the hash + package identifier onto the library row so
+        // the Library window's reading-progress column can resolve this
+        // book's saved position without re-hashing or opening the EPUB.
         // No-op when the book isn't in the catalog.
         OpenRouter.library?.recordEPUBContentHash(
-            hash, forEPUB: url
+            hash, bookID: self.book?.metadata.bookID, forEPUB: url
         )
         // Resolve the stable annotation key (book identity, not file
         // bytes) and load marks under it. One-time migration: a book
@@ -460,9 +460,21 @@ final class ReaderViewModel: ObservableObject {
         }
         self.annotations = bundle.annotations
         guard !userHasNavigated else { return }
-        guard let saved = ReadingPositionStore.load(
-            forContentHash: hash
-        ) else { return }
+        // Reading position keys off the same stable key as annotations,
+        // so it survives editor saves too. Same first-open migration:
+        // adopt the legacy content-hash record into the stable key.
+        var saved = ReadingPositionStore.load(forContentHash: key)
+        if saved == nil, key != hash,
+           let legacy = ReadingPositionStore.load(forContentHash: hash) {
+            saved = ReadingPosition(
+                contentHash: key,
+                spineIndex: legacy.spineIndex,
+                scrollFraction: legacy.scrollFraction,
+                updatedAt: legacy.updatedAt
+            )
+            ReadingPositionStore.save(saved!)
+        }
+        guard let saved else { return }
         guard !userHasNavigated else { return }
         // Jump to the saved spine index unless we're already
         // there (chapter 0). Either way, queue a scroll-
@@ -495,9 +507,9 @@ final class ReaderViewModel: ObservableObject {
     /// `nextChapter`, `jump`) and from the scroll-update path
     /// (debounced). Writes are cheap (one tiny JSON file).
     private func persistCurrentPosition() {
-        guard let hash = contentHash else { return }
+        guard let key = annotationStoreKey else { return }
         let position = ReadingPosition(
-            contentHash: hash,
+            contentHash: key,
             spineIndex: spineIndex,
             scrollFraction: scrollFraction,
             updatedAt: Date()

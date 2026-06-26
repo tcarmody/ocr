@@ -2540,9 +2540,16 @@ struct LibraryWindowView: View {
         guard let hash = entry.epubContentHash else {
             return "Not started"
         }
-        guard let pos = ReadingPositionStore.load(
-            forContentHash: hash
-        ) else {
+        // Position is stored under the stable key (book identity), so it
+        // survives editor saves. Fall back to the legacy content-hash
+        // record for books not yet re-opened since the re-key. See
+        // R-Reader-Stable-Position-Key.
+        let key = AnnotationKey.resolve(
+            bookID: entry.epubBookID, contentHash: hash
+        )
+        guard let pos = ReadingPositionStore.load(forContentHash: key)
+            ?? ReadingPositionStore.load(forContentHash: hash)
+        else {
             return "Started"
         }
         // The reader stores 0-based spineIndex; users think in

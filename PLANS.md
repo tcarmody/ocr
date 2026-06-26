@@ -3963,7 +3963,14 @@ auto-reload (would lose the user's place mid-paragraph).
 
 ### R-Reader-Stable-Position-Key — reading position survives edits
 
-**Status**: deferred.
+**Status**: shipped. `ReadingPositionStore` now keys off the same
+stable `AnnotationKey` as annotations (book identity, not file bytes),
+with first-open migration from the legacy content-hash record. The
+Library progress column resolves the key via a new
+`LibraryEntry.epubBookID` (stamped by the reader through
+`recordEPUBContentHash(_:bookID:forEPUB:)`), falling back to the
+content-hash record for not-yet-reopened books. Prose below is the
+original plan/context.
 
 **Context**. Annotations were re-keyed off the EPUB's package
 identifier (`OPFReader.Metadata.bookID` → `AnnotationKey.resolve`,

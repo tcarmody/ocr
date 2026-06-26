@@ -787,7 +787,9 @@ final class LibraryStore: ObservableObject {
     /// the position-restore lookup — the cached value lets the
     /// Library window display reading progress per row without
     /// re-hashing every EPUB. Idempotent.
-    func recordEPUBContentHash(_ hash: String, forEPUB epubURL: URL) {
+    func recordEPUBContentHash(
+        _ hash: String, bookID: String? = nil, forEPUB epubURL: URL
+    ) {
         let canonical = epubURL.canonicalForFile
         mutateEntries { entries in
             guard let idx = entries.firstIndex(where: {
@@ -795,6 +797,12 @@ final class LibraryStore: ObservableObject {
             }) else { return }
             if entries[idx].epubContentHash != hash {
                 entries[idx].epubContentHash = hash
+            }
+            // Stamp the stable package identifier too (when present) so
+            // the reading-progress column can resolve the position key
+            // without opening the EPUB. See R-Reader-Stable-Position-Key.
+            if let bookID, entries[idx].epubBookID != bookID {
+                entries[idx].epubBookID = bookID
             }
         }
     }
@@ -1197,6 +1205,15 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
     /// for books that have never been opened in the reader —
     /// the row shows "Not started" in that case.
     var epubContentHash: String?
+    /// R-Reader-Stable-Position-Key. Cached EPUB package identifier
+    /// (`OPFReader.Metadata.bookID`). Unlike `epubContentHash` it
+    /// survives editor saves / re-OCR, so it's the stable key under
+    /// which the reader stores annotations + position. The Library's
+    /// reading-progress column needs it to resolve that key without
+    /// opening the EPUB. Populated by the reader on first open; nil
+    /// for never-opened books and books with no package identifier
+    /// (the progress lookup falls back to `epubContentHash`).
+    var epubBookID: String?
 
     init(
         id: UUID = UUID(),
@@ -1212,7 +1229,8 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         sourceContentHashes: [String] = [],
         priorPaths: [String] = [],
         linkedSourcePDFPath: String? = nil,
-        epubContentHash: String? = nil
+        epubContentHash: String? = nil,
+        epubBookID: String? = nil
     ) {
         self.id = id
         self.epubURL = epubURL
@@ -1228,6 +1246,7 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.priorPaths = priorPaths
         self.linkedSourcePDFPath = linkedSourcePDFPath
         self.epubContentHash = epubContentHash
+        self.epubBookID = epubBookID
     }
 
     // MARK: - Codable (decodeIfPresent for relativePath)
@@ -1278,13 +1297,18 @@ struct LibraryEntry: Identifiable, Codable, Equatable, Hashable {
         self.epubContentHash = try c.decodeIfPresent(
             String.self, forKey: .epubContentHash
         )
+        // R-Reader-Stable-Position-Key cache. nil for entries opened
+        // before this feature; the reader backfills on next open.
+        self.epubBookID = try c.decodeIfPresent(
+            String.self, forKey: .epubBookID
+        )
     }
 
     enum CodingKeys: String, CodingKey {
         case id, epubURL, title, languages, addedAt, lastOpened, relativePath
         case conversionType, author, genre
         case sourceContentHashes, priorPaths
-        case linkedSourcePDFPath, epubContentHash
+        case linkedSourcePDFPath, epubContentHash, epubBookID
     }
 
     /// Resolve the cached `linkedSourcePDFPath` to an on-disk URL,
