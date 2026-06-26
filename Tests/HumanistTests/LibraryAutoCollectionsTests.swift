@@ -291,7 +291,7 @@ final class LibraryAutoCollectionsTests: XCTestCase {
     func test_refresh_creates_genre_collections_grouped_by_topLevel() {
         let store = makeStore()
         addEntry(store, title: "Iliad", genre: .poetry)
-        addEntry(store, title: "Foucault", genre: .philosophy)
+        addEntry(store, title: "Foucault", genre: .philosophyModern)
         addEntry(store, title: "Tolkien", genre: .fictionFantasy)
         addEntry(store, title: "Asimov", genre: .fictionScienceFiction)
         addEntry(store, title: "CLR", genre: .technologyComputing)
@@ -305,7 +305,7 @@ final class LibraryAutoCollectionsTests: XCTestCase {
         }
         let names = Set(genreColls.map(\.name))
         XCTAssertTrue(names.contains("Poetry"))
-        XCTAssertTrue(names.contains("Philosophy"))
+        XCTAssertTrue(names.contains("Philosophy: Modern"))
         XCTAssertTrue(names.contains("Fiction: Fantasy"))
         XCTAssertTrue(names.contains("Fiction: Science Fiction"))
         XCTAssertTrue(names.contains("Technology: Computing"))
@@ -314,14 +314,14 @@ final class LibraryAutoCollectionsTests: XCTestCase {
     func test_refresh_skips_uncategorized_genre() {
         let store = makeStore()
         addEntry(store, title: "A", genre: .uncategorized)
-        addEntry(store, title: "B", genre: .philosophy)
+        addEntry(store, title: "B", genre: .philosophyModern)
         LibraryAutoCollections.refresh(library: store)
         let genreColls = store.collections.filter {
             if case .byGenre = $0.autoSource { return true } else { return false }
         }
         XCTAssertEqual(genreColls.count, 1,
             "uncategorized entries should not produce a collection")
-        XCTAssertEqual(genreColls.first?.name, "Philosophy")
+        XCTAssertEqual(genreColls.first?.name, "Philosophy: Modern")
     }
 
     func test_refresh_sorts_genre_collections_by_topLevel_then_leaf() {
