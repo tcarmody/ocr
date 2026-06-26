@@ -8607,8 +8607,14 @@ Stored in the repo; diffs surface regressions.
 
 ## T-Memory-Regression — Memory regression test
 
-**Status**: 100 GB leak found and fixed empirically. No automated
-test prevents recurrence.
+**Status**: shipped. `MemoryRegressionTests` (PipelineTests) loops the
+leak-prone per-page primitives — PDF render + synchronous Vision OCR,
+the same PDFKit/CoreGraphics/Vision NSObject path the `autoreleasepool`
+fix targets — and asserts host RSS (via `task_info`) stays bounded.
+Gated behind `HUMANIST_MEMORY_PROBE=1` (too slow for every run); a
+manual `workflow_dispatch` CI job runs it on demand. Self-contained:
+generates its own text PDF, no real books / Surya / network. Locally:
++5.7 MB over 40 iterations.
 
 ### Goal
 
@@ -8616,9 +8622,23 @@ A test that converts N books in sequence and asserts the host
 process's RSS doesn't grow past a threshold. Run on demand
 (too slow for every test run).
 
+### Scope notes
+
+- Catches leaks that survive pooling (retain cycles, static caches,
+  growing buffers) in the render/OCR path, and establishes a reusable
+  `residentBytes()` helper + harness.
+- Does **not** catch a pipeline that simply drops its
+  `autoreleasepool` (the probe pools each iteration as the pipeline
+  does) — that stays a code-review / bulk-QA concern. A follow-up could
+  drive the real per-page dispatch unpooled to guard that directly, but
+  it needs the full pipeline context (~11 deps).
+- The Surya sidecar's PyTorch-cache leak is in the Python process, out
+  of this host-RSS probe's reach; `reclaim_memory()` in `sidecar.py`
+  guards that side.
+
 ### Effort
 
-~1 day.
+~1 day (done).
 
 ---
 

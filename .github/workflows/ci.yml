@@ -13,6 +13,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:   # manual trigger for the on-demand memory probe
 
 # Cancel superseded runs on the same ref so a rapid push burst doesn't
 # queue a stack of redundant builds.
@@ -48,6 +49,20 @@ jobs:
 
       - name: Test
         run: swift test --skip-build
+
+  memory-probe:
+    name: Memory regression probe (on demand)
+    # Slow (Vision OCR per page); only on a manual "Run workflow".
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native deps (Tesseract + Leptonica)
+        run: brew install tesseract leptonica
+      - name: Run memory probe
+        env:
+          HUMANIST_MEMORY_PROBE: "1"
+        run: swift test --filter MemoryRegressionTests
 
   plans-drift:
     name: PLANS drift check
