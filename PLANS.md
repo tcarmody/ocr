@@ -2129,7 +2129,11 @@ Phase 6 (figures) — same plumbing.
 
 ## P-Diagram-Description — Cloud-augmented diagram alt text and search content
 
-**Status**: planned 2026-05-24.
+**Status**: shipped. Tier 1 — Sonnet alt text for `.picture` regions
+(`5b44bf5`); Tier 2 — longer description for chat / search indexing
+(`98ba230`); Tier 3 — in-image labels (`af7f73d`); Option B —
+post-cascade phase with caption pairing (`b5091a2`). The prose below is
+the original plan/context.
 
 Sonnet does effectively nothing with diagrams today. Surya marks
 the bbox, `FigureExtractor` crops the page raster to PNG, the
@@ -2281,7 +2285,14 @@ EPUB-reading experience.
 
 ## P-Verse-Layout — Free-verse and irregularly-spaced poetry
 
-**Status**: planned 2026-05-19. Pound's *Cantos*, Olson, late
+**Status**: shipped (core). `VerseDetector` with a high-precision
+conjunctive gate (`44cdba9`), `Block.verse` + `VerseLine` model
+(`54dab6a`), wired into `RegionAwareReflow` (`6aa640b`),
+`<div class="verse">` parsing in `ClaudePageXHTMLParser` (`6b51722`),
+VERSE/POETRY rules in the Claude page-OCR prompt (`52085cb`), and
+multilingual verse detection (`4b3709f`). The prose below is the
+original plan/context — it predates the implementation. Pound's
+*Cantos*, Olson, late
 Stevens, and any concrete-poetry corpus all break the
 `ParagraphReflow` / `RegionAwareReflow` assumption that lines
 within a region collapse into prose paragraphs. Today verse
@@ -4986,7 +4997,12 @@ real friction.
 
 ## R-Chat-Cross-Corpus — Knowledge-graph layer + Disagreement detector (Chapter 3)
 
-**Status**: Scoped, not started. Chapter 3 of the chat-features
+**Status**: shipped. Phase 1 — `LibraryConceptGraph` rollup over the
+entity index (`d7900af`); Phase 2a — stopwords/aliases + session cache
+(`698e523`, `3efb4e0`); Phase 2b — Concepts sidebar (`b15d900`);
+Phase 3 — `search_concept` tool in library chat (`f92a2b3`). Later
+renamed user-facing "Concepts" → "Topics" (`c3c4b69`). The prose below
+is the original plan/context. Chapter 3 of the chat-features
 "think big" roadmap (R-Chat-Agentic). Two features bundled because
 the disagreement detector consumes the knowledge-graph layer's
 co-occurrence rollup, but they ship in distinct phases so the
