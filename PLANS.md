@@ -8276,6 +8276,94 @@ field name. The naming-lie family is fully cleaned up.
 
 ---
 
+## S-Surya2-Migration — Upgrade the layout/OCR sidecar to Surya 2
+
+**Status**: deferred — spike says NO-GO for now (the Apple-Silicon
+backend isn't production-ready). Phase 0 shipped; full migration
+gated on the llama.cpp backend stabilizing. See the spike writeup:
+`Tools/spike-results/surya2-2026-06-25.md`.
+
+### Context
+
+Surya 2 (`surya-ocr` 0.20, May 2026) is a ground-up rewrite: the three
+torch models (layout / OCR / table foundations) collapse into one
+~650M Qwen-VL model served by an inference backend — `vllm` on NVIDIA,
+**`llama.cpp` on Apple Silicon** — auto-spawned via
+`SuryaInferenceManager`. Our sidecar (`Sidecars/layout/sidecar.py`)
+targets the Surya 1 `FoundationPredictor` API (0.17–0.19), which 0.20
+removes.
+
+### Phase 0 — shipped (stop the bleeding)
+
+The setup wizard's unpinned `uv tool install surya-ocr` was already
+pulling 0.20, which crashes the sidecar (`surya.foundation` is gone).
+Fixed in commits `9c33e08` + `e8d1d3e`: pin the installer to
+`surya-ocr>=0.17,<0.20` (wizard + docs), and a sidecar version guard
+(`require_compatible_surya`, version via `importlib.metadata` since
+neither 0.17 nor 0.20 exposes `surya.__version__`) that raises an
+actionable reinstall message instead of a bare ImportError.
+
+### Why deferred (the spike blocker)
+
+`surya-ocr 0.20` installs cleanly on macOS (no vllm) and auto-spawns
+`llama-server` (`brew install llama.cpp`, b9780) + downloads the
+`surya-ocr-2-gguf` (~1.4 GB). But the Qwen-VL GGUF **does not run
+correctly on the current Homebrew llama.cpp**: generation truncates to
+~13 tokens (SWA / KV-cache slot bug — `find_slot: non-consecutive
+token position`, llama.cpp PR #13194), so OCR returns empty and layout
+degenerate. Guided decoding is a second incompatibility (`llama-server`
+400, "failed to parse grammar"). Disabling guided, single-slot
+(`PARALLEL=1`), and `--image-min-tokens 1024` all still empty. Not our
+bug — reproduced with a standalone script on Surya's own API.
+
+Beyond the backend bug, the deployment burden is much heavier than
+today's one-command `uv tool install` + in-process MPS: Homebrew + a
+pinned llama.cpp build + an auto-spawned server (port / lifecycle /
+logs) + GGUF downloads + server-flag tuning, i.e. a large
+`SuryaSetupSheet` + `SuryaConnection` rewrite for a non-technical
+audience.
+
+### Approach (when the backend is ready)
+
+1. **Spike again** against a llama.cpp build that runs the GGUF
+   end-to-end. Reuse `scratchpad/spike_v2.py` + the cached model.
+2. **Sidecar rewrite** (`sidecar_v2.py`, behind a flag): `SuryaInference
+   Manager` shared across `LayoutPredictor` / `RecognitionPredictor` /
+   `TableRecPredictor`; `DetectionPredictor` stays torch-only.
+3. **Contract changes** (already mapped):
+   - OCR: `text_lines[].text` (plain, line-level) → `blocks[].html`
+     (block-level, math as `<math>`). The pipeline + `SuryaOCREngine`
+     consume line-level text + bbox for paragraph-bbox alignment and
+     PDF↔source sync — block granularity is the deepest risk. Likely
+     keep `DetectionPredictor` for line boxes and parse block `html`.
+   - Tables: simple cells drop `is_header` / `rowspan` / `colspan` /
+     `within_row_id`. Switch `SuryaConnection` decoding +
+     `SuryaTableExtractor` to `TableRecPredictor.predict_full()`, which
+     returns `<table>` HTML directly (spans/headers handled) — cleaner
+     than today's cell-grid + OCR-text mapping.
+   - Layout: dropped `top_k`, added `count`; labels expanded (Form,
+     Code, Diagram, Bibliography, …).
+4. **Backend UX + cutover**: `SuryaSetupSheet` gains a llama.cpp step +
+   server health check; `SuryaConnection.detect` accounts for the
+   spawned server; keep the v1 path one release for fallback.
+
+### Re-spike trigger
+
+(a) a Homebrew / llama.cpp release runs the Surya 2 GGUF cleanly
+end-to-end, or (b) datalab ships a self-contained macOS runtime.
+
+### Effort
+
+Re-spike ~1 day; sidecar + contracts ~3–5 days if the spike is green;
+backend UX ~1–2 days.
+
+### Dependencies
+
+A working llama.cpp ↔ Surya 2 GGUF combination on Apple Silicon. Holds
+up nothing else; Surya 1 keeps working in the meantime.
+
+---
+
 ## P-Surya-Pool — Multiple Surya sidecars for parallelism
 
 **Status**: one shared Surya sidecar serves all pipelines. Sequential
