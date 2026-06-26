@@ -1,0 +1,62 @@
+name: CI
+
+# T-CI. Build + test on every push and PR. The package targets
+# macOS 26 / Swift 6.2 (`platforms: [.macOS(.v26)]`), so it needs the
+# macos-26 runner image (GA on GitHub-hosted runners, Apple Silicon,
+# default Xcode 26.x → Swift 6.2). The OCR target compiles against
+# Homebrew Tesseract/Leptonica headers, so those are installed first.
+#
+# The suite is offline-safe: the Claude/AI tests use a fake `sk-test`
+# key with mocked transports, and the env-dependent probes self-skip
+# (HUMANIST_PROBE, a real-library guard, and a tessdata guard).
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref so a rapid push burst doesn't
+# queue a stack of redundant builds.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & test (macOS 26)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: swift --version && xcodebuild -version
+
+      - name: Install native deps (Tesseract + Leptonica)
+        # The CTesseract system library pulls headers from
+        # /opt/homebrew/include; the OCR target weak-links the dylibs.
+        run: brew install tesseract leptonica
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Build (incl. tests)
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test --skip-build
+
+  plans-drift:
+    name: PLANS drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history — the checker scans commit messages for
+          # implementation commits behind "not started" items.
+          fetch-depth: 0
+      - name: Check PLANS.md ↔ git drift
+        run: ./Scripts/check-plans-drift.sh

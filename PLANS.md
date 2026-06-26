@@ -8469,16 +8469,37 @@ Keep no-telemetry-by-default. Document it in the README.
 
 ## T-CI — GitHub Actions CI
 
-**Status**: `swift test` runs locally; nothing in CI.
+**Status**: workflow added (`.github/workflows/ci.yml`) — build + full
+test suite on `macos-26`, plus a parallel PLANS-drift job. Verified
+locally (offline-safe suite, native deps, valid YAML); the first
+hosted run happens on the next push. Notarization-on-release-tag is
+still a future add.
 
 ### Goal
 
 Every push runs `swift test`. PR badges. Optional notarization on
 release tags.
 
+### What shipped
+
+- `build-test` job on `macos-26` (the manifest targets
+  `.macOS(.v26)` / Swift 6.2): `brew install tesseract leptonica` for
+  the CTesseract headers, SwiftPM `.build` cache keyed on
+  `Package.resolved`, `swift build --build-tests` + `swift test`.
+- `plans-drift` job (ubuntu) runs `Scripts/check-plans-drift.sh` with
+  full history.
+- Suite is CI-safe: AI tests mock with a fake `sk-test` key; the
+  env-gated probes self-skip (`HUMANIST_PROBE`, real-library guard,
+  tessdata guard).
+
+### Remaining
+
+PR status badge in README; notarization workflow on `v*` tags
+(needs signing secrets in repo settings — deferred to P10).
+
 ### Effort
 
-~0.5 day.
+~0.5 day (done); notarization is separate.
 
 ---
 
