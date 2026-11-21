@@ -470,7 +470,7 @@ final class LibraryChatViewModel: ObservableObject {
                     registry: registry,
                     library: library,
                     backend: backend,
-                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
                 )
             case .localOllama:
                 await self.runOllamaSendAgentic(

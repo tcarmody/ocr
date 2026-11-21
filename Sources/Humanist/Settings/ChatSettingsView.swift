@@ -233,7 +233,7 @@ struct ChatSettingsView: View {
             }
             switch chatBackendBinding.wrappedValue {
             case .cloudHaiku:
-                Text("Haiku 4.5 — fast and cheap (~$0.06/query at 60 KB-per-chapter context). Good default for \"where does X discuss Y\" questions.")
+                Text("Haiku 5.5 — fast and cheap (~$0.01/query at 60 KB-per-chapter context). Good default for \"where does X discuss Y\" questions.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

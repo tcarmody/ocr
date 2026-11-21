@@ -34,9 +34,21 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// table-structure extraction.
     public static let sonnet4_6 = CloudModel(rawValue: "claude-sonnet-4-6")
 
-    /// Haiku 4.5 — fastest and most cost-effective. Used for the
+    /// Haiku 5.5 — fastest and most cost-effective. Used for the
     /// text-only Tier 2 features: post-OCR character cleanup,
-    /// semantic chapter classification, TOC parsing.
+    /// semantic chapter classification, TOC parsing, plus the
+    /// Cloud (Haiku) chat and briefing backends.
+    ///
+    /// Differences from Haiku 4.5 that callers must respect:
+    /// thinking is adaptive by default (every caller here sends
+    /// `thinking: .disabled`, which Haiku 5.5 accepts at effort
+    /// `high` or below — its default is `medium`); `temperature` /
+    /// `top_p` / `top_k` and assistant prefill return a 400; the
+    /// tokenizer yields ~30% more tokens for the same text.
+    public static let haiku5_5 = CloudModel(rawValue: "claude-haiku-5-5")
+
+    /// Haiku 4.5 — previous Haiku. Kept so persisted usage keyed on
+    /// the old id still prices correctly; new calls use `haiku5_5`.
     public static let haiku4_5 = CloudModel(rawValue: "claude-haiku-4-5")
 
     /// Haiku 4.5 pinned to a dated snapshot — strictest reproducibility
@@ -97,6 +109,13 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
         switch rawValue {
         case "claude-sonnet-4-6":
             return Pricing(inputPerMTok: 3.00, outputPerMTok: 15.00)
+        case "claude-haiku-5-5":
+            // Haiku 5.5: $0.10/M input, $0.50/M output for prompts of
+            // 100K tokens or fewer. Longer prompts bill at $0.50 /
+            // $2.50; not modelled because usage is aggregated per
+            // model across calls, and every Haiku route here sends
+            // prompts well under 100K.
+            return Pricing(inputPerMTok: 0.10, outputPerMTok: 0.50)
         case "claude-haiku-4-5", "claude-haiku-4-5-20251001":
             return Pricing(inputPerMTok: 1.00, outputPerMTok: 5.00)
         case "claude-opus-4-7":

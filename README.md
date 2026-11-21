@@ -189,7 +189,7 @@ Each editor's chat pane and the dedicated library chat window share one engine. 
 
 **Answering backends** — pick one in Settings → AI → Book Chat:
 
-- **Cloud (Haiku 4.5)** — fast, cheap (~$0.06/query at typical scope)
+- **Cloud (Haiku 5.5)** — fast, cheap (~$0.01/query at typical scope)
 - **Cloud (Sonnet 4.6)** — better synthesis on comparative questions (~$0.19/query)
 - **Local (Ollama)** — fully on-device. Default is **qwen3.5:9b** (~5 GB), which supports tool calls so the agentic loop's `search_book` / `search_topic` / `search_library` tools fire on local too. Existing setups keep their previously-chosen model via `@AppStorage`; only fresh installs see the new default. Picking any model in Settings → AI → Local Chat is supported, but tool-capable models (qwen3.5:9b, llama3.1:8b, etc.) are the right choice if you want the agentic retrieval path.
 

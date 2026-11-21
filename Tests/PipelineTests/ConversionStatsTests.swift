@@ -327,6 +327,12 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(p.outputPerMTok, 5.00)
     }
 
+    func test_haiku_5_5_rates() {
+        let p = CloudModel.haiku5_5.pricing
+        XCTAssertEqual(p.inputPerMTok, 0.10)
+        XCTAssertEqual(p.outputPerMTok, 0.50)
+    }
+
     func test_haiku_dated_alias_uses_same_rates() {
         let p = CloudModel.haiku4_5_20251001.pricing
         XCTAssertEqual(p.inputPerMTok, 1.00)

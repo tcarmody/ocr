@@ -27,7 +27,7 @@ public struct ClaudeCoherenceAnalyzer: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .haiku4_5,
+        model: CloudModel = .haiku5_5,
         maxOutputTokens: Int = 1024
     ) {
         self.client = client

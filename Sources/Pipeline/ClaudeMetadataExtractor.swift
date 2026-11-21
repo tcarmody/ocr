@@ -23,7 +23,7 @@ public struct ClaudeMetadataExtractor: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .haiku4_5,
+        model: CloudModel = .haiku5_5,
         maxOutputTokens: Int = 512  // ample for the JSON shape
     ) {
         self.client = client

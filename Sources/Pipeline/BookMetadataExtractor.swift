@@ -3,7 +3,7 @@ import Document
 
 /// Common interface for engines that extract publication metadata
 /// (title, author, year, publisher, ISBN) from a book's front
-/// matter. Both `ClaudeMetadataExtractor` (Cloud, Haiku 4.5) and
+/// matter. Both `ClaudeMetadataExtractor` (Cloud, Haiku 5.5) and
 /// `AppleFoundationModelMetadataExtractor` (Phase 2 of
 /// `L-Foundation-Models`) conform. Pipeline picks one at runtime
 /// based on processing mode + per-feature toggles + availability.

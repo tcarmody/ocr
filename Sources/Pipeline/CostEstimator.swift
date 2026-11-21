@@ -98,14 +98,17 @@ public enum CostEstimator {
                 inputTokens: 1500, outputTokens: 500
             ))
         case .postOCRCleanupPassages:
-            // Haiku 4.5: ~500 input (text + prompts) + ~200 output.
-            return CloudModel.haiku4_5.pricing.cost(for: Usage(
-                inputTokens: 500, outputTokens: 200
+            // Haiku 5.5: ~650 input (text + prompts) + ~260 output
+            // (Haiku 4.5 figures of 500 / 200, scaled ~1.3x for the
+            // Haiku 5.5 tokenizer).
+            return CloudModel.haiku5_5.pricing.cost(for: Usage(
+                inputTokens: 650, outputTokens: 260
             ))
         case .postOCRCleanupVision:
-            // Haiku 4.5 with image: ~3000 input + ~200 output.
-            return CloudModel.haiku4_5.pricing.cost(for: Usage(
-                inputTokens: 3000, outputTokens: 200
+            // Haiku 5.5 with image: ~3150 input (image + ~650 text)
+            // + ~260 output, tokenizer-scaled as above.
+            return CloudModel.haiku5_5.pricing.cost(for: Usage(
+                inputTokens: 3150, outputTokens: 260
             ))
         case .tableExtraction:
             // Sonnet 4.6: ~2500 input (table region image) + ~800
@@ -384,7 +387,7 @@ public enum CostEstimator {
                 lines.append(.init(
                     label: "Post-OCR cleanup"
                         + (cloudFeatures.postOCRCleanupVisionMode ? " (vision)" : ""),
-                    model: CloudModel.haiku4_5.rawValue,
+                    model: CloudModel.haiku5_5.rawValue,
                     calls: calls, costUSD: cost
                 ))
                 totalCalls += calls

@@ -173,7 +173,7 @@ final class ClaudePostProcessorTests: XCTestCase {
         let budget = CloudCallBudget(cap: 5)
         let p = makeProcessor(transport: mock, budget: budget)
         _ = await p.correct(text: lowQualityText, languages: [.en])
-        let usage = await budget.modelUsage[.haiku4_5]
+        let usage = await budget.modelUsage[.haiku5_5]
         XCTAssertEqual(usage?.inputTokens, 100)
         XCTAssertEqual(usage?.outputTokens, 20)
     }
@@ -209,7 +209,7 @@ final class ClaudePostProcessorTests: XCTestCase {
         let body = try JSONSerialization.jsonObject(
             with: sent[0].httpBody!
         ) as! [String: Any]
-        XCTAssertEqual(body["model"] as? String, "claude-haiku-4-5")
+        XCTAssertEqual(body["model"] as? String, "claude-haiku-5-5")
         let thinking = body["thinking"] as! [String: Any]
         XCTAssertEqual(thinking["type"] as? String, "disabled")
     }

@@ -9,7 +9,7 @@ import OCR
 /// Haiku-backed post-OCR character cleanup. Runs after `RegionCascade`
 /// produces final per-page observations. For regions whose joined text
 /// scores below a configurable quality floor, we send the OCR text +
-/// language hint to Haiku 4.5 with a tight "fix obvious OCR errors,
+/// language hint to Haiku 5.5 with a tight "fix obvious OCR errors,
 /// don't paraphrase" prompt and replace the region's observations with
 /// the corrected text — gated by `OCRChangeGuardrail`, which is the
 /// same guardrail the cascade itself uses to vet Claude OCR output.
@@ -42,8 +42,8 @@ public struct ClaudePostProcessor: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .haiku4_5,
-        maxOutputTokens: Int = 2048,
+        model: CloudModel = .haiku5_5,
+        maxOutputTokens: Int = 3072,  // ~30% headroom for the Haiku 5.5 tokenizer
         triggerThreshold: Double = 0.7,
         minCharsToProcess: Int = 30
     ) {

@@ -191,7 +191,7 @@ final class BookBriefingService: ObservableObject {
             case .cloudHaiku, .cloudSonnet:
                 try await runCloud(
                     userPrompt: userPrompt,
-                    model: backend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                    model: backend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
                 )
             case .localOllama:
                 try await runOllama(userPrompt: userPrompt)
@@ -230,7 +230,7 @@ final class BookBriefingService: ObservableObject {
         backend: ChatBackend, ollamaModel: String
     ) -> String {
         switch backend {
-        case .cloudHaiku:  return "claude-haiku-4-5"
+        case .cloudHaiku:  return "claude-haiku-5-5"
         case .cloudSonnet: return "claude-sonnet-4-6"
         case .localOllama: return "ollama:\(ollamaModel)"
         }

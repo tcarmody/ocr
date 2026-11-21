@@ -29,8 +29,8 @@ public struct ClaudeTOCParser: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .haiku4_5,
-        maxOutputTokens: Int = 4096
+        model: CloudModel = .haiku5_5,
+        maxOutputTokens: Int = 6144  // ~30% headroom for the Haiku 5.5 tokenizer
     ) {
         self.client = client
         self.budget = budget

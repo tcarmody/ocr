@@ -68,7 +68,7 @@ The model decides whether to call a tool based on what it needs; you'll see a to
 
 Settings → AI → Book Chat:
 
-- **Cloud (Haiku 4.5)** — fast, cheap (~$0.06/query at typical scope)
+- **Cloud (Haiku 5.5)** — fast, cheap (~$0.01/query at typical scope)
 - **Cloud (Sonnet 4.6)** — better on comparative questions (~$0.19/query)
 - **Local (Ollama)** — fully on-device. Default qwen3.5:9b. Tool-capable.
 

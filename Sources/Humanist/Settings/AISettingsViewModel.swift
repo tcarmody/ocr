@@ -213,7 +213,7 @@ final class AISettingsViewModel: ObservableObject {
         }
         let client = clientFactory(keyStore)
         let request = AnthropicMessageRequest(
-            model: .haiku4_5,
+            model: .haiku5_5,
             maxTokens: 1,
             messages: [Message(role: .user, content: .plain("hi"))],
             thinking: .disabled

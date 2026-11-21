@@ -200,7 +200,7 @@ public struct AISettings: Sendable, Codable, Equatable {
     /// Per-feature toggles. Each is independently switchable, but
     /// none of them activate unless `processingMode == .cloud`. The
     /// model selection per feature follows our recommendation:
-    /// Sonnet 4.6 for vision-heavy tasks, Haiku 4.5 for text.
+    /// Sonnet 4.6 for vision-heavy tasks, Haiku 5.5 for text.
     public struct CloudFeatures: Sendable, Codable, Equatable {
         /// Vision OCR for hard regions where Vision + Tesseract both
         /// scored below the quality floor (Sonnet 4.6).
@@ -254,7 +254,7 @@ public struct AISettings: Sendable, Codable, Equatable {
         public var diagramDescription: Bool
         /// Character-level cleanup pass on OCR output that's already
         /// "good enough" but has known mojibake / diacritic issues
-        /// (Haiku 4.5).
+        /// (Haiku 5.5).
         public var postOCRCleanup: Bool
         /// When true, post-OCR cleanup runs in **vision mode** — the
         /// rendered region image is sent alongside the OCR text so
@@ -264,10 +264,10 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// Off by default; ignored when `postOCRCleanup` itself is off.
         public var postOCRCleanupVisionMode: Bool
         /// EPUB 3 `epub:type` per chapter via title classification
-        /// (Haiku 4.5).
+        /// (Haiku 5.5).
         public var semanticClassification: Bool
         /// Parse the printed TOC into an authoritative chapter tree
-        /// (Haiku 4.5 default; escalates to Sonnet 4.6 on parse
+        /// (Haiku 5.5 default; escalates to Sonnet 4.6 on parse
         /// failure).
         public var tocParsing: Bool
         /// Tier 9 / Q-Metadata. One Haiku call per book over the

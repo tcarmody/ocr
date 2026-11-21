@@ -4,7 +4,7 @@ import Document  // BCP47
 import OCR
 
 /// Common interface for post-OCR character cleanup engines. Both
-/// `ClaudePostProcessor` (Cloud, Haiku 4.5) and
+/// `ClaudePostProcessor` (Cloud, Haiku 5.5) and
 /// `AppleFoundationModelPostProcessor` (Phase 2.5 of
 /// `L-Foundation-Models`) conform. The cascade calls this through
 /// the protocol so adding / removing implementations is a one-line

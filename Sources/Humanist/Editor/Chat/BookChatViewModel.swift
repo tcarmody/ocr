@@ -191,7 +191,7 @@ final class BookChatViewModel: ObservableObject {
 
     /// Selected chat backend. Resolved per-send so a Settings change
     /// applies on the next query without rebuilding the view model.
-    /// Default is Cloud (Haiku 4.5).
+    /// Default is Cloud (Haiku 5.5).
     private var backend: ChatBackend {
         if let raw = UserDefaults.standard.string(forKey: "humanist.chat.backend"),
            let b = ChatBackend(rawValue: raw) {
@@ -555,7 +555,7 @@ final class BookChatViewModel: ObservableObject {
                 await self.runCloudSend(
                     userPrompt: userPrompt,
                     allowedHits: [],
-                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
                 )
             case .localOllama:
                 await self.runOllamaSend(
@@ -699,7 +699,7 @@ final class BookChatViewModel: ObservableObject {
                     hierarchy: hierarchySnapshot,
                     entities: entitySnapshot,
                     style: style,
-                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
                 )
             case .localOllama:
                 await self.runCurrentBookOllamaSendAgentic(
@@ -864,7 +864,7 @@ final class BookChatViewModel: ObservableObject {
                     registry: registry,
                     library: library,
                     backend: backend,
-                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku4_5
+                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
                 )
             case .localOllama:
                 await self.runLibraryOllamaSendAgentic(

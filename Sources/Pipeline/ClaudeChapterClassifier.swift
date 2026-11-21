@@ -27,7 +27,7 @@ public struct ClaudeChapterClassifier: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .haiku4_5,
+        model: CloudModel = .haiku5_5,
         maxOutputTokens: Int = 32  // ample for a single label string
     ) {
         self.client = client

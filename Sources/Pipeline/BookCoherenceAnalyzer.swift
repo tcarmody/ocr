@@ -3,7 +3,7 @@ import Document
 
 /// Common interface for engines that scan a book's chapter digest
 /// for recurring OCR errors and apply guarded global rewrites.
-/// Both `ClaudeCoherenceAnalyzer` (Cloud, Haiku 4.5) and
+/// Both `ClaudeCoherenceAnalyzer` (Cloud, Haiku 5.5) and
 /// `AppleFoundationModelCoherenceAnalyzer` (Phase 2 of
 /// `L-Foundation-Models`) conform.
 ///
