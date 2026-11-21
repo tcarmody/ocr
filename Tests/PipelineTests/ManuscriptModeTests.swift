@@ -12,7 +12,7 @@ final class ManuscriptModeTests: XCTestCase {
 
     func test_typeset_mode_uses_sonnet_by_default() {
         let mode: ClaudePageOCREngine.Mode = .typeset
-        XCTAssertEqual(mode.defaultModel, .sonnet4_6)
+        XCTAssertEqual(mode.defaultModel, .sonnet5_5)
     }
 
     func test_manuscript_mode_uses_opus_by_default() {
@@ -114,7 +114,7 @@ final class ManuscriptModeTests: XCTestCase {
     func test_earlyPrint_mode_uses_sonnet_by_default() {
         for face in EarlyPrintTypeface.allCases {
             let mode: ClaudePageOCREngine.Mode = .earlyPrint(typeface: face)
-            XCTAssertEqual(mode.defaultModel, .sonnet4_6,
+            XCTAssertEqual(mode.defaultModel, .sonnet5_5,
                 "early print \(face) should stay on Sonnet (same cost tier as Claude OCR)")
         }
     }

@@ -92,10 +92,11 @@ public enum CostEstimator {
     public static func costPerCall(_ feature: Feature) -> Double {
         switch feature {
         case .hardRegionOCR:
-            // Sonnet 4.6: ~1500 input (region image, ~10K base64
-            // chars) + ~500 output (transcription).
-            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
-                inputTokens: 1500, outputTokens: 500
+            // Sonnet 5.5: ~1500 input (region image, ~10K base64
+            // chars) + ~650 output (transcription; 4.6 figure of 500
+            // scaled ~1.3x for the 5.5 tokenizer).
+            return CloudModel.sonnet5_5.pricing.cost(for: Usage(
+                inputTokens: 1500, outputTokens: 650
             ))
         case .postOCRCleanupPassages:
             // Haiku 5.5: ~650 input (text + prompts) + ~260 output
@@ -111,23 +112,24 @@ public enum CostEstimator {
                 inputTokens: 3150, outputTokens: 260
             ))
         case .tableExtraction:
-            // Sonnet 4.6: ~2500 input (table region image) + ~800
-            // output (cell array).
-            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
-                inputTokens: 2500, outputTokens: 800
+            // Sonnet 5.5: ~2500 input (table region image) + ~1040
+            // output (cell array; tokenizer-scaled from 800).
+            return CloudModel.sonnet5_5.pricing.cost(for: Usage(
+                inputTokens: 2500, outputTokens: 1040
             ))
         case .pageOCR:
-            // Sonnet 4.6: ~4000 input (full-page image at 600 DPI,
-            // base64) + ~2000 output (XHTML for typical academic
-            // page; dense pages can run higher). The output cost
-            // dominates; a 400-page book runs ~$16-20.
-            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
-                inputTokens: 4000, outputTokens: 2000
+            // Sonnet 5.5: ~4000 input (full-page image, downsized to
+            // 1568 px) + ~2600 output (XHTML for typical academic
+            // page, tokenizer-scaled from 2000; dense pages can run
+            // higher). The output cost dominates; a 400-page book
+            // runs ~$13-17.
+            return CloudModel.sonnet5_5.pricing.cost(for: Usage(
+                inputTokens: 4000, outputTokens: 2600
             ))
         case .pageOCRGemini:
             // Gemini 2.5 Flash: ~1000 input (image tiles bill at
             // ~258 tokens/tile vs Claude's ~1500) + ~2000 output.
-            // Per-page cost lands around $0.005 vs Sonnet's ~$0.04
+            // Per-page cost lands around $0.005 vs Sonnet 5.5 ~$0.035
             // — a 400-page book runs ~$2-3.
             return CloudModel.gemini25Flash.pricing.cost(for: Usage(
                 inputTokens: 1000, outputTokens: 2000
@@ -166,30 +168,33 @@ public enum CostEstimator {
                 inputTokens: 0, outputTokens: 1
             ))
         case .chapterStructurePass:
-            // Sonnet 4.6: one call per book validating the chapter
-            // list. ~5K input tokens (chapter titles + opening text
-            // per chapter, capped at 16K) + ~1K output (per-chapter
-            // decision JSON). Lands around $0.03-0.05 per book.
-            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
-                inputTokens: 5000, outputTokens: 1000
+            // Sonnet 5.5: one call per book validating the chapter
+            // list. ~6.5K input tokens (chapter titles + opening text
+            // per chapter, capped at 16K) + ~1.3K output (per-chapter
+            // decision JSON), tokenizer-scaled from 5K / 1K. Lands
+            // around $0.02-0.04 per book.
+            return CloudModel.sonnet5_5.pricing.cost(for: Usage(
+                inputTokens: 6500, outputTokens: 1300
             ))
         case .chapterMissedBreakDetection:
-            // Sonnet 4.6: one call per book reading the full text.
-            // ~80K input tokens (capped via mid-chapter truncation
-            // for very long books) + ~500 output (typically 0-3
-            // insertions). Lands around $0.24-0.30 per book.
-            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
-                inputTokens: 80_000, outputTokens: 500
+            // Sonnet 5.5: one call per book reading the full text.
+            // ~104K input tokens (capped via mid-chapter truncation
+            // for very long books) + ~650 output (typically 0-3
+            // insertions), tokenizer-scaled from 80K / 500. Lands
+            // around $0.21-0.26 per book.
+            return CloudModel.sonnet5_5.pricing.cost(for: Usage(
+                inputTokens: 104_000, outputTokens: 650
             ))
         case .frontBackMatterSplitting:
-            // Sonnet 4.6: one call per book scanning only the
+            // Sonnet 5.5: one call per book scanning only the
             // chapters identified as front-matter / back-matter.
             // Typical book: ~5 candidate chapters × ~3K chars each
-            // ≈ 15K-20K input tokens + ~300 output. Lands around
-            // $0.05-0.07 per book; floor at $0 when the book has
+            // ≈ 20K-26K input tokens + ~390 output (tokenizer-scaled
+            // from 15-20K / 300). Lands around $0.04-0.06 per book;
+            // floor at $0 when the book has
             // no front/back-matter chapters (call doesn't fire).
-            return CloudModel.sonnet4_6.pricing.cost(for: Usage(
-                inputTokens: 18_000, outputTokens: 300
+            return CloudModel.sonnet5_5.pricing.cost(for: Usage(
+                inputTokens: 23_400, outputTokens: 390
             ))
         }
     }
@@ -201,7 +206,7 @@ public enum CostEstimator {
         case tableExtraction
         case pageOCR
         /// Gemini 2.5 Flash page-OCR. ~7-10× cheaper per page than
-        /// `.pageOCR` (Sonnet 4.6); same XHTML output schema.
+        /// `.pageOCR` (Sonnet 5.5); same XHTML output schema.
         case pageOCRGemini
         /// Gemini 3 Flash preview page-OCR. Pricier than 2.5 Flash
         /// but with stronger reasoning; thinking pinned to minimal
@@ -263,7 +268,7 @@ public enum CostEstimator {
             case .claude:
                 feature = .pageOCR
                 label = "Page OCR (whole-page Sonnet)"
-                modelId = CloudModel.sonnet4_6.rawValue
+                modelId = CloudModel.sonnet5_5.rawValue
             case .gemini25Flash:
                 feature = .pageOCRGemini
                 label = "Page OCR (Gemini 2.5 Flash)"
@@ -304,7 +309,7 @@ public enum CostEstimator {
                         * costPerCall(.tableExtraction)
                     lines.append(.init(
                         label: "Table extraction",
-                        model: CloudModel.sonnet4_6.rawValue,
+                        model: CloudModel.sonnet5_5.rawValue,
                         calls: tableCalls, costUSD: tableCost
                     ))
                     totalCalls += tableCalls
@@ -319,7 +324,7 @@ public enum CostEstimator {
                 let cost = costPerCall(.chapterStructurePass)
                 lines.append(.init(
                     label: "Chapter structure (Sonnet)",
-                    model: CloudModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet5_5.rawValue,
                     calls: 1, costUSD: cost
                 ))
                 totalCalls += 1
@@ -329,7 +334,7 @@ public enum CostEstimator {
                 let cost = costPerCall(.chapterMissedBreakDetection)
                 lines.append(.init(
                     label: "Missed chapter breaks (Sonnet, full text)",
-                    model: CloudModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet5_5.rawValue,
                     calls: 1, costUSD: cost
                 ))
                 totalCalls += 1
@@ -339,7 +344,7 @@ public enum CostEstimator {
                 let cost = costPerCall(.frontBackMatterSplitting)
                 lines.append(.init(
                     label: "Front/back-matter splitting (Sonnet)",
-                    model: CloudModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet5_5.rawValue,
                     calls: 1, costUSD: cost
                 ))
                 totalCalls += 1
@@ -364,7 +369,7 @@ public enum CostEstimator {
                 let cost = Double(calls) * costPerCall(.hardRegionOCR)
                 lines.append(.init(
                     label: "Hard-region OCR",
-                    model: CloudModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet5_5.rawValue,
                     calls: calls, costUSD: cost
                 ))
                 totalCalls += calls
@@ -403,7 +408,7 @@ public enum CostEstimator {
                 let cost = Double(calls) * costPerCall(.tableExtraction)
                 lines.append(.init(
                     label: "Table extraction",
-                    model: CloudModel.sonnet4_6.rawValue,
+                    model: CloudModel.sonnet5_5.rawValue,
                     calls: calls, costUSD: cost
                 ))
                 totalCalls += calls
@@ -416,7 +421,7 @@ public enum CostEstimator {
             let cost = costPerCall(.chapterStructurePass)
             lines.append(.init(
                 label: "Chapter structure (Sonnet)",
-                model: CloudModel.sonnet4_6.rawValue,
+                model: CloudModel.sonnet5_5.rawValue,
                 calls: 1, costUSD: cost
             ))
             totalCalls += 1
@@ -427,7 +432,7 @@ public enum CostEstimator {
             let cost = costPerCall(.chapterMissedBreakDetection)
             lines.append(.init(
                 label: "Missed chapter breaks (Sonnet, full text)",
-                model: CloudModel.sonnet4_6.rawValue,
+                model: CloudModel.sonnet5_5.rawValue,
                 calls: 1, costUSD: cost
             ))
             totalCalls += 1
@@ -440,7 +445,7 @@ public enum CostEstimator {
             let cost = costPerCall(.frontBackMatterSplitting)
             lines.append(.init(
                 label: "Front/back-matter splitting (Sonnet)",
-                model: CloudModel.sonnet4_6.rawValue,
+                model: CloudModel.sonnet5_5.rawValue,
                 calls: 1, costUSD: cost
             ))
             totalCalls += 1

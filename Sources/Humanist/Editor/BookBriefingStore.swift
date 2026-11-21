@@ -90,7 +90,7 @@ struct BookBriefingStore {
 
     /// `version` lets a future schema change negotiate decode
     /// behavior; today every persisted file is version 1.
-    /// `backendIdentifier` is e.g. "claude-sonnet-4-6" or
+    /// `backendIdentifier` is e.g. "claude-sonnet-5-5" or
     /// "ollama:qwen3.5:9b" — surfaced in the sheet so the user
     /// can see which model produced the cached text and decide
     /// whether to Retry against a different model.

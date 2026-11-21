@@ -144,6 +144,37 @@ final class AnthropicMessageRequestTests: XCTestCase {
         XCTAssertEqual(thinking?["type"] as? String, "disabled")
     }
 
+    func test_thinking_disabled_maps_to_between_tools_on_sonnet_5_5() throws {
+        let r = AnthropicMessageRequest(
+            model: .sonnet5_5,
+            maxTokens: 256,
+            messages: [Message(role: .user, content: .plain("Hi"))],
+            thinking: .disabled
+        )
+        let json = try encode(r)
+        let thinking = json["thinking"] as? [String: Any]
+        XCTAssertEqual(thinking?["type"] as? String, "between_tools")
+        XCTAssertEqual(thinking?.count, 1, "between_tools takes no other field")
+    }
+
+    func test_between_tools_maps_back_to_disabled_off_sonnet_5_5() throws {
+        for model in [CloudModel.haiku5_5, .sonnet4_6, .opus4_7] {
+            let r = AnthropicMessageRequest(
+                model: model,
+                maxTokens: 256,
+                messages: [Message(role: .user, content: .plain("Hi"))],
+                thinking: .betweenTools
+            )
+            let json = try encode(r)
+            let thinking = json["thinking"] as? [String: Any]
+            XCTAssertEqual(thinking?["type"] as? String, "disabled", model.rawValue)
+        }
+    }
+
+    func test_adaptive_thinking_is_not_remapped() {
+        XCTAssertEqual(ThinkingConfig.adaptive.resolved(for: .sonnet5_5), .adaptive)
+    }
+
     func test_thinking_adaptive_renders_correctly() throws {
         let r = AnthropicMessageRequest(
             model: .sonnet4_6,

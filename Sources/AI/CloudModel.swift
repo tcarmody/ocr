@@ -28,11 +28,31 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
         self.rawValue = rawValue
     }
 
-    /// Sonnet 4.6 — best speed / intelligence balance. Used for
+    /// Sonnet 5.5 — best speed / intelligence balance. Used for
     /// vision-heavy tasks where ground-truth quality matters: hard-
-    /// region OCR (polytonic Greek, Hebrew, mixed scripts) and
-    /// table-structure extraction.
+    /// region OCR (polytonic Greek, Hebrew, mixed scripts), typeset
+    /// and early-print page OCR, table / math / diagram extraction,
+    /// chapter structure, plus the Cloud (Sonnet) chat and briefing
+    /// backends.
+    ///
+    /// Differences from Sonnet 4.6 that callers must respect:
+    /// `thinking: disabled` returns a 400 — `ThinkingConfig.resolved`
+    /// sends `between_tools` instead; forced `tool_choice`, sampling
+    /// params and assistant prefill return a 400; the tokenizer
+    /// yields ~30% more tokens for the same text.
+    public static let sonnet5_5 = CloudModel(rawValue: "claude-sonnet-5-5")
+
+    /// Sonnet 4.6 — previous Sonnet. Kept so persisted usage keyed
+    /// on the old id still prices correctly; new calls use `sonnet5_5`.
     public static let sonnet4_6 = CloudModel(rawValue: "claude-sonnet-4-6")
+
+    /// True for models that reject `thinking: {type: "disabled"}`
+    /// and turn extended thinking off with `between_tools` instead.
+    /// Only Sonnet 5.5 accepts `between_tools`; every other model
+    /// rejects it.
+    public var turnsThinkingOffWithBetweenTools: Bool {
+        rawValue == "claude-sonnet-5-5"
+    }
 
     /// Haiku 5.5 — fastest and most cost-effective. Used for the
     /// text-only Tier 2 features: post-OCR character cleanup,
@@ -107,6 +127,11 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// authoritative source.
     public var pricing: Pricing {
         switch rawValue {
+        case "claude-sonnet-5-5":
+            // Sonnet 5.5: $2/M input, $10/M output; cache reads are
+            // $0.10/M (0.05× input, not the usual 0.1×).
+            return Pricing(inputPerMTok: 2.00, outputPerMTok: 10.00,
+                           cacheReadPerMTokOverride: 0.10)
         case "claude-sonnet-4-6":
             return Pricing(inputPerMTok: 3.00, outputPerMTok: 15.00)
         case "claude-haiku-5-5":
@@ -170,14 +195,22 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
 public struct Pricing: Sendable, Equatable {
     public let inputPerMTok: Double
     public let outputPerMTok: Double
+    /// Set only for models whose cache-read rate isn't 0.1× input
+    /// (Sonnet 5.5 reads at 0.05×).
+    public let cacheReadPerMTokOverride: Double?
 
-    public init(inputPerMTok: Double, outputPerMTok: Double) {
+    public init(
+        inputPerMTok: Double,
+        outputPerMTok: Double,
+        cacheReadPerMTokOverride: Double? = nil
+    ) {
         self.inputPerMTok = inputPerMTok
         self.outputPerMTok = outputPerMTok
+        self.cacheReadPerMTokOverride = cacheReadPerMTokOverride
     }
 
     public var cacheCreationPerMTok: Double { inputPerMTok * 1.25 }
-    public var cacheReadPerMTok: Double { inputPerMTok * 0.1 }
+    public var cacheReadPerMTok: Double { cacheReadPerMTokOverride ?? inputPerMTok * 0.1 }
 
     /// Cost in USD for a `Usage` snapshot at this model's rates.
     public func cost(for usage: Usage) -> Double {

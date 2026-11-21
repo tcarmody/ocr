@@ -8,7 +8,7 @@ import Layout
 import OCR
 
 /// Cloud Phase 5. Sonnet-driven table-structure extraction: crop the
-/// page raster to a `.table` region, send the crop to Sonnet 4.6,
+/// page raster to a `.table` region, send the crop to Sonnet 5.5,
 /// and parse the JSON response into `[[TableCell]]`. The model reads
 /// each cell's text directly from the image — page OCR observations
 /// aren't consulted — so this path also fixes the cases where Surya
@@ -36,11 +36,11 @@ public struct ClaudeTableExtractor: TableExtractor {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .sonnet4_6,
+        model: CloudModel = .sonnet5_5,
         // Tables can carry a lot of cell text; budget output tokens
         // generously. A 10×6 academic table at ~30 chars/cell still
         // fits well under 4K, but multi-paragraph cells push higher.
-        maxOutputTokens: Int = 4096
+        maxOutputTokens: Int = 6144  // ~30% headroom for the Sonnet 5.5 tokenizer
     ) {
         self.client = client
         self.budget = budget

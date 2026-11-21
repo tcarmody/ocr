@@ -11,7 +11,7 @@ import OCR
 ///   `surya-table` model returns row/column cell structure for the
 ///   cropped region, and we map this page's existing OCR observations
 ///   onto each cell's bbox.
-/// * `ClaudeTableExtractor` — Cloud Phase 5 (online): Sonnet 4.6
+/// * `ClaudeTableExtractor` — Cloud Phase 5 (online): Sonnet 5.5
 ///   reads the cropped region image and returns a structured JSON
 ///   grid directly. The cell text is the model's transcription; OCR
 ///   observations aren't consulted.

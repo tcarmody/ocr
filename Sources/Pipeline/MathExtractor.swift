@@ -33,7 +33,7 @@ public struct MathExtractionResult: Sendable, Equatable {
 /// back to the raster figure" — the cascade emits a `Block.figure`
 /// with the region's PNG as the user-visible fallback.
 ///
-/// Today only `ClaudeMathExtractor` (Sonnet 4.6) conforms; future
+/// Today only `ClaudeMathExtractor` (Sonnet 5.5) conforms; future
 /// Gemini Flash and Mathpix implementations will conform without
 /// touching the cascade-loop call site (mirrors `TableExtractor`).
 public protocol MathExtractor: Sendable {

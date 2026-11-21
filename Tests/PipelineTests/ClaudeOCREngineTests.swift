@@ -174,7 +174,7 @@ final class ClaudeOCREngineTests: XCTestCase {
             with: sent[0].httpBody!
         ) as! [String: Any]
         let thinking = body["thinking"] as! [String: Any]
-        XCTAssertEqual(thinking["type"] as? String, "disabled")
+        XCTAssertEqual(thinking["type"] as? String, "between_tools")  // Sonnet 5.5 spelling of thinking-off
     }
 
     // MARK: - Budget enforcement

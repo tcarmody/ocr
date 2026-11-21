@@ -39,7 +39,7 @@ For whole-page OCR, pick a provider:
 
 | Provider | Cost/page | Notes |
 |---|---|---|
-| Claude Sonnet 4.6 | ~$0.04 | Best on dense academic layouts (baseline) |
+| Claude Sonnet 5.5 | ~$0.035 | Best on dense academic layouts (baseline) |
 | Gemini 2.5 Flash | ~$0.005 | GA; ~7–10× cheaper than Sonnet on typeset prose |
 | Gemini 3 Flash preview | ~$0.006 | Newer reasoning model; `thinking_level: minimal` pinned |
 | Gemini 3.5 Flash | ~$0.02 | Experimental for OCR; ~half Sonnet's cost |

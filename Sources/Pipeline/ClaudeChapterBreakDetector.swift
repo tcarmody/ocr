@@ -22,7 +22,7 @@ import Document
 /// applied left-to-right within a chapter and right-to-left
 /// across the chapter list (so earlier indices stay valid).
 ///
-/// Cost: ~80K input + ~500 output ≈ $0.24/book at Sonnet 4.6
+/// Cost: ~104K input + ~650 output ≈ $0.21/book at Sonnet 5.5
 /// rates. Caps the per-chapter digest so very long books stay
 /// inside the budget — truncates from the middle of each chapter
 /// when the aggregate would exceed `maxInputTokens`. Missed
@@ -41,15 +41,16 @@ public struct ClaudeChapterBreakDetector: Sendable {
     public var model: CloudModel
     public var maxOutputTokens: Int
     /// Hard cap on the input digest size, measured in approximate
-    /// tokens (4 chars/token rule of thumb). Defaults to 80K to
-    /// keep per-book input cost under ~$0.25 at Sonnet 4.6 rates.
+    /// tokens (4 chars/token rule of thumb). Defaults to 80K, which
+    /// the Sonnet 5.5 tokenizer bills as ~104K real tokens —
+    /// ~$0.21 per book at Sonnet 5.5 rates.
     public var maxInputTokens: Int
 
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .sonnet4_6,
-        maxOutputTokens: Int = 2048,
+        model: CloudModel = .sonnet5_5,
+        maxOutputTokens: Int = 3072,  // ~30% headroom for the Sonnet 5.5 tokenizer
         maxInputTokens: Int = 80_000
     ) {
         self.client = client

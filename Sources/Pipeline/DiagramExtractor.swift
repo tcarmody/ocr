@@ -45,7 +45,7 @@ public struct DiagramExtractionResult: Sendable, Equatable {
 /// figure is still embedded; the user just doesn't get the
 /// generated text.
 ///
-/// Today only `ClaudeDiagramExtractor` (Sonnet 4.6) conforms;
+/// Today only `ClaudeDiagramExtractor` (Sonnet 5.5) conforms;
 /// future Gemini Flash and on-device VLM implementations will
 /// conform without touching the call site (mirrors
 /// `TableExtractor` / `MathExtractor`).

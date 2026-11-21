@@ -191,7 +191,7 @@ final class BookBriefingService: ObservableObject {
             case .cloudHaiku, .cloudSonnet:
                 try await runCloud(
                     userPrompt: userPrompt,
-                    model: backend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
+                    model: backend == .cloudSonnet ? .sonnet5_5 : .haiku5_5
                 )
             case .localOllama:
                 try await runOllama(userPrompt: userPrompt)
@@ -231,7 +231,7 @@ final class BookBriefingService: ObservableObject {
     ) -> String {
         switch backend {
         case .cloudHaiku:  return "claude-haiku-5-5"
-        case .cloudSonnet: return "claude-sonnet-4-6"
+        case .cloudSonnet: return "claude-sonnet-5-5"
         case .localOllama: return "ollama:\(ollamaModel)"
         }
     }
@@ -239,7 +239,7 @@ final class BookBriefingService: ObservableObject {
     private func runCloud(userPrompt: String, model: CloudModel) async throws {
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: 2000,
+            maxTokens: 2600,
             system: .cached(Self.systemPrompt, ttl: .oneHour),
             messages: [Message(role: .user, content: .plain(userPrompt))],
             thinking: .disabled

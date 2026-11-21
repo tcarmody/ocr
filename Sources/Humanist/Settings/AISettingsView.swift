@@ -131,7 +131,7 @@ struct AISettingsView: View {
             // more providers come online (Mathpix, future Gemini /
             // Claude variants).
             Picker("Provider", selection: $vm.settings.pageOCRProvider) {
-                Text("Claude Sonnet 4.6").tag(PageOCRProvider.claude)
+                Text("Claude Sonnet 5.5").tag(PageOCRProvider.claude)
                 Text("Gemini 2.5 Flash (lower cost)").tag(PageOCRProvider.gemini25Flash)
                 Text("Gemini 3 Flash (preview)").tag(PageOCRProvider.gemini3FlashPreview)
                 Text("Gemini 3.5 Flash (experimental)").tag(PageOCRProvider.gemini35Flash)

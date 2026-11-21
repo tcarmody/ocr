@@ -9,7 +9,7 @@ import OCR
 
 /// P-Diagram-Description Tier 1. Sonnet-driven alt-text generator
 /// for `.picture` regions: crop the page raster to the region,
-/// send the crop + any associated caption to Sonnet 4.6, and
+/// send the crop + any associated caption to Sonnet 5.5, and
 /// return a short, screen-reader-ready description that
 /// `RegionAwareReflow` swaps in for the bare `alt="figure"`
 /// placeholder.
@@ -35,12 +35,12 @@ public struct ClaudeDiagramExtractor: DiagramExtractor {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .sonnet4_6,
+        model: CloudModel = .sonnet5_5,
         // Short alt text + small headroom for Tier 2/3 once they
         // land. The system prompt caps the model at 120 chars
         // for Tier 1 output; 512 tokens covers that with room
         // for the future description / labels payload.
-        maxOutputTokens: Int = 512
+        maxOutputTokens: Int = 768  // ~30% headroom for the Sonnet 5.5 tokenizer
     ) {
         self.client = client
         self.budget = budget

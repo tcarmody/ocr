@@ -555,7 +555,7 @@ final class BookChatViewModel: ObservableObject {
                 await self.runCloudSend(
                     userPrompt: userPrompt,
                     allowedHits: [],
-                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
+                    model: chosenBackend == .cloudSonnet ? .sonnet5_5 : .haiku5_5
                 )
             case .localOllama:
                 await self.runOllamaSend(
@@ -699,7 +699,7 @@ final class BookChatViewModel: ObservableObject {
                     hierarchy: hierarchySnapshot,
                     entities: entitySnapshot,
                     style: style,
-                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
+                    model: chosenBackend == .cloudSonnet ? .sonnet5_5 : .haiku5_5
                 )
             case .localOllama:
                 await self.runCurrentBookOllamaSendAgentic(
@@ -864,7 +864,7 @@ final class BookChatViewModel: ObservableObject {
                     registry: registry,
                     library: library,
                     backend: backend,
-                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
+                    model: chosenBackend == .cloudSonnet ? .sonnet5_5 : .haiku5_5
                 )
             case .localOllama:
                 await self.runLibraryOllamaSendAgentic(
@@ -909,7 +909,7 @@ final class BookChatViewModel: ObservableObject {
         )
         let request = AnthropicMessageRequest(
             model: model,
-            maxTokens: useLongFormSynthesis ? 2500 : 1500,
+            maxTokens: useLongFormSynthesis ? 3300 : 2000,
             system: .cached(systemPrompt, ttl: .oneHour),
             messages: apiMessages,
             thinking: .disabled
@@ -1055,7 +1055,7 @@ final class BookChatViewModel: ObservableObject {
             while true {
                 let request = AnthropicMessageRequest(
                     model: model,
-                    maxTokens: useLongFormSynthesis ? 2500 : 1500,
+                    maxTokens: useLongFormSynthesis ? 3300 : 2000,
                     system: .cached(systemPrompt, ttl: .oneHour),
                     messages: apiMessages,
                     thinking: .disabled,
@@ -2160,7 +2160,7 @@ final class BookChatViewModel: ObservableObject {
             while true {
                 let request = AnthropicMessageRequest(
                     model: model,
-                    maxTokens: useLongFormSynthesis ? 2500 : 1500,
+                    maxTokens: useLongFormSynthesis ? 3300 : 2000,
                     system: .cached(libraryScopeSystemPrompt, ttl: .oneHour),
                     messages: apiMessages,
                     thinking: .disabled,

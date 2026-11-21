@@ -7,7 +7,7 @@ import Document
 import OCR
 
 /// End-to-end "Claude does the page" engine. Skips the cascade — given
-/// a rendered page image, it asks Sonnet 4.6 to return a clean XHTML
+/// a rendered page image, it asks Sonnet 5.5 to return a clean XHTML
 /// fragment of the page's body content (paragraphs, headings,
 /// footnotes, language spans, footnote references) and parses that
 /// directly into a `[Block]` + `[Footnote]` slice.
@@ -21,7 +21,7 @@ import OCR
 ///     multiple imperfect tools and we kept hitting failure modes at
 ///     the seams (column merge, mid-word chapter break, footnote
 ///     misattribution).
-///   * **Cost**: ~$0.04 / page at Sonnet 4.6 pricing — roughly 2-3×
+///   * **Cost**: ~$0.035 / page at Sonnet 5.5 pricing — roughly 2-3×
 ///     the current Cloud-enhanced cascade. Surfaced to the user via
 ///     the "Claude OCR ($$$)" toggle's help text.
 ///   * **Speed**: one network call per page (~5-15s) replaces the
@@ -51,8 +51,8 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
 
         var defaultModel: CloudModel {
             switch self {
-            case .typeset: return .sonnet4_6
-            case .earlyPrint: return .sonnet4_6
+            case .typeset: return .sonnet5_5
+            case .earlyPrint: return .sonnet5_5
             case .manuscript: return .opus4_7
             }
         }
@@ -84,7 +84,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         budget: CloudCallBudget,
         mode: Mode = .typeset,
         model: CloudModel? = nil,
-        maxOutputTokens: Int = 8192,
+        maxOutputTokens: Int = 12288,  // ~30% headroom for the 5.x tokenizer
         captureSink: CaptureSink? = nil
     ) {
         self.client = client

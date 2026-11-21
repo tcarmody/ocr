@@ -48,8 +48,8 @@ public struct ClaudeFrontBackMatterSplitter: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .sonnet4_6,
-        maxOutputTokens: Int = 1024,
+        model: CloudModel = .sonnet5_5,
+        maxOutputTokens: Int = 1536,  // ~30% headroom for the Sonnet 5.5 tokenizer
         maxCharsPerChapter: Int = 10_000
     ) {
         self.client = client

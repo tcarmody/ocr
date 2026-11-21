@@ -200,10 +200,10 @@ public struct AISettings: Sendable, Codable, Equatable {
     /// Per-feature toggles. Each is independently switchable, but
     /// none of them activate unless `processingMode == .cloud`. The
     /// model selection per feature follows our recommendation:
-    /// Sonnet 4.6 for vision-heavy tasks, Haiku 5.5 for text.
+    /// Sonnet 5.5 for vision-heavy tasks, Haiku 5.5 for text.
     public struct CloudFeatures: Sendable, Codable, Equatable {
         /// Vision OCR for hard regions where Vision + Tesseract both
-        /// scored below the quality floor (Sonnet 4.6).
+        /// scored below the quality floor (Sonnet 5.5).
         public var hardRegionOCR: Bool
         /// Google Cloud Document OCR (Vision API DOCUMENT_TEXT_DETECTION)
         /// added to the per-region cascade as Stage 2.5, sitting between
@@ -230,10 +230,10 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// rowspan/colspan fidelity — merged cells flatten to 1×1.
         public var landingAITableExtraction: Bool
         /// Table-structure extraction from cropped table region
-        /// images (Sonnet 4.6).
+        /// images (Sonnet 5.5).
         public var tableExtraction: Bool
         /// P-Math-Cascade. MathML transcription from cropped
-        /// `.formula` region images (Sonnet 4.6). When on (and a
+        /// `.formula` region images (Sonnet 5.5). When on (and a
         /// key is configured), cascade-mode conversions get real
         /// MathML markup for display equations instead of just a
         /// rastered image. Whole-page Cloud OCR already emits
@@ -267,7 +267,7 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// (Haiku 5.5).
         public var semanticClassification: Bool
         /// Parse the printed TOC into an authoritative chapter tree
-        /// (Haiku 5.5 default; escalates to Sonnet 4.6 on parse
+        /// (Haiku 5.5 default; escalates to Sonnet 5.5 on parse
         /// failure).
         public var tocParsing: Bool
         /// Tier 9 / Q-Metadata. One Haiku call per book over the

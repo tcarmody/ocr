@@ -157,7 +157,7 @@ public actor PDFToEPUBPipeline {
         public var manuscriptHand: ManuscriptHand
         /// E-Vision-Modes / Early Print track. When true (Cloud
         /// mode + API key required), page OCR routes through
-        /// `ClaudePageOCREngine` in early-print mode (Sonnet 4.6
+        /// `ClaudePageOCREngine` in early-print mode (Sonnet 5.5
         /// with normalizing-posture prompt for 15th–18th c.
         /// printed books). Mutually exclusive with
         /// `useWholePageOCR` and `useManuscriptMode` at the

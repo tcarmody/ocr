@@ -9,7 +9,7 @@ import OCR
 
 /// P-Math-Cascade. Sonnet-driven MathML transcription for `.formula`
 /// regions: crop the page raster to the region, send the crop to
-/// Sonnet 4.6, and return the model's MathML response. Cascade-mode
+/// Sonnet 5.5, and return the model's MathML response. Cascade-mode
 /// conversions that previously just rastered display equations now
 /// get real semantic markup that screen readers, search, and copy/
 /// paste can use.
@@ -37,12 +37,12 @@ public struct ClaudeMathExtractor: MathExtractor {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .sonnet4_6,
+        model: CloudModel = .sonnet5_5,
         // Single display equation rarely exceeds 1K MathML tokens
         // (a long aligned derivation pushes ~2K). 4K leaves
         // comfortable headroom without burning budget on a
         // generous-but-unused ceiling.
-        maxOutputTokens: Int = 4096
+        maxOutputTokens: Int = 6144  // ~30% headroom for the Sonnet 5.5 tokenizer
     ) {
         self.client = client
         self.budget = budget

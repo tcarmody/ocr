@@ -238,7 +238,7 @@ struct ChatSettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             case .cloudSonnet:
-                Text("Sonnet 4.6 — ~3× the cost of Haiku (~$0.19/query) but better at comparative / synthesis questions.")
+                Text("Sonnet 5.5 — ~15× the cost of Haiku (~$0.17/query) but better at comparative / synthesis questions.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

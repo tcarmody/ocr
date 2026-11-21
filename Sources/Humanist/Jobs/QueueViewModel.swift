@@ -76,7 +76,7 @@ final class QueueViewModel: ObservableObject {
     /// cursive / contemporaryInformal) load a tuned prompt.
     @Published var manuscriptHand: ManuscriptHand = .auto
     /// E-Vision-Modes / Early Print track. Routes per-page OCR
-    /// through Sonnet 4.6 with a normalizing-posture prompt for
+    /// through Sonnet 5.5 with a normalizing-posture prompt for
     /// 15th–18th c. printed material. Mutually exclusive with
     /// `useWholePageOCR` + `useManuscriptMode` at the UI layer.
     /// Per-session toggle.

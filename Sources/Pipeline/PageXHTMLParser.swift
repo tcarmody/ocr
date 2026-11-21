@@ -3,7 +3,7 @@ import Document
 
 /// Parses the XHTML fragment a page-OCR cloud model returns into a
 /// `[Block]` + `[Footnote]` slice. Shared by `ClaudePageOCREngine`
-/// (Sonnet 4.6 / Opus 4.7) and `GeminiPageOCREngine` (Gemini 2.5 /
+/// (Sonnet 5.5 / Opus 4.7) and `GeminiPageOCREngine` (Gemini 2.5 /
 /// 3 Flash Preview / 3.5 Flash) — both engines emit the same
 /// XHTML output contract from the shared base system prompt.
 /// Previously named `ClaudePageXHTMLParser` from the era when only

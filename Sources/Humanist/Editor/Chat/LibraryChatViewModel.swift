@@ -470,7 +470,7 @@ final class LibraryChatViewModel: ObservableObject {
                     registry: registry,
                     library: library,
                     backend: backend,
-                    model: chosenBackend == .cloudSonnet ? .sonnet4_6 : .haiku5_5
+                    model: chosenBackend == .cloudSonnet ? .sonnet5_5 : .haiku5_5
                 )
             case .localOllama:
                 await self.runOllamaSendAgentic(
@@ -853,7 +853,7 @@ final class LibraryChatViewModel: ObservableObject {
             while true {
                 let request = AnthropicMessageRequest(
                     model: model,
-                    maxTokens: useLongFormSynthesis ? 2500 : 1500,
+                    maxTokens: useLongFormSynthesis ? 3300 : 2000,
                     system: .cached(systemPrompt, ttl: .oneHour),
                     messages: apiMessages,
                     thinking: .disabled,

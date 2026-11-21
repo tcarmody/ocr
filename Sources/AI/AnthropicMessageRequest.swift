@@ -45,7 +45,7 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         self.maxTokens = maxTokens
         self.system = system
         self.messages = messages
-        self.thinking = thinking
+        self.thinking = thinking?.resolved(for: model)
         self.stopSequences = stopSequences
         self.cacheControl = cacheControl
         self.outputConfig = outputConfig
@@ -331,20 +331,43 @@ public struct CacheControl: Sendable, Encodable, Equatable {
 
 // MARK: - Thinking control
 
-/// Adaptive thinking is the recommended mode on Sonnet 4.6 and Haiku
-/// 4.5; for our read-only tasks (OCR, table extraction, classification,
-/// TOC parsing) we explicitly disable thinking — none of them benefit
-/// from chain-of-thought, and disabling saves tokens + latency.
+/// For our read-only tasks (OCR, table extraction, classification,
+/// TOC parsing, chat) we turn extended thinking off — none of them
+/// benefit enough from chain-of-thought to pay its tokens + latency.
+///
+/// Callers always say `.disabled` to mean "no extended thinking";
+/// `AnthropicMessageRequest.init` maps that to the spelling the
+/// target model accepts via `resolved(for:)`. Sonnet 5.5 rejects
+/// `disabled` with a 400 and takes `between_tools` instead (no
+/// extended thinking; short between-tool-call notes come back as
+/// `thinking` blocks, which `ResponseBlock` decodes as `.unknown`
+/// and the stream parser skips). Every other model rejects
+/// `between_tools`, so the mapping also runs in reverse — a request
+/// built for Sonnet and re-targeted at Haiku stays valid.
 public struct ThinkingConfig: Sendable, Encodable, Equatable {
     public var type: Mode
 
     public enum Mode: String, Sendable, Encodable, Equatable {
         case disabled
         case adaptive
+        case betweenTools = "between_tools"
     }
 
     public static let disabled = ThinkingConfig(type: .disabled)
     public static let adaptive = ThinkingConfig(type: .adaptive)
+    public static let betweenTools = ThinkingConfig(type: .betweenTools)
+
+    /// The thinking-off spelling `model` accepts. Adaptive passes
+    /// through unchanged. `between_tools` is valid only at effort
+    /// `high` or below; no caller here sets a higher effort.
+    public func resolved(for model: CloudModel) -> ThinkingConfig {
+        switch type {
+        case .adaptive:
+            return self
+        case .disabled, .betweenTools:
+            return model.turnsThinkingOffWithBetweenTools ? .betweenTools : .disabled
+        }
+    }
 }
 
 // MARK: - Output config (structured outputs + effort)

@@ -6,7 +6,7 @@ import AI
 import Document
 import OCR
 
-/// `OCREngine` impl backed by Claude Sonnet 4.6 multimodal.
+/// `OCREngine` impl backed by Claude Sonnet 5.5 multimodal.
 ///
 /// Used as the cascade's final tier in `.cloud` processing mode for
 /// regions where Vision, Surya, and Tesseract all produced suspect
@@ -33,15 +33,15 @@ public struct ClaudeOCREngine: OCREngine {
     public var maxOutputTokens: Int
 
     /// Build an engine wired to a specific API client + per-book budget.
-    /// Defaults pin to Sonnet 4.6 with a generous 4096 max output —
+    /// Defaults pin to Sonnet 5.5 with a generous 4096 max output —
     /// most region transcriptions are well under 1K tokens, but
     /// caption-heavy or table-cell regions occasionally need more
     /// headroom and the cost scales with actual output anyway.
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .sonnet4_6,
-        maxOutputTokens: Int = 4096
+        model: CloudModel = .sonnet5_5,
+        maxOutputTokens: Int = 6144  // ~30% headroom for the Sonnet 5.5 tokenizer
     ) {
         self.client = client
         self.budget = budget

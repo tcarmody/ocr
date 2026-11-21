@@ -14,7 +14,7 @@ import Document
 /// the stronger model. The cost is bounded — one call per book,
 /// ~5K input tokens (chapter titles + opening text per chapter)
 /// + ~1K output (decision per chapter). Lands around $0.03–$0.05
-/// per book at Sonnet 4.6 rates. Negligible next to the other
+/// per book at Sonnet 5.5 rates. Negligible next to the other
 /// Cloud features.
 ///
 /// Conservative posture: rejected candidates are MERGED into the
@@ -37,8 +37,8 @@ public struct ClaudeChapterStructureAnalyzer: Sendable {
     public init(
         client: AnthropicAPIClient,
         budget: CloudCallBudget,
-        model: CloudModel = .sonnet4_6,
-        maxOutputTokens: Int = 2048
+        model: CloudModel = .sonnet5_5,
+        maxOutputTokens: Int = 3072  // ~30% headroom for the Sonnet 5.5 tokenizer
     ) {
         self.client = client
         self.budget = budget
