@@ -21,7 +21,7 @@ import OCR
 ///     multiple imperfect tools and we kept hitting failure modes at
 ///     the seams (column merge, mid-word chapter break, footnote
 ///     misattribution).
-///   * **Cost**: ~$0.035 / page at Sonnet 5.5 pricing — roughly 2-3×
+///   * **Cost**: ~$0.04 / page at Sonnet 5.5 pricing — roughly 2-3×
 ///     the current Cloud-enhanced cascade. Surfaced to the user via
 ///     the "Claude OCR ($$$)" toggle's help text.
 ///   * **Speed**: one network call per page (~5-15s) replaces the
@@ -291,8 +291,9 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     /// 5 MB base64-encoded. Books rendered at 600 DPI for scans
     /// blew past both limits silently — the API rejected every
     /// page and the per-page error swallow in the pipeline made
-    /// the conversion produce a blank EPUB. Anthropic's vision
-    /// model auto-downscales above ~1568 px anyway, so anything
+    /// the conversion produce a blank EPUB. The model downscales
+    /// anything above its own max (`CloudModel.maxImageLongEdge`:
+    /// 2576 px for Sonnet 5.5, 1568 px otherwise), so anything
     /// larger is wasted bandwidth + tokens.
     private static func buildRequest(
         pageImage: CGImage,
@@ -301,7 +302,9 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         mode: Mode,
         maxOutputTokens: Int
     ) -> AnthropicMessageRequest? {
-        guard let (png, _) = Self.encodeForAnthropic(pageImage) else { return nil }
+        guard let (png, _) = Self.encodeForAnthropic(
+            pageImage, maxLongEdge: model.maxImageLongEdge
+        ) else { return nil }
         let base64 = png.base64EncodedString()
         return AnthropicMessageRequest(
             model: model,
@@ -490,48 +493,61 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     /// Anthropic API request limits we pre-clamp against.
     /// Source: Anthropic Messages API image-input docs.
     private static let anthropicMaxBase64Bytes: Int = 5 * 1024 * 1024  // 5 MB
-    /// Anthropic auto-downscales images larger than this, so anything
-    /// bigger is wasted bytes + tokens. Use as our preferred starting
-    /// dimension; iterate downward only if PNG still exceeds 5 MB at
-    /// this size (rare but possible for very dense scans).
-    private static let anthropicPreferredMaxDim: Int = 1568
+    /// Default long edge for models that downscale anything larger
+    /// (Sonnet 4.6, Opus 4.7, Haiku). Callers pass
+    /// `CloudModel.maxImageLongEdge`, which is 2576 for Sonnet 5.5.
+    /// Also the first fallback when a larger image overflows 5 MB.
+    static let anthropicPreferredMaxDim: Int = 1568
     /// Floor we won't shrink past; below this OCR quality drops
     /// faster than the 5 MB win is worth.
     private static let anthropicMinMaxDim: Int = 768
 
     /// Returns a base64-safe PNG of `image`, resized down if needed
-    /// to fit Anthropic's 5 MB / 8000 px-per-side limits. Starts at
-    /// `anthropicPreferredMaxDim` (1568 — the resolution Anthropic's
-    /// vision model uses internally) and halves until under 5 MB or
-    /// until the floor is hit. Returns the encoded data + the final
+    /// to fit Anthropic's 5 MB (base64) / 8000 px-per-side limits.
+    /// Starts at `maxLongEdge` (the resolution the target model reads
+    /// at — 2576 for Sonnet 5.5, 1568 otherwise); on overflow steps
+    /// down to 1568, then halves until under 5 MB or until the floor
+    /// is hit. Returns the encoded data + the final
     /// long-edge dimension (useful for diagnostics).
     static func encodeForAnthropic(
-        _ image: CGImage
+        _ image: CGImage,
+        maxLongEdge: Int = anthropicPreferredMaxDim
     ) -> (data: Data, longEdge: Int)? {
-        // Initial size: cap to preferred max dim. Scan-DPI inputs
-        // are routinely 5000-8000 px across; capping to 1568 cuts
-        // the byte count by an order of magnitude with no quality
-        // loss (server-side downscale would do the same anyway).
+        // Initial size: cap to the model's max dim. Scan-DPI inputs
+        // are routinely 5000-8000 px across; capping cuts the byte
+        // count by an order of magnitude with no quality loss
+        // (server-side downscale would do the same anyway).
         let initialDim = max(image.width, image.height)
-        var targetDim = min(initialDim, anthropicPreferredMaxDim)
+        var targetDim = min(initialDim, maxLongEdge, 8000)
         var current = downsize(image, longEdge: targetDim)
         while true {
             guard let png = encodePNG(current) else { return nil }
-            if png.count <= anthropicMaxBase64Bytes {
+            // The 5 MB limit applies to the base64 string, which is
+            // 4/3 the PNG size — compare that, not the raw bytes.
+            if base64Length(png.count) <= anthropicMaxBase64Bytes {
                 return (png, max(current.width, current.height))
             }
-            // PNG still too large — halve the long edge and try
-            // again. Floor at `anthropicMinMaxDim`; if we hit it
+            // PNG still too large — step down to 1568 if we started
+            // above it (keeps the old resolution rather than halving
+            // a 2576 image to 1288), otherwise halve the long edge and
+            // try again. Floor at `anthropicMinMaxDim`; if we hit it
             // and still can't fit, return what we have (the API
             // will reject; the user gets a clear error in
             // claude-pages.txt).
-            let nextDim = max(targetDim / 2, anthropicMinMaxDim)
+            let nextDim = targetDim > anthropicPreferredMaxDim
+                ? anthropicPreferredMaxDim
+                : max(targetDim / 2, anthropicMinMaxDim)
             if nextDim == targetDim {
                 return (png, max(current.width, current.height))
             }
             targetDim = nextDim
             current = downsize(image, longEdge: targetDim)
         }
+    }
+
+    /// Length of the base64 encoding of `byteCount` bytes (padded).
+    static func base64Length(_ byteCount: Int) -> Int {
+        (byteCount + 2) / 3 * 4
     }
 
     /// Resize `image` so its long edge is at most `longEdge` pixels.

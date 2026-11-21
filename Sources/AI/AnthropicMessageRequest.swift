@@ -48,9 +48,23 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         self.thinking = thinking?.resolved(for: model)
         self.stopSequences = stopSequences
         self.cacheControl = cacheControl
-        self.outputConfig = outputConfig
+        self.outputConfig = Self.applyingDefaultEffort(to: outputConfig, for: model)
         self.tools = tools
         self.stream = stream
+    }
+
+    /// Fills in `model.defaultEffort` when the caller didn't pick an
+    /// effort. An explicit effort always wins; a model with no
+    /// default leaves `outputConfig` untouched (nil stays nil).
+    static func applyingDefaultEffort(
+        to outputConfig: OutputConfig?, for model: CloudModel
+    ) -> OutputConfig? {
+        guard let effort = model.defaultEffort, outputConfig?.effort == nil else {
+            return outputConfig
+        }
+        var config = outputConfig ?? OutputConfig()
+        config.effort = effort
+        return config
     }
 
     private enum CodingKeys: String, CodingKey {

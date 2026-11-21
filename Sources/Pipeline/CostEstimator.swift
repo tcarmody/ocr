@@ -118,18 +118,18 @@ public enum CostEstimator {
                 inputTokens: 2500, outputTokens: 1040
             ))
         case .pageOCR:
-            // Sonnet 5.5: ~4000 input (full-page image, downsized to
-            // 1568 px) + ~2600 output (XHTML for typical academic
+            // Sonnet 5.5: ~7200 input (full-page image at 2576 px,
+            // ~4800 image tokens vs ~1600 at the old 1568 px, plus
+            // prompt) + ~2600 output (XHTML for typical academic
             // page, tokenizer-scaled from 2000; dense pages can run
-            // higher). The output cost dominates; a 400-page book
-            // runs ~$13-17.
+            // higher). ~$0.04 / page; a 400-page book runs ~$15-19.
             return CloudModel.sonnet5_5.pricing.cost(for: Usage(
-                inputTokens: 4000, outputTokens: 2600
+                inputTokens: 7200, outputTokens: 2600
             ))
         case .pageOCRGemini:
             // Gemini 2.5 Flash: ~1000 input (image tiles bill at
             // ~258 tokens/tile vs Claude's ~1500) + ~2000 output.
-            // Per-page cost lands around $0.005 vs Sonnet 5.5 ~$0.035
+            // Per-page cost lands around $0.005 vs Sonnet 5.5 ~$0.04
             // — a 400-page book runs ~$2-3.
             return CloudModel.gemini25Flash.pricing.cost(for: Usage(
                 inputTokens: 1000, outputTokens: 2000

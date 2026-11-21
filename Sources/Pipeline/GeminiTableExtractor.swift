@@ -16,7 +16,7 @@ import OCR
 /// Why Flash here: table extraction is per-table (rare — ~0.5 per
 /// book in the cost-estimator model), vision-heavy, and the
 /// structural schema is the same shape Sonnet returns. Per-table
-/// cost runs single-digit cents on Flash vs ~$0.035 on Sonnet, and
+/// cost runs single-digit cents on Flash vs ~$0.04 on Sonnet, and
 /// quality differences haven't shown up on typeset prose tables.
 /// Highly complex multi-row-header tables may still prefer Sonnet —
 /// the page-OCR provider picker is the user's lever there.

@@ -40,6 +40,9 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// sends `between_tools` instead; forced `tool_choice`, sampling
     /// params and assistant prefill return a 400; the tokenizer
     /// yields ~30% more tokens for the same text.
+    ///
+    /// Requests default to effort `low` (`defaultEffort`) and page
+    /// images go up at 2576 px (`maxImageLongEdge`).
     public static let sonnet5_5 = CloudModel(rawValue: "claude-sonnet-5-5")
 
     /// Sonnet 4.6 — previous Sonnet. Kept so persisted usage keyed
@@ -52,6 +55,24 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// rejects it.
     public var turnsThinkingOffWithBetweenTools: Bool {
         rawValue == "claude-sonnet-5-5"
+    }
+
+    /// Effort sent when a request doesn't set one. Sonnet 5.5 runs
+    /// at `low`: its levels are recalibrated from Sonnet 4.6, and
+    /// `low` is Anthropic's starting point for chat, extraction and
+    /// classification — the shape of every Sonnet route here. Nil
+    /// leaves the API default (Haiku 4.5 rejects `effort` outright).
+    public var defaultEffort: OutputConfig.Effort? {
+        rawValue == "claude-sonnet-5-5" ? .low : nil
+    }
+
+    /// Long edge, in pixels, that whole-page images are downsized to
+    /// before upload. Sonnet 5.5 reads images up to 2576 px; older
+    /// routes keep 1568 px, where Sonnet 4.6 / Haiku 4.5 downscale
+    /// anyway. Larger images cost more image tokens (up to ~4,800
+    /// per image at 2576 px vs ~1,600 at 1568 px).
+    public var maxImageLongEdge: Int {
+        rawValue == "claude-sonnet-5-5" ? 2576 : 1568
     }
 
     /// Haiku 5.5 — fastest and most cost-effective. Used for the

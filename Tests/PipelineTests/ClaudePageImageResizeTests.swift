@@ -40,12 +40,65 @@ final class ClaudePageImageResizeTests: XCTestCase {
         XCTAssertEqual(result.longEdge, 1568)
     }
 
+    func test_sonnet_5_5_page_keeps_2576_px() throws {
+        // Flat image compresses well, so the 5 MB cap never forces
+        // a step down: the long edge lands exactly on the model max.
+        let image = makeFlatImage(width: 4000, height: 3000)
+        let result = try XCTUnwrap(ClaudePageOCREngine.encodeForAnthropic(
+            image, maxLongEdge: CloudModel.sonnet5_5.maxImageLongEdge
+        ))
+        XCTAssertEqual(result.longEdge, 2576)
+    }
+
+    func test_other_models_still_cap_at_1568_px() throws {
+        let image = makeFlatImage(width: 4000, height: 3000)
+        let result = try XCTUnwrap(ClaudePageOCREngine.encodeForAnthropic(
+            image, maxLongEdge: CloudModel.opus4_7.maxImageLongEdge
+        ))
+        XCTAssertEqual(result.longEdge, 1568)
+    }
+
+    func test_oversized_2576_page_fits_base64_limit() throws {
+        // Noise-pattern image overflows 5 MB at 2576 px; the encoder
+        // must step down and the *base64* payload must fit.
+        let image = makeImage(width: 9000, height: 6000)
+        let result = try XCTUnwrap(ClaudePageOCREngine.encodeForAnthropic(
+            image, maxLongEdge: 2576
+        ))
+        XCTAssertLessThanOrEqual(
+            ClaudePageOCREngine.base64Length(result.data.count), 5 * 1024 * 1024
+        )
+        XCTAssertLessThanOrEqual(result.longEdge, 2576)
+    }
+
+    func test_base64_length() {
+        XCTAssertEqual(ClaudePageOCREngine.base64Length(0), 0)
+        XCTAssertEqual(ClaudePageOCREngine.base64Length(1), 4)
+        XCTAssertEqual(ClaudePageOCREngine.base64Length(3), 4)
+        XCTAssertEqual(ClaudePageOCREngine.base64Length(4), 8)
+    }
+
     // MARK: - Helpers
 
     /// Build a synthetic CGImage filled with a noise-like pattern
     /// (each pixel a different color) so PNG compression can't trivialize
     /// the file size. Real OCR pages have similar entropy from text
     /// rendering, so this is a representative test fixture.
+    /// Single-color image — compresses to a tiny PNG at any size.
+    private func makeFlatImage(width: Int, height: Int) -> CGImage {
+        let ctx = CGContext(
+            data: nil,
+            width: width, height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage()!
+    }
+
     private func makeImage(width: Int, height: Int) -> CGImage {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bytesPerRow = width * 4

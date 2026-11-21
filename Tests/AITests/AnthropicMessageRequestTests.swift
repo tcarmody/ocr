@@ -189,6 +189,57 @@ final class AnthropicMessageRequestTests: XCTestCase {
 
     // MARK: - Output config
 
+    func test_sonnet_5_5_defaults_to_low_effort() throws {
+        let r = AnthropicMessageRequest(
+            model: .sonnet5_5,
+            maxTokens: 256,
+            messages: [Message(role: .user, content: .plain("Hi"))],
+            thinking: .disabled
+        )
+        let json = try encode(r)
+        let out = json["output_config"] as? [String: Any]
+        XCTAssertEqual(out?["effort"] as? String, "low")
+        XCTAssertNil(out?["format"])
+    }
+
+    func test_explicit_effort_wins_over_sonnet_5_5_default() throws {
+        let r = AnthropicMessageRequest(
+            model: .sonnet5_5,
+            maxTokens: 256,
+            messages: [Message(role: .user, content: .plain("Hi"))],
+            outputConfig: OutputConfig(effort: .high)
+        )
+        let json = try encode(r)
+        let out = json["output_config"] as? [String: Any]
+        XCTAssertEqual(out?["effort"] as? String, "high")
+    }
+
+    func test_default_effort_keeps_caller_format() throws {
+        let schemaJSON = #"{"type":"object"}"#.data(using: .utf8)!
+        let r = AnthropicMessageRequest(
+            model: .sonnet5_5,
+            maxTokens: 256,
+            messages: [Message(role: .user, content: .plain("Hi"))],
+            outputConfig: OutputConfig(format: .init(schemaJSON: schemaJSON))
+        )
+        let json = try encode(r)
+        let out = json["output_config"] as? [String: Any]
+        XCTAssertEqual(out?["effort"] as? String, "low")
+        XCTAssertNotNil(out?["format"])
+    }
+
+    func test_other_models_get_no_default_effort() throws {
+        for model in [CloudModel.haiku4_5, .haiku5_5, .sonnet4_6, .opus4_7] {
+            let r = AnthropicMessageRequest(
+                model: model,
+                maxTokens: 256,
+                messages: [Message(role: .user, content: .plain("Hi"))]
+            )
+            let json = try encode(r)
+            XCTAssertNil(json["output_config"], model.rawValue)
+        }
+    }
+
     func test_output_config_with_json_schema_passes_through_payload() throws {
         let schemaJSON = #"""
         {"type":"object","properties":{"label":{"type":"string"}},"required":["label"]}
