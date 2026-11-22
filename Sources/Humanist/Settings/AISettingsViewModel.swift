@@ -324,7 +324,7 @@ final class AISettingsViewModel: ObservableObject {
 
     /// Probe the LandingAI ADE API. There's no auth-only ping
     /// endpoint; the cheapest probe is a real `:parse` call with a
-    /// 1×1 PNG. Costs ~$0.03 — significant for a Test button, so
+    /// 1×1 PNG on DPT-3 Pro. Costs ~1 credit ($0.01), so
     /// the UI caption flags the cost. A 200 response confirms the
     /// key + endpoint, even when the parsed markdown is empty.
     func testLandingAIConnection() async {
@@ -350,7 +350,7 @@ final class AISettingsViewModel: ObservableObject {
         let boundary = "Boundary-" + UUID().uuidString
         var body = Data()
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\ndpt-2-latest\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\ndpt-3-pro-latest\r\n".data(using: .utf8)!)
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append(
             "Content-Disposition: form-data; name=\"document\"; filename=\"probe.png\"\r\n".data(using: .utf8)!
@@ -359,7 +359,7 @@ final class AISettingsViewModel: ObservableObject {
         body.append(png)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
-        guard let url = URL(string: "https://api.va.landing.ai/v1/ade/parse") else {
+        guard let url = URL(string: "https://api.ade.landing.ai/v2/parse") else {
             landingAITestResult = .failure("Invalid URL.")
             return
         }

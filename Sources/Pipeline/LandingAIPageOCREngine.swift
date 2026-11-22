@@ -3,7 +3,8 @@ import CoreGraphics
 import Document
 import OCR
 
-/// `PageOCREngine` impl backed by LandingAI ADE (`/v1/ade/parse`). Same
+/// `PageOCREngine` impl backed by LandingAI ADE Gen2 (`/v2/parse`,
+/// DPT-3 Pro — see `LandingAIParse`). Same
 /// `ClaudePageResult` output contract as `ClaudePageOCREngine` and
 /// `GeminiPageOCREngine`; the cascade-bypass page-OCR loop is unified
 /// across providers.
@@ -13,22 +14,24 @@ import OCR
 /// (technical reports, multi-figure scientific papers, tables-and-
 /// figures interleaved with prose) beats the LLM-prompt path's
 /// best efforts at parsing free-form vision output. The returned
-/// markdown carries inline MathML for math regions and pipe-table
-/// markdown for tables, both of which round-trip through the page-
-/// OCR parser into `Block.figure` / `Block.table` / inline math
-/// `rawXHTML` without losing structure.
+/// markdown carries pipe-table markdown for tables (requested via
+/// `options.blocks.table.format`; DPT-3's default is HTML) and any
+/// inline `<math>` MathML, both of which round-trip through the
+/// page-OCR parser into `Block.table` / inline math `rawXHTML`.
+/// DPT-3's `<figure>` blocks and `<!-- … -->` markers are stripped
+/// before parsing (`LandingAIParse.cleanMarkdown`).
 ///
-/// **Cost**: most expensive whole-page option (~$0.03/page, ~6× Gemini
-/// Flash, ~30% pricier than Sonnet). No batch API, no prompt caching,
-/// no streaming — single sync call per page. Worth it for diagram-
-/// heavy corpora; over-budget for routine prose. Per-book budget
+/// **Cost**: DPT-3 Pro bills 1 credit per page + 0.5 per 1,000 output
+/// characters ($1 = 100 credits) — ~$0.025 for a typical page, ~5×
+/// Gemini Flash and ~40% under Sonnet 5.5. No batch on the sync
+/// endpoint, no prompt caching, no streaming — single sync call per
+/// page. Worth it for diagram-heavy corpora; pricey for routine prose. Per-book budget
 /// (`CloudCallBudget`) gates total spend regardless.
 ///
 /// **Limitations**: manuscript mode hard-pins Claude — ADE doesn't
 /// handle handwriting. Figures still come from Surya layout +
 /// FigureExtractor (the page-OCR shortcut path's normal flow);
-/// ADE's markdown reference to figures gets translated to caption
-/// text only.
+/// ADE's own `<figure>` descriptions are dropped.
 public struct LandingAIPageOCREngine: PageOCREngine, Sendable {
     public var providerId: String { "landingai-" + (document.model) }
 

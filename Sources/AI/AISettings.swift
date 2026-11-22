@@ -35,9 +35,10 @@ public enum PageOCRProvider: String, Sendable, Codable, Equatable, CaseIterable 
     /// Experimental for our workload — wired so users can A/B
     /// against 2.5 Flash and Sonnet on real corpora.
     case gemini35Flash
-    /// LandingAI ADE (`/v1/ade/parse`) wired as a whole-page OCR
-    /// engine. Most expensive option (~$0.03/page, ~6× Gemini Flash,
-    /// ~30% pricier than Sonnet) but purpose-built for "agentic
+    /// LandingAI ADE (Gen2 `/v2/parse`, DPT-3 Pro) wired as a
+    /// whole-page OCR engine. ~$0.025 for a typical page (~5× Gemini
+    /// Flash, ~40% under Sonnet 5.5; dense pages cost more) and
+    /// purpose-built for "agentic
     /// document extraction" — segments dense diagram-heavy layouts
     /// better than the LLM-prompt path, returns inline MathML and
     /// pipe-table markdown for the page-XHTML parser. No prompt
@@ -212,7 +213,7 @@ public struct AISettings: Sendable, Codable, Equatable {
         /// before falling through to Claude. Independently keyed
         /// (Google Cloud Vision API key, not the AI Studio Gemini key).
         public var googleDocumentOCRInCascade: Bool
-        /// LandingAI Agentic Document Extraction (`/v1/ade/parse`) at
+        /// LandingAI Agentic Document Extraction (Gen2 `/v2/parse`) at
         /// the same Stage 2.5 slot as Google Cloud Vision — a cloud
         /// document-OCR alternative. When both this and
         /// `googleDocumentOCRInCascade` are on, LandingAI wins (it's

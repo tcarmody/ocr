@@ -6,8 +6,9 @@ import OCR
 import Pipeline
 
 /// Live smoke test for `LandingAIDocumentEngine`. Reads a single image
-/// from disk, sends it to LandingAI's `/v1/ade/parse` endpoint, prints
-/// the returned markdown. Not part of `swift test` — hits the live API
+/// from disk, sends it to LandingAI's Gen2 `/v2/parse` endpoint (DPT-3
+/// Pro), prints the cleaned markdown. Also the quickest way to check
+/// that an existing key is accepted by the Gen2 deployment. Not part of `swift test` — hits the live API
 /// and spends credits. Invoke via:
 ///
 ///     swift run LandingAISmoke /path/to/page.png

@@ -7,25 +7,24 @@ import Document
 import OCR
 
 /// `OCREngine` impl backed by LandingAI's Agentic Document Extraction
-/// (`POST /v1/ade/parse`). Prototype: shares the `OCREngine` shape with
-/// `GoogleDocumentOCREngine` so it can plug into `RegionCascade` at the
-/// same tier as a cloud document-OCR alternative — useful when Vision /
-/// Surya / Tesseract reject a region and the user prefers LandingAI over
-/// Cloud Vision (or wants to A/B the two on book-style pages with
-/// dense tables and figures, which is ADE's strength).
+/// Gen2 parse API (`POST /v2/parse`, DPT-3 Pro). Shares the `OCREngine`
+/// shape with `GoogleDocumentOCREngine` so it can plug into
+/// `RegionCascade` at the same tier as a cloud document-OCR alternative
+/// — useful when Vision / Surya / Tesseract reject a region and the
+/// user prefers LandingAI over Cloud Vision (or wants to A/B the two on
+/// book-style pages with dense tables and figures, which is ADE's
+/// strength). Also the transport under `LandingAIPageOCREngine`.
 ///
-/// Wire shape: multipart/form-data with a `document` file part (PNG of
-/// the region) and an optional `model` string field (`dpt-2-latest` by
-/// default). Auth is `Authorization: Bearer <apikey>`. Response is JSON;
-/// we pull `markdown` as the recognized text and surface it as a single
-/// observation spanning the input image's normalized bbox — same posture
-/// as `GoogleDocumentOCREngine`. The cascade translates that to full-
-/// page coords and runs the guardrail comparison against the prior tier.
-///
-/// Not yet wired into `RegionCascade` / `PipelineEngineFactories` — that
-/// requires a new `cloudFeatures.landingAIInCascade` toggle, a stage
-/// slot in `PipelineCascadeLoop`, and a `CostEstimator` case. This
-/// prototype is the engine itself; wiring follows in a separate change.
+/// Wire shape (see `LandingAIParse`): multipart/form-data with a
+/// `document` file part (PNG of the region), a `model` field
+/// (`dpt-3-pro-latest` by default) and an `options` field asking for
+/// pipe-syntax tables. Auth is `Authorization: Bearer <apikey>`. We
+/// pull the response's top-level `markdown` (cleaned of figure and
+/// comment markup) as the recognized text and surface it as a single
+/// observation spanning the input image's normalized bbox — same
+/// posture as `GoogleDocumentOCREngine`. The cascade translates that
+/// to full-page coords and runs the guardrail comparison against the
+/// prior tier.
 public struct LandingAIDocumentEngine: OCREngine, Sendable {
     public let apiKeyProvider: @Sendable () -> String?
     public let budget: CloudCallBudget
@@ -33,16 +32,18 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
     public var model: String
     public var requestTimeout: TimeInterval
 
-    /// `baseURL` defaults to LandingAI's production endpoint. EU users
-    /// should pass `https://api.va.eu-west-1.landing.ai`. `model` is
-    /// the parsing model id (e.g. `dpt-2-latest`); LandingAI documents
-    /// `dpt-2-latest` as the current default — pin a specific revision
-    /// here if regression-testing against a known version.
+    /// `baseURL` defaults to LandingAI's US Gen2 deployment
+    /// (`https://api.ade.landing.ai`). EU users should pass
+    /// `https://api.ade.eu-west-1.landing.ai` with an EU key — keys
+    /// are deployment-specific. `model` is the parse model id;
+    /// `dpt-3-pro-latest` follows new DPT-3 Pro snapshots — pin a
+    /// dated snapshot (e.g. `dpt-3-pro-20260710`) when regression-
+    /// testing against a known version.
     public init(
         apiKeyProvider: @escaping @Sendable () -> String?,
         budget: CloudCallBudget,
-        baseURL: URL = URL(string: "https://api.va.landing.ai")!,
-        model: String = "dpt-2-latest",
+        baseURL: URL = LandingAIParse.defaultBaseURL,
+        model: String = LandingAIParse.defaultModel,
         requestTimeout: TimeInterval = 120
     ) {
         self.apiKeyProvider = apiKeyProvider
@@ -67,6 +68,11 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
             case .missingAPIKey:      return "Missing LandingAI ADE API key."
             case .pngEncodeFailed:    return "Could not encode region image as PNG."
             case .emptyResponse:      return "LandingAI ADE returned no markdown."
+            case .http(401, let b):
+                // Gen2 runs on a separate deployment; a key made for
+                // the old Gen1 API may not be accepted there.
+                return "LandingAI ADE HTTP 401: \(b ?? "") — check the API key; "
+                    + "keys are created at ade.landing.ai (EU: ade.eu-west-1.landing.ai)."
             case .http(let s, let b): return "LandingAI ADE HTTP \(s): \(b ?? "")"
             case .decode(let m):      return "LandingAI ADE response decode: \(m)"
             case .underlying(let e):  return e.localizedDescription
@@ -87,33 +93,12 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
             throw DocumentOCRError.pngEncodeFailed
         }
 
-        // Multipart body. The Python SDK posts the `document` field as
-        // the file part and `model` as a plain text field; we mirror
-        // that. Language hints are not part of the parse endpoint
-        // schema, so `hints.languages` is intentionally ignored.
-        let boundary = "Boundary-" + UUID().uuidString
-        var body = Data()
-        body.append(Self.multipartTextField(
-            name: "model", value: model, boundary: boundary
-        ))
-        body.append(Self.multipartFileField(
-            name: "document",
-            filename: "region.png",
-            mimeType: "image/png",
-            content: png,
-            boundary: boundary
-        ))
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-
-        let url = baseURL.appendingPathComponent("/v1/ade/parse")
-        var request = URLRequest(url: url, timeoutInterval: requestTimeout)
-        request.httpMethod = "POST"
-        request.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.addValue(
-            "multipart/form-data; boundary=\(boundary)",
-            forHTTPHeaderField: "Content-Type"
+        // Language hints are not part of the parse endpoint schema,
+        // so `hints.languages` is intentionally ignored.
+        let request = LandingAIParse.makeRequest(
+            baseURL: baseURL, apiKey: key, model: model,
+            png: png, filename: "region.png", timeout: requestTimeout
         )
-        request.httpBody = body
 
         let data: Data
         let response: URLResponse
@@ -132,22 +117,24 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
             throw DocumentOCRError.http(status: http.statusCode, body: bodyStr)
         }
 
-        let envelope: ParseResponse
+        // 2xx includes 206 (partial success: some pages failed). A
+        // single-image request is one page, so a 206 here would carry
+        // empty markdown and fall through to `.emptyResponse`.
+        let envelope: LandingAIParse.Response
         do {
-            envelope = try Self.decoder.decode(ParseResponse.self, from: data)
+            envelope = try LandingAIParse.decode(data)
         } catch {
             throw DocumentOCRError.decode(String(describing: error))
         }
 
-        // Record one synthetic output token per call so per-book cost
-        // accounting can attribute the per-page rate (see
-        // CloudModel.pricing.landingAIDocumentExtraction).
+        // Record the credits LandingAI billed (tenths of a credit as
+        // synthetic output tokens; see CloudModel.landingAIDPT3Pro).
         await budget.recordUsage(
-            Usage(inputTokens: 0, outputTokens: 1),
-            for: .landingAIDocumentExtraction
+            LandingAIParse.usage(for: envelope),
+            for: .landingAIDPT3Pro
         )
 
-        let text = envelope.markdown ?? ""
+        let text = LandingAIParse.cleanMarkdown(envelope.markdown ?? "")
         guard !text.isEmpty else {
             throw DocumentOCRError.emptyResponse
         }
@@ -178,47 +165,4 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
         guard CGImageDestinationFinalize(dest) else { return nil }
         return buffer as Data
     }
-
-    private static func multipartTextField(
-        name: String, value: String, boundary: String
-    ) -> Data {
-        var part = "--\(boundary)\r\n"
-        part += "Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n"
-        part += "\(value)\r\n"
-        return part.data(using: .utf8)!
-    }
-
-    private static func multipartFileField(
-        name: String,
-        filename: String,
-        mimeType: String,
-        content: Data,
-        boundary: String
-    ) -> Data {
-        var part = Data()
-        var header = "--\(boundary)\r\n"
-        header += "Content-Disposition: form-data; name=\"\(name)\"; "
-        header += "filename=\"\(filename)\"\r\n"
-        header += "Content-Type: \(mimeType)\r\n\r\n"
-        part.append(header.data(using: .utf8)!)
-        part.append(content)
-        part.append("\r\n".data(using: .utf8)!)
-        return part
-    }
-
-    // MARK: - Wire types
-    //
-    // Decode only the fields we use. ADE's `ParseResponse` also carries
-    // `chunks`, `splits`, `metadata`, and `grounding`; downstream code
-    // in the cascade just wants flat text, and the `markdown` field is
-    // the most faithful representation of that.
-
-    private struct ParseResponse: Decodable {
-        let markdown: String?
-    }
-
-    private static let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        return d
-    }()
 }

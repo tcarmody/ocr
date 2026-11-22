@@ -13,7 +13,7 @@ import AI
 ///   * Anthropic — 1-token Haiku ping (~sub-cent)
 ///   * Gemini — `GET /v1beta/models` model-list (free)
 ///   * Google Cloud Vision — minimal annotate call (~$0.0015)
-///   * LandingAI — minimal ADE parse (~$0.03 — flagged in copy)
+///   * LandingAI — minimal ADE parse (~$0.01 — flagged in copy)
 /// When a provider fails-open silently in normal use (Gemini
 /// falls back to Claude, Cloud Vision / LandingAI skip cascade
 /// Stage 2.5), Test Connection is the only way to catch a
@@ -67,7 +67,7 @@ struct APIKeysSettingsView: View {
             Section("LandingAI (ADE)") {
                 landingAIEntry
                 testResultRow(vm.landingAITestResult)
-                caption("Powers the optional LandingAI Agentic Document Extraction path: a cascade Stage 2.5 alternative to Cloud Vision and a table-extractor option ahead of Sonnet. ~$0.03 per call. Get one at va.landing.ai → API keys (the same key the Python SDK reads from VISION_AGENT_API_KEY). Test Connection fires a minimal parse (~$0.03).")
+                caption("Powers the optional LandingAI Agentic Document Extraction path: a cascade Stage 2.5 alternative to Cloud Vision and a table-extractor option ahead of Sonnet. Uses DPT-3 Pro: ~$0.01 per call plus ~$0.005 per 1,000 characters returned. Get one at ade.landing.ai → API (EU: ade.eu-west-1.landing.ai; keys are region-specific) — the same key the Python SDK reads from VISION_AGENT_API_KEY. If a key from the older va.landing.ai console is rejected, create a new one there. Test Connection fires a minimal parse (~$0.01).")
             }
         }
         .formStyle(.grouped)

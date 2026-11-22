@@ -437,8 +437,9 @@ struct ContentView: View {
         /// validated against Gemini.
         case geminiTypeset
         /// LandingAI ADE in whole-page mode — purpose-built for
-        /// diagram-heavy documents. ~$0.03/page (~6× Gemini Flash,
-        /// ~30% pricier than Sonnet). Routed via per-conversion
+        /// diagram-heavy documents. DPT-3 Pro, ~$0.025/page for a
+        /// typical page (~5× Gemini Flash, ~40% under Sonnet 5.5).
+        /// Routed via per-conversion
         /// override on `queue.pageOCRProvider = .landingAI`.
         case landingAITypeset
         case earlyPrint
@@ -518,7 +519,7 @@ struct ContentView: View {
         case .geminiTypeset:
             return "Gemini 2.5 Flash OCRs each page end-to-end. Same XHTML output as Claude Typeset at ~7–10× lower cost (~$2 per book). Best on typeset prose; Sonnet still wins on dense academic layouts. Requires Cloud mode + a Google AI Studio key in Settings → AI."
         case .landingAITypeset:
-            return "LandingAI ADE OCRs each page via /v1/ade/parse. Purpose-built for diagram-heavy documents (technical reports, multi-figure papers, dense tables-and-figures interleaved with prose). Best segmentation of the lot, but most expensive (~$0.03/page, ~$10–15 per book). No batch API; pages dispatch synchronously. Requires Cloud mode + a LandingAI ADE key in Settings → AI."
+            return "LandingAI ADE (DPT-3 Pro) OCRs each page via /v2/parse. Purpose-built for diagram-heavy documents (technical reports, multi-figure papers, dense tables-and-figures interleaved with prose). Best segmentation of the lot; billed per page plus output length (~$0.025 for a typical page, more for dense ones; ~$8–12 per book). No batch API; pages dispatch synchronously. Requires Cloud mode + a LandingAI ADE key in Settings → AI."
         case .earlyPrint:
             return "Sonnet with a normalizing prompt tuned for 15th–18th c. printed material (long-s, u/v, i/j, ligatures). Pick a typeface inside the menu; \"Auto\" lets the model identify Roman vs Blackletter."
         case .manuscript:

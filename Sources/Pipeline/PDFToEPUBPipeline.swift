@@ -106,7 +106,7 @@ public actor PDFToEPUBPipeline {
         /// an AI Studio key. Nil/empty → Stage 2.5 is skipped.
         public var googleCloudVisionAPIKeyProvider: @Sendable () -> String?
         /// LandingAI ADE API key resolver (Agentic Document Extraction,
-        /// `/v1/ade/parse`). Powers the optional `LandingAIDocumentEngine`
+        /// Gen2 `/v2/parse`, DPT-3 Pro). Powers the optional `LandingAIDocumentEngine`
         /// (Stage 2.5 alternative to Google) and `LandingAITableExtractor`
         /// (prepended to the Cloud table-extractor chain). The Python SDK
         /// reads this key from `VISION_AGENT_API_KEY`; this provider

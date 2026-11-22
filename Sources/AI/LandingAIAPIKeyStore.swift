@@ -1,9 +1,10 @@
 import Foundation
 
 /// Keychain-backed store for the user's LandingAI ADE API key. Used by
-/// `LandingAIDocumentEngine` (Agentic Document Extraction `/v1/ade/parse`)
+/// `LandingAIDocumentEngine` (Agentic Document Extraction Gen2 `/v2/parse`)
 /// as an alternative cloud document-OCR provider alongside
-/// `GoogleDocumentOCREngine`. Issued from the LandingAI console; the
+/// `GoogleDocumentOCREngine`. Issued from ade.landing.ai (EU keys from
+/// ade.eu-west-1.landing.ai — keys are deployment-specific); the
 /// SDK reads the same value from the `VISION_AGENT_API_KEY` env var.
 /// Same shape as the other API-key stores; distinct keychain service
 /// suffix so it doesn't collide with the Cloud Vision or Anthropic key.

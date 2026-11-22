@@ -168,7 +168,7 @@ struct AISettingsView: View {
                    selection: cascadeMidTierBinding) {
                 Text("Off").tag(CascadeMidTier.off)
                 Text("Google Cloud Vision — $0.0015/call").tag(CascadeMidTier.google)
-                Text("LandingAI ADE — $0.03/call").tag(CascadeMidTier.landingAI)
+                Text("LandingAI ADE — ~$0.013/call").tag(CascadeMidTier.landingAI)
             }
             caption("Sits between Tesseract and the hard-region cloud OCR in the per-region cascade. Google's classical OCR absorbs most hard-region work for fractions of a cent. LandingAI ADE is purpose-built for document layout and is the better pick on dense scans, multi-column pages, and complex layouts; pricier per call but you'll typically need fewer calls because more first-tier regions succeed.")
         }

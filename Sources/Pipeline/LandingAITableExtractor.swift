@@ -7,8 +7,9 @@ import Document
 import OCR
 
 /// LandingAI ADE table-structure extraction. Cropped `.table` region
-/// goes to `/v1/ade/parse`; the response's markdown is parsed back
-/// into `[[TableCell]]` via standard pipe-delimited table syntax.
+/// goes to the Gen2 parse API (`POST /v2/parse`, DPT-3 Pro — see
+/// `LandingAIParse`); tables are requested in pipe syntax and the
+/// response's markdown is parsed back into `[[TableCell]]`.
 ///
 /// When wired ahead of `ClaudeTableExtractor` (Cloud-mode setting
 /// `landingAITableExtraction`), this becomes the first cloud attempt
@@ -20,9 +21,10 @@ import OCR
 ///
 /// Limitations vs `ClaudeTableExtractor`:
 ///   * Markdown table syntax doesn't carry `rowspan` / `colspan`, so
-///     merged cells flatten to 1×1. ADE's `grounding` payload has
-///     spans but we don't currently decode it; future work if span
-///     fidelity matters.
+///     merged cells flatten to 1×1 (DPT-3 expands them into empty
+///     neighbours). DPT-3's default HTML tables, and the `table_cell`
+///     nodes in its `structure` tree, do carry spans; we don't decode
+///     them yet — future work if span fidelity matters.
 ///   * Header detection is structural (cells above the `---|---`
 ///     separator row), not semantic — matches markdown convention.
 public struct LandingAITableExtractor: TableExtractor {
@@ -35,8 +37,8 @@ public struct LandingAITableExtractor: TableExtractor {
     public init(
         apiKeyProvider: @escaping @Sendable () -> String?,
         budget: CloudCallBudget,
-        baseURL: URL = URL(string: "https://api.va.landing.ai")!,
-        model: String = "dpt-2-latest",
+        baseURL: URL = LandingAIParse.defaultBaseURL,
+        model: String = LandingAIParse.defaultModel,
         requestTimeout: TimeInterval = 120
     ) {
         self.apiKeyProvider = apiKeyProvider
@@ -63,29 +65,10 @@ public struct LandingAITableExtractor: TableExtractor {
         guard let key = apiKeyProvider(), !key.isEmpty else { return nil }
         guard let png = Self.encodePNG(cropped) else { return nil }
 
-        let boundary = "Boundary-" + UUID().uuidString
-        var body = Data()
-        body.append(Self.multipartTextField(
-            name: "model", value: model, boundary: boundary
-        ))
-        body.append(Self.multipartFileField(
-            name: "document",
-            filename: "table.png",
-            mimeType: "image/png",
-            content: png,
-            boundary: boundary
-        ))
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-
-        let url = baseURL.appendingPathComponent("/v1/ade/parse")
-        var request = URLRequest(url: url, timeoutInterval: requestTimeout)
-        request.httpMethod = "POST"
-        request.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.addValue(
-            "multipart/form-data; boundary=\(boundary)",
-            forHTTPHeaderField: "Content-Type"
+        let request = LandingAIParse.makeRequest(
+            baseURL: baseURL, apiKey: key, model: model,
+            png: png, filename: "table.png", timeout: requestTimeout
         )
-        request.httpBody = body
 
         let data: Data
         let response: URLResponse
@@ -99,19 +82,19 @@ public struct LandingAITableExtractor: TableExtractor {
             return nil
         }
 
-        let envelope: ParseResponse
+        let envelope: LandingAIParse.Response
         do {
-            envelope = try JSONDecoder().decode(ParseResponse.self, from: data)
+            envelope = try LandingAIParse.decode(data)
         } catch {
             return nil
         }
         await budget.recordUsage(
-            Usage(inputTokens: 0, outputTokens: 1),
-            for: .landingAIDocumentExtraction
+            LandingAIParse.usage(for: envelope),
+            for: .landingAIDPT3Pro
         )
 
-        guard let markdown = envelope.markdown,
-              !markdown.isEmpty,
+        let markdown = LandingAIParse.cleanMarkdown(envelope.markdown ?? "")
+        guard !markdown.isEmpty,
               let rows = Self.parseMarkdownTable(markdown) else {
             return nil
         }
@@ -210,12 +193,6 @@ public struct LandingAITableExtractor: TableExtractor {
             .map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
-    // MARK: - Wire types
-
-    private struct ParseResponse: Decodable {
-        let markdown: String?
-    }
-
     // MARK: - Helpers
 
     private static func encodePNG(_ image: CGImage) -> Data? {
@@ -228,32 +205,5 @@ public struct LandingAITableExtractor: TableExtractor {
         CGImageDestinationAddImage(dest, image, nil)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return buffer as Data
-    }
-
-    private static func multipartTextField(
-        name: String, value: String, boundary: String
-    ) -> Data {
-        var part = "--\(boundary)\r\n"
-        part += "Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n"
-        part += "\(value)\r\n"
-        return part.data(using: .utf8)!
-    }
-
-    private static func multipartFileField(
-        name: String,
-        filename: String,
-        mimeType: String,
-        content: Data,
-        boundary: String
-    ) -> Data {
-        var part = Data()
-        var header = "--\(boundary)\r\n"
-        header += "Content-Disposition: form-data; name=\"\(name)\"; "
-        header += "filename=\"\(filename)\"\r\n"
-        header += "Content-Type: \(mimeType)\r\n\r\n"
-        part.append(header.data(using: .utf8)!)
-        part.append(content)
-        part.append("\r\n".data(using: .utf8)!)
-        return part
     }
 }

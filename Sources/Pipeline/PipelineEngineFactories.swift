@@ -64,8 +64,8 @@ extension PDFToEPUBPipeline {
             return makeClaudeOCREngine(options: options, budget: budget)
         case .landingAI:
             // LandingAI is wired for whole-page OCR only. Hard-region
-            // dispatch per-region would burn ~$0.03 per region — far
-            // too expensive vs. Sonnet's ~$0.005/region. Fall back to
+            // dispatch per-region would burn ~$0.013 per region on
+            // DPT-3 Pro — well above Sonnet's ~$0.005/region. Fall back to
             // Claude for the cascade's final tier when the user has
             // picked LandingAI as their page-OCR provider.
             return makeClaudeOCREngine(options: options, budget: budget)

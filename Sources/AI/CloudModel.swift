@@ -190,13 +190,21 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// `outputTokens = 1` per page → multiplied by the per-image rate.
     public static let googleDocumentOCR = CloudModel(rawValue: "google-document-ocr")
 
-    /// LandingAI Agentic Document Extraction (`/v1/ade/parse`) — cloud
-    /// document-OCR alternative to Cloud Vision. Same encoding trick
-    /// as `googleDocumentOCR`: per-request flat rate carried as one
-    /// synthetic output token. Verify the per-page rate against the
-    /// current LandingAI pricing page before relying on the cost
-    /// estimator for billing reconciliation — pricing has moved
-    /// since the SDK's first release.
+    /// LandingAI ADE Gen2 parse (`POST /v2/parse`) on DPT-3 Pro — cloud
+    /// document-OCR alternative to Cloud Vision, a table extractor, and
+    /// a whole-page OCR provider. DPT-3 bills in credits ($1 = 100
+    /// credits): 1 credit per page + 0.5 credits per 1,000 output
+    /// characters on the sync (priority) tier, rounded up to 0.1
+    /// credit. The response reports the exact charge in
+    /// `metadata.billing.total_credits`; callers record it as one
+    /// synthetic output token per tenth of a credit ($0.001), so a
+    /// typical ~3,000-character page (2.5 credits) records 25 tokens.
+    public static let landingAIDPT3Pro = CloudModel(rawValue: "landingai-dpt-3-pro")
+
+    /// LandingAI ADE Gen1 parse (`/v1/ade/parse`, DPT-2) — previous
+    /// endpoint, flat 3 credits ($0.03) per call carried as one
+    /// synthetic output token. Kept so persisted usage keyed on it
+    /// still prices correctly; new calls record `landingAIDPT3Pro`.
     public static let landingAIDocumentExtraction = CloudModel(rawValue: "landingai-ade-parse")
 
     /// Per-million-token pricing in USD. Used by `ConversionStats` to
@@ -255,6 +263,10 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
             // existing pricing/cost helpers working without
             // adding a per-request rate carrier.
             return Pricing(inputPerMTok: 0.00, outputPerMTok: 1500.00)
+        case "landingai-dpt-3-pro":
+            // One synthetic output token = 0.1 credit = $0.001
+            // ($1 buys 100 credits on the Explore and Team plans).
+            return Pricing(inputPerMTok: 0.00, outputPerMTok: 1000.00)
         case "landingai-ade-parse":
             // LandingAI ADE published rate: $0.03/page on the
             // pay-as-you-go tier. Encoded as $30000/M output tokens

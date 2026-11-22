@@ -160,13 +160,21 @@ public enum CostEstimator {
                 inputTokens: 0, outputTokens: 1
             ))
         case .landingAIDocumentOCR:
-            // LandingAI ADE parse: published $0.03 per page. Encoded
-            // in `CloudModel.pricing` as one synthetic output
-            // token × $30000/M. Charged once per per-region call
-            // (Stage 2.5 alternative) and once per table region
-            // (when the LandingAI table extractor is enabled).
-            return CloudModel.landingAIDocumentExtraction.pricing.cost(for: Usage(
-                inputTokens: 0, outputTokens: 1
+            // LandingAI DPT-3 Pro on a cropped region (Stage 2.5
+            // alternative, or one table region): 1 credit for the
+            // page + 0.5 credits per 1,000 output characters. A
+            // typical ~500-character region lands at ~1.3 credits,
+            // carried as 13 tenth-of-a-credit tokens ($0.013).
+            return CloudModel.landingAIDPT3Pro.pricing.cost(for: Usage(
+                inputTokens: 0, outputTokens: 13
+            ))
+        case .landingAIPageOCR:
+            // LandingAI DPT-3 Pro on a whole page: 1 credit + 0.5 per
+            // 1,000 output characters; a typical ~3,000-character
+            // academic page is ~2.5 credits = 25 tokens ($0.025).
+            // Dense pages cost more — the charge scales with output.
+            return CloudModel.landingAIDPT3Pro.pricing.cost(for: Usage(
+                inputTokens: 0, outputTokens: 25
             ))
         case .chapterStructurePass:
             // Sonnet 5.5: one call per book validating the chapter
@@ -221,9 +229,13 @@ public enum CostEstimator {
         /// Cloud Vision DOCUMENT_TEXT_DETECTION — cascade Stage 2.5.
         /// Fixed $0.0015 per call regardless of region size.
         case googleDocumentOCR
-        /// LandingAI ADE parse — cascade Stage 2.5 alternative and
-        /// optional table extractor. Fixed $0.03 per call.
+        /// LandingAI ADE parse (DPT-3 Pro) on a cropped region —
+        /// cascade Stage 2.5 alternative and optional table extractor.
+        /// ~$0.013 per call; the charge scales with output length.
         case landingAIDocumentOCR
+        /// LandingAI ADE parse (DPT-3 Pro) as the whole-page OCR
+        /// provider. ~$0.025 per typical page.
+        case landingAIPageOCR
         /// P-Sonnet-Structure (chapter pass). One Sonnet call per
         /// book validating the splitter's chapter list.
         case chapterStructurePass
@@ -283,14 +295,12 @@ public enum CostEstimator {
                 label = "Page OCR (Gemini 3.5 Flash)"
                 modelId = CloudModel.gemini35Flash.rawValue
             case .landingAI:
-                // LandingAI ADE parse, fixed $0.03/page. Reuses
-                // the existing `landingAIDocumentOCR` Feature
-                // (same per-call price whether the call is
-                // page-level OCR or cascade Stage 2.5 / table
-                // extraction).
-                feature = .landingAIDocumentOCR
-                label = "Page OCR (LandingAI ADE)"
-                modelId = CloudModel.landingAIDocumentExtraction.rawValue
+                // LandingAI DPT-3 Pro bills per page plus output
+                // characters, so a whole page costs more than a
+                // cropped region — its own Feature.
+                feature = .landingAIPageOCR
+                label = "Page OCR (LandingAI DPT-3 Pro)"
+                modelId = CloudModel.landingAIDPT3Pro.rawValue
             }
             let cost = Double(calls) * costPerCall(feature)
             lines.append(.init(
