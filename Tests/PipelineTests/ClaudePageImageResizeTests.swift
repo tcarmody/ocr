@@ -40,20 +40,55 @@ final class ClaudePageImageResizeTests: XCTestCase {
         XCTAssertEqual(result.longEdge, 1568)
     }
 
-    func test_sonnet_5_5_page_keeps_2576_px() throws {
-        // Flat image compresses well, so the 5 MB cap never forces
-        // a step down: the long edge lands exactly on the model max.
-        let image = makeFlatImage(width: 4000, height: 3000)
-        let result = try XCTUnwrap(ClaudePageOCREngine.encodeForAnthropic(
-            image, maxLongEdge: CloudModel.sonnet5_5.maxImageLongEdge
-        ))
-        XCTAssertEqual(result.longEdge, 2576)
+    func test_high_res_models_keep_2576_px_when_under_3_75_MP() throws {
+        // 2:1 landscape: 2576 × 1288 = 3.3 MP, under the pixel cap,
+        // so the long edge lands exactly on the model max. Flat image
+        // compresses well, so the 5 MB cap never forces a step down.
+        let image = makeFlatImage(width: 5152, height: 2576)
+        for model in [CloudModel.sonnet5_5, .opus5_5] {
+            let result = try XCTUnwrap(ClaudePageOCREngine.encodeForAnthropic(
+                image,
+                maxLongEdge: model.maxImageLongEdge,
+                maxPixels: model.maxImagePixels
+            ))
+            XCTAssertEqual(result.longEdge, 2576, model.rawValue)
+        }
+    }
+
+    func test_portrait_page_is_capped_at_3_75_MP() throws {
+        // A4-ish portrait at scan DPI: 2576 px long edge would be
+        // ~4.7 MP, so the pixel cap wins (~2300 px long edge).
+        let image = makeFlatImage(width: 4960, height: 7016)
+        for model in [CloudModel.sonnet5_5, .opus5_5] {
+            let result = try XCTUnwrap(ClaudePageOCREngine.encodeForAnthropic(
+                image,
+                maxLongEdge: model.maxImageLongEdge,
+                maxPixels: model.maxImagePixels
+            ))
+            let decoded = try XCTUnwrap(NSImage(data: result.data)?
+                .cgImage(forProposedRect: nil, context: nil, hints: nil))
+            XCTAssertLessThanOrEqual(decoded.width * decoded.height, 3_750_000, model.rawValue)
+            XCTAssertGreaterThan(result.longEdge, 2200, model.rawValue)
+            XCTAssertLessThan(result.longEdge, 2576, model.rawValue)
+        }
+    }
+
+    func test_longEdgeFitting() {
+        let small = makeFlatImage(width: 1000, height: 800)
+        XCTAssertEqual(ClaudePageOCREngine.longEdgeFitting(small, maxPixels: 3_750_000), Int.max)
+        XCTAssertEqual(ClaudePageOCREngine.longEdgeFitting(small, maxPixels: nil), Int.max)
+        let big = makeFlatImage(width: 3000, height: 4000)  // 12 MP, 4:3
+        let edge = ClaudePageOCREngine.longEdgeFitting(big, maxPixels: 3_750_000)
+        // sqrt(3.75M × 4/3) ≈ 2236
+        XCTAssertEqual(Double(edge), 2235, accuracy: 2)
     }
 
     func test_other_models_still_cap_at_1568_px() throws {
         let image = makeFlatImage(width: 4000, height: 3000)
         let result = try XCTUnwrap(ClaudePageOCREngine.encodeForAnthropic(
-            image, maxLongEdge: CloudModel.opus4_7.maxImageLongEdge
+            image,
+            maxLongEdge: CloudModel.opus4_7.maxImageLongEdge,
+            maxPixels: CloudModel.opus4_7.maxImagePixels
         ))
         XCTAssertEqual(result.longEdge, 1568)
     }

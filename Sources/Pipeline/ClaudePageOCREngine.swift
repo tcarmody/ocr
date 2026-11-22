@@ -298,8 +298,8 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     /// page and the per-page error swallow in the pipeline made
     /// the conversion produce a blank EPUB. The model downscales
     /// anything above its own max (`CloudModel.maxImageLongEdge`:
-    /// 2576 px for Sonnet 5.5, 1568 px otherwise), so anything
-    /// larger is wasted bandwidth + tokens.
+    /// 2576 px / 3.75 MP for Sonnet and Opus 5.5, 1568 px otherwise),
+    /// so anything larger is wasted bandwidth + tokens.
     private static func buildRequest(
         pageImage: CGImage,
         languages: [BCP47],
@@ -308,7 +308,9 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         maxOutputTokens: Int
     ) -> AnthropicMessageRequest? {
         guard let (png, _) = Self.encodeForAnthropic(
-            pageImage, maxLongEdge: model.maxImageLongEdge
+            pageImage,
+            maxLongEdge: model.maxImageLongEdge,
+            maxPixels: model.maxImagePixels
         ) else { return nil }
         let base64 = png.base64EncodedString()
         return AnthropicMessageRequest(
@@ -499,8 +501,9 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     /// Source: Anthropic Messages API image-input docs.
     private static let anthropicMaxBase64Bytes: Int = 5 * 1024 * 1024  // 5 MB
     /// Default long edge for models that downscale anything larger
-    /// (Sonnet 4.6, Opus, Haiku). Callers pass
-    /// `CloudModel.maxImageLongEdge`, which is 2576 for Sonnet 5.5.
+    /// (Sonnet 4.6, Opus 4.7, Haiku). Callers pass
+    /// `CloudModel.maxImageLongEdge`, which is 2576 for Sonnet and
+    /// Opus 5.5.
     /// Also the first fallback when a larger image overflows 5 MB.
     static let anthropicPreferredMaxDim: Int = 1568
     /// Floor we won't shrink past; below this OCR quality drops
@@ -509,21 +512,27 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
 
     /// Returns a base64-safe PNG of `image`, resized down if needed
     /// to fit Anthropic's 5 MB (base64) / 8000 px-per-side limits.
-    /// Starts at `maxLongEdge` (the resolution the target model reads
-    /// at — 2576 for Sonnet 5.5, 1568 otherwise); on overflow steps
+    /// Starts at the largest size the target model reads: `maxLongEdge`
+    /// (2576 for Sonnet / Opus 5.5, 1568 otherwise), shrunk further
+    /// when needed so width × height stays within `maxPixels`
+    /// (3.75 MP on those models); on overflow steps
     /// down to 1568, then halves until under 5 MB or until the floor
     /// is hit. Returns the encoded data + the final
     /// long-edge dimension (useful for diagnostics).
     static func encodeForAnthropic(
         _ image: CGImage,
-        maxLongEdge: Int = anthropicPreferredMaxDim
+        maxLongEdge: Int = anthropicPreferredMaxDim,
+        maxPixels: Int? = nil
     ) -> (data: Data, longEdge: Int)? {
         // Initial size: cap to the model's max dim. Scan-DPI inputs
         // are routinely 5000-8000 px across; capping cuts the byte
         // count by an order of magnitude with no quality loss
         // (server-side downscale would do the same anyway).
         let initialDim = max(image.width, image.height)
-        var targetDim = min(initialDim, maxLongEdge, 8000)
+        var targetDim = min(
+            initialDim, maxLongEdge, 8000,
+            longEdgeFitting(image, maxPixels: maxPixels)
+        )
         var current = downsize(image, longEdge: targetDim)
         while true {
             guard let png = encodePNG(current) else { return nil }
@@ -548,6 +557,19 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
             targetDim = nextDim
             current = downsize(image, longEdge: targetDim)
         }
+    }
+
+    /// Largest long edge at which `image`, scaled with its aspect
+    /// ratio kept, stays within `maxPixels` in total (Int.max when
+    /// there is no pixel cap). Rounded down, with 1 px of slack so
+    /// rounding the short side in `downsize` can't tip it over.
+    static func longEdgeFitting(_ image: CGImage, maxPixels: Int?) -> Int {
+        guard let maxPixels else { return Int.max }
+        let w = Double(image.width), h = Double(image.height)
+        let area = w * h
+        guard area > Double(maxPixels) else { return Int.max }
+        let scale = (Double(maxPixels) / area).squareRoot()
+        return max(1, Int((max(w, h) * scale).rounded(.down)) - 1)
     }
 
     /// Length of the base64 encoding of `byteCount` bytes (padded).

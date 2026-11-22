@@ -118,7 +118,8 @@ public enum CostEstimator {
                 inputTokens: 2500, outputTokens: 1040
             ))
         case .pageOCR:
-            // Sonnet 5.5: ~7200 input (full-page image at 2576 px,
+            // Sonnet 5.5: ~7200 input (full-page image at the high-res
+            // limit, 2576 px / 3.75 MP:
             // ~4800 image tokens vs ~1600 at the old 1568 px, plus
             // prompt) + ~2600 output (XHTML for typical academic
             // page, tokenizer-scaled from 2000; dense pages can run

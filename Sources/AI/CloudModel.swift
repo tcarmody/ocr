@@ -42,7 +42,8 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// yields ~30% more tokens for the same text.
     ///
     /// Requests default to effort `low` (`defaultEffort`) and page
-    /// images go up at 2576 px (`maxImageLongEdge`).
+    /// images go up at the high-res maximum (`maxImageLongEdge`,
+    /// `maxImagePixels`).
     public static let sonnet5_5 = CloudModel(rawValue: "claude-sonnet-5-5")
 
     /// Sonnet 4.6 — previous Sonnet. Kept so persisted usage keyed
@@ -96,13 +97,28 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
         }
     }
 
-    /// Long edge, in pixels, that whole-page images are downsized to
-    /// before upload. Sonnet 5.5 reads images up to 2576 px; older
+    /// True for models with high-resolution vision: images up to
+    /// 2576 px on the long edge **and** 3.75 MP in total. Older
     /// routes keep 1568 px, where Sonnet 4.6 / Haiku 4.5 downscale
-    /// anyway. Larger images cost more image tokens (up to ~4,800
-    /// per image at 2576 px vs ~1,600 at 1568 px).
+    /// anyway.
+    public var hasHighResVision: Bool {
+        rawValue == "claude-sonnet-5-5" || rawValue == "claude-opus-5-5"
+    }
+
+    /// Long edge, in pixels, that whole-page images are downsized to
+    /// before upload — the model's maximum. Larger images cost more
+    /// image tokens (up to ~4,800 per image at the high-res limit vs
+    /// ~1,600 at 1568 px).
     public var maxImageLongEdge: Int {
-        rawValue == "claude-sonnet-5-5" ? 2576 : 1568
+        hasHighResVision ? 2576 : 1568
+    }
+
+    /// Total-pixel ceiling for whole-page images, or nil when the
+    /// long-edge cap is the only limit applied. High-res models cap
+    /// at 3.75 MP, so a portrait page (≈1.41:1) tops out near
+    /// 2300 px on the long edge rather than 2576.
+    public var maxImagePixels: Int? {
+        hasHighResVision ? 3_750_000 : nil
     }
 
     /// Haiku 5.5 — fastest and most cost-effective. Used for the
@@ -139,7 +155,8 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// is always on (`disabled` returns a 400 at every effort), so
     /// `ThinkingConfig.resolved` omits the field and requests default
     /// to effort `low`; forced `tool_choice` returns a 400; requests
-    /// opt into server-side refusal fallback. Same tokenizer as 4.7.
+    /// opt into server-side refusal fallback; page images go up at
+    /// the high-res maximum (2576 px / 3.75 MP). Same tokenizer as 4.7.
     public static let opus5_5 = CloudModel(rawValue: "claude-opus-5-5")
 
     /// Opus 4.7 — previous Opus. Kept so persisted usage keyed on
