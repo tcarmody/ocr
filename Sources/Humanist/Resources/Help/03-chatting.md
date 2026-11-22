@@ -89,7 +89,7 @@ Used for retrieval, independent of the answering backend. Pick under Settings â†
 | Backend | Cost | Notes |
 |---|---|---|
 | Apple `NLEmbedding` | Free | On-device; default. |
-| Ollama (`nomic-embed-text`) | Free | Local; better on technical text. |
+| Ollama (`embeddinggemma-2:270m`) | Free | Local; Google's EmbeddingGemma 2, 100+ languages. Pull once with `ollama pull embeddinggemma-2:270m`. |
 | Voyage AI | Cloud | Best on academic English. |
 | Gemini Embedding 2 | Cloud | Best on multilingual / classical-script content. |
 

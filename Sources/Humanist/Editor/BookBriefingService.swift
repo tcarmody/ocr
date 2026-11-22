@@ -513,7 +513,7 @@ final class BookBriefingService: ObservableObject {
         guard !digest.isEmpty else { return fallback() }
         let queryVector: [Float]
         do {
-            let vectors = try await backend.embed([digest])
+            let vectors = try await backend.embedQuery([digest])
             guard let first = vectors.first, !first.isEmpty else {
                 return fallback()
             }

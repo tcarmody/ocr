@@ -221,12 +221,12 @@ final class BookChatViewModel: ObservableObject {
 
     /// Local Ollama embedding model tag. Independent from the chat
     /// model — embedding tasks want a small dedicated embedder
-    /// (`nomic-embed-text` ~ 270 MB) rather than a 20 GB chat model.
+    /// (EmbeddingGemma 2, ~300 MB) rather than a 20 GB chat model.
     private var ollamaEmbeddingModel: String {
         let raw = UserDefaults.standard.string(
             forKey: "humanist.chat.ollamaEmbeddingModel"
         ) ?? ""
-        return raw.isEmpty ? "nomic-embed-text" : raw
+        return raw.isEmpty ? EmbeddingBackendChoice.defaultOllamaModel : raw
     }
 
     /// Voyage embedding model. `voyage-3` is the strong default;
@@ -1808,7 +1808,7 @@ final class BookChatViewModel: ObservableObject {
         _ query: String, using backend: any EmbeddingBackend
     ) async -> [Float]? {
         do {
-            let vectors = try await backend.embed([query])
+            let vectors = try await backend.embedQuery([query])
             return vectors.first
         } catch {
             return nil

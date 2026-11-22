@@ -80,7 +80,7 @@ caffeinate -i .build/arm64-apple-macosx/release/humanist-cli reindex --backend g
 Useful reindex flags:
 
 - `--gemini-dim 768|1536|3072` — Matryoshka dim for Gemini
-- `--voyage-model voyage-3` / `--ollama-model nomic-embed-text` — model override
+- `--voyage-model voyage-3` / `--ollama-model embeddinggemma-2:270m` — model override
 - `--catalog <path>` — point at a non-default `library.json`
 - `--store-root <path>` — point at a non-default embeddings root
 - `--app-bundle-id com.tcarmody.Humanist` — keychain lookup ID; defaults to the standard app bundle ID so the CLI finds keys the app stored

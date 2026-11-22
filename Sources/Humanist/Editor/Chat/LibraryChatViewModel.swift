@@ -91,7 +91,7 @@ final class LibraryChatViewModel: ObservableObject {
         let raw = UserDefaults.standard.string(
             forKey: "humanist.chat.ollamaEmbeddingModel"
         ) ?? ""
-        return raw.isEmpty ? "nomic-embed-text" : raw
+        return raw.isEmpty ? EmbeddingBackendChoice.defaultOllamaModel : raw
     }
 
     private var voyageModel: String {
@@ -740,7 +740,7 @@ final class LibraryChatViewModel: ObservableObject {
         _ query: String, using backend: any EmbeddingBackend
     ) async -> [Float]? {
         do {
-            let vectors = try await backend.embed([query])
+            let vectors = try await backend.embedQuery([query])
             return vectors.first
         } catch {
             return nil

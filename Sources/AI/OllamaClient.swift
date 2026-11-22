@@ -548,7 +548,7 @@ public actor OllamaClient {
 
     /// Embed a batch of texts via `/api/embed`. The daemon must have
     /// the requested embedding model pulled (e.g.
-    /// `ollama pull nomic-embed-text`); if it's missing, the call
+    /// `ollama pull embeddinggemma-2:270m`); if it's missing, the call
     /// returns `OllamaError.modelNotPulled`.
     ///
     /// Vectors come back as `[Double]` from Ollama; we down-convert

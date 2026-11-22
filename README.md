@@ -287,7 +287,7 @@ The default embedding backend is Apple's on-device `NLEmbedding` — free, offli
 
 - **Voyage AI** (best on academic English) — get a key at <https://voyageai.com>; paste under Settings → AI → Chat Retrieval → Voyage. Test Connection button runs a one-token probe.
 - **Gemini Embedding 2** (best on multilingual / classical-script content) — get a key at <https://aistudio.google.com>; same pattern. Matryoshka output (truncate to 768 / 1536 / full ~3072 dim) for storage / quality tradeoffs.
-- **Ollama embeddings** — pull `nomic-embed-text` or similar; paste the model tag under Settings → AI → Chat Retrieval.
+- **Ollama embeddings** — pull `embeddinggemma-2:270m` (the default; Google's EmbeddingGemma 2) or another embedder; paste the model tag under Settings → AI → Chat Retrieval.
 
 ## Source layout
 

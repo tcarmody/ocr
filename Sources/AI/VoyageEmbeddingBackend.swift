@@ -76,11 +76,22 @@ public actor VoyageEmbeddingBackend: EmbeddingBackend {
     }
 
     public func embed(_ texts: [String]) async throws -> [[Float]] {
+        try await embed(texts, inputType: "document")
+    }
+
+    /// Queries use Voyage's `input_type: "query"`, which prepends its
+    /// retrieval-query prompt server-side. Document vectors are
+    /// unchanged, so existing sidecars stay valid.
+    public func embedQuery(_ texts: [String]) async throws -> [[Float]] {
+        try await embed(texts, inputType: "query")
+    }
+
+    private func embed(_ texts: [String], inputType: String) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         guard let key = keyStore.read() else {
             throw EmbeddingError.missingAPIKey(provider: "Voyage")
         }
-        let body = RequestBody(input: texts, model: model, inputType: "document")
+        let body = RequestBody(input: texts, model: model, inputType: inputType)
         let url = baseURL.appendingPathComponent("v1/embeddings")
         var request = URLRequest(url: url, timeoutInterval: requestTimeout)
         request.httpMethod = "POST"

@@ -157,7 +157,7 @@ enum BackendResolver {
         let raw = UserDefaults.standard.string(
             forKey: "humanist.chat.ollamaEmbeddingModel"
         ) ?? ""
-        return raw.isEmpty ? "nomic-embed-text" : raw
+        return raw.isEmpty ? EmbeddingBackendChoice.defaultOllamaModel : raw
     }
 
     private static func voyageModel() -> String {

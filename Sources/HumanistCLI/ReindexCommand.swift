@@ -75,7 +75,7 @@ struct ReindexCommand: AsyncParsableCommand {
         name: .long,
         help: "Ollama embedding model name. Only used when --backend ollama."
     )
-    var ollamaModel: String = "nomic-embed-text"
+    var ollamaModel: String = EmbeddingBackendChoice.defaultOllamaModel
 
     @Option(
         name: .long,

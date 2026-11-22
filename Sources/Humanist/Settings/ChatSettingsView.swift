@@ -18,10 +18,10 @@ struct ChatSettingsView: View {
     @AppStorage("humanist.chat.ollamaModel")
     private var ollamaModel: String = "qwen3.5:9b"
     /// Ollama embedding model tag. Independent from the chat model
-    /// so users can run a small dedicated embedder (~270 MB) for
+    /// so users can run a small dedicated embedder (~300 MB) for
     /// retrieval and a heavier model for chat answers.
     @AppStorage("humanist.chat.ollamaEmbeddingModel")
-    private var ollamaEmbeddingModel: String = "nomic-embed-text"
+    private var ollamaEmbeddingModel: String = EmbeddingBackendChoice.defaultOllamaModel
     /// Voyage embedding model. `voyage-3` (1024-dim) is the strong
     /// default; `voyage-3-lite` (512-dim) is roughly half the cost.
     @AppStorage("humanist.chat.voyageModel")
@@ -415,7 +415,7 @@ struct ChatSettingsView: View {
                         TextField("ollama embed tag", text: $ollamaEmbeddingModel)
                             .textFieldStyle(.roundedBorder)
                     }
-                    Text("Default \"nomic-embed-text\" is ~270 MB. Pull it once with `ollama pull nomic-embed-text`. The daemon must be running when the editor opens an EPUB.")
+                    Text("Default \"embeddinggemma-2:270m\" (Google EmbeddingGemma 2, text-only) is ~300–380 MB. Pull it once with `ollama pull embeddinggemma-2:270m`. EmbeddingGemma and nomic-embed-text get their query / document prompts added automatically. The daemon must be running when the editor opens an EPUB.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

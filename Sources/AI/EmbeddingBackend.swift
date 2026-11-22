@@ -21,12 +21,65 @@ public protocol EmbeddingBackend: Sendable {
     /// Embedding dimension. Stored in the sidecar; mismatch → full
     /// rebuild.
     var dimension: Int { get }
-    /// Embed a batch of texts. Order of results matches order of
-    /// inputs. Empty input → empty output. Caller is responsible
-    /// for batching to amortize per-call overhead — Voyage / Gemini
-    /// support up to ~100 inputs per call; NLEmbedding is loop-per-
-    /// text but accepts the same protocol.
+    /// Embed a batch of **documents** (the paragraphs being indexed).
+    /// Order of results matches order of inputs. Empty input → empty
+    /// output. Caller is responsible for batching to amortize per-call
+    /// overhead — Voyage / Gemini support up to ~100 inputs per call;
+    /// NLEmbedding is loop-per-text but accepts the same protocol.
     func embed(_ texts: [String]) async throws -> [[Float]]
+    /// Embed a batch of **search queries** — the text compared against
+    /// indexed documents. Retrieval models trained asymmetrically want
+    /// queries marked differently from documents (Voyage `input_type`,
+    /// Gemini `taskType`, EmbeddingGemma / nomic prompt prefixes); the
+    /// default just calls `embed`, right for symmetric backends such
+    /// as `NLEmbedding`.
+    func embedQuery(_ texts: [String]) async throws -> [[Float]]
+}
+
+public extension EmbeddingBackend {
+    func embedQuery(_ texts: [String]) async throws -> [[Float]] {
+        try await embed(texts)
+    }
+}
+
+/// Prompt prefixes an asymmetric retrieval model expects on its
+/// inputs. Prepended client-side — Ollama's `/api/embed` passes text
+/// through unchanged.
+public struct EmbeddingPromptPrefixes: Sendable, Equatable {
+    public let query: String
+    public let document: String
+
+    public init(query: String, document: String) {
+        self.query = query
+        self.document = document
+    }
+
+    /// EmbeddingGemma (v1 and 2) retrieval prompts, from the model
+    /// card: `task: search result | query: …` for queries and
+    /// `title: {title} | text: …` for documents, with `title: none`
+    /// when there's no title (paragraphs don't carry one).
+    public static let embeddingGemma = EmbeddingPromptPrefixes(
+        query: "task: search result | query: ",
+        document: "title: none | text: "
+    )
+
+    /// nomic-embed-text task prefixes.
+    public static let nomicEmbedText = EmbeddingPromptPrefixes(
+        query: "search_query: ",
+        document: "search_document: "
+    )
+
+    /// Prefixes for an Ollama model tag, matched on the model family
+    /// (the name before any `:tag`). Nil for models without a
+    /// documented prompt format — text goes through unchanged.
+    public static func forOllamaModel(_ model: String) -> EmbeddingPromptPrefixes? {
+        let family = model.split(separator: ":", maxSplits: 1).first
+            .map { $0.lowercased() } ?? ""
+        let name = family.split(separator: "/").last.map(String.init) ?? family
+        if name.hasPrefix("embeddinggemma") { return .embeddingGemma }
+        if name.hasPrefix("nomic-embed-text") { return .nomicEmbedText }
+        return nil
+    }
 }
 
 /// Errors surfaced by an `EmbeddingBackend`. Callers map to a banner
@@ -154,6 +207,12 @@ private struct ConcurrencySafeEmbedding: @unchecked Sendable {
 /// same Ollama install that powers the local-chat path can serve
 /// embeddings.
 ///
+/// Models with a documented prompt format (EmbeddingGemma,
+/// nomic-embed-text — see `EmbeddingPromptPrefixes.forOllamaModel`)
+/// get their query / document prefixes prepended, and their
+/// identifier gains a `.prefixed` suffix so sidecars built before
+/// prefixes were applied are rebuilt rather than mixed with them.
+///
 /// Dimension is probed at construction time by embedding a single
 /// short string; this is the only way to know without a per-model
 /// hard-coded table, which would silently break when users pick
@@ -162,6 +221,8 @@ public struct OllamaEmbeddingBackend: EmbeddingBackend {
     public let identifier: String
     public let dimension: Int
     public let model: String
+    /// Query / document prefixes for this model, or nil.
+    public let prefixes: EmbeddingPromptPrefixes?
     private let client: OllamaClient
 
     /// Build a backend by probing the daemon for the model's
@@ -198,12 +259,19 @@ public struct OllamaEmbeddingBackend: EmbeddingBackend {
                 "ollama returned empty embeddings for the dimension probe"
             )
         }
+        let prefixes = EmbeddingPromptPrefixes.forOllamaModel(model)
         return OllamaEmbeddingBackend(
-            identifier: "ollama.\(model)",
+            identifier: identifier(model: model, prefixes: prefixes),
             dimension: firstVector.count,
             model: model,
+            prefixes: prefixes,
             client: client
         )
+    }
+
+    /// `ollama.<model>`, plus `.prefixed` when prompt prefixes apply.
+    static func identifier(model: String, prefixes: EmbeddingPromptPrefixes?) -> String {
+        "ollama.\(model)" + (prefixes == nil ? "" : ".prefixed")
     }
 
     /// Internal init — public callers go through `make` so the
@@ -212,15 +280,25 @@ public struct OllamaEmbeddingBackend: EmbeddingBackend {
         identifier: String,
         dimension: Int,
         model: String,
+        prefixes: EmbeddingPromptPrefixes? = nil,
         client: OllamaClient
     ) {
         self.identifier = identifier
         self.dimension = dimension
         self.model = model
+        self.prefixes = prefixes
         self.client = client
     }
 
     public func embed(_ texts: [String]) async throws -> [[Float]] {
+        try await send(texts.map { (prefixes?.document ?? "") + $0 })
+    }
+
+    public func embedQuery(_ texts: [String]) async throws -> [[Float]] {
+        try await send(texts.map { (prefixes?.query ?? "") + $0 })
+    }
+
+    private func send(_ texts: [String]) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         do {
             let vectors = try await client.embed(model: model, texts: texts)

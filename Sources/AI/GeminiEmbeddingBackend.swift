@@ -153,6 +153,17 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
     }
 
     public func embed(_ texts: [String]) async throws -> [[Float]] {
+        try await embed(texts, taskType: "RETRIEVAL_DOCUMENT")
+    }
+
+    /// Queries use `taskType: RETRIEVAL_QUERY`, the counterpart of the
+    /// `RETRIEVAL_DOCUMENT` used at index time. Document vectors are
+    /// unchanged, so existing sidecars stay valid.
+    public func embedQuery(_ texts: [String]) async throws -> [[Float]] {
+        try await embed(texts, taskType: "RETRIEVAL_QUERY")
+    }
+
+    private func embed(_ texts: [String], taskType: String) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         guard let key = keyStore.read() else {
             throw EmbeddingError.missingAPIKey(provider: "Google AI Studio (Gemini)")
@@ -181,7 +192,9 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
         var allEmbeddings: [[Float]] = []
         allEmbeddings.reserveCapacity(truncated.count)
         for chunk in truncated.chunked(into: Self.maxItemsPerRequest) {
-            let chunkEmbeddings = try await embedOneChunk(chunk, apiKey: key)
+            let chunkEmbeddings = try await embedOneChunk(
+                chunk, apiKey: key, taskType: taskType
+            )
             allEmbeddings.append(contentsOf: chunkEmbeddings)
         }
         return allEmbeddings
@@ -191,7 +204,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
     /// `batchEmbedContents`. Same shape as the v1 `embed(_:)` but
     /// without the input-size check (caller already chunked).
     private func embedOneChunk(
-        _ texts: [String], apiKey: String
+        _ texts: [String], apiKey: String, taskType: String
     ) async throws -> [[Float]] {
         let path = "/v1beta/models/\(model):batchEmbedContents"
         let url = baseURL.appendingPathComponent(path)
@@ -203,7 +216,7 @@ public actor GeminiEmbeddingBackend: EmbeddingBackend {
                     content: ContentEnvelope(
                         parts: [ContentPart(text: text)]
                     ),
-                    taskType: "RETRIEVAL_DOCUMENT",
+                    taskType: taskType,
                     outputDimensionality: outputDimensionality
                 )
             }

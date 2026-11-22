@@ -14,7 +14,7 @@ public enum EmbeddingBackendChoice: String, CaseIterable, Identifiable, Sendable
     case appleNL
     /// Ollama embedding endpoint (`/api/embed`). Better quality than
     /// NLEmbedding for technical text; requires the daemon and a
-    /// pulled embedding model (e.g. `nomic-embed-text`).
+    /// pulled embedding model (default `embeddinggemma-2:270m`).
     case ollama
     /// Voyage AI cloud embeddings. Strong on technical / academic
     /// English. Cheap (~$0.005/book). Requires a Voyage API key.
@@ -26,6 +26,12 @@ public enum EmbeddingBackendChoice: String, CaseIterable, Identifiable, Sendable
     case gemini
 
     public var id: String { rawValue }
+
+    /// Default Ollama embedding model: EmbeddingGemma 2's text-only
+    /// 270M size (~300–380 MB pulled, 768-dim, 8K-token input, 100+
+    /// languages). The `:latest` / `:740m` tags add image, video and
+    /// audio encoders the retriever doesn't use.
+    public static let defaultOllamaModel = "embeddinggemma-2:270m"
 
     /// Persisted under this key in `UserDefaults`. Read per-build
     /// so a Settings change applies on the next chat session.
@@ -45,7 +51,7 @@ public enum EmbeddingBackendChoice: String, CaseIterable, Identifiable, Sendable
         case .appleNL:
             return "On-device sentence embedding. No setup, no API key, no network. Quality is moderate but enough to surface conceptually-related paragraphs the keyword pass missed."
         case .ollama:
-            return "Local embedding model via the Ollama daemon. Better quality than Apple's built-in for technical text; requires a pulled embedding model like nomic-embed-text."
+            return "Local embedding model via the Ollama daemon. Better quality than Apple's built-in for technical text; requires a pulled embedding model — EmbeddingGemma 2 (embeddinggemma-2:270m) by default."
         case .voyage:
             return "Voyage AI's cloud embeddings. Strong on technical / academic English. Adds an API call per paragraph at index time (~$0.005 per book). Requires a Voyage API key."
         case .gemini:
