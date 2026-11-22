@@ -8,8 +8,11 @@ import OCR
 
 /// LandingAI ADE table-structure extraction. Cropped `.table` region
 /// goes to the Gen2 parse API (`POST /v2/parse`, DPT-3 Pro — see
-/// `LandingAIParse`); tables are requested in pipe syntax and the
-/// response's markdown is parsed back into `[[TableCell]]`.
+/// `LandingAIParse`). The first `table` block in the response's
+/// `structure` tree becomes `[[TableCell]]` straight from its
+/// `table_cell` nodes, merged cells kept as `rowspan` / `colspan`.
+/// Fallbacks, in order: the first HTML `<table>` in the flat markdown
+/// (also span-aware), then a pipe-syntax table.
 ///
 /// When wired ahead of `ClaudeTableExtractor` (Cloud-mode setting
 /// `landingAITableExtraction`), this becomes the first cloud attempt
@@ -20,13 +23,11 @@ import OCR
 /// or sub-2×2 dimensions.
 ///
 /// Limitations vs `ClaudeTableExtractor`:
-///   * Markdown table syntax doesn't carry `rowspan` / `colspan`, so
-///     merged cells flatten to 1×1 (DPT-3 expands them into empty
-///     neighbours). DPT-3's default HTML tables, and the `table_cell`
-///     nodes in its `structure` tree, do carry spans; we don't decode
-///     them yet — future work if span fidelity matters.
-///   * Header detection is structural (cells above the `---|---`
-///     separator row), not semantic — matches markdown convention.
+///   * Gen2 has no header flag. The rows covered by the first row's
+///     cells are marked as header (`<th>` cells win in the HTML
+///     fallback; cells above `---|---` in the pipe fallback) — a
+///     structural guess, not semantic detection.
+///   * Only the first table in the crop is returned.
 public struct LandingAITableExtractor: TableExtractor {
     public let apiKeyProvider: @Sendable () -> String?
     public let budget: CloudCallBudget
@@ -93,19 +94,31 @@ public struct LandingAITableExtractor: TableExtractor {
             for: .landingAIDPT3Pro
         )
 
-        let markdown = LandingAIParse.cleanMarkdown(envelope.markdown ?? "")
-        guard !markdown.isEmpty,
-              let rows = Self.parseMarkdownTable(markdown) else {
-            return nil
-        }
+        guard let rows = Self.rows(from: envelope) else { return nil }
 
         // Same rows × cols floor as the heuristic and the other paths.
-        let maxCols = rows.map(\.count).max() ?? 0
+        let maxCols = LandingAIParse.columnCount(rows)
         guard rows.count >= TableHeuristic.minRows,
               maxCols >= TableHeuristic.minCols else {
             return nil
         }
         return rows
+    }
+
+    /// Rows for the first table in `response`: structure tree, then
+    /// HTML `<table>` in the markdown, then pipe syntax. Nil when none
+    /// yields a table.
+    static func rows(from response: LandingAIParse.Response) -> [[TableCell]]? {
+        if let table = response.blocks.first(where: { $0.type == "table" }) {
+            let rows = LandingAIParse.tableRows(from: table, in: response)
+            if !rows.isEmpty { return rows }
+        }
+        let markdown = LandingAIParse.cleanMarkdown(response.markdown ?? "")
+        guard !markdown.isEmpty else { return nil }
+        if let rows = LandingAIParse.parseHTMLTable(markdown), !rows.isEmpty {
+            return rows
+        }
+        return parseMarkdownTable(markdown)
     }
 
     // MARK: - Markdown table parsing

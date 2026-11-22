@@ -14,12 +14,15 @@ import OCR
 /// (technical reports, multi-figure scientific papers, tables-and-
 /// figures interleaved with prose) beats the LLM-prompt path's
 /// best efforts at parsing free-form vision output. The returned
-/// markdown carries pipe-table markdown for tables (requested via
-/// `options.blocks.table.format`; DPT-3's default is HTML) and any
-/// inline `<math>` MathML, both of which round-trip through the
-/// page-OCR parser into `Block.table` / inline math `rawXHTML`.
-/// DPT-3's `<figure>` blocks and `<!-- … -->` markers are stripped
-/// before parsing (`LandingAIParse.cleanMarkdown`).
+/// response's `structure` tree gives typed blocks in reading order:
+/// `text` blocks run through the markdown converter below (headings,
+/// paragraphs, emphasis, inline `<math>` MathML → `rawXHTML`), and
+/// `table` blocks become `Block.table` straight from their
+/// `table_cell` nodes, merged cells kept as `rowspan` / `colspan`.
+/// `marginalia` (page numbers, running heads, side notes) and
+/// `figure` blocks are skipped, matching `ClaudePageOCREngine`'s
+/// "what to skip" rules. Without a tree we fall back to the flat
+/// markdown, whose HTML `<table>` markup `parseMarkdown` also reads.
 ///
 /// **Cost**: DPT-3 Pro bills 1 credit per page + 0.5 per 1,000 output
 /// characters ($1 = 100 credits) — ~$0.025 for a typical page, ~5×
@@ -46,14 +49,17 @@ public struct LandingAIPageOCREngine: PageOCREngine, Sendable {
         pageIndex: Int,
         languages: [BCP47]
     ) async throws -> ClaudePageResult {
-        let result = try await document.recognize(
-            image: pageImage,
-            hints: OCRHints(languages: languages)
+        // Language hints aren't part of the parse schema.
+        let response = try await document.parse(
+            image: pageImage, filename: "page.png"
         )
-        // Empty response → empty result; pipeline records it as
-        // `.empty` provider status. The Vision back-fill fallback
-        // still runs upstream when this is the only signal.
-        let blocks = Self.parseMarkdown(result.text)
+        let blocks = Self.blocks(from: response)
+        // Empty response → `.empty` provider status. The Vision
+        // back-fill fallback still runs upstream when this is the
+        // only signal.
+        guard !blocks.isEmpty else {
+            throw LandingAIDocumentEngine.DocumentOCRError.emptyResponse
+        }
         return ClaudePageResult(blocks: blocks, footnotes: [])
     }
 
@@ -73,6 +79,34 @@ public struct LandingAIPageOCREngine: PageOCREngine, Sendable {
         return .apiError
     }
 
+    // MARK: - Structure tree → [Block]
+
+    /// Blocks for one page response. Uses the structure tree when it
+    /// yields anything; otherwise the cleaned flat markdown.
+    static func blocks(from response: LandingAIParse.Response) -> [Block] {
+        var out: [Block] = []
+        for node in response.blocks {
+            switch node.type {
+            case "table":
+                let rows = LandingAIParse.tableRows(
+                    from: node, in: response, runs: parseInline
+                )
+                if !rows.isEmpty {
+                    out.append(.table(rows: rows, caption: []))
+                }
+            case "text", "card", "attestation":
+                out.append(contentsOf: parseMarkdown(
+                    LandingAIParse.cleanMarkdown(response.text(of: node))
+                ))
+            default:
+                // marginalia, figure, logo, scan_code: not body text.
+                continue
+            }
+        }
+        if !out.isEmpty { return out }
+        return parseMarkdown(LandingAIParse.cleanMarkdown(response.markdown ?? ""))
+    }
+
     // MARK: - Markdown → [Block]
 
     /// Minimal markdown converter for ADE's response shape. Handles
@@ -80,6 +114,8 @@ public struct LandingAIPageOCREngine: PageOCREngine, Sendable {
     ///   * ATX headings (`#`, `##`, `###`)
     ///   * Paragraphs (blank-line separated)
     ///   * Pipe tables (header row + `|---|---|` separator + body)
+    ///   * HTML `<table>` blocks (DPT-3's default table markup), with
+    ///     `rowspan` / `colspan`, via `LandingAIParse.parseHTMLTable`
     ///   * Inline `**bold**` / `*italic*`
     ///   * Inline `<math>…</math>` HTML — passed through verbatim
     ///     as `InlineRun.rawXHTML` so the page-XHTML writer emits
@@ -111,6 +147,25 @@ public struct LandingAIPageOCREngine: PageOCREngine, Sendable {
             if line.isEmpty {
                 flushParagraph()
                 i += 1
+                continue
+            }
+            // HTML table: consume from `<table` through the line that
+            // closes it, then parse spans and cells.
+            if line.lowercased().hasPrefix("<table") {
+                flushParagraph()
+                var j = i
+                var html: [String] = []
+                while j < lines.count {
+                    html.append(lines[j])
+                    if lines[j].lowercased().contains("</table>") { break }
+                    j += 1
+                }
+                if let rows = LandingAIParse.parseHTMLTable(
+                    html.joined(separator: "\n"), runs: parseInline
+                ), !rows.isEmpty {
+                    blocks.append(.table(rows: rows, caption: []))
+                }
+                i = j + 1
                 continue
             }
             if let h = parseHeading(line) {

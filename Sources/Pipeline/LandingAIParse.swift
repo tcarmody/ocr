@@ -1,5 +1,6 @@
 import Foundation
 import AI
+import Document
 
 /// Shared wire layer for LandingAI's ADE Gen2 parse API (DPT-3),
 /// used by `LandingAIDocumentEngine` (cascade region OCR + page OCR)
@@ -10,15 +11,18 @@ import AI
 /// is still multipart/form-data with a `document` file part, a `model`
 /// field and Bearer auth; the response is a redesign — `chunks`,
 /// per-chunk markdown and the top-level `grounding` map are gone in
-/// favour of a `structure` tree. We read only the top-level `markdown`
-/// string (still the whole document in reading order) and the billing
-/// metadata, so the rest of the pipeline is unaffected.
+/// favour of a `structure` tree: document → pages → blocks (`text`,
+/// `table` → `table_cell`, `figure`, `marginalia`, …) in reading order,
+/// each with a `grounding` (page, a `[start, end)` code-point `range`
+/// into the top-level `markdown`, and a top-left-origin 0–1 `box`).
+/// Callers build their output from that tree — typed blocks, real
+/// boxes, and table cells with `row` / `col` / `rowspan` / `colspan` —
+/// and fall back to the flat `markdown` when it's missing.
 ///
 /// Gen2 markdown differs from Gen1 in ways the callers care about:
-///   * tables default to HTML `<table>` markup — we send
-///     `options.blocks.table.format = "markdown"` so the existing
-///     pipe-table parsers keep working (merged cells expand into
-///     empty neighbours, as before);
+///   * tables are HTML `<table>` markup (the default, kept because it
+///     preserves merged cells); `parseHTMLTable` reads it when the
+///     structure tree isn't available;
 ///   * figures render as `<figure type="…">…</figure>` and the output
 ///     ends with a `<!-- doc_id=… -->` line (plus `<!-- PAGE BREAK -->`
 ///     between pages of multi-page input) — `cleanMarkdown` strips
@@ -38,8 +42,10 @@ public enum LandingAIParse {
     /// names the snapshot that ran (e.g. `dpt-3-pro-20260710`).
     public static let defaultModel = "dpt-3-pro-latest"
 
-    /// Ask for pipe-syntax tables instead of the HTML default.
-    static let optionsJSON = #"{"blocks":{"table":{"format":"markdown"}}}"#
+    /// Keep the default HTML tables (they carry merged cells) and turn
+    /// off per-line `atomic_grounding`, which we don't read — it only
+    /// enlarges the response.
+    static let optionsJSON = #"{"atomic_grounding":false}"#
 
     /// Build the multipart `POST /v2/parse` request for one PNG.
     static func makeRequest(
@@ -82,6 +88,41 @@ public enum LandingAIParse {
     struct Response: Decodable {
         let markdown: String?
         let metadata: Metadata?
+        /// Root `document` node; nil on a body without one.
+        var structure: Node? = nil
+
+        init(markdown: String?, metadata: Metadata?, structure: Node? = nil) {
+            self.markdown = markdown
+            self.metadata = metadata
+            self.structure = structure
+        }
+
+        /// `[start, end)` slice of `markdown` in Unicode code points —
+        /// the unit Gen2 uses for every `grounding.range`. Clamped, so
+        /// a bad range yields "" rather than a crash.
+        func slice(_ range: Node.Range?) -> String {
+            guard let range, let markdown else { return "" }
+            let scalars = Array(markdown.unicodeScalars)
+            let lo = max(0, min(range.start, scalars.count))
+            let hi = max(lo, min(range.end, scalars.count))
+            var out = String.UnicodeScalarView()
+            out.append(contentsOf: scalars[lo..<hi])
+            return String(out)
+        }
+
+        /// Text of a block: its markdown slice.
+        func text(of node: Node) -> String { slice(node.grounding?.range) }
+
+        /// Blocks of every successfully parsed page, in reading order.
+        var blocks: [Node] {
+            (structure?.children ?? [])
+                .filter { $0.type == "page" && $0.status != "failed" }
+                .flatMap { $0.children ?? [] }
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case markdown, metadata, structure
+        }
 
         struct Metadata: Decodable {
             let modelVersion: String?
@@ -101,6 +142,41 @@ public enum LandingAIParse {
             private enum CodingKeys: String, CodingKey {
                 case totalCredits = "total_credits"
             }
+        }
+    }
+
+    /// One `structure` node — document, page or block. Only `type` is
+    /// required here; Gen2 omits unset optional fields.
+    struct Node: Decodable, Equatable {
+        let type: String
+        var id: String? = nil
+        var grounding: Grounding? = nil
+        var children: [Node]? = nil
+        /// Pages only: `"ok"` or `"failed"`.
+        var status: String? = nil
+        /// `table_cell` only: 0-indexed position and spans (default 1).
+        var row: Int? = nil
+        var col: Int? = nil
+        var rowspan: Int? = nil
+        var colspan: Int? = nil
+
+        struct Grounding: Decodable, Equatable {
+            var page: Int? = nil
+            var range: Range? = nil
+            var box: Box? = nil
+        }
+
+        struct Range: Decodable, Equatable {
+            let start: Int
+            let end: Int
+        }
+
+        /// Fractions of the page, origin top-left, y increasing down.
+        struct Box: Decodable, Equatable {
+            let xmin: Double
+            let ymin: Double
+            let xmax: Double
+            let ymax: Double
         }
     }
 
@@ -127,6 +203,189 @@ public enum LandingAIParse {
             of: #"\n{3,}"#, with: "\n\n", options: .regularExpression
         )
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Tables
+
+    /// `[[TableCell]]` for a `table` node, from its `table_cell`
+    /// children: one row per `row` index, cells ordered by `col`, each
+    /// merged cell listed once with its spans (same convention as
+    /// `ClaudeTableExtractor`). Gen2 has no header flag, so the rows
+    /// covered by the first row's cells are treated as the header —
+    /// matching what the pipe-table path did with the first row.
+    static func tableRows(
+        from table: Node,
+        in response: Response,
+        runs makeRuns: (String) -> [InlineRun] = plainRuns
+    ) -> [[TableCell]] {
+        let cells = (table.children ?? []).filter { $0.type == "table_cell" }
+        guard !cells.isEmpty else { return [] }
+        let byRow = Dictionary(grouping: cells) { $0.row ?? 0 }
+        let headerRows = (byRow[byRow.keys.min() ?? 0] ?? [])
+            .map { max(1, $0.rowspan ?? 1) }.max() ?? 1
+        let firstRow = byRow.keys.min() ?? 0
+        return byRow.keys.sorted().map { r in
+            (byRow[r] ?? []).sorted { ($0.col ?? 0) < ($1.col ?? 0) }.map { cell in
+                TableCell(
+                    runs: makeRuns(cellText(response.text(of: cell))),
+                    isHeader: r < firstRow + headerRows,
+                    rowspan: max(1, cell.rowspan ?? 1),
+                    colspan: max(1, cell.colspan ?? 1)
+                )
+            }
+        }
+    }
+
+    /// Parse the first HTML `<table>` in `html` — the fallback when the
+    /// structure tree is missing. Reads `rowspan` / `colspan`; `<th>`
+    /// cells are headers, and when there are none the first row's
+    /// rowspan rule from `tableRows` applies.
+    static func parseHTMLTable(
+        _ html: String,
+        runs makeRuns: (String) -> [InlineRun] = plainRuns
+    ) -> [[TableCell]]? {
+        guard let tableRange = html.range(
+            of: #"<table\b[^>]*>[\s\S]*?</table>"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) else { return nil }
+        let table = String(html[tableRange])
+        let rowPattern = try! NSRegularExpression(
+            pattern: #"<tr\b[^>]*>([\s\S]*?)</tr>"#, options: [.caseInsensitive]
+        )
+        let cellPattern = try! NSRegularExpression(
+            pattern: #"<(td|th)\b([^>]*)>([\s\S]*?)</\1>"#, options: [.caseInsensitive]
+        )
+        func group(_ m: NSTextCheckingResult, _ i: Int, in s: String) -> String {
+            guard let r = Swift.Range(m.range(at: i), in: s) else { return "" }
+            return String(s[r])
+        }
+        func span(_ name: String, in attrs: String) -> Int {
+            guard let r = attrs.range(
+                of: name + #"\s*=\s*["']?(\d+)"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) else { return 1 }
+            let digits = attrs[r].filter(\.isNumber)
+            return max(1, Int(digits) ?? 1)
+        }
+        var raw: [[(isTH: Bool, text: String, rowspan: Int, colspan: Int)]] = []
+        let ns = table as NSString
+        for rowMatch in rowPattern.matches(in: table, range: NSRange(location: 0, length: ns.length)) {
+            let rowHTML = group(rowMatch, 1, in: table)
+            let rns = rowHTML as NSString
+            let cells = cellPattern.matches(
+                in: rowHTML, range: NSRange(location: 0, length: rns.length)
+            ).map { m in
+                let attrs = group(m, 2, in: rowHTML)
+                return (
+                    isTH: group(m, 1, in: rowHTML).lowercased() == "th",
+                    text: cellText(group(m, 3, in: rowHTML)),
+                    rowspan: span("rowspan", in: attrs),
+                    colspan: span("colspan", in: attrs)
+                )
+            }
+            if !cells.isEmpty { raw.append(cells) }
+        }
+        guard !raw.isEmpty else { return nil }
+        let anyTH = raw.contains { $0.contains { $0.isTH } }
+        let headerRows = raw[0].map(\.rowspan).max() ?? 1
+        return raw.enumerated().map { (i, row) in
+            row.map { c in
+                TableCell(
+                    runs: makeRuns(c.text),
+                    isHeader: anyTH ? c.isTH : i < headerRows,
+                    rowspan: c.rowspan,
+                    colspan: c.colspan
+                )
+            }
+        }
+    }
+
+    /// Grid width of `rows`: the widest row counting colspans. A lower
+    /// bound when rowspans push cells right, which is fine for the
+    /// minimum-size check callers use it for.
+    static func columnCount(_ rows: [[TableCell]]) -> Int {
+        rows.map { $0.reduce(0) { $0 + $1.colspan } }.max() ?? 0
+    }
+
+    static func plainRuns(_ text: String) -> [InlineRun] {
+        text.isEmpty ? [] : [InlineRun(text)]
+    }
+
+    /// Cell content as plain text: `<br>` becomes a space, other tags
+    /// are dropped, entities decoded, whitespace collapsed.
+    static func cellText(_ raw: String) -> String {
+        var t = raw.replacingOccurrences(
+            of: #"<br\s*/?>"#, with: " ", options: [.regularExpression, .caseInsensitive]
+        )
+        t = t.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        t = decodeEntities(t)
+        t = t.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Block text as plain text for OCR observations: table cells and
+    /// rows become spaces and newlines, other tags are dropped,
+    /// entities decoded.
+    static func plainText(_ markdown: String) -> String {
+        var t = cleanMarkdown(markdown)
+        t = t.replacingOccurrences(
+            of: #"</t[dh]>"#, with: " ", options: [.regularExpression, .caseInsensitive]
+        )
+        t = t.replacingOccurrences(
+            of: #"</tr>\s*|<br\s*/?>"#, with: "\n", options: [.regularExpression, .caseInsensitive]
+        )
+        t = t.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        t = decodeEntities(t)
+        t = t.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+        t = t.replacingOccurrences(of: #" *\n *"#, with: "\n", options: .regularExpression)
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Decode the HTML entities an HTML table cell can carry: the five
+    /// named XML ones, `&nbsp;`, and numeric `&#N;` / `&#xH;`.
+    static func decodeEntities(_ s: String) -> String {
+        guard s.contains("&") else { return s }
+        var out = ""
+        var rest = s[...]
+        while let amp = rest.firstIndex(of: "&") {
+            out += rest[rest.startIndex..<amp]
+            let tail = rest[amp...]
+            guard let semi = tail.firstIndex(of: ";"),
+                  tail.distance(from: amp, to: semi) <= 10 else {
+                out.append("&")
+                rest = rest[rest.index(after: amp)...]
+                continue
+            }
+            let name = String(tail[tail.index(after: amp)..<semi])
+            var decoded: String?
+            switch name {
+            case "amp": decoded = "&"
+            case "lt": decoded = "<"
+            case "gt": decoded = ">"
+            case "quot": decoded = "\""
+            case "apos", "#39": decoded = "'"
+            case "nbsp": decoded = "\u{00A0}"
+            default:
+                if name.hasPrefix("#x") || name.hasPrefix("#X"),
+                   let v = UInt32(name.dropFirst(2), radix: 16),
+                   let u = Unicode.Scalar(v) {
+                    decoded = String(Character(u))
+                } else if name.hasPrefix("#"),
+                          let v = UInt32(name.dropFirst()),
+                          let u = Unicode.Scalar(v) {
+                    decoded = String(Character(u))
+                }
+            }
+            if let decoded {
+                out += decoded
+                rest = rest[rest.index(after: semi)...]
+            } else {
+                out.append("&")
+                rest = rest[rest.index(after: amp)...]
+            }
+        }
+        out += rest
+        return out
     }
 
     // MARK: - Cost

@@ -17,14 +17,15 @@ import OCR
 ///
 /// Wire shape (see `LandingAIParse`): multipart/form-data with a
 /// `document` file part (PNG of the region), a `model` field
-/// (`dpt-3-pro-latest` by default) and an `options` field asking for
-/// pipe-syntax tables. Auth is `Authorization: Bearer <apikey>`. We
-/// pull the response's top-level `markdown` (cleaned of figure and
-/// comment markup) as the recognized text and surface it as a single
-/// observation spanning the input image's normalized bbox — same
-/// posture as `GoogleDocumentOCREngine`. The cascade translates that
-/// to full-page coords and runs the guardrail comparison against the
-/// prior tier.
+/// (`dpt-3-pro-latest` by default) and an `options` field. Auth is
+/// `Authorization: Bearer <apikey>`. Each text-bearing block of the
+/// response's `structure` tree becomes one observation with its own
+/// box (converted to Vision's lower-left origin) and plain text —
+/// HTML tables flattened to space-separated cells, one row per line.
+/// When the tree is missing we fall back to the flat `markdown` as a
+/// single observation spanning the whole image, as before. The
+/// cascade translates boxes to full-page coords and runs the
+/// guardrail comparison against the prior tier.
 public struct LandingAIDocumentEngine: OCREngine, Sendable {
     public let apiKeyProvider: @Sendable () -> String?
     public let budget: CloudCallBudget
@@ -81,6 +82,24 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
     }
 
     public func recognize(image: CGImage, hints: OCRHints) async throws -> OCRResult {
+        // Language hints are not part of the parse endpoint schema,
+        // so `hints.languages` is intentionally ignored.
+        let response = try await parse(image: image, filename: "region.png")
+        let observations = Self.observations(from: response)
+        let text = observations.map(\.text).joined(separator: "\n\n")
+        guard !text.isEmpty else {
+            throw DocumentOCRError.emptyResponse
+        }
+        let mean = observations.map(\.confidence).reduce(0, +)
+            / Double(observations.count)
+        return OCRResult(text: text, meanConfidence: mean, observations: observations)
+    }
+
+    /// One `POST /v2/parse` call: budget, request, status check,
+    /// decode and cost recording. Shared by `recognize` and
+    /// `LandingAIPageOCREngine`, which builds blocks from the
+    /// structure tree.
+    func parse(image: CGImage, filename: String) async throws -> LandingAIParse.Response {
         guard await budget.tryConsume() else {
             throw DocumentOCRError.budgetExhausted
         }
@@ -93,11 +112,9 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
             throw DocumentOCRError.pngEncodeFailed
         }
 
-        // Language hints are not part of the parse endpoint schema,
-        // so `hints.languages` is intentionally ignored.
         let request = LandingAIParse.makeRequest(
             baseURL: baseURL, apiKey: key, model: model,
-            png: png, filename: "region.png", timeout: requestTimeout
+            png: png, filename: filename, timeout: requestTimeout
         )
 
         let data: Data
@@ -119,7 +136,7 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
 
         // 2xx includes 206 (partial success: some pages failed). A
         // single-image request is one page, so a 206 here would carry
-        // empty markdown and fall through to `.emptyResponse`.
+        // a failed page and empty markdown → `.emptyResponse` upstream.
         let envelope: LandingAIParse.Response
         do {
             envelope = try LandingAIParse.decode(data)
@@ -133,22 +150,53 @@ public struct LandingAIDocumentEngine: OCREngine, Sendable {
             LandingAIParse.usage(for: envelope),
             for: .landingAIDPT3Pro
         )
+        return envelope
+    }
 
-        let text = LandingAIParse.cleanMarkdown(envelope.markdown ?? "")
-        guard !text.isEmpty else {
-            throw DocumentOCRError.emptyResponse
+    /// Block types whose text is page content for OCR purposes.
+    /// Figures, logos and scan codes carry descriptions or payloads,
+    /// not transcribed text.
+    static let textBlockTypes: Set<String> = [
+        "text", "table", "marginalia", "card", "attestation",
+    ]
+
+    /// Observations from the structure tree: one per text-bearing
+    /// block, in reading order, with its box converted from Gen2's
+    /// top-left origin to Vision's lower-left. Falls back to the flat
+    /// markdown as one full-image observation when the tree has no
+    /// usable blocks.
+    static func observations(from response: LandingAIParse.Response) -> [TextObservation] {
+        let fromTree: [TextObservation] = response.blocks.compactMap { node in
+            guard textBlockTypes.contains(node.type) else { return nil }
+            let text = LandingAIParse.plainText(response.text(of: node))
+            guard !text.isEmpty else { return nil }
+            return TextObservation(
+                text: text,
+                confidence: 0.95,
+                box: visionBox(node.grounding?.box),
+                source: .claude
+            )
         }
-
-        let observation = TextObservation(
-            text: text,
+        if !fromTree.isEmpty { return fromTree }
+        let flat = LandingAIParse.plainText(response.markdown ?? "")
+        guard !flat.isEmpty else { return [] }
+        return [TextObservation(
+            text: flat,
             confidence: 0.95,
             box: CGRect(x: 0, y: 0, width: 1, height: 1),
             source: .claude
-        )
-        return OCRResult(
-            text: text,
-            meanConfidence: 0.95,
-            observations: [observation]
+        )]
+    }
+
+    /// Gen2 box (fractions, origin top-left, y down) → Vision rect
+    /// (normalized, origin lower-left). Missing box → whole image.
+    static func visionBox(_ box: LandingAIParse.Node.Box?) -> CGRect {
+        guard let box else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
+        let xmin = min(max(box.xmin, 0), 1), xmax = min(max(box.xmax, 0), 1)
+        let ymin = min(max(box.ymin, 0), 1), ymax = min(max(box.ymax, 0), 1)
+        return CGRect(
+            x: xmin, y: 1 - max(ymin, ymax),
+            width: abs(xmax - xmin), height: abs(ymax - ymin)
         )
     }
 
