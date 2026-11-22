@@ -41,7 +41,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     /// stays on Sonnet but layers on a normalizing-posture prompt
     /// tuned for 15th–18th c. printed books (long-s, ligatures,
     /// u/v + i/j interchange). `.manuscript(hand:)` routes to
-    /// Opus 4.7 with a diplomatic-posture prompt for handwritten
+    /// Opus 5.5 with a diplomatic-posture prompt for handwritten
     /// material. The three are mutually exclusive at the
     /// launcher; the engine factory picks one per conversion.
     public enum Mode: Sendable, Equatable {
@@ -53,7 +53,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
             switch self {
             case .typeset: return .sonnet5_5
             case .earlyPrint: return .sonnet5_5
-            case .manuscript: return .opus4_7
+            case .manuscript: return .opus5_5
             }
         }
     }
@@ -84,14 +84,19 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
         budget: CloudCallBudget,
         mode: Mode = .typeset,
         model: CloudModel? = nil,
-        maxOutputTokens: Int = 12288,  // ~30% headroom for the 5.x tokenizer
+        maxOutputTokens: Int? = nil,
         captureSink: CaptureSink? = nil
     ) {
         self.client = client
         self.budget = budget
         self.mode = mode
-        self.model = model ?? mode.defaultModel
+        let resolvedModel = model ?? mode.defaultModel
+        self.model = resolvedModel
+        // 12288 leaves ~30% headroom over the 4.x caps for the 5.x
+        // tokenizer. Opus 5.5 always thinks, and thinking counts
+        // toward max_tokens, so its default adds room for that.
         self.maxOutputTokens = maxOutputTokens
+            ?? (resolvedModel.alwaysThinks ? 16000 : 12288)
         self.captureSink = captureSink
     }
 
@@ -494,7 +499,7 @@ public struct ClaudePageOCREngine: PageOCREngine, Sendable {
     /// Source: Anthropic Messages API image-input docs.
     private static let anthropicMaxBase64Bytes: Int = 5 * 1024 * 1024  // 5 MB
     /// Default long edge for models that downscale anything larger
-    /// (Sonnet 4.6, Opus 4.7, Haiku). Callers pass
+    /// (Sonnet 4.6, Opus, Haiku). Callers pass
     /// `CloudModel.maxImageLongEdge`, which is 2576 for Sonnet 5.5.
     /// Also the first fallback when a larger image overflows 5 MB.
     static let anthropicPreferredMaxDim: Int = 1568

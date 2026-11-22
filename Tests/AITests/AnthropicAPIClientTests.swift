@@ -127,6 +127,23 @@ final class AnthropicAPIClientTests: XCTestCase {
 
     // MARK: - Missing key
 
+    func test_fallbacks_request_adds_server_side_fallback_beta() async throws {
+        let mock = MockTransport(steps: [.init(status: 200, body: successBody())])
+        let client = makeClient(transport: mock)
+        _ = try await client.send(AnthropicMessageRequest(
+            model: .opus5_5,
+            maxTokens: 128,
+            messages: [Message(role: .user, content: .plain("hi"))]
+        ))
+        let sent = await mock.sentRequests
+        XCTAssertEqual(
+            sent[0].value(forHTTPHeaderField: "anthropic-beta"),
+            "server-side-fallback-2026-07-01"
+        )
+        let body = try JSONSerialization.jsonObject(with: sent[0].httpBody!) as! [String: Any]
+        XCTAssertEqual(body["fallbacks"] as? String, "default")
+    }
+
     func test_missing_api_key_throws_before_network_call() async {
         let mock = MockTransport(steps: [])
         let client = makeClient(transport: mock, apiKey: nil)

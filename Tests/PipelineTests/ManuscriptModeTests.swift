@@ -18,7 +18,7 @@ final class ManuscriptModeTests: XCTestCase {
     func test_manuscript_mode_uses_opus_by_default() {
         for hand in ManuscriptHand.allCases {
             let mode: ClaudePageOCREngine.Mode = .manuscript(hand: hand)
-            XCTAssertEqual(mode.defaultModel, .opus4_7,
+            XCTAssertEqual(mode.defaultModel, .opus5_5,
                 "manuscript \(hand) should default to Opus")
         }
     }

@@ -28,6 +28,28 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
     /// response framing). The synchronous `send(_:)` path leaves this
     /// nil; `sendStream(_:)` flips it to true before encoding.
     public var stream: Bool?
+    /// Server-side refusal fallback. `.default` re-runs a request the
+    /// model's safety classifiers decline on the model Anthropic
+    /// recommends for that refusal category. Filled in from
+    /// `CloudModel.supportsServerSideFallback` (Opus 5.5) when the
+    /// caller doesn't set it; needs the `server-side-fallback-2026-07-01`
+    /// beta, which the client adds whenever this is non-nil. Rejected
+    /// by the Batches API, so `AnthropicBatchSubmitRequest` strips it.
+    public var fallbacks: Fallbacks?
+
+    /// `"default"` is the only form used here (the array form, which
+    /// names fallback models, is not modelled).
+    public enum Fallbacks: String, Sendable, Encodable, Equatable {
+        case `default`
+    }
+
+    /// Beta header the `fallbacks` field requires.
+    public static let serverSideFallbackBeta = "server-side-fallback-2026-07-01"
+
+    /// Beta headers this request needs on top of the client's own.
+    public var requiredBetaHeaders: [String] {
+        fallbacks == nil ? [] : [Self.serverSideFallbackBeta]
+    }
 
     public init(
         model: CloudModel,
@@ -39,7 +61,8 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         cacheControl: CacheControl? = nil,
         outputConfig: OutputConfig? = nil,
         tools: [Tool]? = nil,
-        stream: Bool? = nil
+        stream: Bool? = nil,
+        fallbacks: Fallbacks? = nil
     ) {
         self.model = model
         self.maxTokens = maxTokens
@@ -51,6 +74,8 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         self.outputConfig = Self.applyingDefaultEffort(to: outputConfig, for: model)
         self.tools = tools
         self.stream = stream
+        self.fallbacks = fallbacks
+            ?? (model.supportsServerSideFallback ? .default : nil)
     }
 
     /// Fills in `model.defaultEffort` when the caller didn't pick an
@@ -78,6 +103,7 @@ public struct AnthropicMessageRequest: Sendable, Encodable, Equatable {
         case outputConfig = "output_config"
         case tools
         case stream
+        case fallbacks
     }
 }
 
@@ -355,9 +381,12 @@ public struct CacheControl: Sendable, Encodable, Equatable {
 /// `disabled` with a 400 and takes `between_tools` instead (no
 /// extended thinking; short between-tool-call notes come back as
 /// `thinking` blocks, which `ResponseBlock` decodes as `.unknown`
-/// and the stream parser skips). Every other model rejects
-/// `between_tools`, so the mapping also runs in reverse — a request
-/// built for Sonnet and re-targeted at Haiku stays valid.
+/// and the stream parser skips). Opus 5.5 can't turn thinking off
+/// at all — `disabled` is a 400 at every effort — so the field is
+/// omitted (adaptive) and `CloudModel.defaultEffort` keeps the
+/// thinking short. Every other model rejects `between_tools`, so
+/// the mapping also runs in reverse — a request built for Sonnet
+/// and re-targeted at Haiku stays valid.
 public struct ThinkingConfig: Sendable, Encodable, Equatable {
     public var type: Mode
 
@@ -371,15 +400,20 @@ public struct ThinkingConfig: Sendable, Encodable, Equatable {
     public static let adaptive = ThinkingConfig(type: .adaptive)
     public static let betweenTools = ThinkingConfig(type: .betweenTools)
 
-    /// The thinking-off spelling `model` accepts. Adaptive passes
-    /// through unchanged. `between_tools` is valid only at effort
-    /// `high` or below; no caller here sets a higher effort.
-    public func resolved(for model: CloudModel) -> ThinkingConfig {
+    /// The thinking-off spelling `model` accepts, or nil when the
+    /// model can't turn thinking off and the field must be omitted.
+    /// Adaptive passes through unchanged. `between_tools` is valid
+    /// only at effort `high` or below; no caller here sets higher.
+    public func resolved(for model: CloudModel) -> ThinkingConfig? {
         switch type {
         case .adaptive:
             return self
         case .disabled, .betweenTools:
-            return model.turnsThinkingOffWithBetweenTools ? .betweenTools : .disabled
+            switch model.thinkingOff {
+            case .disabled:     return .disabled
+            case .betweenTools: return .betweenTools
+            case .omitted:      return nil
+            }
         }
     }
 }

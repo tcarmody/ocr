@@ -104,6 +104,24 @@ final class AnthropicBatchAPIClientTests: XCTestCase {
         XCTAssertEqual(requests[1]["custom_id"] as? String, "page-1")
     }
 
+    func test_batch_params_never_carry_fallbacks() throws {
+        // The Batches API rejects `fallbacks`; Opus 5.5 requests turn
+        // it on by default, so the batch encoder must drop it.
+        let params = AnthropicMessageRequest(
+            model: .opus5_5, maxTokens: 8,
+            messages: [Message(role: .user, content: .plain("hi"))]
+        )
+        XCTAssertEqual(params.fallbacks, .default)
+        let data = try JSONEncoder().encode(AnthropicBatchSubmitRequest(requests: [
+            .init(customId: "page-0", params: params)
+        ]))
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let entry = (json["requests"] as! [[String: Any]])[0]
+        let encoded = entry["params"] as! [String: Any]
+        XCTAssertNil(encoded["fallbacks"])
+        XCTAssertEqual(encoded["model"] as? String, "claude-opus-5-5")
+    }
+
     func test_submit_throws_missing_api_key() async {
         let mock = MockTransport(steps: [])
         let client = AnthropicBatchAPIClient(

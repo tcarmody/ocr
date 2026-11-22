@@ -157,7 +157,7 @@ struct ConversionOptions: Codable, Equatable {
     /// existing queued jobs still load (see `CodingKeys`).
     var useWholePageOCR: Bool
     /// E-Vision-Modes / Manuscript track. Routes per-page OCR
-    /// through Claude Opus 4.7 with hand-specific prompts instead
+    /// through Claude Opus 5.5 with hand-specific prompts instead
     /// of the Sonnet typeset path. Per-job; the launcher exposes
     /// this as the "Manuscript mode" toggle alongside Claude OCR.
     var useManuscriptMode: Bool

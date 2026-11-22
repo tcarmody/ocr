@@ -49,21 +49,51 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// on the old id still prices correctly; new calls use `sonnet5_5`.
     public static let sonnet4_6 = CloudModel(rawValue: "claude-sonnet-4-6")
 
-    /// True for models that reject `thinking: {type: "disabled"}`
-    /// and turn extended thinking off with `between_tools` instead.
-    /// Only Sonnet 5.5 accepts `between_tools`; every other model
-    /// rejects it.
-    public var turnsThinkingOffWithBetweenTools: Bool {
-        rawValue == "claude-sonnet-5-5"
+    /// How a request turns extended thinking off on this model.
+    /// `.betweenTools` for Sonnet 5.5 (it 400s on `disabled`; every
+    /// other model 400s on `between_tools`); `.omitted` for Opus 5.5,
+    /// where thinking is always on and only effort controls it;
+    /// `.disabled` everywhere else.
+    public enum ThinkingOff: Sendable, Equatable {
+        case disabled, betweenTools, omitted
     }
+
+    public var thinkingOff: ThinkingOff {
+        switch rawValue {
+        case "claude-sonnet-5-5": return .betweenTools
+        case "claude-opus-5-5":   return .omitted
+        default:                  return .disabled
+        }
+    }
+
+    /// True when requests opt into server-side refusal fallback
+    /// (`fallbacks: "default"`). Opus 5.5's safety classifiers can
+    /// decline benign requests; the fallback re-runs a decline on
+    /// Anthropic's recommended model instead of failing the page.
+    /// Off for Haiku 5.5 (no server-side fallback) and Sonnet 5.5
+    /// (its `between_tools` thinking-off isn't accepted by its
+    /// fallback model).
+    public var supportsServerSideFallback: Bool {
+        rawValue == "claude-opus-5-5"
+    }
+
+    /// True when the model may think even with thinking "off", so
+    /// `max_tokens` needs room for thinking as well as the reply.
+    public var alwaysThinks: Bool { thinkingOff == .omitted }
 
     /// Effort sent when a request doesn't set one. Sonnet 5.5 runs
     /// at `low`: its levels are recalibrated from Sonnet 4.6, and
     /// `low` is Anthropic's starting point for chat, extraction and
-    /// classification — the shape of every Sonnet route here. Nil
+    /// classification — the shape of every Sonnet route here.
+    /// Opus 5.5 also runs at `low`: thinking can't be turned off
+    /// there, so effort is the only lever on its thinking spend (its
+    /// API default is `medium`; raise it if handwriting quality drops). Nil
     /// leaves the API default (Haiku 4.5 rejects `effort` outright).
     public var defaultEffort: OutputConfig.Effort? {
-        rawValue == "claude-sonnet-5-5" ? .low : nil
+        switch rawValue {
+        case "claude-sonnet-5-5", "claude-opus-5-5": return .low
+        default: return nil
+        }
     }
 
     /// Long edge, in pixels, that whole-page images are downsized to
@@ -98,12 +128,22 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
     /// alias above.
     public static let haiku4_5_20251001 = CloudModel(rawValue: "claude-haiku-4-5-20251001")
 
-    /// Opus 4.7 — highest-capability tier, used by
+    /// Opus 5.5 — highest-capability tier, used by
     /// `ClaudePageOCREngine` in Manuscript mode for handwritten
     /// material (secretary hand, round hand, 19th-c. cursive,
     /// contemporary informal). Significantly more expensive than
     /// Sonnet for typeset OCR, but the gap in handwriting
     /// recognition justifies the routing.
+    ///
+    /// Differences from Opus 4.7 that callers must respect: thinking
+    /// is always on (`disabled` returns a 400 at every effort), so
+    /// `ThinkingConfig.resolved` omits the field and requests default
+    /// to effort `low`; forced `tool_choice` returns a 400; requests
+    /// opt into server-side refusal fallback. Same tokenizer as 4.7.
+    public static let opus5_5 = CloudModel(rawValue: "claude-opus-5-5")
+
+    /// Opus 4.7 — previous Opus. Kept so persisted usage keyed on
+    /// the old id still prices correctly; new calls use `opus5_5`.
     public static let opus4_7 = CloudModel(rawValue: "claude-opus-4-7")
 
     /// Gemini 2.5 Flash — Google's fast multimodal model, used as the
@@ -164,6 +204,11 @@ public struct CloudModel: Sendable, Codable, Equatable, Hashable, RawRepresentab
             return Pricing(inputPerMTok: 0.10, outputPerMTok: 0.50)
         case "claude-haiku-4-5", "claude-haiku-4-5-20251001":
             return Pricing(inputPerMTok: 1.00, outputPerMTok: 5.00)
+        case "claude-opus-5-5":
+            // Opus 5.5: $4/M input, $20/M output; cache reads $0.20/M
+            // (0.05× input). Thinking tokens bill as output.
+            return Pricing(inputPerMTok: 4.00, outputPerMTok: 20.00,
+                           cacheReadPerMTokOverride: 0.20)
         case "claude-opus-4-7":
             return Pricing(inputPerMTok: 5.00, outputPerMTok: 25.00)
         case "gemini-2.5-flash":

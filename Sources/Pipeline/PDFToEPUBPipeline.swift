@@ -144,7 +144,7 @@ public actor PDFToEPUBPipeline {
         /// E-Vision-Modes / Manuscript track. When true (and Cloud
         /// mode + an API key are configured), every page routes
         /// through `ClaudePageOCREngine` in manuscript mode
-        /// (Claude Opus 4.7) instead of the typeset Sonnet path.
+        /// (Claude Opus 5.5) instead of the typeset Sonnet path.
         /// Per-job; the launcher's "Manuscript mode" toggle is
         /// the only surface that flips this. Mutually exclusive
         /// with `useWholePageOCR` at the launcher layer — both

@@ -24,7 +24,7 @@ public enum BookConversionType: String, Sendable, Codable,
     /// books with period orthography.
     case earlyPrint
 
-    /// PDF → EPUB via E-Vision-Modes Manuscript mode (Opus 4.7
+    /// PDF → EPUB via E-Vision-Modes Manuscript mode (Opus 5.5
     /// + hand-specific prompt). Handwritten material.
     case manuscript
 

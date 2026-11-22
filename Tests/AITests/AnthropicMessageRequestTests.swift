@@ -171,6 +171,33 @@ final class AnthropicMessageRequestTests: XCTestCase {
         }
     }
 
+    func test_opus_5_5_omits_thinking_and_runs_low_effort() throws {
+        let r = AnthropicMessageRequest(
+            model: .opus5_5,
+            maxTokens: 256,
+            messages: [Message(role: .user, content: .plain("Hi"))],
+            thinking: .disabled
+        )
+        let json = try encode(r)
+        XCTAssertNil(json["thinking"], "disabled is a 400 on Opus 5.5")
+        let out = json["output_config"] as? [String: Any]
+        XCTAssertEqual(out?["effort"] as? String, "low")
+        XCTAssertEqual(json["fallbacks"] as? String, "default")
+        XCTAssertEqual(r.requiredBetaHeaders, ["server-side-fallback-2026-07-01"])
+    }
+
+    func test_only_opus_5_5_opts_into_fallbacks() throws {
+        for model in [CloudModel.haiku5_5, .sonnet5_5, .sonnet4_6, .opus4_7] {
+            let r = AnthropicMessageRequest(
+                model: model,
+                maxTokens: 256,
+                messages: [Message(role: .user, content: .plain("Hi"))]
+            )
+            XCTAssertNil(try encode(r)["fallbacks"], model.rawValue)
+            XCTAssertTrue(r.requiredBetaHeaders.isEmpty, model.rawValue)
+        }
+    }
+
     func test_adaptive_thinking_is_not_remapped() {
         XCTAssertEqual(ThinkingConfig.adaptive.resolved(for: .sonnet5_5), .adaptive)
     }

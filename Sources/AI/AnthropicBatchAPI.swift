@@ -54,6 +54,17 @@ public struct AnthropicBatchSubmitRequest: Sendable, Encodable, Equatable {
             case customId = "custom_id"
             case params
         }
+
+        /// The Batches API rejects `fallbacks`, so batched requests
+        /// always go without server-side refusal fallback — a
+        /// declined page comes back as a refusal result instead.
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(customId, forKey: .customId)
+            var batchParams = params
+            batchParams.fallbacks = nil
+            try c.encode(batchParams, forKey: .params)
+        }
     }
 }
 

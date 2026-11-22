@@ -61,7 +61,7 @@ final class QueueViewModel: ObservableObject {
     /// aren't met.
     @Published var useWholePageOCR: Bool = false
     /// E-Vision-Modes / Manuscript track. When true, page OCR
-    /// routes to Claude Opus 4.7 with a hand-family-specific
+    /// routes to Claude Opus 5.5 with a hand-family-specific
     /// prompt (see `manuscriptHand`). Mutually exclusive with
     /// `useWholePageOCR` at the UI layer — the engine factory
     /// also lets manuscript win when both are set, but the

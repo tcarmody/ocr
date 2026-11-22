@@ -335,6 +335,13 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(p.cacheCreationPerMTok, 2.50, accuracy: 0.0001)
     }
 
+    func test_opus_5_5_rates() {
+        let p = CloudModel.opus5_5.pricing
+        XCTAssertEqual(p.inputPerMTok, 4.00)
+        XCTAssertEqual(p.outputPerMTok, 20.00)
+        XCTAssertEqual(p.cacheReadPerMTok, 0.20, accuracy: 0.0001)  // 0.05× input
+    }
+
     func test_haiku_5_5_rates() {
         let p = CloudModel.haiku5_5.pricing
         XCTAssertEqual(p.inputPerMTok, 0.10)

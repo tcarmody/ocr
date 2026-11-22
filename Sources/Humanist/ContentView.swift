@@ -522,7 +522,7 @@ struct ContentView: View {
         case .earlyPrint:
             return "Sonnet with a normalizing prompt tuned for 15th–18th c. printed material (long-s, u/v, i/j, ligatures). Pick a typeface inside the menu; \"Auto\" lets the model identify Roman vs Blackletter."
         case .manuscript:
-            return "Opus 4.7 with hand-family-specific prompts for handwritten material. ≈ 5× more expensive than Claude — Typeset. Pick a hand inside the menu; \"Auto\" identifies the family from the page."
+            return "Opus 5.5 with hand-family-specific prompts for handwritten material. ≈ 2–3× the cost of Claude — Typeset (about $0.09/page, thinking included). Pick a hand inside the menu; \"Auto\" identifies the family from the page."
         }
     }
 

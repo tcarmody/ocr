@@ -225,9 +225,15 @@ extension AnthropicAPIClient {
         ur.addValue("text/event-stream", forHTTPHeaderField: "Accept")
         ur.addValue(apiKey, forHTTPHeaderField: "x-api-key")
         ur.addValue(config.apiVersion, forHTTPHeaderField: "anthropic-version")
-        if !config.betaHeaders.isEmpty {
+        // Client-wide betas plus any the request itself needs (e.g.
+        // `fallbacks` -> server-side-fallback), de-duplicated.
+        var betas = config.betaHeaders
+        for beta in request.requiredBetaHeaders where !betas.contains(beta) {
+            betas.append(beta)
+        }
+        if !betas.isEmpty {
             ur.addValue(
-                config.betaHeaders.joined(separator: ","),
+                betas.joined(separator: ","),
                 forHTTPHeaderField: "anthropic-beta"
             )
         }

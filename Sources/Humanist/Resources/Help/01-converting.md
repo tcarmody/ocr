@@ -16,7 +16,7 @@ The launcher's *Per-job overrides* lets you pick the mode for each PDF:
 
 - **Print** — typeset books, born-digital or scanned. The default.
 - **Early Print** — 15th–18th c. printed books. Silently modernizes long-s, u/v, i/j, ligatures. Preserves period spelling. Handles Roman, Blackletter (Fraktur), and Italic typefaces.
-- **Manuscript** — handwritten material. Uses Claude Opus 4.7 (provider-pinned — handwriting needs Opus's visual reasoning). Hand-family prompts for 16th–17th c. secretary, 18th c. round hand, 19th–early 20th c. cursive, modern.
+- **Manuscript** — handwritten material. Uses Claude Opus 5.5 (provider-pinned — handwriting needs Opus's visual reasoning). Hand-family prompts for 16th–17th c. secretary, 18th c. round hand, 19th–early 20th c. cursive, modern.
 - **Facing-page bilingual** — Loeb-style facing-page editions. Tags each page anchor with its partner via `data-facing-page`. Auto-detect is conservative; this toggle relaxes the gates.
 
 ## Private vs. Cloud
