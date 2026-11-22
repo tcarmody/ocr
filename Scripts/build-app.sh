@@ -11,7 +11,11 @@ rm -rf "$APP_BUNDLE"
 log "Compiling Swift executable (release, arm64)"
 ( cd "$REPO_ROOT" && swift build -c release --arch arm64 )
 
-BIN="$REPO_ROOT/.build/arm64-apple-macosx/release/$APP_NAME"
+# Ask SwiftPM where it put the products: older toolchains use
+# .build/arm64-apple-macosx/release/, the Swift Build backend
+# (Swift 6.4+) uses .build/out/Products/Release/.
+BIN_DIR="$( cd "$REPO_ROOT" && swift build -c release --arch arm64 --show-bin-path )"
+BIN="$BIN_DIR/$APP_NAME"
 [[ -x "$BIN" ]] || die "Swift build did not produce $BIN"
 
 log "Assembling $APP_BUNDLE"
@@ -188,10 +192,10 @@ log "Rewrote main binary deps to @rpath; added LC_RPATH"
 # Bundle humanist-cli alongside the main binary. It ships in
 # Contents/MacOS/ so power users can invoke `Humanist.app/Contents/MacOS/humanist-cli`
 # directly, and Scripts/install-cli.sh installs from the same swift
-# build cache (.build/arm64-apple-macosx/release/) for $PATH.
+# build cache ($BIN_DIR) for $PATH.
 # Same @rpath rewriting as the main binary so the bundled copy is
 # self-contained against the .app's Frameworks/.
-CLI_SRC="$REPO_ROOT/.build/arm64-apple-macosx/release/humanist-cli"
+CLI_SRC="$BIN_DIR/humanist-cli"
 if [[ -x "$CLI_SRC" ]]; then
     cp "$CLI_SRC" "$APP_MACOS/humanist-cli"
     chmod +w "$APP_MACOS/humanist-cli"

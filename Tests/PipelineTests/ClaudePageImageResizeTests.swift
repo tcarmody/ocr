@@ -1,6 +1,7 @@
 import XCTest
 import CoreGraphics
 import AppKit
+import AI
 @testable import Pipeline
 
 /// Tests that `ClaudePageOCREngine.encodeForAnthropic` produces
