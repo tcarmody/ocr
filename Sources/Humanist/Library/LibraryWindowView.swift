@@ -308,6 +308,37 @@ struct LibraryWindowView: View {
     @State private var refreshDone: Bool = false
     @State private var refreshTask: Task<Void, Never>?
 
+    /// Shown while `library.json` is still being fetched from iCloud
+    /// (or couldn't be read), so an empty table isn't mistaken for an
+    /// empty library.
+    @ViewBuilder
+    private var catalogLoadBanner: some View {
+        switch library.loadState {
+        case .loaded:
+            EmptyView()
+        case .waitingForCloud:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Loading your library from iCloud Drive… Books appear when the catalog finishes downloading. Changes made now are kept.")
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.bar)
+        case .unreadable:
+            Label(
+                "Couldn't read the library catalog. Nothing will be saved over it until it can be read — check iCloud Drive, then relaunch.",
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+    }
+
     var body: some View {
         // The modifier chain on this view hit the SwiftUI type-
         // checker budget once we added the restore-snapshot sheet
@@ -315,6 +346,7 @@ struct LibraryWindowView: View {
         // onReceive handlers in one chain). Split into three
         // computed views so each chain stays within budget.
         coreBodyWithAlerts
+            .safeAreaInset(edge: .top, spacing: 0) { catalogLoadBanner }
             .alert("Some files could not be moved to Trash",
                    isPresented: Binding(
                        get: { removeError != nil },

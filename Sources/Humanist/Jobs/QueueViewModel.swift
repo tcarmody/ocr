@@ -395,8 +395,8 @@ final class QueueViewModel: ObservableObject {
             } else {
                 estimate = .empty
             }
-            let hasAPIKey = (AnthropicAPIKeyStore().read() ?? "").isEmpty == false
-            let hasGeminiKey = (GeminiAPIKeyStore().read() ?? "").isEmpty == false
+            let hasAPIKey = AnthropicAPIKeyStore().hasKey
+            let hasGeminiKey = GeminiAPIKeyStore().hasKey
             let suryaAvailable = SuryaConnection.detect() != nil
             let warnings = ProfileWarningEvaluator.evaluate(
                 ProfileWarningInputs(

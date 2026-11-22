@@ -89,11 +89,19 @@ public struct KeychainAPIKeyStore: Sendable {
         }
     }
 
-    /// True when a key is currently stored. Cheap probe — useful for
-    /// the Settings UI to render "Key configured" without revealing
-    /// the value itself.
+    /// True when a key is currently stored. Asks only whether the
+    /// item exists — no `kSecReturnData` — so the secret is never
+    /// decrypted and macOS never shows its "wants to use your
+    /// confidential information" prompt. That prompt appears after
+    /// every rebuild of an ad-hoc-signed app, and `hasKey` runs on
+    /// the main thread during launch, so reading the value here once
+    /// froze startup until the dialog was answered. The prompt now
+    /// waits for the first real `read()`, when a feature needs the
+    /// key.
     public var hasKey: Bool {
-        read() != nil
+        var query = baseQuery()
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     // MARK: - Helpers

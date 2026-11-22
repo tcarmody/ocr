@@ -1274,7 +1274,7 @@ private struct ModeBadge: View {
 
     private func refresh() {
         settings = AISettingsStore().load()
-        hasAPIKey = (AnthropicAPIKeyStore().read() ?? "").isEmpty == false
+        hasAPIKey = AnthropicAPIKeyStore().hasKey
     }
 }
 

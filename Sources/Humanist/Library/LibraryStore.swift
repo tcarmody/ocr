@@ -58,6 +58,24 @@ final class LibraryStore: ObservableObject {
     /// just a safety net for crashes / kill-9 / power loss.
     @Published private(set) var claims: [ClaimMarker] = []
 
+    /// Whether the catalog has been read yet. `.waitingForCloud` while
+    /// `library.json` is a dataless placeholder (evicted by iCloud's
+    /// Optimize Mac Storage, or any File Provider) being fetched in
+    /// the background; `.unreadable` when it exists but couldn't be
+    /// read. Saves are refused in both states so an empty in-memory
+    /// catalog can never overwrite the real one.
+    enum LoadState: Equatable {
+        case loaded
+        case waitingForCloud
+        case unreadable
+    }
+
+    @Published private(set) var loadState: LoadState = .loaded
+
+    /// Background read of a dataless catalog, kept so tests and a
+    /// later `reload()` can wait on / supersede it.
+    private(set) var deferredLoad: Task<Void, Never>?
+
     /// Where the JSON actually lives on disk. Set at init based on
     /// `shareAcrossMachines` + output-root state. Stays stable
     /// across reads/writes for the store's lifetime — toggling the
@@ -81,6 +99,24 @@ final class LibraryStore: ObservableObject {
         }
         load()
     }
+
+    /// Init seam for tests: `isDataless` and `readData` stand in for
+    /// the file-system checks so the deferred path can be driven
+    /// without iCloud.
+    init(
+        storeURL: URL,
+        isDataless: @escaping @Sendable (URL) -> Bool,
+        readData: @escaping @Sendable (URL) -> Data?
+    ) {
+        self.storeURL = storeURL
+        self.sharingAcrossMachines = false
+        self.isDatalessCheck = isDataless
+        self.readDataHook = readData
+        load()
+    }
+
+    private var isDatalessCheck: @Sendable (URL) -> Bool = LibraryStore.isDataless
+    private var readDataHook: @Sendable (URL) -> Data? = { try? Data(contentsOf: $0) }
 
     /// Resolve where library.json should live. Three-way precedence:
     ///   1. `shareAcrossMachines` ON + outputRoot configured →
@@ -147,8 +183,92 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - persistence
 
+    /// Read the catalog. A dataless placeholder is read on a
+    /// background thread instead: reading it blocks until the
+    /// provider delivers the bytes, which once hung launch
+    /// indefinitely when iCloud's download queue had stalled.
     private func load() {
-        guard let data = try? Data(contentsOf: storeURL) else { return }
+        if isDatalessCheck(storeURL) {
+            beginDeferredLoad()
+            return
+        }
+        guard let data = readDataHook(storeURL) else { return }
+        apply(data)
+    }
+
+    /// True when `url` is a dataless placeholder — its metadata is
+    /// local but its contents live with a File Provider (iCloud
+    /// Drive's Optimize Mac Storage, Dropbox, …). `lstat` doesn't
+    /// trigger a download, so this check never blocks.
+    nonisolated static func isDataless(_ url: URL) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return false }
+        // SF_DATALESS from <sys/stat.h>.
+        return info.st_flags & 0x4000_0000 != 0
+    }
+
+    private func beginDeferredLoad() {
+        deferredLoad?.cancel()
+        loadState = .waitingForCloud
+        let url = storeURL
+        let read = readDataHook
+        deferredLoad = Task { [weak self] in
+            // Keep asking iCloud for the file while we wait: a
+            // stalled queue ignored the implicit fetch the blocked
+            // read made, but an explicit request got it moving.
+            let nudge = Task.detached(priority: .utility) {
+                while !Task.isCancelled {
+                    try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                    try? await Task.sleep(for: .seconds(15))
+                }
+            }
+            let data: Data? = await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: read(url))
+                }
+            }
+            nudge.cancel()
+            guard !Task.isCancelled else { return }
+            self?.finishDeferredLoad(data)
+        }
+    }
+
+    /// Apply a catalog that arrived after launch, keeping anything
+    /// added while we waited (a finished conversion, a new
+    /// collection, a claim). Removals made during the wait are not
+    /// replayed — the Library window shows a loading state then, so
+    /// there's nothing visible to remove.
+    private func finishDeferredLoad(_ data: Data?) {
+        guard let data else {
+            // The file is there but couldn't be read: stay read-only
+            // rather than risk writing an empty catalog over it.
+            loadState = FileManager.default.fileExists(atPath: storeURL.path)
+                ? .unreadable : .loaded
+            return
+        }
+        let addedEntries = entries
+        let addedCollections = collections
+        let addedRejected = rejectedSourceHashes
+        let addedClaims = claims
+        loadState = .loaded
+        apply(data)
+
+        let knownEntries = Set(entries.map(\.id))
+        let newEntries = addedEntries.filter { !knownEntries.contains($0.id) }
+        let knownCollections = Set(collections.map(\.id))
+        let newCollections = addedCollections.filter { !knownCollections.contains($0.id) }
+        let newRejected = addedRejected.subtracting(rejectedSourceHashes)
+        let newClaims = addedClaims.filter { !claims.contains($0) }
+        guard !newEntries.isEmpty || !newCollections.isEmpty
+            || !newRejected.isEmpty || !newClaims.isEmpty else { return }
+        entries += newEntries
+        collections += newCollections
+        rejectedSourceHashes.formUnion(newRejected)
+        claims += newClaims
+        save()
+    }
+
+    private func apply(_ data: Data) {
         let decoder = JSONDecoder()
         var loadedEntries: [LibraryEntry] = []
         var loadedCollections: [BookCollection] = []
@@ -378,6 +498,10 @@ final class LibraryStore: ObservableObject {
     }
 
     private func save() {
+        // Never write before the real catalog has been read — while
+        // it's still in iCloud this would replace it with whatever
+        // is in memory (usually nothing).
+        guard loadState == .loaded else { return }
         // Recompute `relativePath` against the current root on
         // every save so a moved file or a freshly-configured root
         // gets picked up. Stored as forward slashes regardless of
