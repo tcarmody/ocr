@@ -14,8 +14,16 @@ import Document
 /// publication conventions. Schema-guided generation pins every
 /// field to a string, so parsing succeeds without the JSON-fence
 /// stripping the Cloud path needs. The text post-processing
-/// (`normalizeYear`, `normalizeISBN`) reuses the Cloud impl's
-/// helpers verbatim.
+/// (`normalizeYear`, `normalizeISBN`, and `nilIfEmpty`'s placeholder
+/// filter) reuses the Cloud impl's helpers verbatim.
+///
+/// The on-device model is small enough to copy formatting examples
+/// from its prompt as answers (it once returned the author
+/// "FirstName LastName, OtherName OtherLastName" and year "2003" for
+/// a page with neither), so the prompt describes formats without
+/// sample values, and `grounded(_:in:)` drops any field whose value
+/// doesn't appear in the front matter — the instructions already
+/// require verbatim values.
 public struct AppleFoundationModelMetadataExtractor: BookMetadataExtractor {
     public let client: AppleFoundationModelClient
 
@@ -42,14 +50,78 @@ public struct AppleFoundationModelMetadataExtractor: BookMetadataExtractor {
         } catch {
             return nil
         }
-        let result = ClaudeMetadataExtractor.Result(
-            title: ClaudeMetadataExtractor.nilIfEmpty(response.title),
-            author: ClaudeMetadataExtractor.nilIfEmpty(response.author),
-            year: ClaudeMetadataExtractor.normalizeYear(response.year),
-            publisher: ClaudeMetadataExtractor.nilIfEmpty(response.publisher),
-            isbn: ClaudeMetadataExtractor.normalizeISBN(response.isbn)
+        let result = Self.grounded(
+            ClaudeMetadataExtractor.Result(
+                title: ClaudeMetadataExtractor.nilIfEmpty(response.title),
+                author: ClaudeMetadataExtractor.nilIfEmpty(response.author),
+                year: ClaudeMetadataExtractor.normalizeYear(response.year),
+                publisher: ClaudeMetadataExtractor.nilIfEmpty(response.publisher),
+                isbn: ClaudeMetadataExtractor.normalizeISBN(response.isbn)
+            ),
+            in: trimmed
         )
         return result.isEmpty ? nil : result
+    }
+
+    // MARK: - Grounding
+
+    /// Keep only the fields whose values are present in `source`.
+    /// Text fields match case- and whitespace-insensitively; an author
+    /// list matches when every listed name does; the year must appear
+    /// as a standalone four-digit number; the ISBN's digits must appear
+    /// in the source's digit stream (hyphens and spaces ignored).
+    static func grounded(
+        _ result: ClaudeMetadataExtractor.Result, in source: String
+    ) -> ClaudeMetadataExtractor.Result {
+        let haystack = normalizedForMatch(source)
+        func present(_ value: String?) -> String? {
+            guard let value else { return nil }
+            let needle = normalizedForMatch(value)
+            return !needle.isEmpty && haystack.contains(needle) ? value : nil
+        }
+        func authorPresent(_ value: String?) -> String? {
+            guard let value else { return nil }
+            let names = value
+                .replacingOccurrences(of: " and ", with: ",")
+                .replacingOccurrences(of: "&", with: ",")
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            guard !names.isEmpty,
+                  names.allSatisfy({ present($0) != nil }) else { return nil }
+            return value
+        }
+        func yearPresent(_ value: String?) -> String? {
+            guard let value else { return nil }
+            return source.range(
+                of: #"(?<!\d)"# + value + #"(?!\d)"#, options: .regularExpression
+            ) != nil ? value : nil
+        }
+        func isbnPresent(_ value: String?) -> String? {
+            guard let value else { return nil }
+            let digits = source.uppercased()
+                .filter { $0.isNumber || $0 == "X" }
+            return digits.contains(value) ? value : nil
+        }
+        return ClaudeMetadataExtractor.Result(
+            title: present(result.title),
+            author: authorPresent(result.author),
+            year: yearPresent(result.year),
+            publisher: present(result.publisher),
+            isbn: isbnPresent(result.isbn)
+        )
+    }
+
+    /// Lowercased, curly quotes straightened, whitespace runs (line
+    /// breaks included) collapsed to one space.
+    static func normalizedForMatch(_ s: String) -> String {
+        s.lowercased()
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            .replacingOccurrences(of: "\u{2018}", with: "'")
+            .replacingOccurrences(of: "\u{201C}", with: "\"")
+            .replacingOccurrences(of: "\u{201D}", with: "\"")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - @Generable schema
@@ -62,10 +134,10 @@ public struct AppleFoundationModelMetadataExtractor: BookMetadataExtractor {
         @Guide(description: "The book's main title only — exclude subtitles and series names unless typographically inseparable. Nil if not visible.")
         var title: String?
 
-        @Guide(description: "Author name(s). Single name, or 'FirstName LastName, OtherName OtherLastName' for multiple authors. Editors and translators excluded. Nil if not visible.")
+        @Guide(description: "Author name(s) exactly as printed in the text, multiple authors separated by commas. Editors and translators excluded. Nil if no author name is printed.")
         var author: String?
 
-        @Guide(description: "Four-digit publication year as a string. Pick the original publication year when both reprint and original are visible. Nil if not visible.")
+        @Guide(description: "Publication year as printed in the text, four digits. Pick the original publication year when both reprint and original are visible. Nil if no year is printed.")
         var year: String?
 
         @Guide(description: "Publisher name only — exclude city, imprint, etc. Nil if not visible.")
@@ -89,17 +161,18 @@ public struct AppleFoundationModelMetadataExtractor: BookMetadataExtractor {
 
         For each field, return the value verbatim as it appears in \
         the text, or leave it nil if it isn't visible. DO NOT guess. \
-        DO NOT synthesize from related fields.
+        DO NOT synthesize from related fields. Never answer with a \
+        stand-in such as "nil", "unknown" or an example value — \
+        leave the field empty instead.
 
         Conventions:
           * `title`: the main book title only — exclude subtitles \
         and series names unless typographically inseparable.
-          * `author`: single name or "FirstName LastName, OtherName \
-        OtherLastName" for multiple authors. Editors / translators \
-        excluded.
-          * `year`: four-digit publication year as a string ("2003"). \
-        Pick the original publication year when both reprint and \
-        original are visible.
+          * `author`: the name or names exactly as printed; separate \
+        several authors with commas. Editors / translators excluded.
+          * `year`: the four-digit publication year as printed. Pick \
+        the original publication year when both reprint and original \
+        are visible.
           * `publisher`: publisher name only — exclude city, imprint.
           * `isbn`: ISBN-10 or ISBN-13 as printed (hyphens OK).
         """

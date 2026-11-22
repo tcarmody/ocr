@@ -185,8 +185,27 @@ public struct ClaudeMetadataExtractor: Sendable {
     static func nilIfEmpty(_ s: String?) -> String? {
         guard let s else { return nil }
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        guard !trimmed.isEmpty else { return nil }
+        return isPlaceholder(trimmed) ? nil : trimmed
     }
+
+    /// Stand-in values a model writes instead of leaving a field
+    /// empty: the literal word for "missing" ("nil", "null", "N/A",
+    /// "unknown", "not visible") or the prompt's own format example
+    /// copied back. Exact, case-insensitive match on the whole value
+    /// so real titles that merely contain these words survive.
+    static func isPlaceholder(_ s: String) -> Bool {
+        let key = s.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: " .\"'`()[]"))
+        return placeholderValues.contains(key)
+    }
+
+    static let placeholderValues: Set<String> = [
+        "nil", "null", "none", "n/a", "na", "unknown", "not visible",
+        "not available", "not found", "not specified", "not provided",
+        "not stated", "not given", "no title", "no author", "untitled",
+        "firstname lastname", "firstname lastname, othername otherlastname",
+    ]
 
     /// Year normalization: extract a 4-digit substring if present.
     /// Haiku sometimes returns "2003" and sometimes "© 2003" or
